@@ -1,0 +1,13 @@
+{
+  "name": "mail-app-ingest",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-09",
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "FORWARD_TO": "allisteraall@gmail.com",
+    "OWNER_EMAIL": "me@allisterantosik.com"
+  }
+}

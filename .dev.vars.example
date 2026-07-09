@@ -1,0 +1,3 @@
+DATABASE_URL="postgres://user:password@example.neon.tech/dbname?sslmode=require"
+# Optional: enables best-effort post-forward message embeddings.
+OPENAI_API_KEY=""

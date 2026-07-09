@@ -1,0 +1,8 @@
+From: Alice <alice@example.com>
+To: Inbox <inbox@example.org>
+Subject: Hello there
+Message-ID: <simple@example.com>
+Date: Wed, 08 Jul 2026 12:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+This is a simple message body.
