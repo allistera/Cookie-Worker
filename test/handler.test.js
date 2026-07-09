@@ -101,6 +101,31 @@ describe('email handler', () => {
     await expect(worker.email(message, env(), ctx())).rejects.toThrow('forward failed');
   });
 
+  test('swallows permanent forward errors once the message is stored', async () => {
+    neon.mockReturnValue(sqlReturning());
+    const message = fakeMessage(simpleFixture);
+    message.forward.mockRejectedValueOnce(new Error('non-authenticated emails cannot be forwarded'));
+    await worker.email(message, env(), ctx());
+    expect(messageFromLastLog()).toMatchObject({ event: 'forward_failed_permanent' });
+  });
+
+  test('swallows permanent forward errors for duplicates', async () => {
+    neon.mockReturnValue(sqlReturning({ outcome: 'duplicate', messageUuid: null }));
+    const message = fakeMessage(simpleFixture);
+    message.forward.mockRejectedValueOnce(new Error('destination address not verified'));
+    await worker.email(message, env(), ctx());
+    expect(messageFromLastLog()).toMatchObject({ event: 'forward_failed_permanent' });
+  });
+
+  test('rethrows permanent forward errors when storage also failed', async () => {
+    const sql = sqlReturning();
+    sql.transaction = vi.fn(async () => { throw new Error('boom'); });
+    neon.mockReturnValue(sql);
+    const message = fakeMessage(simpleFixture);
+    message.forward.mockRejectedValueOnce(new Error('non-authenticated emails cannot be forwarded'));
+    await expect(worker.email(message, env(), ctx())).rejects.toThrow('non-authenticated');
+  });
+
   test('schedules embedding only for inserted rows when OPENAI_API_KEY is set', async () => {
     neon.mockReturnValue(sqlReturning());
     const context = ctx();

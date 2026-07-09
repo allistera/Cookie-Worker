@@ -121,9 +121,17 @@ Flow of `async email(message, env, ctx)`:
    If the store promise exists (i.e. the failure was the budget timeout, not parse), hand it
    to `ctx.waitUntil(...)` — a store that merely outran the budget may still succeed; log
    `{event:'stored_late', outcome, message_id}` if it does, swallow its rejection.
-7. `await message.forward(env.FORWARD_TO)` — **outside** the try/catch. Forward errors
-   propagate: the sending MTA sees a temporary failure and retries; idempotent storage
-   makes the retry safe.
+7. `await message.forward(env.FORWARD_TO)` — in its own try/catch. Transient forward
+   errors propagate: the sending MTA sees a temporary failure and retries; idempotent
+   storage makes the retry safe. **Permanent** forward errors (`isPermanentForwardError`:
+   Cloudflare's "non-authenticated emails cannot be forwarded" and "destination address
+   not verified") are different — retries can never succeed, so propagating them makes
+   the sender retry until the mail bounces, having ingested the message on every attempt.
+   Once the message is safely stored (`'inserted'` or `'duplicate'`), a permanent forward
+   error is logged as `{event:'forward_failed_permanent', error, message_id}` and
+   swallowed; the message is accepted on the strength of the store. If storage also
+   failed, permanent forward errors still propagate so MTA retries give storage another
+   chance.
 8. **(v1.1)** After the forward has been awaited: if the store outcome was `'inserted'` and
    `env.OPENAI_API_KEY` is set, hand `embedMessage(sql, record, env.OPENAI_API_KEY)` (§7a)
    to `ctx.waitUntil(...)`. It runs after the response; its failure is logged

@@ -62,7 +62,20 @@ export default {
       }
     }
 
-    await message.forward(env.FORWARD_TO);
+    try {
+      await message.forward(env.FORWARD_TO);
+    } catch (err) {
+      // Transient forward errors propagate so the sending MTA retries
+      // (idempotent storage makes the retry safe). Permanent errors would
+      // retry forever and bounce, so once the message is safely stored we
+      // accept it and only log the lost forward.
+      if (!storeResult || !isPermanentForwardError(err)) throw err;
+      console.log(JSON.stringify({
+        event: 'forward_failed_permanent',
+        error: redact(err, env.DATABASE_URL),
+        message_id: record?.messageId,
+      }));
+    }
 
     if (
       sql
@@ -82,6 +95,19 @@ export default {
     }
   },
 };
+
+const PERMANENT_FORWARD_ERRORS = [
+  /non-authenticated emails cannot be forwarded/iu,
+  /destination address (?:is )?not verified/iu,
+];
+
+/**
+ * @param {unknown} err
+ */
+export function isPermanentForwardError(err) {
+  const text = err instanceof Error ? err.message : String(err);
+  return PERMANENT_FORWARD_ERRORS.some((pattern) => pattern.test(text));
+}
 
 /**
  * @param {string} databaseUrl
