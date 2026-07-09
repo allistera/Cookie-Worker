@@ -1,6 +1,7 @@
 {
   "name": "mail-app-ingest",
   "main": "src/index.js",
+  "workers_dev": false,
   "compatibility_date": "2026-07-09",
   "upload_source_maps": true,
   "observability": {
