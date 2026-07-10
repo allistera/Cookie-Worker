@@ -1,4 +1,4 @@
-import { neon } from '@neondatabase/serverless';
+import postgres from 'postgres';
 import { embedMessage } from './embed.js';
 import { parseEmail } from './parse.js';
 import { storeEmail } from './store.js';
@@ -24,7 +24,7 @@ export default {
     let record = null;
     /** @type {Promise<Awaited<ReturnType<typeof storeEmail>>> | null} */
     let storePromise = null;
-    /** @type {import('@neondatabase/serverless').NeonQueryFunction<false, false> | null} */
+    /** @type {import('postgres').Sql | null} */
     let sql = null;
     /** @type {Awaited<ReturnType<typeof storeEmail>> | null} */
     let storeResult = null;
@@ -114,7 +114,13 @@ export function isPermanentForwardError(err) {
  */
 export function createSql(databaseUrl) {
   try {
-    return neon(databaseUrl);
+    return postgres(databaseUrl, {
+      prepare: false,
+      ssl: 'require',
+      max: 1,
+      idle_timeout: 10,
+      connect_timeout: 10,
+    });
   } catch {
     throw new Error('DATABASE_URL is not a valid connection string');
   }

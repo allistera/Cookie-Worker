@@ -4,7 +4,7 @@ export const EMBEDDING_INPUT_CAP = 24000;
 export const EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
 
 /**
- * @param {import('@neondatabase/serverless').NeonQueryFunction<false, false>} sql
+ * @param {import('postgres').Sql} sql
  * @param {{messageId: string, subject?: string | null, bodyText?: string | null}} record
  * @param {string} messageUuid
  * @param {string} apiKey

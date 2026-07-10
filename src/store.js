@@ -1,5 +1,5 @@
 /**
- * @param {import('@neondatabase/serverless').NeonQueryFunction<false, false>} sql
+ * @param {import('postgres').Sql} sql
  * @param {any} record
  * @param {string} ownerEmail
  * @returns {Promise<{outcome: 'inserted' | 'duplicate', messageUuid: string | null}>}
@@ -38,13 +38,13 @@ export async function storeEmail(sql, record, ownerEmail) {
   const statements = [];
 
   if (!row.thread_id) {
-    statements.push(sql`
+    statements.push((sql) => sql`
       INSERT INTO threads (id, user_id, subject, last_message_at)
       VALUES (${threadId}, ${userId}, ${record.subject}, ${sentAt})
     `);
   }
 
-  statements.push(sql`
+  statements.push((sql) => sql`
     INSERT INTO messages (
       id, thread_id, user_id, from_name, from_address, recipients, subject, snippet,
       body_text, body_html, sent_at, message_id, headers, raw_size, truncated,
@@ -61,7 +61,7 @@ export async function storeEmail(sql, record, ownerEmail) {
   `);
 
   for (const attachment of record.attachments) {
-    statements.push(sql`
+    statements.push((sql) => sql`
       INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, blob_url)
       VALUES (
         ${crypto.randomUUID()}, ${messageUuid}, ${attachment.filename},
@@ -71,15 +71,17 @@ export async function storeEmail(sql, record, ownerEmail) {
   }
 
   if (row.thread_id) {
-    statements.push(sql`
+    statements.push((sql) => sql`
       UPDATE threads
       SET message_count = message_count + 1,
-          last_message_at = GREATEST(last_message_at, ${sentAt})
+          last_message_at = GREATEST(last_message_at, ${sentAt}::timestamptz)
       WHERE id = ${threadId}
         AND EXISTS (SELECT 1 FROM messages WHERE id = ${messageUuid})
     `);
   }
 
-  await sql.transaction(statements);
+  await sql.begin(async (sql) => {
+    for (const statement of statements) await statement(sql);
+  });
   return { outcome: 'inserted', messageUuid };
 }

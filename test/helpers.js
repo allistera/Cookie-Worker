@@ -21,9 +21,9 @@ export function fakeMessage(raw, options = {}) {
 export function createMockSql(options = {}) {
   const queries = [];
   const transactions = [];
-  const sql = (strings, ...values) => {
+  const tagged = (sink) => (strings, ...values) => {
     const query = { text: strings.join('?'), values };
-    queries.push(query);
+    sink.push(query);
     if (query.text.includes('SELECT') && query.text.includes('FROM users')) {
       return Promise.resolve(options.lookupRows ?? [{
         user_id: 'user-1',
@@ -33,9 +33,14 @@ export function createMockSql(options = {}) {
     }
     return query;
   };
-  sql.transaction = async (statements) => {
-    transactions.push(statements);
+  const sql = tagged(queries);
+  // Mirrors postgres.js sql.begin: runs the callback with a transaction-scoped
+  // sql, recording the statements it executes as one batch.
+  sql.begin = async (callback) => {
     if (options.transactionRejects) throw new Error('transaction failed');
+    const batch = [];
+    transactions.push(batch);
+    await callback(tagged(batch));
     return [];
   };
   sql.queries = queries;
