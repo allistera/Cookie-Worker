@@ -1,4 +1,4 @@
-# SPEC: mail-app-ingest — Cloudflare Email Worker (capture → Neon → forward)
+# SPEC: mail-app-ingest — Cloudflare Email Worker (capture → Supabase → forward)
 
 > **Status:** This spec describes the **complete v1 implementation** as it shipped inside
 > Cookie-Web (built and hardened through July 2026, including the SRE review fixes),
@@ -19,7 +19,7 @@ A Cloudflare **Email Worker** bound to the domain's **catch-all** Email Routing 
 every inbound message it:
 
 1. Parses the raw MIME with `postal-mime`.
-2. Persists the message into the app's **existing** Neon Postgres tables
+2. Persists the message into the app's **existing** Supabase Postgres tables
    (`threads` / `messages` / `attachments`) against the single owner user.
 3. Forwards the original message to a verified destination address.
 4. **(v1.1)** After forwarding, best-effort: embeds the stored message with OpenAI and
@@ -34,8 +34,9 @@ one level down: an embedding failure must never block, reject, delay, or fail st
 - Cloudflare Workers, **plain JavaScript** (ESM, `"type": "module"`), no TypeScript source —
   types are checked via `tsc` over JSDoc/`checkJs` (`jsconfig.json`, `strict: true`,
   `noImplicitAny: false`, `types: ["@cloudflare/workers-types"]`, target/lib ES2024).
-- Dependencies: `@neondatabase/serverless` ^1.1.0 (HTTP driver — Workers can't open raw TCP;
-  no Hyperdrive in v1), `postal-mime` ^2.7.5.
+- Dependencies: `postgres` ^3.4 (postgres.js TCP driver over the `nodejs_compat` socket
+  layer, `prepare: false` for Supabase's transaction pooler; no Hyperdrive in v1),
+  `postal-mime` ^2.7.5.
 - Dev dependencies: `wrangler` ^4.x, `vitest` ^4.x, `eslint` ^10 (flat config), `typescript` ^6,
   `@cloudflare/workers-types`, `globals`.
 - `package.json` scripts: `dev` (wrangler dev), `test` (vitest run), `typecheck`
@@ -91,8 +92,10 @@ RUNBOOK.md          # ops doc (deploy, routing setup, logs, rollback, local dev)
   - `OPENAI_API_KEY` — **optional** (v1.1 embeddings). When unset, the embedding step is
     skipped entirely and rows are left with `embedding = NULL`; Cookie-Web's dispatch-only
     **Backfill Embeddings** workflow (`scripts/backfill-embeddings.js`) picks them up later.
-- No `nodejs_compat` flag is required by the neon HTTP driver as used here.
-- Dev/test must use a dedicated Neon branch (`vercel-dev`), never production.
+- The `nodejs_compat` compatibility flag is **required** by postgres.js (TCP sockets).
+- Dev/test must use a dedicated Supabase project/branch, never production. Dashboard
+  connection strings may carry a `&supa=base-pooler.x` marker that psql rejects
+  (postgres.js tolerates it) — strip it before reusing the URL elsewhere.
 
 ## 5. Handler flow (`src/index.js`)
 
@@ -108,9 +111,9 @@ Flow of `async email(message, env, ctx)`:
 
 1. Oversize guard (above), then forward and return.
 2. `parseEmail(message)` → normalized record.
-3. `neon(env.DATABASE_URL)` — wrap construction in try/catch and rethrow a generic
-   `'DATABASE_URL is not a valid connection string'`: neon's own errors can embed the full
-   connection string and it must never reach a log line.
+3. `postgres(env.DATABASE_URL, {...})` — wrap construction in try/catch and rethrow a
+   generic `'DATABASE_URL is not a valid connection string'`: the driver's own errors can
+   embed the full connection string and it must never reach a log line.
 4. `storeEmail(sql, record, env.OWNER_EMAIL)` raced against the budget via
    `withTimeout(promise, ms)` (Promise.race with a timer, `finally(clearTimeout)`).
 5. On success log JSON `{event:'stored', outcome, message_id, raw_size, attachments, truncated}`.
@@ -191,9 +194,8 @@ Rules:
 `storeEmail(sql, record, ownerEmail)` → `'inserted' | 'duplicate'`; throws on any failure
 (caller logs + forwards regardless).
 
-The neon HTTP driver has **no interactive transactions**, so the flow is one lookup SELECT
-followed by one `sql.transaction([...])` batch built with client-generated
-`crypto.randomUUID()` ids:
+The flow is one lookup SELECT followed by one `sql.begin(...)` transaction that replays
+the prepared statements in order, built with client-generated `crypto.randomUUID()` ids:
 
 1. **Lookup (single SELECT):** against `users WHERE email = ownerEmail ORDER BY created_at
    LIMIT 1`, returning:
@@ -302,12 +304,12 @@ keys are never logged. Tail with `npx wrangler tail mail-app-ingest`.
 
 `test/helpers.js`: `fakeMessage(raw, {from, to})` — minimal ForwardableEmailMessage stand-in
 (postal-mime accepts a string for `raw`, so no ReadableStream needed); `createMockSql({lookupRows})`
-— mimics the neon tagged-template client, recording executed queries and `transaction()` batches.
+— mimics the postgres.js tagged-template client, recording executed queries and `begin()` transactions.
 
 - **handler.test.js:** stores then forwards exactly once (happy path); still forwards when
   store throws; still forwards when store hangs past the budget; never logs message bodies
   on failure; skips parse/store for oversized messages but still forwards; never logs the
-  connection string when neon() rejects the URL; redacts the connection string from
+  connection string when postgres() rejects the URL; redacts the connection string from
   arbitrary store errors; hands a budget-exceeding store to ctx.waitUntil instead of
   cancelling it; lets forward() failures propagate for MTA retry.
 - **parse.test.js:** simple fixture → normalized record; deterministic synthetic ID when
@@ -352,7 +354,7 @@ pushed to the worker through the action's `secrets:` input. No local deploys.
   Cookie-Web's **Backfill Embeddings** workflow; the worker itself never retries.
 - **Rollback:** `npx wrangler rollback`, or flip the catch-all back to plain forwarding —
   mail keeps flowing with no worker in the path.
-- **Local dev:** `cp .dev.vars.example .dev.vars` (Neon vercel-dev branch URL),
+- **Local dev:** `cp .dev.vars.example .dev.vars` (dev Supabase pooler URL),
   `npm run dev`, then
   `curl --request POST 'http://localhost:8787/cdn-cgi/handler/email'
   --url-query 'from=sender@example.com' --url-query 'to=inbox@example.org'
@@ -369,7 +371,7 @@ pushed to the worker through the action's `secrets:` input. No local deploys.
   itself (query embedding, tsvector leg, rank fusion, `/api/search`) lives entirely in
   Cookie-Web — the worker only writes document vectors (§7a); its retry story is
   Cookie-Web's Backfill Embeddings workflow, not worker-side queues.
-- Store step is best-effort within 5 s; slower Neon calls are abandoned (mail still
+- Store step is best-effort within 5 s; slower database calls are abandoned (mail still
   forwarded; the MTA retry usually lands the row).
 - Single-owner design: mail is stored against the one `users` row matching `OWNER_EMAIL`;
   if none exists the message is forwarded but not stored.
@@ -382,4 +384,5 @@ pushed to the worker through the action's `secrets:` input. No local deploys.
 - Route-emails Workers API: `email()` handler, `ForwardableEmailMessage`, `forward()`,
   `setReject()`
 - `https://developers.cloudflare.com/email-service/local-development/routing/index.md`
-- `@neondatabase/serverless` README (HTTP driver usage in Workers)
+- postgres.js README (`porsager/postgres`) and Supabase "connecting with Workers" docs
+  (transaction pooler on port 6543, `prepare: false`)

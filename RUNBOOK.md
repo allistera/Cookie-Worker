@@ -15,7 +15,7 @@ In Cloudflare Email Routing, verify `FORWARD_TO`, then set the domain catch-all 
 
 ## Local Development
 
-Copy `.dev.vars.example` to `.dev.vars` and point `DATABASE_URL` at the dedicated Neon dev branch.
+Copy `.dev.vars.example` to `.dev.vars` and point `DATABASE_URL` at the dev Supabase project (never production).
 
 ```sh
 npm run dev
