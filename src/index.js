@@ -9,7 +9,7 @@ export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 export default {
   /**
    * @param {ForwardableEmailMessage} message
-   * @param {{DATABASE_URL: string, FORWARD_TO: string, OWNER_EMAIL: string, OPENAI_API_KEY?: string}} env
+   * @param {{HYPERDRIVE: {connectionString: string}, FORWARD_TO: string, OWNER_EMAIL: string, OPENAI_API_KEY?: string}} env
    * @param {ExecutionContext} ctx
    */
   async email(message, env, ctx) {
@@ -31,7 +31,7 @@ export default {
 
     try {
       record = await parseEmail(message);
-      sql = createSql(env.DATABASE_URL);
+      sql = createSql(env.HYPERDRIVE.connectionString);
       storePromise = storeEmail(sql, record, env.OWNER_EMAIL);
       storeResult = await withTimeout(storePromise, STORE_BUDGET_MS);
       console.log(JSON.stringify({
@@ -45,7 +45,7 @@ export default {
     } catch (err) {
       console.log(JSON.stringify({
         event: 'store_failed',
-        error: redact(err, env.DATABASE_URL),
+        error: redact(err, env.HYPERDRIVE.connectionString),
         message_id: record?.messageId,
         raw_size: record?.rawSize ?? rawSize,
       }));
@@ -72,7 +72,7 @@ export default {
       if (!storeResult || !isPermanentForwardError(err)) throw err;
       console.log(JSON.stringify({
         event: 'forward_failed_permanent',
-        error: redact(err, env.DATABASE_URL),
+        error: redact(err, env.HYPERDRIVE.connectionString),
         message_id: record?.messageId,
       }));
     }
@@ -88,7 +88,7 @@ export default {
         .catch((err) => {
           console.log(JSON.stringify({
             event: 'embed_failed',
-            error: redact(err, env.DATABASE_URL, env.OPENAI_API_KEY),
+            error: redact(err, env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY),
             message_id: record?.messageId,
           }));
         }));
@@ -122,7 +122,7 @@ export function createSql(databaseUrl) {
       connect_timeout: 10,
     });
   } catch {
-    throw new Error('DATABASE_URL is not a valid connection string');
+    throw new Error('database connection string is not valid');
   }
 }
 

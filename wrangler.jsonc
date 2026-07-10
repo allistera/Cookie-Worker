@@ -8,6 +8,12 @@
   "observability": {
     "enabled": true
   },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "a276ebeb4ec84d33b050614b6b5020e5"
+    }
+  ],
   "vars": {
     "FORWARD_TO": "allisteraall@gmail.com",
     "OWNER_EMAIL": "me@allisterantosik.com"

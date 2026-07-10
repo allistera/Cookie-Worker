@@ -6,8 +6,12 @@ Deploys are intentionally GitHub Actions-only. Use the `deploy` workflow dispatc
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
-- `DATABASE_URL`
 - `OPENAI_API_KEY` (optional, enables v1.1 embeddings)
+
+The Supabase connection is not a Worker secret: it lives in the **Hyperdrive** config
+(`mail-app-ingest-db`, bound as `HYPERDRIVE` in `wrangler.jsonc`). To rotate the database
+password, update the Hyperdrive config
+(`npx wrangler hyperdrive update <id> --connection-string=...`) — no redeploy needed.
 
 ## Email Routing Setup
 
@@ -15,7 +19,12 @@ In Cloudflare Email Routing, verify `FORWARD_TO`, then set the domain catch-all 
 
 ## Local Development
 
-Copy `.dev.vars.example` to `.dev.vars` and point `DATABASE_URL` at the dev Supabase project (never production).
+Copy `.dev.vars.example` to `.dev.vars`, then point the local Hyperdrive binding at the
+dev Supabase project (never production):
+
+```sh
+export WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
+```
 
 ```sh
 npm run dev

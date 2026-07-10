@@ -35,8 +35,7 @@ one level down: an embedding failure must never block, reject, delay, or fail st
   types are checked via `tsc` over JSDoc/`checkJs` (`jsconfig.json`, `strict: true`,
   `noImplicitAny: false`, `types: ["@cloudflare/workers-types"]`, target/lib ES2024).
 - Dependencies: `postgres` ^3.4 (postgres.js TCP driver over the `nodejs_compat` socket
-  layer, `prepare: false` for Supabase's transaction pooler; no Hyperdrive in v1),
-  `postal-mime` ^2.7.5.
+  layer, connecting through the **Hyperdrive** binding — see §4), `postal-mime` ^2.7.5.
 - Dev dependencies: `wrangler` ^4.x, `vitest` ^4.x, `eslint` ^10 (flat config), `typescript` ^6,
   `@cloudflare/workers-types`, `globals`.
 - `package.json` scripts: `dev` (wrangler dev), `test` (vitest run), `typecheck`
@@ -58,7 +57,7 @@ test/
                     # inline-image.eml, no-message-id.eml  (each with Message-ID
                     # except no-message-id.eml; local dev endpoint needs one)
 wrangler.jsonc      # config below
-.dev.vars.example   # DATABASE_URL placeholder only
+.dev.vars.example   # OPENAI_API_KEY placeholder + local Hyperdrive env-var note
 .gitignore          # .dev.vars, .wrangler/, node_modules/
 jsconfig.json  vitest.config.js  eslint.config.js  package.json
 RUNBOOK.md          # ops doc (deploy, routing setup, logs, rollback, local dev)
@@ -73,9 +72,17 @@ RUNBOOK.md          # ops doc (deploy, routing setup, logs, rollback, local dev)
 {
   "name": "mail-app-ingest",
   "main": "src/index.js",
+  "workers_dev": false,                      // email-only worker; no HTTP surface
   "compatibility_date": "2026-07-07",        // or newer at rebuild time
+  "compatibility_flags": ["nodejs_compat"],  // postgres.js needs the node socket layer
   "upload_source_maps": true,
   "observability": { "enabled": true },
+  // Database access goes through Hyperdrive (edge connection pooling + TLS).
+  // postgres.js CANNOT reach Supabase's pooler directly from Workers: its
+  // nodejs_compat socket shim fails per-connect and retries until the
+  // subrequest limit ("Too many subrequests") kills the invocation.
+  // The Hyperdrive config points at the Supabase SESSION pooler (port 5432).
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<config id>" }],
   "vars": {
     // Must be a verified destination address in Cloudflare Email Routing.
     "FORWARD_TO": "allisteraall@gmail.com",
@@ -88,10 +95,12 @@ RUNBOOK.md          # ops doc (deploy, routing setup, logs, rollback, local dev)
 
 - Secrets (`.dev.vars` locally — never committed; `.dev.vars.example` carries placeholders;
   pushed to prod via the deploy workflow's `secrets:` input):
-  - `DATABASE_URL` — required.
   - `OPENAI_API_KEY` — **optional** (v1.1 embeddings). When unset, the embedding step is
     skipped entirely and rows are left with `embedding = NULL`; Cookie-Web's dispatch-only
     **Backfill Embeddings** workflow (`scripts/backfill-embeddings.js`) picks them up later.
+- The database connection string is **not** a Worker secret: it lives in the Hyperdrive
+  config and the Worker reads `env.HYPERDRIVE.connectionString`. Local dev supplies it via
+  `WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`.
 - The `nodejs_compat` compatibility flag is **required** by postgres.js (TCP sockets).
 - Dev/test must use a dedicated Supabase project/branch, never production. Dashboard
   connection strings may carry a `&supa=base-pooler.x` marker that psql rejects
@@ -111,14 +120,14 @@ Flow of `async email(message, env, ctx)`:
 
 1. Oversize guard (above), then forward and return.
 2. `parseEmail(message)` → normalized record.
-3. `postgres(env.DATABASE_URL, {...})` — wrap construction in try/catch and rethrow a
-   generic `'DATABASE_URL is not a valid connection string'`: the driver's own errors can
-   embed the full connection string and it must never reach a log line.
+3. `postgres(env.HYPERDRIVE.connectionString, {...})` — wrap construction in try/catch
+   and rethrow a generic `'database connection string is not valid'`: the driver's own
+   errors can embed the full connection string and it must never reach a log line.
 4. `storeEmail(sql, record, env.OWNER_EMAIL)` raced against the budget via
    `withTimeout(promise, ms)` (Promise.race with a timer, `finally(clearTimeout)`).
 5. On success log JSON `{event:'stored', outcome, message_id, raw_size, attachments, truncated}`.
 6. On any error: log JSON `{event:'store_failed', error, message_id, raw_size}` where
-   `error` is passed through `redact(err, env.DATABASE_URL)` (splits on the secret, joins
+   `error` is passed through `redact(err, env.HYPERDRIVE.connectionString)` (splits on the secret, joins
    with `[redacted]`). Never log bodies, subjects, or connection strings.
    **Never call `setReject()` for a storage failure.**
    If the store promise exists (i.e. the failure was the budget timeout, not parse), hand it
@@ -336,7 +345,7 @@ keys are never logged. Tail with `npx wrangler tail mail-app-ingest`.
 Single workflow: **test** job on push/PR to main (`npm ci`, lint, typecheck, `npm test`,
 `npx wrangler deploy --dry-run`), Node 22, npm cache. **deploy** job runs **only on manual
 `workflow_dispatch`**, `needs: test`, via `cloudflare/wrangler-action@v3` with repo secrets
-`CLOUDFLARE_API_TOKEN` (Workers Scripts:Edit), `CLOUDFLARE_ACCOUNT_ID`, and `DATABASE_URL`
+`CLOUDFLARE_API_TOKEN` (Workers Scripts:Edit), `CLOUDFLARE_ACCOUNT_ID`,
 pushed to the worker through the action's `secrets:` input. No local deploys.
 (In the dedicated repo, drop Cookie-Web's `paths:` filters and `working-directory`.)
 

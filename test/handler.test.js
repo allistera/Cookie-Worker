@@ -21,7 +21,7 @@ function sqlReturning(result = { outcome: 'inserted', messageUuid: 'message-1' }
 
 function env(overrides = {}) {
   return {
-    DATABASE_URL: 'postgres://user:pass@example/db',
+    HYPERDRIVE: { connectionString: 'postgres://user:pass@example/db' },
     FORWARD_TO: 'forward@example.com',
     OWNER_EMAIL: 'owner@example.com',
     ...overrides,
@@ -74,7 +74,7 @@ describe('email handler', () => {
     const logged = console.log.mock.calls.map((call) => call[0]).join('\n');
     expect(logged).not.toContain('simple message body');
     expect(logged).not.toContain('postgres://user:pass@example/db');
-    expect(logged).toContain('DATABASE_URL is not a valid connection string');
+    expect(logged).toContain('database connection string is not valid');
   });
 
   test('hands a slow store to waitUntil and forwards', async () => {
