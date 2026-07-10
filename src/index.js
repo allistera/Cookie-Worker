@@ -114,9 +114,12 @@ export function isPermanentForwardError(err) {
  */
 export function createSql(databaseUrl) {
   try {
+    // No ssl option: the Hyperdrive endpoint does not speak TLS itself —
+    // Hyperdrive terminates TLS to the origin database. Asking the driver
+    // for TLS here makes every connect fail and retry until the invocation
+    // dies with "Too many subrequests".
     return postgres(databaseUrl, {
       prepare: false,
-      ssl: 'require',
       max: 1,
       idle_timeout: 10,
       connect_timeout: 10,
