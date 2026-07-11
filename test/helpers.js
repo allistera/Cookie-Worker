@@ -16,7 +16,7 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean}} options
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[]}} options
  */
 export function createMockSql(options = {}) {
   const queries = [];
@@ -31,7 +31,11 @@ export function createMockSql(options = {}) {
         thread_id: null,
       }]);
     }
-    return query;
+    // Message insert uses RETURNING id to detect concurrent DO NOTHING races.
+    if (query.text.includes('INSERT INTO messages') && query.text.includes('RETURNING')) {
+      return Promise.resolve(options.messageInsertReturns ?? [{ id: 'message-1' }]);
+    }
+    return Promise.resolve([]);
   };
   const sql = tagged(queries);
   // Mirrors postgres.js sql.begin: runs the callback with a transaction-scoped
@@ -43,6 +47,7 @@ export function createMockSql(options = {}) {
     await callback(tagged(batch));
     return [];
   };
+  sql.end = vi.fn(async () => undefined);
   sql.queries = queries;
   sql.transactions = transactions;
   return sql;

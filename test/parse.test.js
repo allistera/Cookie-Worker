@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'vitest';
-import { capString, htmlToText, MAX_MESSAGE_ID, parseEmail } from '../src/parse.js';
+import {
+  capString,
+  htmlToText,
+  MAX_FUTURE_MS,
+  MAX_HEADER_VALUE,
+  MAX_HEADERS,
+  MAX_MESSAGE_ID,
+  parseEmail,
+} from '../src/parse.js';
 import { fakeMessage, simpleFixture } from './helpers.js';
 
 describe('parseEmail', () => {
@@ -82,5 +90,31 @@ aGVsbG8=
 
   test('htmlToText handles common entities and block spacing', () => {
     expect(htmlToText('<div>A&amp;B<br>C &lt; D &quot;x&quot;</div>')).toBe('A&B\nC < D "x"');
+  });
+
+  test('clamps far-future Date headers to now', async () => {
+    const farFuture = new Date(Date.now() + MAX_FUTURE_MS + 60_000).toUTCString();
+    const raw = simpleFixture.replace(
+      'Date: Wed, 08 Jul 2026 12:00:00 +0000',
+      `Date: ${farFuture}`,
+    );
+    const before = Date.now();
+    const record = await parseEmail(fakeMessage(raw));
+    const after = Date.now();
+    expect(record.sentAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(record.sentAt.getTime()).toBeLessThanOrEqual(after + 1000);
+  });
+
+  test('caps headers at MAX_HEADERS and bounds values', async () => {
+    const extra = Array.from({ length: MAX_HEADERS + 20 }, (_, i) => (
+      `X-Extra-${i}: ${'v'.repeat(MAX_HEADER_VALUE + 50)}`
+    )).join('\n');
+    const raw = simpleFixture.replace(
+      'Content-Type: text/plain; charset=utf-8',
+      `${extra}\nContent-Type: text/plain; charset=utf-8`,
+    );
+    const record = await parseEmail(fakeMessage(raw));
+    expect(record.headers.length).toBeLessThanOrEqual(MAX_HEADERS);
+    expect(record.headers.every((header) => header.value.length <= MAX_HEADER_VALUE)).toBe(true);
   });
 });

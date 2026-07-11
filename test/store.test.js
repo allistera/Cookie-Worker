@@ -33,6 +33,7 @@ describe('storeEmail', () => {
     expect(sql.transactions[0]).toHaveLength(2);
     expect(sql.transactions[0][0].text).toContain('INSERT INTO threads');
     expect(sql.transactions[0][1].text).toContain('INSERT INTO messages');
+    expect(sql.transactions[0][1].text).toContain('RETURNING');
   });
 
   test('returns duplicate without writing', async () => {
@@ -50,6 +51,20 @@ describe('storeEmail', () => {
     expect(sql.transactions[0]).toHaveLength(2);
     expect(sql.transactions[0][0].text).toContain('INSERT INTO messages');
     expect(sql.transactions[0][1].text).toContain('UPDATE threads');
+  });
+
+  test('returns duplicate when concurrent insert wins (RETURNING empty)', async () => {
+    const sql = createMockSql({
+      lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }],
+      messageInsertReturns: [],
+    });
+    await expect(storeEmail(sql, record(), 'owner@example.com')).resolves.toEqual({
+      outcome: 'duplicate',
+      messageUuid: null,
+    });
+    // Message insert ran; attachments/counter update did not.
+    expect(sql.transactions[0]).toHaveLength(1);
+    expect(sql.transactions[0][0].text).toContain('INSERT INTO messages');
   });
 
   test('throws when no user matches', async () => {

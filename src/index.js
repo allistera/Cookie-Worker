@@ -28,6 +28,8 @@ export default {
     let sql = null;
     /** @type {Awaited<ReturnType<typeof storeEmail>> | null} */
     let storeResult = null;
+    /** When true, a waitUntil task owns sql.end — main path must not end it. */
+    let sqlOwnedByWaitUntil = false;
 
     try {
       record = await parseEmail(message);
@@ -49,7 +51,10 @@ export default {
         message_id: record?.messageId,
         raw_size: record?.rawSize ?? rawSize,
       }));
-      if (storePromise && record) {
+      // Only keep the store running past the budget; hard failures are already done.
+      if (storePromise && record && isStoreTimeout(err) && sql) {
+        sqlOwnedByWaitUntil = true;
+        const lateSql = sql;
         ctx.waitUntil(storePromise
           .then((lateResult) => {
             console.log(JSON.stringify({
@@ -58,7 +63,8 @@ export default {
               message_id: record?.messageId,
             }));
           })
-          .catch(() => undefined));
+          .catch(() => undefined)
+          .finally(() => endSql(lateSql)));
       }
     }
 
@@ -69,7 +75,10 @@ export default {
       // (idempotent storage makes the retry safe). Permanent errors would
       // retry forever and bounce, so once the message is safely stored we
       // accept it and only log the lost forward.
-      if (!storeResult || !isPermanentForwardError(err)) throw err;
+      if (!storeResult || !isPermanentForwardError(err)) {
+        if (sql && !sqlOwnedByWaitUntil) ctx.waitUntil(endSql(sql));
+        throw err;
+      }
       console.log(JSON.stringify({
         event: 'forward_failed_permanent',
         error: redact(err, env.HYPERDRIVE.connectionString),
@@ -79,19 +88,25 @@ export default {
 
     if (
       sql
+      && !sqlOwnedByWaitUntil
       && record
       && storeResult?.outcome === 'inserted'
       && storeResult.messageUuid
       && env.OPENAI_API_KEY
     ) {
-      ctx.waitUntil(embedMessage(sql, record, storeResult.messageUuid, env.OPENAI_API_KEY)
+      sqlOwnedByWaitUntil = true;
+      const embedSql = sql;
+      ctx.waitUntil(embedMessage(embedSql, record, storeResult.messageUuid, env.OPENAI_API_KEY)
         .catch((err) => {
           console.log(JSON.stringify({
             event: 'embed_failed',
             error: redact(err, env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY),
             message_id: record?.messageId,
           }));
-        }));
+        })
+        .finally(() => endSql(embedSql)));
+    } else if (sql && !sqlOwnedByWaitUntil) {
+      ctx.waitUntil(endSql(sql));
     }
   },
 };
@@ -107,6 +122,13 @@ const PERMANENT_FORWARD_ERRORS = [
 export function isPermanentForwardError(err) {
   const text = err instanceof Error ? err.message : String(err);
   return PERMANENT_FORWARD_ERRORS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * @param {unknown} err
+ */
+export function isStoreTimeout(err) {
+  return err instanceof Error && err.message.startsWith('store timed out');
 }
 
 /**
@@ -127,6 +149,15 @@ export function createSql(databaseUrl) {
   } catch {
     throw new Error('database connection string is not valid');
   }
+}
+
+/**
+ * Best-effort client teardown so isolate reuse does not leave sockets open.
+ * @param {import('postgres').Sql | null | undefined} sql
+ */
+export function endSql(sql) {
+  if (!sql) return Promise.resolve();
+  return sql.end({ timeout: 2 }).catch(() => undefined);
 }
 
 /**

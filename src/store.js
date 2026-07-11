@@ -35,53 +35,66 @@ export async function storeEmail(sql, record, ownerEmail) {
   const userId = row.user_id;
   const threadId = row.thread_id ?? threadUuid;
   const sentAt = record.sentAt.toISOString();
-  const statements = [];
+  const isNewThread = !row.thread_id;
 
-  if (!row.thread_id) {
-    statements.push((sql) => sql`
-      INSERT INTO threads (id, user_id, subject, last_message_at)
-      VALUES (${threadId}, ${userId}, ${record.subject}, ${sentAt})
-    `);
-  }
+  /** @type {boolean} */
+  let inserted = false;
 
-  statements.push((sql) => sql`
-    INSERT INTO messages (
-      id, thread_id, user_id, from_name, from_address, recipients, subject, snippet,
-      body_text, body_html, sent_at, message_id, headers, raw_size, truncated,
-      envelope_from, envelope_to
-    )
-    VALUES (
-      ${messageUuid}, ${threadId}, ${userId}, ${record.fromName}, ${record.fromAddress},
-      ${JSON.stringify(record.recipients)}::jsonb, ${record.subject}, ${record.snippet},
-      ${record.bodyText}, ${record.bodyHtml}, ${sentAt}, ${record.messageId},
-      ${JSON.stringify(record.headers)}::jsonb, ${record.rawSize}, ${record.truncated},
-      ${record.envelopeFrom}, ${record.envelopeTo}
-    )
-    ON CONFLICT (user_id, message_id) WHERE message_id IS NOT NULL DO NOTHING
-  `);
+  await sql.begin(async (tx) => {
+    if (isNewThread) {
+      await tx`
+        INSERT INTO threads (id, user_id, subject, last_message_at)
+        VALUES (${threadId}, ${userId}, ${record.subject}, ${sentAt})
+      `;
+    }
 
-  for (const attachment of record.attachments) {
-    statements.push((sql) => sql`
-      INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, blob_url)
-      VALUES (
-        ${crypto.randomUUID()}, ${messageUuid}, ${attachment.filename},
-        ${attachment.mime_type}, ${attachment.size}, ${null}
+    // RETURNING distinguishes a real insert from a concurrent unique-index
+    // no-op (lookup raced another MTA retry). Without this, DO NOTHING left us
+    // reporting "inserted" for a UUID that was never written.
+    const insertedRows = await tx`
+      INSERT INTO messages (
+        id, thread_id, user_id, from_name, from_address, recipients, subject, snippet,
+        body_text, body_html, sent_at, message_id, headers, raw_size, truncated,
+        envelope_from, envelope_to
       )
-    `);
-  }
+      VALUES (
+        ${messageUuid}, ${threadId}, ${userId}, ${record.fromName}, ${record.fromAddress},
+        ${JSON.stringify(record.recipients)}::jsonb, ${record.subject}, ${record.snippet},
+        ${record.bodyText}, ${record.bodyHtml}, ${sentAt}, ${record.messageId},
+        ${JSON.stringify(record.headers)}::jsonb, ${record.rawSize}, ${record.truncated},
+        ${record.envelopeFrom}, ${record.envelopeTo}
+      )
+      ON CONFLICT (user_id, message_id) WHERE message_id IS NOT NULL DO NOTHING
+      RETURNING id
+    `;
 
-  if (row.thread_id) {
-    statements.push((sql) => sql`
-      UPDATE threads
-      SET message_count = message_count + 1,
-          last_message_at = GREATEST(last_message_at, ${sentAt}::timestamptz)
-      WHERE id = ${threadId}
-        AND EXISTS (SELECT 1 FROM messages WHERE id = ${messageUuid})
-    `);
-  }
+    if (insertedRows.length === 0) {
+      // Concurrent duplicate. A fresh threads row may remain (accepted race).
+      return;
+    }
 
-  await sql.begin(async (sql) => {
-    for (const statement of statements) await statement(sql);
+    inserted = true;
+
+    for (const attachment of record.attachments) {
+      await tx`
+        INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, blob_url)
+        VALUES (
+          ${crypto.randomUUID()}, ${messageUuid}, ${attachment.filename},
+          ${attachment.mime_type}, ${attachment.size}, ${null}
+        )
+      `;
+    }
+
+    if (!isNewThread) {
+      await tx`
+        UPDATE threads
+        SET message_count = message_count + 1,
+            last_message_at = GREATEST(last_message_at, ${sentAt}::timestamptz)
+        WHERE id = ${threadId}
+      `;
+    }
   });
+
+  if (!inserted) return { outcome: 'duplicate', messageUuid: null };
   return { outcome: 'inserted', messageUuid };
 }

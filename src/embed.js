@@ -28,7 +28,11 @@ export async function embedMessage(sql, record, messageUuid, apiKey) {
   }
   const body = await response.json();
   const vector = body?.data?.[0]?.embedding;
-  if (!Array.isArray(vector)) throw new Error('OpenAI embeddings API returned no vector');
+  if (!Array.isArray(vector) || vector.length !== EMBEDDING_DIMENSIONS) {
+    throw new Error(
+      `OpenAI embeddings API returned invalid vector (expected ${EMBEDDING_DIMENSIONS} dimensions)`,
+    );
+  }
 
   await sql`
     UPDATE messages
