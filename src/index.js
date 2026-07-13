@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
-import { embedMessage } from './embed.js';
+import { AI_MODEL, enrichMessage } from './enrich.js';
 import { parseEmail } from './parse.js';
 import { captureHandledException, createSentryOptions, redact } from './sentry.js';
 import { storeEmail } from './store.js';
@@ -73,23 +73,9 @@ const worker = {
               outcome: lateResult.outcome,
               message_id: lateRecord.messageId,
             }));
-            if (
-              lateResult.outcome === 'inserted'
-              && lateResult.messageUuid
-              && apiKey
-            ) {
-              await embedMessage(lateSql, lateRecord, lateResult.messageUuid, apiKey)
-                .catch((embedErr) => {
-                  console.log(JSON.stringify({
-                    event: 'embed_failed',
-                    error: redact(embedErr, connectionString, apiKey),
-                    message_id: lateRecord.messageId,
-                  }));
-                  captureHandledException('embed', embedErr, [connectionString, apiKey], {
-                    message_id: lateRecord.messageId,
-                    late: true,
-                  });
-                });
+            await endSql(lateSql);
+            if (lateResult.outcome === 'inserted' && lateResult.messageUuid && apiKey) {
+              await runAiEnrichment(env, lateRecord, lateResult.messageUuid, true);
             }
           })
           .catch((lateErr) => {
@@ -132,28 +118,85 @@ const worker = {
       && env.OPENAI_API_KEY
     ) {
       sqlOwnedByWaitUntil = true;
-      const embedSql = sql;
+      const ingestSql = sql;
       const embedRecord = record;
-      const apiKey = env.OPENAI_API_KEY;
-      const connectionString = env.HYPERDRIVE.connectionString;
-      ctx.waitUntil(embedMessage(embedSql, embedRecord, storeResult.messageUuid, apiKey)
-        .catch((err) => {
-          console.log(JSON.stringify({
-            event: 'embed_failed',
-            error: redact(err, connectionString, apiKey),
-            message_id: embedRecord.messageId,
-          }));
-          captureHandledException('embed', err, [connectionString, apiKey], {
-            message_id: embedRecord.messageId,
-            late: false,
-          });
-        })
-        .finally(() => endSql(embedSql)));
+      const messageUuid = storeResult.messageUuid;
+      ctx.waitUntil(endSql(ingestSql)
+        .then(() => runAiEnrichment(env, embedRecord, messageUuid, false)));
     } else if (sql && !sqlOwnedByWaitUntil) {
       ctx.waitUntil(endSql(sql));
     }
   },
+
+  /**
+   * Repairs interrupted best-effort enrichment without touching delivery.
+   * @param {ScheduledController} _controller
+   * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env
+   * @param {ExecutionContext} ctx
+   */
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil(recoverPendingEnrichment(env));
+  },
 };
+
+/**
+ * AI is strictly best-effort and receives a fresh Hyperdrive client after the
+ * ingest connection is closed. Failures never affect forwarding.
+ * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env
+ * @param {any} record
+ * @param {string} messageUuid
+ * @param {boolean} late
+ */
+async function runAiEnrichment(env, record, messageUuid, late) {
+  if (!env.OPENAI_API_KEY) return;
+  const sql = createSql(env.HYPERDRIVE.connectionString);
+  try {
+    await enrichMessage(sql, record, messageUuid, env.OPENAI_API_KEY, env.AI_MODEL || AI_MODEL);
+  } catch (err) {
+    console.log(JSON.stringify({
+      event: 'ai_enrichment_failed',
+      error: redact(err, env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY),
+      message_id: record.messageId,
+    }));
+    captureHandledException('ai_enrichment', err, [
+      env.HYPERDRIVE.connectionString,
+      env.OPENAI_API_KEY,
+    ], { message_id: record.messageId, late });
+  } finally {
+    await endSql(sql);
+  }
+}
+
+/**
+ * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env
+ */
+export async function recoverPendingEnrichment(env) {
+  if (!env.OPENAI_API_KEY) return;
+  const sql = createSql(env.HYPERDRIVE.connectionString);
+  let rows;
+  try {
+    rows = await sql`
+      SELECT m.id, m.message_id, m.from_address, m.subject, m.body_text
+      FROM message_ai ai
+      JOIN messages m ON m.id = ai.message_id
+      JOIN users u ON u.id = m.user_id
+      WHERE u.email = ${env.OWNER_EMAIL}
+        AND ai.status IN ('pending', 'failed')
+        AND ai.updated_at < now() - interval '2 minutes'
+      ORDER BY ai.updated_at
+      LIMIT 3
+    `;
+  } finally {
+    await endSql(sql);
+  }
+  await Promise.all(rows.map((row) => runAiEnrichment(env, {
+    messageId: row.message_id || `<${row.id}@recovery.cookie>`,
+    fromAddress: row.from_address,
+    subject: row.subject,
+    bodyText: row.body_text,
+  }, row.id, false)));
+  console.log(JSON.stringify({ event: 'ai_recovery_complete', attempted: rows.length }));
+}
 
 export default Sentry.withSentry(createSentryOptions, worker);
 

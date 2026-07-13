@@ -84,6 +84,12 @@ export async function storeEmail(sql, record, ownerEmail) {
 
     inserted = true;
 
+    await tx`
+      INSERT INTO message_ai (message_id, status, provider, prompt_version)
+      VALUES (${messageUuid}, 'pending', 'openai', 'email-enrichment-v1')
+      ON CONFLICT (message_id) DO NOTHING
+    `;
+
     for (const attachment of record.attachments) {
       await tx`
         INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, blob_url)

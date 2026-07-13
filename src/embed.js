@@ -12,6 +12,24 @@ export const EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
  * @param {string} apiKey
  */
 export async function embedMessage(sql, record, messageUuid, apiKey) {
+  const vector = await createEmbedding(record, apiKey);
+  await sql`
+    UPDATE messages
+    SET embedding = ${JSON.stringify(vector)}::vector,
+        embedding_model = ${EMBEDDING_MODEL}
+    WHERE id = ${messageUuid}
+      AND embedding IS NULL
+  `;
+  console.log(JSON.stringify({ event: 'embedded', message_id: record.messageId }));
+}
+
+/**
+ * Fetches a vector without holding a database concern, so AI enrichment can
+ * run classification and embedding requests concurrently.
+ * @param {{subject?: string | null, bodyText?: string | null}} record
+ * @param {string} apiKey
+ */
+export async function createEmbedding(record, apiKey) {
   const input = buildEmbeddingInput(record.subject, record.bodyText);
   const response = await fetch(EMBEDDINGS_URL, {
     method: 'POST',
@@ -36,14 +54,7 @@ export async function embedMessage(sql, record, messageUuid, apiKey) {
     );
   }
 
-  await sql`
-    UPDATE messages
-    SET embedding = ${JSON.stringify(vector)}::vector,
-        embedding_model = ${EMBEDDING_MODEL}
-    WHERE id = ${messageUuid}
-      AND embedding IS NULL
-  `;
-  console.log(JSON.stringify({ event: 'embedded', message_id: record.messageId }));
+  return vector;
 }
 
 /**

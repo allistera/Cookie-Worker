@@ -30,12 +30,13 @@ describe('storeEmail', () => {
     const result = await storeEmail(sql, record(), 'owner@example.com');
     expect(result.outcome).toBe('inserted');
     expect(result.messageUuid).toEqual(expect.any(String));
-    expect(sql.transactions[0]).toHaveLength(2);
+    expect(sql.transactions[0]).toHaveLength(3);
     expect(sql.transactions[0][0].text).toContain('INSERT INTO threads');
     expect(sql.transactions[0][0].text).toContain('message_count');
     expect(sql.transactions[0][0].values).toContain(1);
     expect(sql.transactions[0][1].text).toContain('INSERT INTO messages');
     expect(sql.transactions[0][1].text).toContain('RETURNING');
+    expect(sql.transactions[0][2].text).toContain('INSERT INTO message_ai');
   });
 
   test('returns duplicate without writing', async () => {
@@ -50,9 +51,10 @@ describe('storeEmail', () => {
   test('reuses referenced thread and bumps counters', async () => {
     const sql = createMockSql({ lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }] });
     await storeEmail(sql, record({ references: ['<parent@example.com>'] }), 'owner@example.com');
-    expect(sql.transactions[0]).toHaveLength(2);
+    expect(sql.transactions[0]).toHaveLength(3);
     expect(sql.transactions[0][0].text).toContain('INSERT INTO messages');
-    expect(sql.transactions[0][1].text).toContain('UPDATE threads');
+    expect(sql.transactions[0][1].text).toContain('INSERT INTO message_ai');
+    expect(sql.transactions[0][2].text).toContain('UPDATE threads');
   });
 
   test('returns duplicate when concurrent insert wins (RETURNING empty)', async () => {

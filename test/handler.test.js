@@ -81,10 +81,23 @@ describe('email handler', () => {
     postgres.mockReset();
     sentry.captureException.mockReset();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }),
-    })));
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).includes('/responses')) {
+        return {
+          ok: true,
+          json: async () => ({
+            output_text: JSON.stringify({
+              labels: [], spam_verdict: 'inbox', spam_score: 0.01,
+              spam_reason: 'legitimate', summary: 'A normal email', priority: 'normal',
+            }),
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }),
+      };
+    }));
   });
 
   test('stores and forwards exactly once', async () => {
@@ -242,7 +255,7 @@ describe('email handler', () => {
       event: 'stored_late',
       outcome: 'inserted',
     });
-    expect(mockedFetch()).toHaveBeenCalledOnce();
+    expect(mockedFetch()).toHaveBeenCalledTimes(2);
     expect(sql.end).toHaveBeenCalled();
     vi.useRealTimers();
   });
@@ -281,16 +294,16 @@ describe('email handler', () => {
     await expect(worker.email(message, env(), ctx())).rejects.toThrow('non-authenticated');
   });
 
-  test('schedules embedding only for inserted rows when OPENAI_API_KEY is set', async () => {
+  test('schedules AI enrichment only for inserted rows when OPENAI_API_KEY is set', async () => {
     const sql = sqlReturning();
     postgres.mockReturnValue(sql);
     const context = ctx();
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), context);
     expect(context.waitUntil).toHaveBeenCalledOnce();
-    expect(mockedFetch()).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(mockedFetch()).toHaveBeenCalledTimes(2));
   });
 
-  test('skips embedding for duplicates and missing API keys', async () => {
+  test('skips AI enrichment for duplicates and missing API keys', async () => {
     postgres.mockReturnValue(sqlReturning({ outcome: 'duplicate', messageUuid: null }));
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), ctx());
     expect(mockedFetch()).not.toHaveBeenCalled();
@@ -300,16 +313,34 @@ describe('email handler', () => {
     expect(mockedFetch()).not.toHaveBeenCalled();
   });
 
-  test('embedding failures are swallowed inside waitUntil', async () => {
+  test('AI enrichment failures are swallowed inside waitUntil', async () => {
     mockedFetch().mockRejectedValueOnce(new Error('embed broke'));
     postgres.mockReturnValue(sqlReturning());
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), ctx());
-    await Promise.resolve();
-    expect(messageFromLog('embed_failed')).toMatchObject({ event: 'embed_failed' });
+    await vi.waitFor(() => expect(messageFromLog('ai_enrichment_failed')).toMatchObject({
+      event: 'ai_enrichment_failed',
+    }));
     expect(sentry.captureException).toHaveBeenCalledOnce();
     expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
-      tags: { service: 'mail-app-ingest', operation: 'embed' },
+      tags: { service: 'mail-app-ingest', operation: 'ai_enrichment' },
     });
+  });
+});
+
+describe('scheduled recovery', () => {
+  beforeEach(() => {
+    postgres.mockReset();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  test('schedules a sweep for durable pending enrichment rows', async () => {
+    const sql = sqlReturning();
+    postgres.mockReturnValue(sql);
+    const context = ctx();
+    await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
+    expect(context.waitUntil).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(sql.end).toHaveBeenCalled());
+    expect(sql.mock.calls.some((call) => call[0].join('?').includes('FROM message_ai'))).toBe(true);
   });
 });
 
