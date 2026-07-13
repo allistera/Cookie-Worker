@@ -1,67 +1,60 @@
 # Cookie Worker
 
-Cookie Worker (`mail-app-ingest`) is a Cloudflare Email Worker for Cookie-Web. It
-receives routed email, stores a parsed copy in Supabase through Cloudflare
-Hyperdrive, and forwards the original message to the configured mailbox.
+Cookie Worker (`mail-app-ingest`) is Cookie's Cloudflare Email Worker. It parses inbound mail, stores it in Supabase through Hyperdrive, forwards the original, and enriches the stored copy with OpenAI.
 
-Forwarding is the priority: storage and optional embedding failures are reported
-without intentionally preventing delivery. Transient forwarding failures are
-re-thrown so the sending mail server can retry safely.
+Forwarding is the primary outcome. Storage, AI, embedding, and monitoring failures do not intentionally prevent delivery.
 
-## What it does
+## Request flow
 
-- Parses incoming MIME email and attachments with `postal-mime`.
-- Stores messages idempotently in the Cookie-Web database.
-- Forwards the original email to `FORWARD_TO`.
-- Optionally creates OpenAI embeddings after a successful insert.
-- Reports sanitized failures to Sentry with Cloudflare release metadata.
-- Rejects parsing for messages over 10 MiB while still forwarding them.
+```text
+Cloudflare Email Routing
+  -> parse MIME
+  -> store idempotently through Hyperdrive
+  -> forward original email
+  -> close ingest database client
+  -> waitUntil(AI classification + embedding on a fresh client)
+```
+
+Transient forwarding errors are re-thrown so the sending server can retry. Permanent forwarding errors are accepted only when the message was stored safely.
+
+## Capabilities
+
+- Parses MIME bodies and attachment metadata with `postal-mime`.
+- Rejects parsing above 10 MiB while still forwarding the original.
+- Stores messages idempotently by user and RFC Message-ID.
+- Creates durable pending AI state inside the storage transaction.
+- Auto-tags enabled user labels from a strict structured response.
+- Moves only spam scored at least `0.98` into the Spam folder.
+- Creates `text-embedding-3-small` vectors for semantic search.
+- Retries stale pending or failed AI work every 15 minutes in batches of three.
+- Reports sanitised failures to Sentry without email or model content.
+
+The shared schema and migrations live in the [Cookie-Web repository](https://github.com/allistera/Cookie-Web/tree/main/migrations).
 
 ## Requirements
 
-- Node.js 24+
-- npm
-- A Cloudflare account with Workers, Email Routing, and Hyperdrive configured
-- A compatible Supabase/Postgres database
+- Node.js 22 or newer.
+- npm.
+- Cloudflare Workers, Email Routing, and Hyperdrive.
+- A compatible Supabase Postgres database with Cookie-Web migrations applied.
+- A separate development database for local testing.
 
-## Setup
+## Local setup
 
-Install dependencies:
+Install dependencies and copy the secret template:
 
 ```sh
 npm install
-```
-
-Copy the local variable template:
-
-```sh
 cp .dev.vars.example .dev.vars
 ```
 
-Point Wrangler at a development database through the local Hyperdrive override:
+Point local Hyperdrive at a development Supabase session pooler:
 
 ```sh
-export WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
+export WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE='postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres'
 ```
 
 Never use the production database for local development.
-
-## Configuration
-
-| Name | Purpose |
-| --- | --- |
-| `HYPERDRIVE` | Database connection binding configured in `wrangler.jsonc`. |
-| `FORWARD_TO` | Verified mailbox that receives the original email. |
-| `OWNER_EMAIL` | Email of the Cookie-Web user that owns stored messages. |
-| `OPENAI_API_KEY` | Optional; enables best-effort message embeddings. |
-| `SENTRY_DSN` | Required in production; sends sanitized Worker errors to Sentry. |
-| `SENTRY_ENVIRONMENT` | Sentry environment name; defaults to `production`. |
-
-Production secrets are uploaded by the GitHub Actions deployment workflow. The
-database connection string belongs to the Hyperdrive configuration and is not a
-Worker secret.
-
-## Local development
 
 Start Wrangler:
 
@@ -69,7 +62,7 @@ Start Wrangler:
 npm run dev
 ```
 
-Send the included fixture to the local email handler:
+Post the included fixture to the local email handler:
 
 ```sh
 curl --request POST 'http://localhost:8787/cdn-cgi/handler/email' \
@@ -78,8 +71,21 @@ curl --request POST 'http://localhost:8787/cdn-cgi/handler/email' \
   --data-binary @test/fixtures/simple.eml
 ```
 
-Wrangler logs forwarding locally instead of delivering the message. Sending the
-fixture again should produce a `duplicate` storage outcome.
+Wrangler logs local forwarding instead of delivering. Posting the fixture again should report a `duplicate` storage outcome.
+
+## Configuration
+
+| Name | Type | Purpose |
+| --- | --- | --- |
+| `HYPERDRIVE` | Binding | Supabase connection configured in `wrangler.jsonc`. |
+| `FORWARD_TO` | Variable | Verified mailbox receiving the original email. |
+| `OWNER_EMAIL` | Variable | Exact Cookie-Web user email that owns stored messages. |
+| `AI_MODEL` | Variable | Structured classification model; defaults to `gpt-5.6-luna`. |
+| `OPENAI_API_KEY` | Secret | AI classification and embeddings. |
+| `SENTRY_DSN` | Secret | Production error reporting. |
+| `SENTRY_ENVIRONMENT` | Variable | Sentry environment name. |
+
+The database password belongs to Hyperdrive, not Worker secrets. GitHub Actions passes production secrets to Wrangler during deployment.
 
 ## Validation
 
@@ -87,20 +93,20 @@ fixture again should produce a `duplicate` storage outcome.
 npm run lint
 npm run typecheck
 npm test
+npx wrangler deploy --dry-run
 ```
 
 ## Deployment
 
-Production deployment is intentionally handled by the GitHub Actions `deploy`
-workflow. Before deploying, configure these repository secrets:
+Production deployment is intentionally manual through the GitHub Actions `Deploy` workflow. It validates the same lint, typecheck, test, and dry-run commands before publishing.
+
+Required repository secrets:
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
+- `OPENAI_API_KEY`
 - `SENTRY_DSN`
-- `OPENAI_API_KEY` (optional)
 
-After deployment, configure the domain's Cloudflare Email Routing catch-all rule
-to send mail to the `mail-app-ingest` Worker.
+After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`.
 
-See [RUNBOOK.md](RUNBOOK.md) for production verification, embedding catch-up,
-secret rotation, and rollback instructions.
+See [RUNBOOK.md](RUNBOOK.md) for deployment checks, AI recovery, secret rotation, and rollback.

@@ -1,68 +1,82 @@
-# mail-app-ingest Runbook
+# Cookie Worker runbook
+
+This runbook covers deployment, verification, recovery, and rollback for the email-ingest Worker.
+
+## Preconditions
+
+Apply the Cookie Web migrations before deploying Worker changes that depend on them. AI enrichment requires migrations `0010` and `0011`.
+
+Confirm the Cloudflare Worker has its email route, Hyperdrive binding, required variables, and the `OPENAI_API_KEY` and `SENTRY_DSN` secrets.
 
 ## Deploy
 
-Deploys are intentionally GitHub Actions-only. Use the `deploy` workflow dispatch after CI passes. Required repository secrets:
+Run the `Deploy` workflow in GitHub Actions. It validates the Worker, uploads its secrets, and deploys with Wrangler.
 
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-- `OPENAI_API_KEY` (optional, enables v1.1 embeddings)
-- `SENTRY_DSN` (required for production error reporting)
+For local validation before deployment:
 
-The Worker uses `@sentry/cloudflare` for email-invocation errors. It disables
-performance tracing and automatic collection of email bodies, headers, user data,
-cookies, query parameters, AI inputs/outputs, and stack-frame local variables.
-Events are tagged with `service=mail-app-ingest`, `trigger=email`, the failing
-operation, and associated with the Cloudflare Worker version as the Sentry release.
-
-The Supabase connection is not a Worker secret: it lives in the **Hyperdrive** config
-(`mail-app-ingest-db`, bound as `HYPERDRIVE` in `wrangler.jsonc`). To rotate the database
-password, update the Hyperdrive config
-(`npx wrangler hyperdrive update <id> --connection-string=...`) — no redeploy needed.
-
-## Email Routing Setup
-
-In Cloudflare Email Routing, verify `FORWARD_TO`, then set the domain catch-all rule to send to the `mail-app-ingest` Worker.
-
-## Local Development
-
-Copy `.dev.vars.example` to `.dev.vars`, then point the local Hyperdrive binding at the
-dev Supabase project (never production):
-
-```sh
-export WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
+```bash
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npx wrangler deploy --dry-run
 ```
 
-```sh
+## Verify production
+
+Send a message from an external account to the configured Cloudflare Email Routing address. Verify:
+
+- The message arrives at `FORWARD_TO`.
+- A row appears in `messages`, and Worker logs contain a `stored` event.
+- An `ai_enriched` event is written after classification completes.
+- `message_ai.status` becomes `completed`.
+- Suggested tags appear in Cookie Web.
+- Spam above the threshold appears in the hidden Spam folder, not the inbox.
+- A scheduled or manually triggered recovery emits `ai_recovery_complete`.
+
+Check Sentry for errors tagged with the Worker environment and processing stage.
+
+## AI enrichment and recovery
+
+After forwarding succeeds, the Worker starts best-effort enrichment with a fresh database client. Classification and embedding generation run concurrently.
+
+The scheduled handler runs every 15 minutes. It retries up to three `pending` or `failed` rows older than two minutes.
+
+Cookie Web also retains its weekly embedding backfill. That job handles older messages and records that predate immediate enrichment.
+
+AI failures do not block forwarding or storage. Inspect the OpenAI response, rate limits, secret configuration, database connectivity, and migration state.
+
+## Email routing
+
+Cloudflare Email Routing must target this Worker for the intended recipient address. The Worker validates the incoming recipient against `OWNER_EMAIL`.
+
+If messages are not stored, confirm the exact recipient address, Hyperdrive project, and current database schema. Delivery may still succeed through the forwarding fallback.
+
+## Local development
+
+Copy `.dev.vars.example` to `.dev.vars`, set the documented environment values, and run:
+
+```bash
+npm install
 npm run dev
-curl --request POST 'http://localhost:8787/cdn-cgi/handler/email' \
-  --url-query 'from=sender@example.com' \
-  --url-query 'to=inbox@example.org' \
-  --data-binary @test/fixtures/simple.eml
 ```
 
-Wrangler prints the forward call locally instead of delivering mail. Re-posting the same fixture should log `"outcome":"duplicate"`.
+Use a development Supabase project. Do not connect local Worker sessions to production unless the task explicitly requires it.
 
-## Verify Production
+## Rotate credentials
 
-Send a message from an external mailbox to any address at the routed domain. Confirm:
+Update GitHub environment secrets first, then rerun the `Deploy` workflow. Confirm the deployed Worker reports no authentication errors.
 
-- Delivery arrives at `FORWARD_TO`.
-- A `messages` row appears in Cookie-Web.
-- `wrangler tail mail-app-ingest` shows `{"event":"stored","outcome":"inserted"}`.
-- When `OPENAI_API_KEY` is configured, a later `{"event":"embedded"}` log appears and `messages.embedding` is not null.
-- Sentry shows Worker failures under `service:mail-app-ingest` in the configured project.
+When rotating the database password, update the Cloudflare Hyperdrive origin and the local connection string separately.
 
-## Embedding Catch-Up
+## Incident response
 
-When store finishes within budget (or late via `waitUntil` after a timeout), this Worker
-embeds newly inserted rows if `OPENAI_API_KEY` is set. Embed failures and missed late
-work still leave `embedding IS NULL`.
+For AI-only failures, leave email routing active while investigating. Disable the scheduled trigger or roll back the Worker if retries are causing load or repeated errors.
 
-Rows where `embedding IS NULL` are handled by Cookie-Web's Backfill Embeddings workflow.
-That backfill is the safety net — keep it enabled even when Worker embeddings are on.
-This Worker does not run a retry queue.
+For storage or delivery failures, inspect Worker logs and Sentry first. If needed, route mail directly to the fallback mailbox while the Worker is repaired.
 
 ## Rollback
 
-Run `npx wrangler rollback`, or change the Email Routing catch-all back to plain forwarding. Mail should continue flowing either way.
+Use the Cloudflare dashboard or `npx wrangler rollback` to restore the last known-good Worker version.
+
+Avoid rolling back database migrations during an incident. The AI schema changes are additive and safe to leave in place while the Worker is reverted.
