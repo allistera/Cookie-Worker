@@ -7,6 +7,13 @@ Deploys are intentionally GitHub Actions-only. Use the `deploy` workflow dispatc
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 - `OPENAI_API_KEY` (optional, enables v1.1 embeddings)
+- `SENTRY_DSN` (required for production error reporting)
+
+The Worker uses `@sentry/cloudflare` for email-invocation errors. It disables
+performance tracing and automatic collection of email bodies, headers, user data,
+cookies, query parameters, AI inputs/outputs, and stack-frame local variables.
+Events are tagged with `service=mail-app-ingest`, `trigger=email`, the failing
+operation, and associated with the Cloudflare Worker version as the Sentry release.
 
 The Supabase connection is not a Worker secret: it lives in the **Hyperdrive** config
 (`mail-app-ingest-db`, bound as `HYPERDRIVE` in `wrangler.jsonc`). To rotate the database
@@ -44,6 +51,7 @@ Send a message from an external mailbox to any address at the routed domain. Con
 - A `messages` row appears in Cookie-Web.
 - `wrangler tail mail-app-ingest` shows `{"event":"stored","outcome":"inserted"}`.
 - When `OPENAI_API_KEY` is configured, a later `{"event":"embedded"}` log appears and `messages.embedding` is not null.
+- Sentry shows Worker failures under `service:mail-app-ingest` in the configured project.
 
 ## Embedding Catch-Up
 

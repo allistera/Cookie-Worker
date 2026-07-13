@@ -1,15 +1,19 @@
+import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { embedMessage } from './embed.js';
 import { parseEmail } from './parse.js';
+import { captureHandledException, createSentryOptions, redact } from './sentry.js';
 import { storeEmail } from './store.js';
+
+export { redact } from './sentry.js';
 
 export const STORE_BUDGET_MS = 5000;
 export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 
-export default {
+const worker = {
   /**
    * @param {ForwardableEmailMessage} message
-   * @param {{HYPERDRIVE: {connectionString: string}, FORWARD_TO: string, OWNER_EMAIL: string, OPENAI_API_KEY?: string}} env
+   * @param {Env & {SENTRY_DSN?: string}} env
    * @param {ExecutionContext} ctx
    */
   async email(message, env, ctx) {
@@ -51,6 +55,10 @@ export default {
         message_id: record?.messageId,
         raw_size: record?.rawSize ?? rawSize,
       }));
+      captureHandledException('store', err, [env.HYPERDRIVE.connectionString], {
+        message_id: record?.messageId,
+        raw_size: record?.rawSize ?? rawSize,
+      });
       // Only keep the store running past the budget; hard failures are already done.
       if (storePromise && record && isStoreTimeout(err) && sql) {
         sqlOwnedByWaitUntil = true;
@@ -77,10 +85,18 @@ export default {
                     error: redact(embedErr, connectionString, apiKey),
                     message_id: lateRecord.messageId,
                   }));
+                  captureHandledException('embed', embedErr, [connectionString, apiKey], {
+                    message_id: lateRecord.messageId,
+                    late: true,
+                  });
                 });
             }
           })
-          .catch(() => undefined)
+          .catch((lateErr) => {
+            captureHandledException('store_late', lateErr, [connectionString], {
+              message_id: lateRecord.messageId,
+            });
+          })
           .finally(() => endSql(lateSql)));
       }
     }
@@ -101,6 +117,10 @@ export default {
         error: redact(err, env.HYPERDRIVE.connectionString),
         message_id: record?.messageId,
       }));
+      captureHandledException('forward', err, [env.HYPERDRIVE.connectionString], {
+        message_id: record?.messageId,
+        permanent: true,
+      });
     }
 
     if (
@@ -123,6 +143,10 @@ export default {
             error: redact(err, connectionString, apiKey),
             message_id: embedRecord.messageId,
           }));
+          captureHandledException('embed', err, [connectionString, apiKey], {
+            message_id: embedRecord.messageId,
+            late: false,
+          });
         })
         .finally(() => endSql(embedSql)));
     } else if (sql && !sqlOwnedByWaitUntil) {
@@ -130,6 +154,8 @@ export default {
     }
   },
 };
+
+export default Sentry.withSentry(createSentryOptions, worker);
 
 const PERMANENT_FORWARD_ERRORS = [
   /non-authenticated emails cannot be forwarded/iu,
@@ -195,16 +221,4 @@ export function withTimeout(promise, ms) {
   return Promise.race([promise, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
-}
-
-/**
- * @param {unknown} err
- * @param {...(string | undefined)} secrets
- */
-export function redact(err, ...secrets) {
-  let text = err instanceof Error ? err.message : String(err);
-  for (const secret of secrets) {
-    if (secret) text = text.split(secret).join('[redacted]');
-  }
-  return text;
 }

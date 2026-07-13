@@ -50,5 +50,7 @@ jobs:
           command: deploy
           secrets: |
             OPENAI_API_KEY
+            SENTRY_DSN
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}

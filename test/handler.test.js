@@ -6,8 +6,16 @@ vi.mock('postgres', () => ({
   default: vi.fn(),
 }));
 
+vi.mock('@sentry/cloudflare', () => ({
+  captureException: vi.fn(),
+  withSentry: vi.fn((_options, handler) => handler),
+}));
+
 /** @type {any} */
 const postgres = (await import('postgres')).default;
+/** @type {any} */
+const sentry = await import('@sentry/cloudflare');
+const { createSentryOptions } = await import('../src/sentry.js');
 
 /**
  * @param {{outcome?: 'inserted' | 'duplicate', messageUuid?: string | null}} [result]
@@ -36,6 +44,7 @@ function sqlReturning(result = { outcome: 'inserted', messageUuid: 'message-1' }
 
 /**
  * @param {Record<string, unknown>} [overrides]
+ * @returns {any}
  */
 function env(overrides = {}) {
   return {
@@ -70,6 +79,7 @@ function mockedConsoleLog() {
 describe('email handler', () => {
   beforeEach(() => {
     postgres.mockReset();
+    sentry.captureException.mockReset();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -87,6 +97,47 @@ describe('email handler', () => {
     expect(sql.end).toHaveBeenCalled();
   });
 
+  test('configures private Sentry error monitoring for email invocations', () => {
+    const options = createSentryOptions(env({
+      SENTRY_DSN: 'https://public@example.ingest.sentry.io/1',
+      SENTRY_ENVIRONMENT: 'production',
+    }));
+
+    expect(options).toMatchObject({
+      dsn: 'https://public@example.ingest.sentry.io/1',
+      environment: 'production',
+      tracesSampleRate: 0,
+      dataCollection: {
+        userInfo: false,
+        cookies: false,
+        httpBodies: [],
+        httpHeaders: { request: false, response: false },
+        queryParams: false,
+        genAI: { inputs: false, outputs: false },
+        stackFrameVariables: false,
+      },
+      beforeSend: expect.any(Function),
+    });
+
+    const beforeSend = /** @type {NonNullable<typeof options.beforeSend>} */ (options.beforeSend);
+    expect(beforeSend({
+      type: undefined,
+      transaction: 'Handle Email private@example.com',
+      request: { data: 'email body' },
+      user: { email: 'private@example.com' },
+      tags: { existing: 'tag' },
+    }, {})).toMatchObject({
+      transaction: 'mail-app-ingest.email',
+      request: undefined,
+      user: undefined,
+      tags: {
+        existing: 'tag',
+        service: 'mail-app-ingest',
+        trigger: 'email',
+      },
+    });
+  });
+
   test('still forwards when storage fails', async () => {
     const sql = sqlReturning();
     sql.begin = vi.fn(async () => { throw new Error('boom'); });
@@ -99,6 +150,12 @@ describe('email handler', () => {
     // Hard failure: no late-store waitUntil — only sql.end cleanup.
     expect(context.waitUntil).toHaveBeenCalledOnce();
     expect(sql.end).toHaveBeenCalled();
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    expect(sentry.captureException.mock.calls[0][0]).toMatchObject({ message: 'boom' });
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { service: 'mail-app-ingest', operation: 'store' },
+      extra: { raw_size: expect.any(Number) },
+    });
   });
 
   test('skips parse and store for oversized messages but still forwards', async () => {
@@ -116,6 +173,9 @@ describe('email handler', () => {
     expect(logged).not.toContain('simple message body');
     expect(logged).not.toContain('postgres://user:pass@example/db');
     expect(logged).toContain('database connection string is not valid');
+    const captured = sentry.captureException.mock.calls[0][0];
+    expect(captured.message).not.toContain('postgres://user:pass@example/db');
+    expect(captured.stack).not.toContain('postgres://user:pass@example/db');
   });
 
   test('hands a slow store to waitUntil and forwards', async () => {
@@ -246,6 +306,10 @@ describe('email handler', () => {
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), ctx());
     await Promise.resolve();
     expect(messageFromLog('embed_failed')).toMatchObject({ event: 'embed_failed' });
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { service: 'mail-app-ingest', operation: 'embed' },
+    });
   });
 });
 

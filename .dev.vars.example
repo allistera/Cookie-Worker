@@ -4,3 +4,6 @@
 
 # Optional: enables best-effort post-forward message embeddings.
 OPENAI_API_KEY=""
+
+# Optional locally; required in production to send sanitized errors to Sentry.
+SENTRY_DSN=""

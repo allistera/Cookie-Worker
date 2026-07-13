@@ -12,5 +12,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.js", "test/**/*.js", "eslint.config.js", "vitest.config.js"]
+  "include": ["worker-configuration.d.ts", "src/**/*.js", "test/**/*.js", "eslint.config.js", "vitest.config.js"]
 }
