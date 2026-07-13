@@ -2,7 +2,8 @@ import { vi } from 'vitest';
 
 /**
  * @param {string} raw
- * @param {{from?: string, to?: string, rawSize?: number}} options
+ * @param {{from?: string, to?: string, rawSize?: number}} [options]
+ * @returns {any}
  */
 export function fakeMessage(raw, options = {}) {
   return {
@@ -16,11 +17,18 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[]}} options
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[]}} [options]
+ * @returns {any}
  */
 export function createMockSql(options = {}) {
+  /** @type {{text: string, values: unknown[]}[]} */
   const queries = [];
+  /** @type {{text: string, values: unknown[]}[][]} */
   const transactions = [];
+
+  /**
+   * @param {{text: string, values: unknown[]}[]} sink
+   */
   const tagged = (sink) => (strings, ...values) => {
     const query = { text: strings.join('?'), values };
     sink.push(query);
@@ -37,11 +45,14 @@ export function createMockSql(options = {}) {
     }
     return Promise.resolve([]);
   };
+
+  /** @type {any} */
   const sql = tagged(queries);
   // Mirrors postgres.js sql.begin: runs the callback with a transaction-scoped
   // sql, recording the statements it executes as one batch.
   sql.begin = async (callback) => {
     if (options.transactionRejects) throw new Error('transaction failed');
+    /** @type {{text: string, values: unknown[]}[]} */
     const batch = [];
     transactions.push(batch);
     await callback(tagged(batch));

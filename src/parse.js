@@ -160,13 +160,51 @@ function normalizeHeaders(headers) {
 }
 
 /**
+ * Canonical Message-ID form used for storage and threading: `<id@host>`.
+ * Bare ids, extra whitespace, and multi-token headers are normalized.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+export function canonicalizeMessageId(value) {
+  const cleaned = stripNul(value).trim();
+  if (!cleaned) return null;
+
+  const bracketed = cleaned.match(/<([^<>]+)>/u);
+  const id = (bracketed ? bracketed[1] : cleaned).replaceAll(/[<>]/gu, '').trim();
+  if (!id) return null;
+
+  const canonical = `<${id}>`;
+  if (canonical.length > MAX_MESSAGE_ID) return null;
+  return canonical;
+}
+
+/**
+ * Split a References / In-Reply-To header into candidate tokens.
+ * Prefers angle-bracketed ids; otherwise splits on whitespace.
+ *
+ * @param {string} headerValue
+ * @returns {string[]}
+ */
+function extractReferenceTokens(headerValue) {
+  const cleaned = stripNul(headerValue).trim();
+  if (!cleaned) return [];
+  const bracketed = cleaned.match(/<[^<>]+>/gu);
+  if (bracketed) return bracketed;
+  return cleaned.split(/\s+/u).filter(Boolean);
+}
+
+/**
  * @param {{key: string, value: string}[]} headers
  */
 function extractReferences(headers) {
   const values = headers
     .filter((header) => ['references', 'in-reply-to'].includes(header.key.toLowerCase()))
-    .flatMap((header) => header.value.match(/<[^<>]+>/gu) ?? [header.value]);
-  return [...new Set(values.map(stripNul).filter(Boolean))].slice(0, MAX_REFERENCES);
+    .flatMap((header) => extractReferenceTokens(header.value));
+  const canonical = values
+    .map((token) => canonicalizeMessageId(token))
+    .filter((id) => id !== null);
+  return [...new Set(canonical)].slice(0, MAX_REFERENCES);
 }
 
 /**
@@ -177,7 +215,8 @@ function extractReferences(headers) {
 async function normalizeMessageId(messageId, headers, fallback) {
   const headerMessageId = stripNul(messageId)
     || stripNul(headers.find((header) => header.key.toLowerCase() === 'message-id')?.value ?? '');
-  if (headerMessageId && headerMessageId.length <= MAX_MESSAGE_ID) return headerMessageId;
+  const canonical = canonicalizeMessageId(headerMessageId);
+  if (canonical) return canonical;
   return syntheticMessageId(fallback);
 }
 
@@ -208,7 +247,7 @@ function normalizeAttachments(attachments) {
  * @param {unknown} content
  */
 function attachmentSize(content) {
-  if (typeof content === 'string') return content.length;
+  if (typeof content === 'string') return encoder.encode(content).byteLength;
   if (content instanceof ArrayBuffer) return content.byteLength;
   if (ArrayBuffer.isView(content)) return content.byteLength;
   if (content && typeof content === 'object' && 'byteLength' in content) {

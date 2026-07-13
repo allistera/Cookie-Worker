@@ -47,7 +47,13 @@ Send a message from an external mailbox to any address at the routed domain. Con
 
 ## Embedding Catch-Up
 
-Rows where `embedding IS NULL` are handled by Cookie-Web's Backfill Embeddings workflow. This Worker does not run a retry queue.
+When store finishes within budget (or late via `waitUntil` after a timeout), this Worker
+embeds newly inserted rows if `OPENAI_API_KEY` is set. Embed failures and missed late
+work still leave `embedding IS NULL`.
+
+Rows where `embedding IS NULL` are handled by Cookie-Web's Backfill Embeddings workflow.
+That backfill is the safety net — keep it enabled even when Worker embeddings are on.
+This Worker does not run a retry queue.
 
 ## Rollback
 

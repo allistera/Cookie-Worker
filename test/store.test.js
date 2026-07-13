@@ -32,6 +32,8 @@ describe('storeEmail', () => {
     expect(result.messageUuid).toEqual(expect.any(String));
     expect(sql.transactions[0]).toHaveLength(2);
     expect(sql.transactions[0][0].text).toContain('INSERT INTO threads');
+    expect(sql.transactions[0][0].text).toContain('message_count');
+    expect(sql.transactions[0][0].values).toContain(1);
     expect(sql.transactions[0][1].text).toContain('INSERT INTO messages');
     expect(sql.transactions[0][1].text).toContain('RETURNING');
   });
@@ -62,9 +64,20 @@ describe('storeEmail', () => {
       outcome: 'duplicate',
       messageUuid: null,
     });
-    // Message insert ran; attachments/counter update did not.
+    // Message insert ran; attachments/counter update did not. Existing thread is kept.
     expect(sql.transactions[0]).toHaveLength(1);
     expect(sql.transactions[0][0].text).toContain('INSERT INTO messages');
+  });
+
+  test('deletes empty thread when concurrent insert wins on a new thread', async () => {
+    const sql = createMockSql({ messageInsertReturns: [] });
+    await expect(storeEmail(sql, record(), 'owner@example.com')).resolves.toEqual({
+      outcome: 'duplicate',
+      messageUuid: null,
+    });
+    expect(sql.transactions[0][0].text).toContain('INSERT INTO threads');
+    expect(sql.transactions[0][1].text).toContain('INSERT INTO messages');
+    expect(sql.transactions[0][2].text).toContain('DELETE FROM threads');
   });
 
   test('throws when no user matches', async () => {

@@ -6,9 +6,15 @@ vi.mock('postgres', () => ({
   default: vi.fn(),
 }));
 
+/** @type {any} */
 const postgres = (await import('postgres')).default;
 
+/**
+ * @param {{outcome?: 'inserted' | 'duplicate', messageUuid?: string | null}} [result]
+ * @returns {any}
+ */
 function sqlReturning(result = { outcome: 'inserted', messageUuid: 'message-1' }) {
+  /** @type {any} */
   const sql = vi.fn(async (strings) => {
     const text = strings.join('?');
     if (text.includes('SELECT') && text.includes('FROM users')) {
@@ -28,6 +34,9 @@ function sqlReturning(result = { outcome: 'inserted', messageUuid: 'message-1' }
   return sql;
 }
 
+/**
+ * @param {Record<string, unknown>} [overrides]
+ */
 function env(overrides = {}) {
   return {
     HYPERDRIVE: { connectionString: 'postgres://user:pass@example/db' },
@@ -37,8 +46,25 @@ function env(overrides = {}) {
   };
 }
 
+/**
+ * @returns {any}
+ */
 function ctx() {
   return { waitUntil: vi.fn((promise) => promise.catch?.(() => undefined)) };
+}
+
+/**
+ * @returns {any}
+ */
+function mockedFetch() {
+  return fetch;
+}
+
+/**
+ * @returns {any}
+ */
+function mockedConsoleLog() {
+  return console.log;
 }
 
 describe('email handler', () => {
@@ -57,7 +83,7 @@ describe('email handler', () => {
     const message = fakeMessage(simpleFixture);
     await worker.email(message, env(), ctx());
     expect(message.forward).toHaveBeenCalledExactlyOnceWith('forward@example.com');
-    expect(JSON.parse(console.log.mock.calls[0][0])).toMatchObject({ event: 'stored', outcome: 'inserted' });
+    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({ event: 'stored', outcome: 'inserted' });
     expect(sql.end).toHaveBeenCalled();
   });
 
@@ -69,7 +95,7 @@ describe('email handler', () => {
     const context = ctx();
     await worker.email(message, env(), context);
     expect(message.forward).toHaveBeenCalledOnce();
-    expect(JSON.parse(console.log.mock.calls[0][0])).toMatchObject({ event: 'store_failed' });
+    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({ event: 'store_failed' });
     // Hard failure: no late-store waitUntil — only sql.end cleanup.
     expect(context.waitUntil).toHaveBeenCalledOnce();
     expect(sql.end).toHaveBeenCalled();
@@ -80,13 +106,13 @@ describe('email handler', () => {
     await worker.email(message, env(), ctx());
     expect(postgres).not.toHaveBeenCalled();
     expect(message.forward).toHaveBeenCalledOnce();
-    expect(JSON.parse(console.log.mock.calls[0][0])).toMatchObject({ event: 'store_skipped_oversize' });
+    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({ event: 'store_skipped_oversize' });
   });
 
   test('does not log bodies or connection strings on failure', async () => {
     postgres.mockImplementation(() => { throw new Error('bad postgres://user:pass@example/db'); });
     await worker.email(fakeMessage(simpleFixture), env(), ctx());
-    const logged = console.log.mock.calls.map((call) => call[0]).join('\n');
+    const logged = mockedConsoleLog().mock.calls.map((call) => call[0]).join('\n');
     expect(logged).not.toContain('simple message body');
     expect(logged).not.toContain('postgres://user:pass@example/db');
     expect(logged).toContain('database connection string is not valid');
@@ -95,6 +121,7 @@ describe('email handler', () => {
   test('hands a slow store to waitUntil and forwards', async () => {
     vi.useFakeTimers();
     const slow = new Promise((resolve) => setTimeout(() => resolve([]), 6000));
+    /** @type {any} */
     const sql = vi.fn(async (strings) => {
       if (strings.join('?').includes('SELECT')) return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
       if (strings.join('?').includes('RETURNING')) return [{ id: 'message-1' }];
@@ -109,6 +136,54 @@ describe('email handler', () => {
     await run;
     expect(context.waitUntil).toHaveBeenCalled();
     expect(messageFromLog('store_failed')).toMatchObject({ event: 'store_failed' });
+    vi.useRealTimers();
+  });
+
+  test('embeds after a late store insert when OPENAI_API_KEY is set', async () => {
+    vi.useFakeTimers();
+    /** @type {(value?: unknown) => void} */
+    let releaseBegin = () => undefined;
+    const gate = new Promise((resolve) => {
+      releaseBegin = resolve;
+    });
+    /** @type {any} */
+    const sql = vi.fn(async (strings) => {
+      if (strings.join('?').includes('SELECT')) return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
+      if (strings.join('?').includes('RETURNING')) return [{ id: 'message-1' }];
+      return [];
+    });
+    sql.begin = vi.fn(async (callback) => {
+      await gate;
+      await callback(sql);
+      return [];
+    });
+    sql.end = vi.fn(async () => undefined);
+    postgres.mockReturnValue(sql);
+
+    /** @type {Promise<unknown>[]} */
+    const pending = [];
+    /** @type {any} */
+    const context = {
+      waitUntil: vi.fn((promise) => {
+        pending.push(promise);
+        return promise;
+      }),
+    };
+
+    const run = worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), context);
+    await vi.advanceTimersByTimeAsync(5000);
+    await run;
+    expect(messageFromLog('store_failed')).toMatchObject({ event: 'store_failed' });
+    expect(mockedFetch()).not.toHaveBeenCalled();
+
+    releaseBegin();
+    await Promise.all(pending);
+    expect(messageFromLog('stored_late')).toMatchObject({
+      event: 'stored_late',
+      outcome: 'inserted',
+    });
+    expect(mockedFetch()).toHaveBeenCalledOnce();
+    expect(sql.end).toHaveBeenCalled();
     vi.useRealTimers();
   });
 
@@ -152,21 +227,21 @@ describe('email handler', () => {
     const context = ctx();
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), context);
     expect(context.waitUntil).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledOnce();
+    expect(mockedFetch()).toHaveBeenCalledOnce();
   });
 
   test('skips embedding for duplicates and missing API keys', async () => {
     postgres.mockReturnValue(sqlReturning({ outcome: 'duplicate', messageUuid: null }));
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), ctx());
-    expect(fetch).not.toHaveBeenCalled();
+    expect(mockedFetch()).not.toHaveBeenCalled();
 
     postgres.mockReturnValue(sqlReturning());
     await worker.email(fakeMessage(simpleFixture), env(), ctx());
-    expect(fetch).not.toHaveBeenCalled();
+    expect(mockedFetch()).not.toHaveBeenCalled();
   });
 
   test('embedding failures are swallowed inside waitUntil', async () => {
-    fetch.mockRejectedValueOnce(new Error('embed broke'));
+    mockedFetch().mockRejectedValueOnce(new Error('embed broke'));
     postgres.mockReturnValue(sqlReturning());
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), ctx());
     await Promise.resolve();
@@ -193,8 +268,8 @@ describe('helpers', () => {
  * @param {string} event
  */
 function messageFromLog(event) {
-  const line = console.log.mock.calls
-    .map((call) => call[0])
+  const line = mockedConsoleLog().mock.calls
+    .map((/** @type {unknown[]} */ call) => call[0])
     .find((entry) => typeof entry === 'string' && entry.includes(`"event":"${event}"`));
   return JSON.parse(/** @type {string} */ (line));
 }

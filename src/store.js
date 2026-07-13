@@ -43,8 +43,8 @@ export async function storeEmail(sql, record, ownerEmail) {
   await sql.begin(async (tx) => {
     if (isNewThread) {
       await tx`
-        INSERT INTO threads (id, user_id, subject, last_message_at)
-        VALUES (${threadId}, ${userId}, ${record.subject}, ${sentAt})
+        INSERT INTO threads (id, user_id, subject, last_message_at, message_count)
+        VALUES (${threadId}, ${userId}, ${record.subject}, ${sentAt}, ${1})
       `;
     }
 
@@ -69,7 +69,16 @@ export async function storeEmail(sql, record, ownerEmail) {
     `;
 
     if (insertedRows.length === 0) {
-      // Concurrent duplicate. A fresh threads row may remain (accepted race).
+      // Concurrent duplicate: drop the empty thread we just created (if any).
+      if (isNewThread) {
+        await tx`
+          DELETE FROM threads t
+          WHERE t.id = ${threadId}
+            AND NOT EXISTS (
+              SELECT 1 FROM messages m WHERE m.thread_id = t.id
+            )
+        `;
+      }
       return;
     }
 

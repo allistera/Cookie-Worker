@@ -1,3 +1,4 @@
+import js from '@eslint/js';
 import globals from 'globals';
 
 export default [
@@ -15,9 +16,9 @@ export default [
       },
     },
     rules: {
+      ...js.configs.recommended.rules,
       'no-console': 'off',
       'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-      'no-undef': 'error',
       eqeqeq: ['error', 'always'],
     },
   },

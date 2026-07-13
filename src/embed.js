@@ -1,6 +1,8 @@
 export const EMBEDDING_MODEL = 'text-embedding-3-small';
 export const EMBEDDING_DIMENSIONS = 1536;
-export const EMBEDDING_INPUT_CAP = 24000;
+// Character cap, not tokens. text-embedding-3-small allows ~8192 tokens; dense
+// scripts approach ~1 char/token, so stay well under that without a tokenizer.
+export const EMBEDDING_INPUT_CAP = 8000;
 export const EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
 
 /**

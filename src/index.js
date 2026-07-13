@@ -55,13 +55,30 @@ export default {
       if (storePromise && record && isStoreTimeout(err) && sql) {
         sqlOwnedByWaitUntil = true;
         const lateSql = sql;
+        const lateRecord = record;
+        const apiKey = env.OPENAI_API_KEY;
+        const connectionString = env.HYPERDRIVE.connectionString;
         ctx.waitUntil(storePromise
-          .then((lateResult) => {
+          .then(async (lateResult) => {
             console.log(JSON.stringify({
               event: 'stored_late',
               outcome: lateResult.outcome,
-              message_id: record?.messageId,
+              message_id: lateRecord.messageId,
             }));
+            if (
+              lateResult.outcome === 'inserted'
+              && lateResult.messageUuid
+              && apiKey
+            ) {
+              await embedMessage(lateSql, lateRecord, lateResult.messageUuid, apiKey)
+                .catch((embedErr) => {
+                  console.log(JSON.stringify({
+                    event: 'embed_failed',
+                    error: redact(embedErr, connectionString, apiKey),
+                    message_id: lateRecord.messageId,
+                  }));
+                });
+            }
           })
           .catch(() => undefined)
           .finally(() => endSql(lateSql)));
@@ -96,12 +113,15 @@ export default {
     ) {
       sqlOwnedByWaitUntil = true;
       const embedSql = sql;
-      ctx.waitUntil(embedMessage(embedSql, record, storeResult.messageUuid, env.OPENAI_API_KEY)
+      const embedRecord = record;
+      const apiKey = env.OPENAI_API_KEY;
+      const connectionString = env.HYPERDRIVE.connectionString;
+      ctx.waitUntil(embedMessage(embedSql, embedRecord, storeResult.messageUuid, apiKey)
         .catch((err) => {
           console.log(JSON.stringify({
             event: 'embed_failed',
-            error: redact(err, env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY),
-            message_id: record?.messageId,
+            error: redact(err, connectionString, apiKey),
+            message_id: embedRecord.messageId,
           }));
         })
         .finally(() => endSql(embedSql)));

@@ -8,9 +8,9 @@
     "moduleResolution": "Bundler",
     "target": "ES2024",
     "lib": ["ES2024", "WebWorker"],
-    "types": ["@cloudflare/workers-types"],
+    "types": ["@cloudflare/workers-types", "vitest/globals"],
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.js", "eslint.config.js", "vitest.config.js"]
+  "include": ["src/**/*.js", "test/**/*.js", "eslint.config.js", "vitest.config.js"]
 }

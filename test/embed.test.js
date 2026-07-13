@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   buildEmbeddingInput,
   EMBEDDING_DIMENSIONS,
+  EMBEDDING_INPUT_CAP,
   EMBEDDING_MODEL,
   embedMessage,
 } from '../src/embed.js';
@@ -9,6 +10,13 @@ import { createMockSql } from './helpers.js';
 
 function vectorOf(length, value = 0.1) {
   return Array(length).fill(value);
+}
+
+/**
+ * @returns {any}
+ */
+function mockedFetch() {
+  return fetch;
 }
 
 describe('embedMessage', () => {
@@ -22,7 +30,7 @@ describe('embedMessage', () => {
   test('posts subject and body to OpenAI with the shared model contract', async () => {
     const sql = createMockSql();
     await embedMessage(sql, { messageId: '<id>', subject: 'S', bodyText: 'B' }, 'message-1', 'key');
-    const request = fetch.mock.calls[0][1];
+    const request = mockedFetch().mock.calls[0][1];
     const body = JSON.parse(request.body);
     expect(body).toMatchObject({
       model: EMBEDDING_MODEL,
@@ -34,17 +42,17 @@ describe('embedMessage', () => {
 
   test('caps input and turns blank content into one space', () => {
     expect(buildEmbeddingInput('', '')).toBe(' ');
-    expect(buildEmbeddingInput('a'.repeat(30000), '')).toHaveLength(24000);
+    expect(buildEmbeddingInput('a'.repeat(30_000), '')).toHaveLength(EMBEDDING_INPUT_CAP);
   });
 
   test('throws status-only errors for non-2xx responses', async () => {
-    fetch.mockResolvedValueOnce({ ok: false, status: 429, text: async () => 'secret body' });
+    mockedFetch().mockResolvedValueOnce({ ok: false, status: 429, text: async () => 'secret body' });
     await expect(embedMessage(createMockSql(), { messageId: '<id>', subject: 'S', bodyText: 'B' }, 'message-1', 'api-key'))
       .rejects.toThrow('OpenAI embeddings API responded 429');
   });
 
   test('rejects vectors with the wrong dimension', async () => {
-    fetch.mockResolvedValueOnce({
+    mockedFetch().mockResolvedValueOnce({
       ok: true,
       json: async () => ({ data: [{ embedding: [0.1, 0.2] }] }),
     });

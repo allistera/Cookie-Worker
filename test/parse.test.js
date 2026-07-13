@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  canonicalizeMessageId,
   capString,
   htmlToText,
   MAX_FUTURE_MS,
@@ -9,6 +10,20 @@ import {
   parseEmail,
 } from '../src/parse.js';
 import { fakeMessage, simpleFixture } from './helpers.js';
+
+describe('canonicalizeMessageId', () => {
+  test('wraps bare ids and normalizes existing brackets', () => {
+    expect(canonicalizeMessageId('bare-id@example.com')).toBe('<bare-id@example.com>');
+    expect(canonicalizeMessageId('<already@example.com>')).toBe('<already@example.com>');
+    expect(canonicalizeMessageId('  <spaced@example.com>  ')).toBe('<spaced@example.com>');
+  });
+
+  test('returns null for empty or oversized values', () => {
+    expect(canonicalizeMessageId('')).toBeNull();
+    expect(canonicalizeMessageId('<>')).toBeNull();
+    expect(canonicalizeMessageId(`<${'a'.repeat(MAX_MESSAGE_ID)}@example.com>`)).toBeNull();
+  });
+});
 
 describe('parseEmail', () => {
   test('normalizes a simple fixture', async () => {
@@ -20,6 +35,33 @@ describe('parseEmail', () => {
     expect(record.bodyText).toContain('simple message body');
     expect(record.headers.length).toBeGreaterThan(0);
     expect(record.rawSize).toBeGreaterThan(0);
+  });
+
+  test('canonicalizes bare Message-IDs to angle-bracket form', async () => {
+    const raw = simpleFixture.replace(
+      'Message-ID: <simple@example.com>',
+      'Message-ID: bare-id@example.com',
+    );
+    const record = await parseEmail(fakeMessage(raw));
+    expect(record.messageId).toBe('<bare-id@example.com>');
+  });
+
+  test('splits and canonicalizes bare References / In-Reply-To headers', async () => {
+    const raw = `From: a@example.com
+To: b@example.com
+Subject: Re: x
+Message-ID: <child@example.com>
+In-Reply-To: parent@example.com
+References: parent@example.com grandparent@example.com
+Date: Wed, 08 Jul 2026 12:00:00 +0000
+Content-Type: text/plain
+
+Body`;
+    const record = await parseEmail(fakeMessage(raw));
+    expect(record.references).toEqual([
+      '<parent@example.com>',
+      '<grandparent@example.com>',
+    ]);
   });
 
   test('creates deterministic synthetic ids without Message-ID', async () => {
