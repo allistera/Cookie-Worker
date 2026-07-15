@@ -13,7 +13,6 @@ function responseResult(overrides = {}) {
     spam_verdict: 'inbox',
     spam_score: 0.01,
     spam_reason: 'legitimate',
-    summary: 'A normal message',
     priority: 'normal',
     ...overrides,
   };
@@ -43,6 +42,34 @@ describe('AI enrichment', () => {
     expect(request.model).toBe(AI_MODEL);
     expect(request.text.format).toMatchObject({ type: 'json_schema', strict: true });
     expect(request.input[0].content).toContain('untrusted data');
+    // Summaries are user-requested through Cookie-Web's reader; enrichment
+    // must not ask the model for one.
+    expect(request.text.format.schema.properties).not.toHaveProperty('summary');
+    expect(request.text.format.schema.required).not.toContain('summary');
+  });
+
+  test('never writes message_ai.summary during enrichment', async () => {
+    const sql = createMockSql();
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).includes('/responses')) {
+        return {
+          ok: true,
+          json: async () => ({ output_text: JSON.stringify(responseResult()) }),
+        };
+      }
+      return { ok: true, json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }) };
+    }));
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    const statements = sql.transactions[0].map((query) => query.text).join('\n');
+    expect(statements).toContain('INSERT INTO message_ai');
+    expect(statements).not.toContain('summary');
   });
 
   test('requires the high-confidence threshold before moving mail to spam', async () => {

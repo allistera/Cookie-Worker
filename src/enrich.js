@@ -1,5 +1,5 @@
 export const AI_MODEL = 'gpt-5.6-luna';
-export const PROMPT_VERSION = 'email-enrichment-v1';
+export const PROMPT_VERSION = 'email-enrichment-v2';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const SPAM_THRESHOLD = 0.98;
 export const REVIEW_THRESHOLD = 0.8;
@@ -23,10 +23,9 @@ const ENRICHMENT_SCHEMA = {
     spam_verdict: { type: 'string', enum: ['inbox', 'spam'] },
     spam_score: { type: 'number', minimum: 0, maximum: 1 },
     spam_reason: { type: 'string' },
-    summary: { type: 'string' },
     priority: { type: 'string', enum: ['low', 'normal', 'high'] },
   },
-  required: ['labels', 'spam_verdict', 'spam_score', 'spam_reason', 'summary', 'priority'],
+  required: ['labels', 'spam_verdict', 'spam_score', 'spam_reason', 'priority'],
   additionalProperties: false,
 };
 
@@ -160,19 +159,21 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
           `;
         }
       }
+      // message_ai.summary is deliberately never written here: summaries are
+      // generated only when the user requests one in Cookie-Web's reader.
       await tx`
         INSERT INTO message_ai (
-          message_id, status, spam_verdict, spam_score, spam_reason, summary,
+          message_id, status, spam_verdict, spam_score, spam_reason,
           priority, provider, model, prompt_version, processed_at, updated_at
         ) VALUES (
           ${messageUuid}, 'completed', ${verdict}, ${score}, ${classification.spam_reason},
-          ${classification.summary}, ${classification.priority}, 'openai', ${model},
+          ${classification.priority}, 'openai', ${model},
           ${PROMPT_VERSION}, now(), now()
         )
         ON CONFLICT (message_id) DO UPDATE SET
           status = 'completed', spam_verdict = EXCLUDED.spam_verdict,
           spam_score = EXCLUDED.spam_score, spam_reason = EXCLUDED.spam_reason,
-          summary = EXCLUDED.summary, priority = EXCLUDED.priority,
+          priority = EXCLUDED.priority,
           provider = EXCLUDED.provider, model = EXCLUDED.model,
           prompt_version = EXCLUDED.prompt_version, error_code = NULL,
           processed_at = now(), updated_at = now()

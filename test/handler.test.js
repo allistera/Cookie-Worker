@@ -88,7 +88,7 @@ describe('email handler', () => {
           json: async () => ({
             output_text: JSON.stringify({
               labels: [], spam_verdict: 'inbox', spam_score: 0.01,
-              spam_reason: 'legitimate', summary: 'A normal email', priority: 'normal',
+              spam_reason: 'legitimate', priority: 'normal',
             }),
           }),
         };
