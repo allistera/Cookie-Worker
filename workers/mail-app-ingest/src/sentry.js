@@ -2,6 +2,19 @@ import * as Sentry from '@sentry/cloudflare';
 
 const SERVICE = 'mail-app-ingest';
 
+// Cloudflare's message.forward() surfaces upstream SMTP temp-fails as
+// "could not send email: ... transient error (4xx): ...". The handler
+// rethrows these on purpose so the sending MTA retries delivery.
+const TRANSIENT_FORWARD_ERROR = /^could not send email:.*transient error \(4\d\d\)/isu;
+
+/**
+ * @param {unknown} err
+ */
+export function isTransientForwardError(err) {
+  const text = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+  return TRANSIENT_FORWARD_ERROR.test(text);
+}
+
 /**
  * Keep error monitoring useful without sending email bodies, headers, user
  * identity, cookies, or stack-frame local variables to Sentry.
@@ -25,6 +38,14 @@ export function createSentryOptions(env) {
       stackFrameVariables: false,
     },
     beforeSend(event) {
+      // The handler intentionally rethrows transient forward errors so the
+      // sending MTA retries; those are expected operations noise, not crashes.
+      // They stay visible as forward_failed_transient structured logs.
+      const unhandledTransientForward = event.exception?.values?.some((value) => (
+        value.mechanism?.handled === false
+        && isTransientForwardError(value.value ?? '')
+      ));
+      if (unhandledTransientForward) return null;
       return {
         ...event,
         transaction: `${SERVICE}.email`,

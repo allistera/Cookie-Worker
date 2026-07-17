@@ -2,7 +2,9 @@ import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { AI_MODEL, enrichMessage } from './enrich.js';
 import { parseEmail } from './parse.js';
-import { captureHandledException, createSentryOptions, redact } from './sentry.js';
+import {
+  captureHandledException, createSentryOptions, isTransientForwardError, redact,
+} from './sentry.js';
 import { storeEmail } from './store.js';
 
 export { redact } from './sentry.js';
@@ -95,6 +97,15 @@ const worker = {
       // retry forever and bounce, so once the message is safely stored we
       // accept it and only log the lost forward.
       if (!storeResult || !isPermanentForwardError(err)) {
+        // Transient errors are filtered out of Sentry (see createSentryOptions),
+        // so this log line is their only trail.
+        if (isTransientForwardError(err)) {
+          console.log(JSON.stringify({
+            event: 'forward_failed_transient',
+            error: redact(err, env.HYPERDRIVE.connectionString),
+            message_id: record?.messageId,
+          }));
+        }
         if (sql && !sqlOwnedByWaitUntil) ctx.waitUntil(endSql(sql));
         throw err;
       }

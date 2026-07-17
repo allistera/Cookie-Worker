@@ -151,6 +151,46 @@ describe('email handler', () => {
     });
   });
 
+  test('drops unhandled transient forward errors so MTA retries are not Sentry noise', () => {
+    const options = createSentryOptions(env({ SENTRY_DSN: 'https://public@example.ingest.sentry.io/1' }));
+    const beforeSend = /** @type {NonNullable<typeof options.beforeSend>} */ (options.beforeSend);
+    const transientMessage = 'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail';
+
+    // The intentional rethrow for MTA retry must not report as a crash.
+    expect(beforeSend(/** @type {any} */ ({
+      exception: {
+        values: [{
+          type: 'Error',
+          value: transientMessage,
+          mechanism: { type: 'auto.faas.cloudflare.email', handled: false },
+        }],
+      },
+    }), {})).toBeNull();
+
+    // Explicitly captured (handled) events keep flowing even with the same text.
+    expect(beforeSend(/** @type {any} */ ({
+      exception: {
+        values: [{ type: 'Error', value: transientMessage, mechanism: { type: 'generic', handled: true } }],
+      },
+    }), {})).not.toBeNull();
+
+    // Permanent SMTP failures and unknown crashes still report.
+    expect(beforeSend(/** @type {any} */ ({
+      exception: {
+        values: [{
+          type: 'Error',
+          value: 'could not send email: Unknown error: permanent error (550): rejected',
+          mechanism: { type: 'auto.faas.cloudflare.email', handled: false },
+        }],
+      },
+    }), {})).not.toBeNull();
+    expect(beforeSend(/** @type {any} */ ({
+      exception: {
+        values: [{ type: 'TypeError', value: 'x is not a function', mechanism: { handled: false } }],
+      },
+    }), {})).not.toBeNull();
+  });
+
   test('still forwards when storage fails', async () => {
     const sql = sqlReturning();
     sql.begin = vi.fn(async () => { throw new Error('boom'); });
@@ -269,6 +309,19 @@ describe('email handler', () => {
     expect(sql.end).toHaveBeenCalled();
   });
 
+  test('logs transient forward failures before rethrowing for MTA retry', async () => {
+    postgres.mockReturnValue(sqlReturning());
+    const message = fakeMessage(simpleFixture);
+    message.forward.mockRejectedValueOnce(new Error(
+      'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail',
+    ));
+    await expect(worker.email(message, env(), ctx())).rejects.toThrow('transient error (421)');
+    expect(messageFromLog('forward_failed_transient')).toMatchObject({
+      event: 'forward_failed_transient',
+      message_id: expect.any(String),
+    });
+  });
+
   test('swallows permanent forward errors once the message is stored', async () => {
     postgres.mockReturnValue(sqlReturning());
     const message = fakeMessage(simpleFixture);
@@ -352,6 +405,22 @@ describe('helpers', () => {
   test('isStoreTimeout matches budget errors only', () => {
     expect(isStoreTimeout(new Error('store timed out after 5000ms'))).toBe(true);
     expect(isStoreTimeout(new Error('boom'))).toBe(false);
+  });
+
+  test('isTransientForwardError matches SMTP 4xx forward errors only', async () => {
+    const { isTransientForwardError } = await import('../src/sentry.js');
+    expect(isTransientForwardError(new Error(
+      'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail',
+    ))).toBe(true);
+    expect(isTransientForwardError(new Error(
+      'could not send email: Unknown error: transient error (451): try again later',
+    ))).toBe(true);
+    expect(isTransientForwardError(new Error(
+      'could not send email: Unknown error: permanent error (550): rejected',
+    ))).toBe(false);
+    expect(isTransientForwardError(new Error('transient error (421)'))).toBe(false);
+    expect(isTransientForwardError(new Error('boom'))).toBe(false);
+    expect(isTransientForwardError('not an error')).toBe(false);
   });
 
   test('redact replaces all provided secrets', () => {
