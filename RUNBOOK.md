@@ -10,16 +10,17 @@ Confirm the Cloudflare Worker has its email route, Hyperdrive binding, required 
 
 ## Deploy
 
-Run the `Deploy` workflow in GitHub Actions. It validates the Worker, uploads its secrets, and deploys with Wrangler.
+Run the `Deploy` workflow in GitHub Actions and enter `mail-app-ingest` as the Worker. It validates every Worker, uploads this Worker's secrets, and deploys only the selected Wrangler configuration.
 
 For local validation before deployment:
 
 ```bash
 npm ci
 npm run lint
+npm run types -- --all --check
 npm run typecheck
 npm test
-npx wrangler deploy --dry-run
+npm run dry-run -- --all
 ```
 
 ## Verify production
@@ -54,11 +55,12 @@ If messages are not stored, confirm the exact recipient address, Hyperdrive proj
 
 ## Local development
 
-Copy `.dev.vars.example` to `.dev.vars`, set the documented environment values, and run:
+Copy the Worker's secret template beside its Wrangler configuration, set the documented environment values, and run:
 
 ```bash
+cp workers/mail-app-ingest/.dev.vars.example workers/mail-app-ingest/.dev.vars
 npm install
-npm run dev
+npm run dev -- mail-app-ingest
 ```
 
 Use a development Supabase project. Do not connect local Worker sessions to production unless the task explicitly requires it.
@@ -77,6 +79,6 @@ For storage or delivery failures, inspect Worker logs and Sentry first. If neede
 
 ## Rollback
 
-Use the Cloudflare dashboard or `npx wrangler rollback` to restore the last known-good Worker version.
+Use the Cloudflare dashboard or `npx wrangler rollback --config workers/mail-app-ingest/wrangler.jsonc` to restore the last known-good Worker version.
 
 Avoid rolling back database migrations during an incident. The AI schema changes are additive and safe to leave in place while the Worker is reverted.

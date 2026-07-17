@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import worker, { MAX_PARSE_BYTES, isStoreTimeout, redact, withTimeout } from '../src/index.js';
+import worker, { MAX_PARSE_BYTES, isStoreTimeout, redact, withTimeout } from '../src/worker.js';
 import { simpleFixture, fakeMessage } from './helpers.js';
 
 vi.mock('postgres', () => ({

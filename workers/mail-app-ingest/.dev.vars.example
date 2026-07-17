@@ -1,6 +1,6 @@
 # The database connection comes from the Hyperdrive binding, not a secret.
 # For local dev, export this before `npm run dev` (dev Supabase project, session pooler):
-#   export WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
+#   export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
 
 # Optional locally: enables post-forward auto-tagging, spam detection, and embeddings.
 OPENAI_API_KEY=""

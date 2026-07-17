@@ -13,7 +13,7 @@ export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 const worker = {
   /**
    * @param {ForwardableEmailMessage} message
-   * @param {Env & {SENTRY_DSN?: string}} env
+   * @param {Env & {SENTRY_DSN?: string, OPENAI_API_KEY?: string, AI_MODEL?: string}} env
    * @param {ExecutionContext} ctx
    */
   async email(message, env, ctx) {

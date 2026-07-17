@@ -2,6 +2,12 @@ name: Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      worker:
+        description: Worker directory name under workers/
+        required: true
+        default: mail-app-ingest
+        type: string
 
 permissions:
   contents: read
@@ -24,9 +30,10 @@ jobs:
 
       - run: npm ci
       - run: npm run lint
+      - run: npm run types -- --all --check
       - run: npm run typecheck
       - run: npm test
-      - run: npx wrangler deploy --dry-run
+      - run: npm run dry-run -- --all
 
   deploy:
     name: Deploy Cloudflare Worker
@@ -43,10 +50,18 @@ jobs:
 
       - run: npm ci
 
-      - uses: cloudflare/wrangler-action@v3
+      - name: Validate selected Worker
+        env:
+          SELECTED_WORKER: ${{ inputs.worker }}
+        run: npm run dry-run -- "$SELECTED_WORKER"
+
+      - name: Deploy mail-app-ingest and synchronize its secrets
+        if: inputs.worker == 'mail-app-ingest'
+        uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/mail-app-ingest
           command: deploy
           secrets: |
             OPENAI_API_KEY
@@ -54,3 +69,12 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Deploy selected Worker
+        if: inputs.worker != 'mail-app-ingest'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/${{ inputs.worker }}
+          command: deploy

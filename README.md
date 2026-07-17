@@ -1,6 +1,52 @@
-# Cookie Worker
+# Cookie Workers
 
-Cookie Worker (`mail-app-ingest`) is Cookie's Cloudflare Email Worker. It parses inbound mail, stores it in Supabase through Hyperdrive, forwards the original, and enriches the stored copy with OpenAI.
+This repository hosts Cookie's independently deployable Cloudflare Workers. Each Worker owns its source, tests, generated environment types, local secret template, and Wrangler configuration under `workers/<name>/`. Root tooling discovers those directories, so adding a Worker does not require another package, registry, or CI workflow.
+
+## Workers
+
+| Worker | Triggers | Purpose |
+| --- | --- | --- |
+| [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
+
+## Repository structure
+
+```text
+workers/
+  mail-app-ingest/
+    src/
+    test/
+    wrangler.jsonc
+    jsconfig.json
+    worker-configuration.d.ts
+    .dev.vars.example
+scripts/
+  workers.mjs
+test/
+  repository/
+```
+
+A directory is a Worker capsule when it contains `workers/<name>/wrangler.jsonc`. All capsules share the root dependency graph and lint, typecheck, and test configuration. Put code in a shared root module only after at least two Workers actually use it.
+
+## Worker commands
+
+Every command requires an explicit Worker name or `--all`; production deploys never accept `--all`.
+
+```sh
+npm run workers
+npm run dev -- mail-app-ingest
+npm run dev:all
+npm run types -- --all
+npm run dry-run -- --all
+npm run deploy -- mail-app-ingest
+```
+
+`dev:all` passes every discovered configuration to one Wrangler development session, which supports service bindings between Workers. `dry-run --all` and `types --all` run once per Worker and stop on the first failure.
+
+To add a Worker, create `workers/<name>/src/index.js`, `wrangler.jsonc`, `jsconfig.json`, tests, `.dev.vars.example`, and generated `worker-configuration.d.ts`. The directory name and Wrangler `name` must match and use lowercase letters, numbers, and dashes. CI discovers, typechecks, and dry-runs the new config automatically; the manual Deploy workflow accepts the same directory name as its `worker` input.
+
+## Mail app ingest
+
+`mail-app-ingest` is Cookie's Cloudflare Email Worker. It parses inbound mail, stores it in Supabase through Hyperdrive, forwards the original, and enriches the stored copy with OpenAI.
 
 Forwarding is the primary outcome. Storage, AI, embedding, and monitoring failures do not intentionally prevent delivery.
 
@@ -45,13 +91,13 @@ Install dependencies and copy the secret template:
 
 ```sh
 npm install
-cp .dev.vars.example .dev.vars
+cp workers/mail-app-ingest/.dev.vars.example workers/mail-app-ingest/.dev.vars
 ```
 
 Point local Hyperdrive at a development Supabase session pooler:
 
 ```sh
-export WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE='postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres'
+export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE='postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres'
 ```
 
 Never use the production database for local development.
@@ -59,7 +105,7 @@ Never use the production database for local development.
 Start Wrangler:
 
 ```sh
-npm run dev
+npm run dev -- mail-app-ingest
 ```
 
 Post the included fixture to the local email handler:
@@ -68,7 +114,7 @@ Post the included fixture to the local email handler:
 curl --request POST 'http://localhost:8787/cdn-cgi/handler/email' \
   --url-query 'from=sender@example.com' \
   --url-query 'to=inbox@example.org' \
-  --data-binary @test/fixtures/simple.eml
+  --data-binary @workers/mail-app-ingest/test/fixtures/simple.eml
 ```
 
 Wrangler logs local forwarding instead of delivering. Posting the fixture again should report a `duplicate` storage outcome.
@@ -77,7 +123,7 @@ Wrangler logs local forwarding instead of delivering. Posting the fixture again 
 
 | Name | Type | Purpose |
 | --- | --- | --- |
-| `HYPERDRIVE` | Binding | Supabase connection configured in `wrangler.jsonc`. |
+| `HYPERDRIVE` | Binding | Supabase connection configured in `workers/mail-app-ingest/wrangler.jsonc`. |
 | `FORWARD_TO` | Variable | Verified mailbox receiving the original email. |
 | `OWNER_EMAIL` | Variable | Exact Cookie-Web user email that owns stored messages. |
 | `AI_MODEL` | Variable | Structured classification model; defaults to `gpt-5.6-luna`. |
@@ -91,14 +137,15 @@ The database password belongs to Hyperdrive, not Worker secrets. GitHub Actions 
 
 ```sh
 npm run lint
+npm run types -- --all --check
 npm run typecheck
 npm test
-npx wrangler deploy --dry-run
+npm run dry-run -- --all
 ```
 
 ## Deployment
 
-Production deployment is intentionally manual through the GitHub Actions `Deploy` workflow. It validates the same lint, typecheck, test, and dry-run commands before publishing.
+Production deployment is intentionally manual through the GitHub Actions `Deploy` workflow. Select the Worker directory name when dispatching it. The workflow validates the entire repository, dry-runs the selected Worker again, and publishes only that Worker. `mail-app-ingest` synchronizes its two existing GitHub secrets during deployment; other Workers manage their own Cloudflare secrets before their first deploy, so mail credentials are never passed to them.
 
 Required repository secrets:
 
