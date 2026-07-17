@@ -7,6 +7,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | Worker | Triggers | Purpose |
 | --- | --- | --- |
 | [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
+| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily) | Python Worker placeholder; currently prints `hello world`. |
 
 ## Repository structure
 
@@ -43,6 +44,8 @@ npm run deploy -- mail-app-ingest
 `dev:all` passes every discovered configuration to one Wrangler development session, which supports service bindings between Workers. `dry-run --all` and `types --all` run once per Worker and stop on the first failure.
 
 To add a Worker, create `workers/<name>/src/index.js`, `wrangler.jsonc`, `jsconfig.json`, tests, `.dev.vars.example`, and generated `worker-configuration.d.ts`. The directory name and Wrangler `name` must match and use lowercase letters, numbers, and dashes. CI discovers, typechecks, and dry-runs the new config automatically; the manual Deploy workflow accepts the same directory name as its `worker` input.
+
+Python capsules (`main` ending in `.py`, with the `python_workers` and `disable_python_external_sdk` compatibility flags) skip `jsconfig.json` and the per-Worker TypeScript check but go through the same discovery, types, and dry-run gates. If a Python Worker grows PyPI dependencies, migrate that capsule to [pywrangler](https://developers.cloudflare.com/workers/languages/python/packages/), which bundles packages and the external SDK.
 
 ## Mail app ingest
 

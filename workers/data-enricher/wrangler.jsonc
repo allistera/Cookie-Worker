@@ -1,0 +1,16 @@
+{
+  "name": "data-enricher",
+  "main": "src/entry.py",
+  "workers_dev": false,
+  "compatibility_date": "2026-07-09",
+  // disable_python_external_sdk keeps the runtime's built-in `workers` SDK so
+  // plain Wrangler (no pywrangler/uv toolchain) can dev and deploy this Worker.
+  "compatibility_flags": ["python_workers", "disable_python_external_sdk"],
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    // Cron Triggers run on UTC.
+    "crons": ["0 5 * * *"]
+  }
+}

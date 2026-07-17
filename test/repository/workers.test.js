@@ -108,6 +108,28 @@ describe('worker repository interface', () => {
     ]);
   });
 
+  test('skips TypeScript checks for Python worker capsules', async () => {
+    const repositoryRoot = await repositoryWithWorkers('mail-app-ingest');
+    const directory = path.join(repositoryRoot, 'workers', 'data-enricher');
+    await mkdir(path.join(directory, 'src'), { recursive: true });
+    await writeFile(path.join(directory, 'wrangler.jsonc'), JSON.stringify({
+      name: 'data-enricher',
+      main: 'src/entry.py',
+    }));
+    await writeFile(path.join(directory, 'src/entry.py'), 'print("hello world")\n');
+
+    await expect(discoverWorkers(repositoryRoot)).resolves.toEqual([
+      expect.objectContaining({ id: 'data-enricher' }),
+      expect.objectContaining({ id: 'mail-app-ingest' }),
+    ]);
+    await expect(createTypecheckCommands(repositoryRoot)).resolves.toEqual([
+      {
+        worker: 'mail-app-ingest',
+        args: ['-p', path.join(repositoryRoot, 'workers/mail-app-ingest/jsconfig.json')],
+      },
+    ]);
+  });
+
   test('rejects a capsule whose directory would deploy a different Worker name', async () => {
     const repositoryRoot = await repositoryWithWorkers('mail-app-ingest');
     await writeFile(

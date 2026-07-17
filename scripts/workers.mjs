@@ -77,6 +77,7 @@ export async function discoverWorkers(repositoryRoot = REPOSITORY_ROOT) {
     }
     workers.push({
       id: entry.name,
+      main: configuration.main,
       directory,
       configPath,
       typesPath: path.join(directory, 'worker-configuration.d.ts'),
@@ -98,7 +99,8 @@ export async function discoverWorkers(repositoryRoot = REPOSITORY_ROOT) {
  */
 export async function createTypecheckCommands(repositoryRoot = REPOSITORY_ROOT) {
   const workers = await discoverWorkers(repositoryRoot);
-  return Promise.all(workers.map(async (worker) => {
+  const javascriptWorkers = workers.filter((worker) => !worker.main.endsWith('.py'));
+  return Promise.all(javascriptWorkers.map(async (worker) => {
     try {
       await access(worker.typecheckPath);
     } catch {
