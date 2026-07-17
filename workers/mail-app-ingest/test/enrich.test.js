@@ -101,4 +101,55 @@ describe('AI enrichment', () => {
     expect(statements).not.toContain("SELECT m.user_id, 'Spam'");
     expect(statements).toContain('INSERT INTO message_ai');
   });
+
+  test('persists the embedding even when classification fails', async () => {
+    const sql = createMockSql();
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).includes('/responses')) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }) };
+    }));
+
+    await expect(enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    )).rejects.toThrow();
+
+    // The embedding was saved outside the classification transaction, so a
+    // fragile classifier failure no longer discards a good vector.
+    const embeddingWrite = sql.queries.find((query) => query.text.includes('SET embedding'));
+    expect(embeddingWrite).toBeTruthy();
+    expect(embeddingWrite.text).toContain('AND embedding IS NULL');
+    // The classification transaction never committed...
+    expect(sql.transactions).toHaveLength(0);
+    // ...and the row is marked failed so the recovery cron retries it.
+    expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(true);
+  });
+
+  test('fails the row for retry when embedding fails, without marking completed', async () => {
+    const sql = createMockSql();
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).includes('/responses')) {
+        return { ok: true, json: async () => ({ output_text: JSON.stringify(responseResult()) }) };
+      }
+      return { ok: false, status: 429, text: async () => 'rate limited' };
+    }));
+
+    await expect(enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    )).rejects.toThrow();
+
+    // No embedding was persisted (its leg failed)...
+    expect(sql.queries.find((query) => query.text.includes('SET embedding'))).toBeFalsy();
+    // ...no completed transaction ran...
+    expect(sql.transactions).toHaveLength(0);
+    // ...and the row is marked failed for the cron to retry.
+    expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(true);
+  });
 });

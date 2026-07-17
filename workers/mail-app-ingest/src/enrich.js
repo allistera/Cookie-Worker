@@ -114,10 +114,34 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
   }));
   try {
     const { createEmbedding, EMBEDDING_MODEL } = await import('./embed.js');
-    const [classification, vector] = await Promise.all([
+    // Classification (fragile structured output) and the embedding (cheap and
+    // robust) are computed together but persisted separately: a classification
+    // failure must not discard a good embedding, since embeddings are the
+    // backbone of semantic search in Cookie-Web.
+    const [classificationSettled, embeddingSettled] = await Promise.allSettled([
       classifyEmail(record, labels, apiKey, model),
       createEmbedding(record, apiKey),
     ]);
+
+    // Save a successful embedding immediately, before the classification-driven
+    // transaction. The IS NULL guard keeps this idempotent, so the recovery
+    // cron re-running enrichment never overwrites or duplicates it.
+    if (embeddingSettled.status === 'fulfilled') {
+      await sql`
+        UPDATE messages
+        SET embedding = ${JSON.stringify(embeddingSettled.value)}::vector,
+            embedding_model = ${EMBEDDING_MODEL}
+        WHERE id = ${messageUuid} AND embedding IS NULL
+      `;
+      console.log(JSON.stringify({ event: 'embedded', message_id: record.messageId }));
+    }
+
+    // With the embedding safely persisted, a failure in either leg fails the
+    // row so the cron retries it — the saved embedding survives the retry.
+    if (embeddingSettled.status === 'rejected') throw embeddingSettled.reason;
+    if (classificationSettled.status === 'rejected') throw classificationSettled.reason;
+
+    const classification = classificationSettled.value;
     const allowed = new Map(labels.map((label) => [label.id, label]));
     const selected = classification.labels.filter(
       (label) => allowed.has(label.id) && label.confidence >= 0.7,
@@ -128,12 +152,6 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       : 'inbox';
 
     await sql.begin(async (tx) => {
-      await tx`
-        UPDATE messages
-        SET embedding = ${JSON.stringify(vector)}::vector,
-            embedding_model = ${EMBEDDING_MODEL}
-        WHERE id = ${messageUuid} AND embedding IS NULL
-      `;
       await tx`DELETE FROM message_labels WHERE message_id = ${messageUuid} AND source = 'ai'`;
       for (const label of selected) {
         await tx`
