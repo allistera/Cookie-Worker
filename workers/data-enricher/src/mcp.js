@@ -1,23 +1,26 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 
-/**
- * Connect to one MCP server over the given transport and inventory its tools.
- * Placeholder gather step until the real result collection lands.
- *
- * @param {import('@modelcontextprotocol/sdk/shared/transport.js').Transport} transport
- */
-export async function gather(transport) {
-  const client = new Client({ name: 'data-enricher', version: '1.0.0' }, {
+export function createMcpClient() {
+  return new Client({ name: 'data-enricher', version: '1.0.0' }, {
     // The default ajv validator compiles schemas with new Function(), which
     // the Workers runtime forbids; this validator interprets schemas instead.
     jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
   });
+}
+
+/**
+ * Connect to a remote MCP server over streamable HTTP.
+ *
+ * @param {string} url
+ * @param {{bearerToken?: string}} [options]
+ */
+export async function connectMcp(url, { bearerToken } = {}) {
+  const transport = new StreamableHTTPClientTransport(new URL(url), bearerToken
+    ? { requestInit: { headers: { Authorization: `Bearer ${bearerToken}` } } }
+    : undefined);
+  const client = createMcpClient();
   await client.connect(transport);
-  try {
-    const { tools } = await client.listTools();
-    return { tools: tools.map((tool) => tool.name) };
-  } finally {
-    await client.close();
-  }
+  return client;
 }

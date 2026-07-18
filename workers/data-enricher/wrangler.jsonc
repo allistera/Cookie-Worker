@@ -19,8 +19,8 @@
     }
   ],
   "vars": {
-    // Comma-separated URLs of the MCP servers to gather results from.
-    "MCP_SERVERS": "",
+    "TODOIST_MCP_URL": "https://ai.todoist.net/mcp",
+    "AI_MODEL": "gpt-5.6-luna",
     "OWNER_EMAIL": "allisteraall@gmail.com"
   }
 }

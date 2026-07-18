@@ -7,7 +7,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | Worker | Triggers | Purpose |
 | --- | --- | --- |
 | [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
-| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily) | Gathers results from the MCP servers listed in `MCP_SERVERS`. |
+| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily) | Stores Todoist tasks due today and AI task analyses of important emails. |
 
 ## Repository structure
 
