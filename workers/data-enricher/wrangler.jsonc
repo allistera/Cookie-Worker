@@ -1,16 +1,19 @@
 {
   "name": "data-enricher",
-  "main": "src/entry.py",
+  "main": "src/index.js",
   "workers_dev": false,
   "compatibility_date": "2026-07-09",
-  // The `workers` SDK and PyPI packages are vendored into python_modules by
-  // pywrangler (uv run pywrangler ...); dev and deploy must go through it.
-  "compatibility_flags": ["python_workers"],
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
   "observability": {
     "enabled": true
   },
   "triggers": {
     // Cron Triggers run on UTC.
     "crons": ["0 5 * * *"]
+  },
+  "vars": {
+    // Comma-separated URLs of the MCP servers to gather results from.
+    "MCP_SERVERS": ""
   }
 }
