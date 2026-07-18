@@ -12,8 +12,15 @@
     // Cron Triggers run on UTC.
     "crons": ["0 5 * * *"]
   },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "a276ebeb4ec84d33b050614b6b5020e5"
+    }
+  ],
   "vars": {
     // Comma-separated URLs of the MCP servers to gather results from.
-    "MCP_SERVERS": ""
+    "MCP_SERVERS": "",
+    "OWNER_EMAIL": "allisteraall@gmail.com"
   }
 }
