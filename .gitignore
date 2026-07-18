@@ -1,5 +1,7 @@
 .dev.vars
 .wrangler/
 node_modules/
+python_modules/
+.venv/
 coverage/
 dist/

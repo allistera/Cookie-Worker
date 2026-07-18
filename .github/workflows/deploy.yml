@@ -70,8 +70,20 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
+      - name: Install uv
+        if: inputs.worker == 'data-enricher'
+        uses: astral-sh/setup-uv@v8
+
+      - name: Deploy data-enricher with vendored Python packages
+        if: inputs.worker == 'data-enricher'
+        working-directory: workers/data-enricher
+        run: uv run pywrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Deploy selected Worker
-        if: inputs.worker != 'mail-app-ingest'
+        if: inputs.worker != 'mail-app-ingest' && inputs.worker != 'data-enricher'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
