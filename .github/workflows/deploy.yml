@@ -70,8 +70,23 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
+      - name: Deploy data-enricher and synchronize its secrets
+        if: inputs.worker == 'data-enricher'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/data-enricher
+          command: deploy
+          secrets: |
+            TODOIST_API_TOKEN
+            OPENAI_API_KEY
+        env:
+          TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
       - name: Deploy selected Worker
-        if: inputs.worker != 'mail-app-ingest'
+        if: inputs.worker != 'mail-app-ingest' && inputs.worker != 'data-enricher'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
