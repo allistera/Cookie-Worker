@@ -28,7 +28,7 @@ export async function discoverWorkers(repositoryRoot = REPOSITORY_ROOT) {
     entries = await readdir(workersDirectory, { withFileTypes: true });
   } catch (error) {
     if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
-      throw new Error(`No workers directory found at ${workersDirectory}`);
+      throw new Error(`No workers directory found at ${workersDirectory}`, { cause: error });
     }
     throw error;
   }

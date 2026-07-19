@@ -128,6 +128,9 @@ const worker = {
       && storeResult.messageUuid
       && env.OPENAI_API_KEY
     ) {
+      // Keep the ownership invariant symmetric with the store-timeout path above:
+      // any waitUntil that takes sql sets this flag, even where nothing reads it back.
+      // eslint-disable-next-line no-useless-assignment
       sqlOwnedByWaitUntil = true;
       const ingestSql = sql;
       const embedRecord = record;
