@@ -73,6 +73,32 @@ async function analyzeImportantEmails(sql, env, userId) {
   console.log(JSON.stringify({ event: 'emails_analyzed', messages: messages.length, tasks: extracted }));
 }
 
+/**
+ * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+ */
+export async function runEnrichment(env) {
+  const sql = createSql(env.HYPERDRIVE.connectionString);
+  /** @type {Error[]} */
+  const failures = [];
+  try {
+    const userId = await lookupUserId(sql, env.OWNER_EMAIL);
+    // The two phases are independent; one failing must not starve the other.
+    for (const phase of [gatherTodoist, analyzeImportantEmails]) {
+      try {
+        await phase(sql, env, userId);
+      } catch (error) {
+        failures.push(/** @type {Error} */ (error));
+        console.log(JSON.stringify({ event: 'phase_failed', phase: phase.name, error: String(error) }));
+      }
+    }
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'data-enricher run had failures');
+  }
+}
+
 export default {
   /**
    * @param {ScheduledController} _controller
@@ -80,25 +106,35 @@ export default {
    * @param {ExecutionContext} _ctx
    */
   async scheduled(_controller, env, _ctx) {
-    const sql = createSql(env.HYPERDRIVE.connectionString);
-    /** @type {Error[]} */
-    const failures = [];
-    try {
-      const userId = await lookupUserId(sql, env.OWNER_EMAIL);
-      // The two phases are independent; one failing must not starve the other.
-      for (const phase of [gatherTodoist, analyzeImportantEmails]) {
-        try {
-          await phase(sql, env, userId);
-        } catch (error) {
-          failures.push(/** @type {Error} */ (error));
-          console.log(JSON.stringify({ event: 'phase_failed', phase: phase.name, error: String(error) }));
-        }
-      }
-    } finally {
-      await sql.end({ timeout: 5 });
+    await runEnrichment(env);
+  },
+
+  /**
+   * Manual trigger: POST /run with `Authorization: Bearer <HTTP_TRIGGER_TOKEN>`.
+   * @param {Request} request
+   * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string, HTTP_TRIGGER_TOKEN?: string}} env
+   * @param {ExecutionContext} _ctx
+   */
+  async fetch(request, env, _ctx) {
+    const url = new URL(request.url);
+    if (url.pathname !== '/run') {
+      return new Response('Not Found', { status: 404 });
     }
-    if (failures.length > 0) {
-      throw new AggregateError(failures, 'data-enricher run had failures');
+    if (request.method !== 'POST') {
+      return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'POST' } });
+    }
+    // An unset token keeps the endpoint closed rather than open.
+    if (!env.HTTP_TRIGGER_TOKEN
+      || request.headers.get('Authorization') !== `Bearer ${env.HTTP_TRIGGER_TOKEN}`) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+    try {
+      await runEnrichment(env);
+      return Response.json({ status: 'ok' });
+    } catch (error) {
+      // Body stays generic: nested errors may carry connection details.
+      console.log(JSON.stringify({ event: 'http_run_failed', error: String(error) }));
+      return Response.json({ status: 'failed' }, { status: 500 });
     }
   },
 };

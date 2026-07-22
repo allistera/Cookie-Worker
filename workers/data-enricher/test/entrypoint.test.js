@@ -6,6 +6,7 @@ describe('Cloudflare entrypoint', () => {
     expect(Object.keys(entrypoint)).toEqual(['default']);
     expect(entrypoint.default).toEqual(expect.objectContaining({
       scheduled: expect.any(Function),
+      fetch: expect.any(Function),
     }));
   });
 });

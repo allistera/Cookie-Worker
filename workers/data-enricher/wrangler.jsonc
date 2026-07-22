@@ -1,7 +1,8 @@
 {
   "name": "data-enricher",
   "main": "src/index.js",
-  "workers_dev": false,
+  // The HTTP trigger (POST /run) is served from the workers.dev URL.
+  "workers_dev": true,
   "compatibility_date": "2026-07-09",
   "compatibility_flags": ["nodejs_compat"],
   "upload_source_maps": true,

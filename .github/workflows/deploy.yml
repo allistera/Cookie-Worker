@@ -81,9 +81,11 @@ jobs:
           secrets: |
             TODOIST_API_TOKEN
             OPENAI_API_KEY
+            HTTP_TRIGGER_TOKEN
         env:
           TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HTTP_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
 
       - name: Deploy selected Worker
         if: inputs.worker != 'mail-app-ingest' && inputs.worker != 'data-enricher'
