@@ -152,4 +152,30 @@ describe('AI enrichment', () => {
     // ...and the row is marked failed for the cron to retry.
     expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(true);
   });
+
+  test('completes classification when the embeddings endpoint is forbidden', async () => {
+    const sql = createMockSql();
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).includes('/responses')) {
+        return { ok: true, json: async () => ({ output_text: JSON.stringify(responseResult()) }) };
+      }
+      return { ok: false, status: 403, text: async () => 'endpoint permission denied' };
+    }));
+
+    const result = await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    expect(result).toMatchObject({ verdict: 'inbox' });
+    expect(sql.queries.find((query) => query.text.includes('SET embedding'))).toBeFalsy();
+    expect(sql.transactions).toHaveLength(1);
+    expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(false);
+    expect(console.log).toHaveBeenCalledWith(JSON.stringify({
+      event: 'embedding_skipped_forbidden',
+      message_id: '<id>',
+    }));
+  });
 });

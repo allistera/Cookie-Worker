@@ -5,6 +5,15 @@ export const EMBEDDING_DIMENSIONS = 1536;
 export const EMBEDDING_INPUT_CAP = 8000;
 export const EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
 
+export class EmbeddingApiError extends Error {
+  /** @param {number} status */
+  constructor(status) {
+    super(`OpenAI embeddings API responded ${status}`);
+    this.name = 'EmbeddingApiError';
+    this.status = status;
+  }
+}
+
 /**
  * @param {import('postgres').Sql} sql
  * @param {{messageId: string, subject?: string | null, bodyText?: string | null}} record
@@ -44,7 +53,7 @@ export async function createEmbedding(record, apiKey) {
     }),
   });
   if (!response.ok) {
-    throw new Error(`OpenAI embeddings API responded ${response.status}`);
+    throw new EmbeddingApiError(response.status);
   }
   const body = await response.json();
   const vector = body?.data?.[0]?.embedding;

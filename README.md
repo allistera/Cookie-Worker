@@ -130,7 +130,7 @@ Wrangler logs local forwarding instead of delivering. Posting the fixture again 
 | `FORWARD_TO` | Variable | Verified mailbox receiving the original email. |
 | `OWNER_EMAIL` | Variable | Exact Cookie-Web user email that owns stored messages. |
 | `AI_MODEL` | Variable | Structured classification model; defaults to `gpt-5.6-luna`. |
-| `OPENAI_API_KEY` | Secret | AI classification and embeddings. |
+| `OPENAI_API_KEY` | Secret | AI classification and embeddings. Restricted keys need write access to both `/v1/responses` and `/v1/embeddings`. |
 | `SENTRY_DSN` | Secret | Production error reporting. |
 | `SENTRY_ENVIRONMENT` | Variable | Sentry environment name. |
 

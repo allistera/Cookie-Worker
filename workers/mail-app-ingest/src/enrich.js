@@ -113,7 +113,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
     description: typeof label.description === 'string' ? label.description : null,
   }));
   try {
-    const { createEmbedding, EMBEDDING_MODEL } = await import('./embed.js');
+    const { createEmbedding, EmbeddingApiError, EMBEDDING_MODEL } = await import('./embed.js');
     // Classification (fragile structured output) and the embedding (cheap and
     // robust) are computed together but persisted separately: a classification
     // failure must not discard a good embedding, since embeddings are the
@@ -136,9 +136,25 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       console.log(JSON.stringify({ event: 'embedded', message_id: record.messageId }));
     }
 
-    // With the embedding safely persisted, a failure in either leg fails the
-    // row so the cron retries it — the saved embedding survives the retry.
-    if (embeddingSettled.status === 'rejected') throw embeddingSettled.reason;
+    // Transient embedding failures fail the row so the cron retries it. A 403
+    // is permanent until key permissions change, so classification can still
+    // complete and the existing Cookie-Web backfill can fill the missing vector.
+    if (embeddingSettled.status === 'rejected') {
+      if (
+        embeddingSettled.reason instanceof EmbeddingApiError
+        && embeddingSettled.reason.status === 403
+      ) {
+        // A restricted OpenAI key can allow Responses while denying embeddings.
+        // Retrying cannot repair endpoint permissions; complete classification
+        // and leave the vector null for Cookie-Web's embedding backfill.
+        console.log(JSON.stringify({
+          event: 'embedding_skipped_forbidden',
+          message_id: record.messageId,
+        }));
+      } else {
+        throw embeddingSettled.reason;
+      }
+    }
     if (classificationSettled.status === 'rejected') throw classificationSettled.reason;
 
     const classification = classificationSettled.value;
