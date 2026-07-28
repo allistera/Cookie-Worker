@@ -95,7 +95,7 @@ export async function storeEmail(sql, record, ownerEmail) {
         INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, blob_url)
         VALUES (
           ${crypto.randomUUID()}, ${messageUuid}, ${attachment.filename},
-          ${attachment.mime_type}, ${attachment.size}, ${null}
+          ${attachment.mime_type}, ${attachment.size}, ${attachment.blob_url ?? null}
         )
       `;
     }

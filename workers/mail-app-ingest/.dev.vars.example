@@ -7,3 +7,6 @@ OPENAI_API_KEY=""
 
 # Optional locally; required in production to send sanitized errors to Sentry.
 SENTRY_DSN=""
+
+# Required to retain inbound attachment bytes in Cookie-Web's private Blob store.
+BLOB_READ_WRITE_TOKEN=""

@@ -66,9 +66,11 @@ jobs:
           secrets: |
             OPENAI_API_KEY
             SENTRY_DSN
+            BLOB_READ_WRITE_TOKEN
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
 
       - name: Deploy data-enricher and synchronize its secrets
         if: inputs.worker == 'data-enricher'

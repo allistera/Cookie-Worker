@@ -6,7 +6,7 @@ This runbook covers deployment, verification, recovery, and rollback for the ema
 
 Apply the Cookie Web migrations before deploying Worker changes that depend on them. AI enrichment requires migrations `0010` and `0011`.
 
-Confirm the Cloudflare Worker has its email route, Hyperdrive binding, required variables, and the `OPENAI_API_KEY` and `SENTRY_DSN` secrets.
+Confirm the Cloudflare Worker has its email route, Hyperdrive binding, required variables, and the `OPENAI_API_KEY`, `SENTRY_DSN`, and `BLOB_READ_WRITE_TOKEN` secrets.
 
 ## Deploy
 
@@ -29,6 +29,7 @@ Send a message from an external account to the configured Cloudflare Email Routi
 
 - The message arrives at `FORWARD_TO`.
 - A row appears in `messages`, and Worker logs contain a `stored` event.
+- Attachment rows carry private Blob URLs and download successfully in Cookie Web.
 - An `ai_enriched` event is written after classification completes.
 - `message_ai.status` becomes `completed`.
 - Suggested tags appear in Cookie Web.

@@ -68,7 +68,7 @@ Transient forwarding errors are re-thrown so the sending server can retry. Perma
 
 ## Capabilities
 
-- Parses MIME bodies and attachment metadata with `postal-mime`.
+- Parses MIME bodies and uploads attachment bytes to private Vercel Blob storage.
 - Rejects parsing above 10 MiB while still forwarding the original.
 - Stores messages idempotently by user and RFC Message-ID.
 - Creates durable pending AI state inside the storage transaction.
@@ -132,6 +132,7 @@ Wrangler logs local forwarding instead of delivering. Posting the fixture again 
 | `AI_MODEL` | Variable | Structured classification model; defaults to `gpt-5.6-luna`. |
 | `OPENAI_API_KEY` | Secret | AI classification and embeddings. Restricted keys need write access to both `/v1/responses` and `/v1/embeddings`. |
 | `SENTRY_DSN` | Secret | Production error reporting. |
+| `BLOB_READ_WRITE_TOKEN` | Secret | Upload access to Cookie-Web's private attachment Blob store. |
 | `SENTRY_ENVIRONMENT` | Variable | Sentry environment name. |
 
 The database password belongs to Hyperdrive, not Worker secrets. GitHub Actions passes production secrets to Wrangler during deployment.
@@ -156,6 +157,7 @@ Required repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `OPENAI_API_KEY`
 - `SENTRY_DSN`
+- `BLOB_READ_WRITE_TOKEN`
 
 After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`.
 

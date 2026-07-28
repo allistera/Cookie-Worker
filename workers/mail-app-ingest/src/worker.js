@@ -1,5 +1,6 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
+import { uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
 import { parseEmail } from './parse.js';
 import {
@@ -15,7 +16,7 @@ export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 const worker = {
   /**
    * @param {ForwardableEmailMessage} message
-   * @param {Env & {SENTRY_DSN?: string, OPENAI_API_KEY?: string, AI_MODEL?: string}} env
+   * @param {Env & {SENTRY_DSN?: string, OPENAI_API_KEY?: string, BLOB_READ_WRITE_TOKEN?: string, AI_MODEL?: string}} env
    * @param {ExecutionContext} ctx
    */
   async email(message, env, ctx) {
@@ -39,6 +40,26 @@ const worker = {
 
     try {
       record = await parseEmail(message);
+      const uploaded = await uploadAttachments(
+        record.attachments,
+        record.messageId,
+        env.BLOB_READ_WRITE_TOKEN,
+      );
+      record.attachments = uploaded.attachments;
+      for (const failure of uploaded.failures) {
+        console.log(JSON.stringify({
+          event: 'attachment_upload_failed',
+          index: failure.index,
+          message_id: record.messageId,
+          error: redact(failure.error, env.BLOB_READ_WRITE_TOKEN),
+        }));
+        captureHandledException(
+          'attachment_upload',
+          failure.error,
+          [env.BLOB_READ_WRITE_TOKEN],
+          { message_id: record.messageId, attachment_index: failure.index },
+        );
+      }
       sql = createSql(env.HYPERDRIVE.connectionString);
       storePromise = storeEmail(sql, record, env.OWNER_EMAIL);
       storeResult = await withTimeout(storePromise, STORE_BUDGET_MS);

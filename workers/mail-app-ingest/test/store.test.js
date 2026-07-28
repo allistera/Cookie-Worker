@@ -87,12 +87,21 @@ describe('storeEmail', () => {
     await expect(storeEmail(sql, record(), 'missing@example.com')).rejects.toThrow('no users row matches');
   });
 
-  test('inserts attachments with null blob_url', async () => {
+  test('persists an uploaded attachment blob URL', async () => {
     const sql = createMockSql();
-    await storeEmail(sql, record({ attachments: [{ filename: null, mime_type: 'text/plain', size: 3 }] }), 'owner@example.com');
+    await storeEmail(sql, record({
+      attachments: [{
+        filename: null,
+        mime_type: 'text/plain',
+        size: 3,
+        blob_url: 'https://store.private.blob.vercel-storage.com/mail-attachments/hash/0',
+      }],
+    }), 'owner@example.com');
     const attachmentStatement = sql.transactions[0].find((statement) => statement.text.includes('INSERT INTO attachments'));
     expect(attachmentStatement.text).toContain('blob_url');
-    expect(attachmentStatement.values).toContain(null);
+    expect(attachmentStatement.values).toContain(
+      'https://store.private.blob.vercel-storage.com/mail-attachments/hash/0',
+    );
   });
 
   test('propagates transaction failures', async () => {

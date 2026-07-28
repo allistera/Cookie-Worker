@@ -90,7 +90,7 @@ Content-Type: text/html; charset=utf-8
     expect(new TextEncoder().encode(capped.value).byteLength).toBeLessThanOrEqual(512 * 1024);
   });
 
-  test('records attachment metadata only and permits null filenames', async () => {
+  test('retains attachment bytes and permits null filenames', async () => {
     const record = await parseEmail(fakeMessage(`From: a@example.com
 To: b@example.com
 Subject: Attachment
@@ -110,6 +110,7 @@ aGVsbG8=
 --x--`));
     expect(record.attachments[0]).toMatchObject({ filename: null, mime_type: 'image/png' });
     expect(record.attachments[0].size).toBeGreaterThan(0);
+    expect(new TextDecoder().decode(record.attachments[0].content)).toBe('hello');
   });
 
   test('strips NUL values', async () => {

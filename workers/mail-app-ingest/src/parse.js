@@ -235,10 +235,12 @@ function makeSnippet(value) {
 function normalizeAttachments(attachments) {
   return attachments.slice(0, MAX_ATTACHMENTS_META).map((attachment) => {
     const item = /** @type {{filename?: unknown, mimeType?: unknown, contentType?: unknown, content?: unknown}} */ (attachment);
+    const content = attachmentContent(item.content);
     return {
       filename: item.filename === null || item.filename === undefined ? null : stripNul(item.filename),
       mime_type: stripNul(item.mimeType ?? item.contentType ?? ''),
-      size: attachmentSize(item.content),
+      size: content.byteLength,
+      content,
     };
   });
 }
@@ -246,14 +248,23 @@ function normalizeAttachments(attachments) {
 /**
  * @param {unknown} content
  */
-function attachmentSize(content) {
-  if (typeof content === 'string') return encoder.encode(content).byteLength;
-  if (content instanceof ArrayBuffer) return content.byteLength;
-  if (ArrayBuffer.isView(content)) return content.byteLength;
-  if (content && typeof content === 'object' && 'byteLength' in content) {
-    return Number(content.byteLength) || 0;
+function attachmentContent(content) {
+  if (typeof content === 'string') return copyBytes(encoder.encode(content));
+  if (content instanceof ArrayBuffer) return content;
+  if (ArrayBuffer.isView(content)) {
+    return copyBytes(new Uint8Array(content.buffer, content.byteOffset, content.byteLength));
   }
-  return 0;
+  return new ArrayBuffer(0);
+}
+
+/**
+ * @param {Uint8Array} bytes
+ * @returns {ArrayBuffer}
+ */
+function copyBytes(bytes) {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
 }
 
 /**
