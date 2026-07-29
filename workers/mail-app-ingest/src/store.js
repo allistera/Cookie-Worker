@@ -1,3 +1,5 @@
+import { applyLabelRules } from './rules.js';
+
 /**
  * @param {import('postgres').Sql} sql
  * @param {any} record
@@ -89,6 +91,10 @@ export async function storeEmail(sql, record, ownerEmail) {
       VALUES (${messageUuid}, 'pending', 'openai', 'email-enrichment-v1')
       ON CONFLICT (message_id) DO NOTHING
     `;
+
+    // Deterministic, so it runs synchronously in the storage transaction
+    // rather than the best-effort waitUntil path AI enrichment takes.
+    await applyLabelRules(tx, userId, messageUuid, record);
 
     for (const attachment of record.attachments) {
       await tx`

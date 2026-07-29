@@ -17,7 +17,7 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[]}} [options]
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[]}} [options]
  * @returns {any}
  */
 export function createMockSql(options = {}) {
@@ -43,6 +43,9 @@ export function createMockSql(options = {}) {
     if (query.text.includes('INSERT INTO messages') && query.text.includes('RETURNING')) {
       return Promise.resolve(options.messageInsertReturns ?? [{ id: 'message-1' }]);
     }
+    if (query.text.includes('FROM label_rules')) {
+      return Promise.resolve(options.ruleRows ?? []);
+    }
     return Promise.resolve([]);
   };
 
@@ -55,8 +58,7 @@ export function createMockSql(options = {}) {
     /** @type {{text: string, values: unknown[]}[]} */
     const batch = [];
     transactions.push(batch);
-    await callback(tagged(batch));
-    return [];
+    return callback(tagged(batch));
   };
   sql.end = vi.fn(async () => undefined);
   sql.queries = queries;

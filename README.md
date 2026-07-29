@@ -58,7 +58,7 @@ Forwarding is the primary outcome. Storage, AI, embedding, and monitoring failur
 ```text
 Cloudflare Email Routing
   -> parse MIME
-  -> store idempotently through Hyperdrive
+  -> store idempotently through Hyperdrive (+ apply matching tag rules)
   -> forward original email
   -> close ingest database client
   -> waitUntil(AI classification + embedding on a fresh client)
@@ -72,6 +72,7 @@ Transient forwarding errors are re-thrown so the sending server can retry. Perma
 - Rejects parsing above 10 MiB while still forwarding the original.
 - Stores messages idempotently by user and RFC Message-ID.
 - Creates durable pending AI state inside the storage transaction.
+- Applies user-defined tag rules (subject/body/from/to conditions) synchronously inside the storage transaction, before AI enrichment runs.
 - Auto-tags enabled user labels from a strict structured response.
 - Moves only spam scored at least `0.98` into the Spam folder.
 - Creates `text-embedding-3-small` vectors for semantic search.

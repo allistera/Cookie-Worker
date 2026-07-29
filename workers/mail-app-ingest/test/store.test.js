@@ -30,13 +30,27 @@ describe('storeEmail', () => {
     const result = await storeEmail(sql, record(), 'owner@example.com');
     expect(result.outcome).toBe('inserted');
     expect(result.messageUuid).toEqual(expect.any(String));
-    expect(sql.transactions[0]).toHaveLength(3);
+    expect(sql.transactions[0]).toHaveLength(4);
     expect(sql.transactions[0][0].text).toContain('INSERT INTO threads');
     expect(sql.transactions[0][0].text).toContain('message_count');
     expect(sql.transactions[0][0].values).toContain(1);
     expect(sql.transactions[0][1].text).toContain('INSERT INTO messages');
     expect(sql.transactions[0][1].text).toContain('RETURNING');
     expect(sql.transactions[0][2].text).toContain('INSERT INTO message_ai');
+    expect(sql.transactions[0][3].text).toContain('FROM label_rules');
+  });
+
+  test('applies a matching tag rule in the same transaction as the insert', async () => {
+    const sql = createMockSql({
+      ruleRows: [
+        { rule_id: 'rule-1', label_id: 'label-1', match_type: 'all', field: 'subject', operator: 'contains', value: 'subject' },
+      ],
+    });
+    const result = await storeEmail(sql, record(), 'owner@example.com');
+
+    expect(result.outcome).toBe('inserted');
+    const ruleInsert = sql.transactions[0].find((q) => q.text.includes('INSERT INTO message_labels'));
+    expect(ruleInsert.values).toEqual([result.messageUuid, 'label-1', 'rule-1']);
   });
 
   test('returns duplicate without writing', async () => {
@@ -51,10 +65,11 @@ describe('storeEmail', () => {
   test('reuses referenced thread and bumps counters', async () => {
     const sql = createMockSql({ lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }] });
     await storeEmail(sql, record({ references: ['<parent@example.com>'] }), 'owner@example.com');
-    expect(sql.transactions[0]).toHaveLength(3);
+    expect(sql.transactions[0]).toHaveLength(4);
     expect(sql.transactions[0][0].text).toContain('INSERT INTO messages');
     expect(sql.transactions[0][1].text).toContain('INSERT INTO message_ai');
-    expect(sql.transactions[0][2].text).toContain('UPDATE threads');
+    expect(sql.transactions[0][2].text).toContain('FROM label_rules');
+    expect(sql.transactions[0][3].text).toContain('UPDATE threads');
   });
 
   test('returns duplicate when concurrent insert wins (RETURNING empty)', async () => {
