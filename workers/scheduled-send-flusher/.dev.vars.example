@@ -1,0 +1,7 @@
+# Bearer secret this Worker sends to Cookie-Web's POST /api/send?resource=flush.
+# Must match Cookie-Web's SCHEDULED_SEND_FLUSH_TOKEN env var.
+COOKIE_WEB_FLUSH_TOKEN=""
+
+# Bearer secret required to POST /run on this Worker's own workers.dev URL for
+# manual/ops testing; the deployed Worker gets it from GitHub secrets.
+HTTP_TRIGGER_TOKEN=""

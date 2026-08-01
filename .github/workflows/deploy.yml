@@ -89,8 +89,26 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HTTP_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
 
+      - name: Deploy scheduled-send-flusher and synchronize its secrets
+        if: inputs.worker == 'scheduled-send-flusher'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/scheduled-send-flusher
+          command: deploy
+          secrets: |
+            COOKIE_WEB_FLUSH_TOKEN
+            HTTP_TRIGGER_TOKEN
+        env:
+          COOKIE_WEB_FLUSH_TOKEN: ${{ secrets.COOKIE_WEB_FLUSH_TOKEN }}
+          HTTP_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
+
       - name: Deploy selected Worker
-        if: inputs.worker != 'mail-app-ingest' && inputs.worker != 'data-enricher'
+        if: >-
+          inputs.worker != 'mail-app-ingest' &&
+          inputs.worker != 'data-enricher' &&
+          inputs.worker != 'scheduled-send-flusher'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

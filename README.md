@@ -8,6 +8,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | --- | --- | --- |
 | [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
 | [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily) | Stores Todoist tasks due today and AI task analyses of important emails. |
+| [`scheduled-send-flusher`](workers/scheduled-send-flusher) | Scheduled (every 5 minutes) | Calls Cookie-Web's `POST /api/send?resource=flush` so "Send Later" mail actually goes out once due; owns no mail-sending logic itself. |
 
 ## Repository structure
 
@@ -150,7 +151,7 @@ npm run dry-run -- --all
 
 ## Deployment
 
-Production deployment is intentionally manual through the GitHub Actions `Deploy` workflow. Select the Worker directory name when dispatching it. The workflow validates the entire repository, dry-runs the selected Worker again, and publishes only that Worker. `mail-app-ingest` synchronizes its two existing GitHub secrets during deployment; other Workers manage their own Cloudflare secrets before their first deploy, so mail credentials are never passed to them.
+Production deployment is intentionally manual through the GitHub Actions `Deploy` workflow. Select the Worker directory name when dispatching it. The workflow validates the entire repository, dry-runs the selected Worker again, and publishes only that Worker. `mail-app-ingest`, `data-enricher`, and `scheduled-send-flusher` each synchronize their own GitHub secrets during deployment (scoped per Worker in `deploy.yml`), so no Worker receives another Worker's credentials.
 
 Required repository secrets:
 
@@ -159,6 +160,9 @@ Required repository secrets:
 - `OPENAI_API_KEY`
 - `SENTRY_DSN`
 - `BLOB_READ_WRITE_TOKEN`
+- `TODOIST_API_TOKEN`
+- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints.
+- `COOKIE_WEB_FLUSH_TOKEN` — bearer secret `scheduled-send-flusher` sends to Cookie-Web; must match Cookie-Web's `SCHEDULED_SEND_FLUSH_TOKEN` env var.
 
 After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`.
 

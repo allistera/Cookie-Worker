@@ -1,0 +1,21 @@
+{
+  "name": "scheduled-send-flusher",
+  "main": "src/index.js",
+  // The HTTP trigger (POST /run) is served from the workers.dev URL.
+  "workers_dev": true,
+  "compatibility_date": "2026-07-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    // Cron Triggers run on UTC. Every 5 minutes bounds how late a "Send
+    // Later" email can go out past its scheduled time.
+    "crons": ["*/5 * * * *"]
+  },
+  "vars": {
+    // TODO: replace with Cookie-Web's real production URL before first deploy.
+    "COOKIE_WEB_FLUSH_URL": "https://cookie-web.vercel.app/api/send?resource=flush"
+  }
+}
