@@ -1,3 +1,5 @@
+import { DIGEST_KIND, DIGEST_PROMPT_VERSION } from './digest.js';
+
 /**
  * @typedef {{
  *   source: 'todoist' | 'email',
@@ -82,4 +84,34 @@ export async function storeSummary(sql, userId, record) {
       model = EXCLUDED.model,
       raw = EXCLUDED.raw
   `;
+}
+
+/**
+ * Replace the stored daily digest. Digest rows carry no message_id, so the
+ * partial unique index on summaries does not apply to them and each run would
+ * otherwise append. Insert first and prune afterwards: a failed insert leaves
+ * yesterday's digest readable, and a failed prune only leaves a superseded row
+ * that the newest-first read ignores.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{overview: string, topics: unknown[]}} digest
+ * @param {string | null} [model]
+ * @returns {Promise<string>}
+ */
+export async function storeDigest(sql, userId, digest, model) {
+  const raw = JSON.stringify({ topics: digest.topics, prompt_version: DIGEST_PROMPT_VERSION });
+  const [row] = await sql`
+    INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
+    VALUES (${userId}, NULL, ${DIGEST_KIND}, ${digest.overview}, ${model ?? null}, ${raw})
+    RETURNING id
+  `;
+  await sql`
+    DELETE FROM summaries
+    WHERE user_id = ${userId}
+      AND kind = ${DIGEST_KIND}
+      AND message_id IS NULL
+      AND id <> ${row.id}
+  `;
+  return row.id;
 }

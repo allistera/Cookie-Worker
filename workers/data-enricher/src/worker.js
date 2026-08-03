@@ -2,7 +2,8 @@ import postgres from 'postgres';
 import { connectMcp } from './mcp.js';
 import { gatherTodoistTasks } from './todoist.js';
 import { analyzeEmail, fetchImportantMessages } from './analyze.js';
-import { lookupUserId, storeSummary, storeTasks } from './store.js';
+import { buildDigest, fetchDigestMessages } from './digest.js';
+import { lookupUserId, storeDigest, storeSummary, storeTasks } from './store.js';
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
@@ -74,6 +75,30 @@ async function analyzeImportantEmails(sql, env, userId) {
 }
 
 /**
+ * Cluster the unread inbox into the topics AI Today lists. Stored whole, so a
+ * day with no unread mail replaces the digest with an empty one rather than
+ * leaving stale topics on the dashboard.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+ * @param {string} userId
+ */
+async function buildDailyDigest(sql, env, userId) {
+  const apiKey = env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+  const messages = await fetchDigestMessages(sql, userId);
+  const digest = messages.length
+    ? await buildDigest(messages, apiKey, env.AI_MODEL)
+    : { overview: '', topics: [] };
+  await storeDigest(sql, userId, digest, env.AI_MODEL);
+  console.log(JSON.stringify({
+    event: 'digest_built',
+    messages: messages.length,
+    topics: digest.topics.length,
+  }));
+}
+
+/**
  * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
  */
 export async function runEnrichment(env) {
@@ -82,8 +107,8 @@ export async function runEnrichment(env) {
   const failures = [];
   try {
     const userId = await lookupUserId(sql, env.OWNER_EMAIL);
-    // The two phases are independent; one failing must not starve the other.
-    for (const phase of [gatherTodoist, analyzeImportantEmails]) {
+    // The phases are independent; one failing must not starve the others.
+    for (const phase of [gatherTodoist, analyzeImportantEmails, buildDailyDigest]) {
       try {
         await phase(sql, env, userId);
       } catch (error) {
