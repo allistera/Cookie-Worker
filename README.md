@@ -7,7 +7,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | Worker | Triggers | Purpose |
 | --- | --- | --- |
 | [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
-| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily) | Stores Todoist tasks due today and AI task analyses of important emails. |
+| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily), manual | Stores Todoist tasks due today, AI task analyses of important emails, and a daily digest grouping unread mail into topics. Feeds Cookie-Web's AI Today page. |
 | [`scheduled-send-flusher`](workers/scheduled-send-flusher) | Scheduled (every 5 minutes) | Calls Cookie-Web's `POST /api/send?resource=flush` so "Send Later" mail actually goes out once due; owns no mail-sending logic itself. |
 
 ## Repository structure
@@ -161,7 +161,7 @@ Required repository secrets:
 - `SENTRY_DSN`
 - `BLOB_READ_WRITE_TOKEN`
 - `TODOIST_API_TOKEN`
-- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints.
+- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=digest`, which rebuilds only the daily digest; Cookie-Web's AI Today refresh calls it through `POST /api/tasks?resource=refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
 - `COOKIE_WEB_FLUSH_TOKEN` — bearer secret `scheduled-send-flusher` sends to Cookie-Web; must match Cookie-Web's `SCHEDULED_SEND_FLUSH_TOKEN` env var.
 
 After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`.

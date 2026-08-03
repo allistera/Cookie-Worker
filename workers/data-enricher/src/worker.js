@@ -100,15 +100,16 @@ async function buildDailyDigest(sql, env, userId) {
 
 /**
  * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+ * @param {Array<(sql: import('postgres').Sql, env: any, userId: string) => Promise<void>>} phases
  */
-export async function runEnrichment(env) {
+async function runPhases(env, phases) {
   const sql = createSql(env.HYPERDRIVE.connectionString);
   /** @type {Error[]} */
   const failures = [];
   try {
     const userId = await lookupUserId(sql, env.OWNER_EMAIL);
     // The phases are independent; one failing must not starve the others.
-    for (const phase of [gatherTodoist, analyzeImportantEmails, buildDailyDigest]) {
+    for (const phase of phases) {
       try {
         await phase(sql, env, userId);
       } catch (error) {
@@ -124,6 +125,27 @@ export async function runEnrichment(env) {
   }
 }
 
+/**
+ * The nightly run: everything.
+ *
+ * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+ */
+export async function runEnrichment(env) {
+  return runPhases(env, [gatherTodoist, analyzeImportantEmails, buildDailyDigest]);
+}
+
+/**
+ * Just the digest, for AI Today's refresh control. Kept separate from the full
+ * run because that one also re-gathers Todoist and analyses up to ten emails
+ * one at a time — far too slow and too expensive to sit behind a button. The
+ * digest is a single model call, so it can be awaited by the caller.
+ *
+ * @param {Env & {OPENAI_API_KEY?: string}} env
+ */
+export async function runDigestOnly(env) {
+  return runPhases(env, [buildDailyDigest]);
+}
+
 export default {
   /**
    * @param {ScheduledController} _controller
@@ -136,6 +158,9 @@ export default {
 
   /**
    * Manual trigger: POST /run with `Authorization: Bearer <HTTP_TRIGGER_TOKEN>`.
+   * `?phase=digest` rebuilds only the daily digest, which is what Cookie-Web's
+   * AI Today refresh calls; no phase runs everything, as the cron does.
+   *
    * @param {Request} request
    * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string, HTTP_TRIGGER_TOKEN?: string}} env
    * @param {ExecutionContext} _ctx
@@ -153,12 +178,16 @@ export default {
       || request.headers.get('Authorization') !== `Bearer ${env.HTTP_TRIGGER_TOKEN}`) {
       return new Response('Unauthorized', { status: 401 });
     }
+    const phase = url.searchParams.get('phase');
+    if (phase !== null && phase !== 'digest') {
+      return Response.json({ status: 'failed', error: 'unknown phase' }, { status: 400 });
+    }
     try {
-      await runEnrichment(env);
-      return Response.json({ status: 'ok' });
+      await (phase === 'digest' ? runDigestOnly(env) : runEnrichment(env));
+      return Response.json({ status: 'ok', phase: phase ?? 'all' });
     } catch (error) {
       // Body stays generic: nested errors may carry connection details.
-      console.log(JSON.stringify({ event: 'http_run_failed', error: String(error) }));
+      console.log(JSON.stringify({ event: 'http_run_failed', phase: phase ?? 'all', error: String(error) }));
       return Response.json({ status: 'failed' }, { status: 500 });
     }
   },
