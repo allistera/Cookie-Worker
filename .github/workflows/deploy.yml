@@ -80,18 +80,18 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers/data-enricher
           command: deploy
+          # Only required secrets are synced here: wrangler-action fails the
+          # whole deploy if any listed secret has no value. The news round-up's
+          # optional PRODUCT_HUNT_TOKEN and GITHUB_API_TOKEN are set once with
+          # `wrangler secret put` and survive later deploys untouched.
           secrets: |
             TODOIST_API_TOKEN
             OPENAI_API_KEY
             HTTP_TRIGGER_TOKEN
-            PRODUCT_HUNT_TOKEN
-            GITHUB_API_TOKEN
         env:
           TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HTTP_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
-          PRODUCT_HUNT_TOKEN: ${{ secrets.PRODUCT_HUNT_TOKEN }}
-          GITHUB_API_TOKEN: ${{ secrets.GITHUB_API_TOKEN }}
 
       - name: Deploy scheduled-send-flusher and synchronize its secrets
         if: inputs.worker == 'scheduled-send-flusher'

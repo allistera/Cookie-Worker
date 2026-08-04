@@ -162,8 +162,15 @@ Required repository secrets:
 - `BLOB_READ_WRITE_TOKEN`
 - `TODOIST_API_TOKEN`
 - `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=today` (rebuild both AI Today cards) and `?phase=digest` (the mail digest alone); Cookie-Web's AI Today refresh calls the former through `POST /api/tasks?resource=refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
-- `PRODUCT_HUNT_TOKEN` — optional, for `data-enricher`'s news round-up. Without it the Product Hunt section is skipped and the rest still runs. Same token as the `allistera/daily-news` project uses.
-- `GITHUB_API_TOKEN` — optional, for `data-enricher`'s news round-up. Only raises the GitHub search rate limit; the search works unauthenticated, and one request a day is well inside it. Not named `GITHUB_TOKEN` because Actions reserves that prefix for its own token, so a repository secret cannot use it.
+`data-enricher`'s news round-up takes two further, optional secrets. These are **not** synced by the `Deploy` workflow — `wrangler-action` fails the entire deploy when a listed secret has no value, and these may legitimately be unset. Set them once from `workers/data-enricher`; Cloudflare keeps them across later deploys:
+
+```sh
+npx wrangler secret put PRODUCT_HUNT_TOKEN
+npx wrangler secret put GITHUB_API_TOKEN
+```
+
+- `PRODUCT_HUNT_TOKEN` — without it the Product Hunt section is skipped and the rest of the round-up still runs. Same token the `allistera/daily-news` project uses.
+- `GITHUB_API_TOKEN` — only raises the GitHub search rate limit; the search works unauthenticated, and one request a day is well inside it. Not named `GITHUB_TOKEN` because Actions reserves that prefix for its own token, so a repository secret cannot use that name.
 - `COOKIE_WEB_FLUSH_TOKEN` — bearer secret `scheduled-send-flusher` sends to Cookie-Web; must match Cookie-Web's `SCHEDULED_SEND_FLUSH_TOKEN` env var.
 
 After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`.
