@@ -7,7 +7,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | Worker | Triggers | Purpose |
 | --- | --- | --- |
 | [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
-| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily), manual | Stores Todoist tasks due today, AI task analyses of important emails, and a daily digest grouping unread mail into topics. Feeds Cookie-Web's AI Today page. |
+| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily), manual | Stores Todoist tasks due today, AI task analyses of important emails, a daily digest grouping unread mail into topics, and a personalised news round-up (GitHub, Product Hunt, BBC UK). Feeds Cookie-Web's AI Today page. |
 | [`scheduled-send-flusher`](workers/scheduled-send-flusher) | Scheduled (every 5 minutes) | Calls Cookie-Web's `POST /api/send?resource=flush` so "Send Later" mail actually goes out once due; owns no mail-sending logic itself. |
 
 ## Repository structure
@@ -161,7 +161,9 @@ Required repository secrets:
 - `SENTRY_DSN`
 - `BLOB_READ_WRITE_TOKEN`
 - `TODOIST_API_TOKEN`
-- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=digest`, which rebuilds only the daily digest; Cookie-Web's AI Today refresh calls it through `POST /api/tasks?resource=refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
+- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=today` (rebuild both AI Today cards) and `?phase=digest` (the mail digest alone); Cookie-Web's AI Today refresh calls the former through `POST /api/tasks?resource=refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
+- `PRODUCT_HUNT_TOKEN` — optional, for `data-enricher`'s news round-up. Without it the Product Hunt section is skipped and the rest still runs. Same token as the `allistera/daily-news` project uses.
+- `GITHUB_API_TOKEN` — optional, for `data-enricher`'s news round-up. Only raises the GitHub search rate limit; the search works unauthenticated, and one request a day is well inside it. Not named `GITHUB_TOKEN` because Actions reserves that prefix for its own token, so a repository secret cannot use it.
 - `COOKIE_WEB_FLUSH_TOKEN` — bearer secret `scheduled-send-flusher` sends to Cookie-Web; must match Cookie-Web's `SCHEDULED_SEND_FLUSH_TOKEN` env var.
 
 After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`.

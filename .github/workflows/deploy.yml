@@ -84,10 +84,14 @@ jobs:
             TODOIST_API_TOKEN
             OPENAI_API_KEY
             HTTP_TRIGGER_TOKEN
+            PRODUCT_HUNT_TOKEN
+            GITHUB_API_TOKEN
         env:
           TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HTTP_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
+          PRODUCT_HUNT_TOKEN: ${{ secrets.PRODUCT_HUNT_TOKEN }}
+          GITHUB_API_TOKEN: ${{ secrets.GITHUB_API_TOKEN }}
 
       - name: Deploy scheduled-send-flusher and synchronize its secrets
         if: inputs.worker == 'scheduled-send-flusher'

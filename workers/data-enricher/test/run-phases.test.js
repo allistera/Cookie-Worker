@@ -25,18 +25,26 @@ vi.mock('../src/digest.js', () => ({
   DIGEST_KIND: 'daily_digest',
   DIGEST_PROMPT_VERSION: 'daily-digest-v1',
 }));
+vi.mock('../src/news.js', () => ({
+  buildNews: vi.fn(async () => ({ sections: [] })),
+  NEWS_KIND: 'daily_news',
+  NEWS_PROMPT_VERSION: 'daily-news-v1',
+}));
 vi.mock('../src/store.js', () => ({
   lookupUserId: vi.fn(async () => 'user-1'),
   storeTasks: vi.fn(async () => 0),
   storeSummary: vi.fn(async () => undefined),
   storeDigest: vi.fn(async () => 'digest-1'),
+  storeNews: vi.fn(async () => 'news-1'),
+  fetchInterests: vi.fn(async () => []),
 }));
 
 import worker from '../src/worker.js';
 import { gatherTodoistTasks } from '../src/todoist.js';
 import { fetchImportantMessages } from '../src/analyze.js';
 import { buildDigest } from '../src/digest.js';
-import { storeDigest } from '../src/store.js';
+import { buildNews } from '../src/news.js';
+import { storeDigest, storeNews } from '../src/store.js';
 
 const TOKEN = 'test-trigger-token';
 const env = /** @type {any} */ ({
@@ -73,6 +81,7 @@ describe('POST /run phase routing', () => {
     expect(gatherTodoistTasks).toHaveBeenCalled();
     expect(fetchImportantMessages).toHaveBeenCalled();
     expect(storeDigest).toHaveBeenCalled();
+    expect(storeNews).toHaveBeenCalled();
   });
 
   // The refresh button must not re-gather Todoist or re-analyse ten emails.
@@ -83,6 +92,19 @@ describe('POST /run phase routing', () => {
     await expect(response.json()).resolves.toEqual({ status: 'ok', phase: 'digest' });
     expect(buildDigest).toHaveBeenCalled();
     expect(storeDigest).toHaveBeenCalled();
+    expect(buildNews).not.toHaveBeenCalled();
+    expect(gatherTodoistTasks).not.toHaveBeenCalled();
+    expect(fetchImportantMessages).not.toHaveBeenCalled();
+  });
+
+  // AI Today's refresh rebuilds both of its cards in one trigger.
+  test('runs the digest and the news for ?phase=today', async () => {
+    const response = await run('?phase=today');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: 'ok', phase: 'today' });
+    expect(storeDigest).toHaveBeenCalled();
+    expect(storeNews).toHaveBeenCalled();
     expect(gatherTodoistTasks).not.toHaveBeenCalled();
     expect(fetchImportantMessages).not.toHaveBeenCalled();
   });

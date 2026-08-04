@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { lookupUserId, storeDigest, storeTasks, storeSummary } from '../src/store.js';
+import { fetchInterests, lookupUserId, storeDigest, storeNews, storeTasks, storeSummary } from '../src/store.js';
 
 function mockSql(rows = []) {
   const calls = [];
@@ -96,5 +96,41 @@ describe('storeDigest', () => {
     await storeDigest(sql, 'user-1', { overview: '', topics: [] }, null);
     expect(sql.calls[0].values).toContain('');
     expect(sql.calls).toHaveLength(2);
+  });
+});
+
+describe('fetchInterests', () => {
+  test('reads the interests key out of prefs', async () => {
+    const sql = mockSql([{ interests: ['Rust', 'Postgres'] }]);
+    await expect(fetchInterests(sql, 'user-1')).resolves.toEqual(['Rust', 'Postgres']);
+    expect(sql.calls[0].text).toContain("prefs -> 'interests'");
+    expect(sql.calls[0].values).toContain('user-1');
+  });
+
+  // Absent or malformed prefs mean "do not personalise", never a crash.
+  test('falls back to an empty list', async () => {
+    await expect(fetchInterests(mockSql([]), 'user-1')).resolves.toEqual([]);
+    await expect(fetchInterests(mockSql([{ interests: null }]), 'user-1')).resolves.toEqual([]);
+    await expect(fetchInterests(mockSql([{ interests: 'Rust' }]), 'user-1')).resolves.toEqual([]);
+  });
+
+  test('drops non-string entries', async () => {
+    const sql = mockSql([{ interests: ['Rust', 42, null] }]);
+    await expect(fetchInterests(sql, 'user-1')).resolves.toEqual(['Rust']);
+  });
+});
+
+describe('storeNews', () => {
+  test('inserts the new news before pruning superseded ones', async () => {
+    const sql = mockSql([{ id: 'news-2' }]);
+    const news = { sections: [{ emoji: '💻', title: 'GitHub', items: [] }] };
+
+    await expect(storeNews(sql, 'user-1', news, 'gpt-5.6-luna')).resolves.toBe('news-2');
+
+    expect(sql.calls[0].text).toContain('INSERT INTO summaries');
+    expect(sql.calls[0].values).toEqual(expect.arrayContaining(['user-1', 'daily_news']));
+    expect(sql.calls[0].values.some((v) => String(v).includes('daily-news-v1'))).toBe(true);
+    expect(sql.calls[1].text).toContain('DELETE FROM summaries');
+    expect(sql.calls[1].values).toEqual(expect.arrayContaining(['user-1', 'daily_news', 'news-2']));
   });
 });

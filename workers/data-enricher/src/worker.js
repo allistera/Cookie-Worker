@@ -3,7 +3,15 @@ import { connectMcp } from './mcp.js';
 import { gatherTodoistTasks } from './todoist.js';
 import { analyzeEmail, fetchImportantMessages } from './analyze.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
-import { lookupUserId, storeDigest, storeSummary, storeTasks } from './store.js';
+import { buildNews } from './news.js';
+import {
+  fetchInterests,
+  lookupUserId,
+  storeDigest,
+  storeNews,
+  storeSummary,
+  storeTasks,
+} from './store.js';
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
@@ -99,6 +107,39 @@ async function buildDailyDigest(sql, env, userId) {
 }
 
 /**
+ * The day's personalised news for AI Today: GitHub and Product Hunt ranked
+ * against the reader's stored interests, plus straight UK headlines. Stored
+ * whole, so a day where every source fails replaces it with an empty set
+ * rather than leaving yesterday's news looking current.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {Env & {OPENAI_API_KEY?: string, GITHUB_API_TOKEN?: string, PRODUCT_HUNT_TOKEN?: string}} env
+ * @param {string} userId
+ */
+async function buildDailyNews(sql, env, userId) {
+  const apiKey = env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+  const interests = await fetchInterests(sql, userId);
+  const news = await buildNews({
+    interests,
+    apiKey,
+    model: env.AI_MODEL,
+    // Not GITHUB_TOKEN: Actions reserves secret names with that prefix, so it
+    // could never be synced as a Worker secret. Optional either way — it only
+    // raises the search rate limit, and we make one request a day.
+    githubToken: env.GITHUB_API_TOKEN,
+    productHuntToken: env.PRODUCT_HUNT_TOKEN,
+  });
+  await storeNews(sql, userId, news, env.AI_MODEL);
+  console.log(JSON.stringify({
+    event: 'news_built',
+    interests: interests.length,
+    sections: news.sections.length,
+    items: news.sections.reduce((total, section) => total + section.items.length, 0),
+  }));
+}
+
+/**
  * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
  * @param {Array<(sql: import('postgres').Sql, env: any, userId: string) => Promise<void>>} phases
  */
@@ -131,19 +172,29 @@ async function runPhases(env, phases) {
  * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
  */
 export async function runEnrichment(env) {
-  return runPhases(env, [gatherTodoist, analyzeImportantEmails, buildDailyDigest]);
+  return runPhases(env, [gatherTodoist, analyzeImportantEmails, buildDailyDigest, buildDailyNews]);
 }
 
 /**
- * Just the digest, for AI Today's refresh control. Kept separate from the full
- * run because that one also re-gathers Todoist and analyses up to ten emails
- * one at a time — far too slow and too expensive to sit behind a button. The
- * digest is a single model call, so it can be awaited by the caller.
+ * Just the digest. Kept separate from the full run because that one also
+ * re-gathers Todoist and analyses up to ten emails one at a time — far too
+ * slow and too expensive to sit behind a button.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runDigestOnly(env) {
   return runPhases(env, [buildDailyDigest]);
+}
+
+/**
+ * Both of AI Today's cards, for its refresh control: the mail digest and the
+ * news. A handful of model calls rather than the nightly run's dozen, so the
+ * caller can await it.
+ *
+ * @param {Env & {OPENAI_API_KEY?: string}} env
+ */
+export async function runTodayRefresh(env) {
+  return runPhases(env, [buildDailyDigest, buildDailyNews]);
 }
 
 export default {
@@ -158,8 +209,9 @@ export default {
 
   /**
    * Manual trigger: POST /run with `Authorization: Bearer <HTTP_TRIGGER_TOKEN>`.
-   * `?phase=digest` rebuilds only the daily digest, which is what Cookie-Web's
-   * AI Today refresh calls; no phase runs everything, as the cron does.
+   * `?phase=today` rebuilds both AI Today cards, which is what Cookie-Web's
+   * refresh control calls; `?phase=digest` rebuilds only the mail digest; no
+   * phase runs everything, as the cron does.
    *
    * @param {Request} request
    * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string, HTTP_TRIGGER_TOKEN?: string}} env
@@ -179,11 +231,12 @@ export default {
       return new Response('Unauthorized', { status: 401 });
     }
     const phase = url.searchParams.get('phase');
-    if (phase !== null && phase !== 'digest') {
+    const runners = { digest: runDigestOnly, today: runTodayRefresh };
+    if (phase !== null && !Object.hasOwn(runners, phase)) {
       return Response.json({ status: 'failed', error: 'unknown phase' }, { status: 400 });
     }
     try {
-      await (phase === 'digest' ? runDigestOnly(env) : runEnrichment(env));
+      await (phase === null ? runEnrichment(env) : runners[phase](env));
       return Response.json({ status: 'ok', phase: phase ?? 'all' });
     } catch (error) {
       // Body stays generic: nested errors may carry connection details.

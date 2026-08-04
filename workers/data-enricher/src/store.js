@@ -1,4 +1,5 @@
 import { DIGEST_KIND, DIGEST_PROMPT_VERSION } from './digest.js';
+import { NEWS_KIND, NEWS_PROMPT_VERSION } from './news.js';
 
 /**
  * @typedef {{
@@ -99,6 +100,51 @@ export async function storeSummary(sql, userId, record) {
  * @param {string | null} [model]
  * @returns {Promise<string>}
  */
+/**
+ * The reader's personalisation topics from users.prefs, written by Cookie-Web's
+ * settings pane. Absent or malformed prefs mean "do not personalise".
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @returns {Promise<string[]>}
+ */
+export async function fetchInterests(sql, userId) {
+  const rows = await sql`
+    SELECT coalesce(prefs -> 'interests', '[]'::jsonb) AS interests
+    FROM users
+    WHERE id = ${userId}
+  `;
+  const interests = rows[0]?.interests;
+  return Array.isArray(interests) ? interests.filter((i) => typeof i === 'string') : [];
+}
+
+/**
+ * Replace the stored daily news, on the same insert-then-prune footing as
+ * storeDigest.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{sections: unknown[]}} news
+ * @param {string | null} [model]
+ * @returns {Promise<string>}
+ */
+export async function storeNews(sql, userId, news, model) {
+  const raw = JSON.stringify({ sections: news.sections, prompt_version: NEWS_PROMPT_VERSION });
+  const [row] = await sql`
+    INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
+    VALUES (${userId}, NULL, ${NEWS_KIND}, '', ${model ?? null}, ${raw})
+    RETURNING id
+  `;
+  await sql`
+    DELETE FROM summaries
+    WHERE user_id = ${userId}
+      AND kind = ${NEWS_KIND}
+      AND message_id IS NULL
+      AND id <> ${row.id}
+  `;
+  return row.id;
+}
+
 export async function storeDigest(sql, userId, digest, model) {
   const raw = JSON.stringify({ topics: digest.topics, prompt_version: DIGEST_PROMPT_VERSION });
   const [row] = await sql`
