@@ -162,9 +162,12 @@ Required repository secrets:
 - `BLOB_READ_WRITE_TOKEN`
 - `TODOIST_API_TOKEN`
 - `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=today` (rebuild both AI Today cards) and `?phase=digest` (the mail digest alone); Cookie-Web's AI Today refresh calls the former through `POST /api/tasks?resource=refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
-`data-enricher`'s news round-up takes two further, optional secrets. These are **not** synced by the `Deploy` workflow — `wrangler-action` fails the entire deploy when a listed secret has no value, and these may legitimately be unset. Set them once from `workers/data-enricher`; Cloudflare keeps them across later deploys:
+`data-enricher`'s news round-up takes two further, optional secrets. These are **not** synced by the `Deploy` workflow — `wrangler-action` fails the entire deploy when a listed secret has no value, and these may legitimately be unset. Set them once; Cloudflare keeps them across later deploys.
+
+Run these from the Worker's own directory. Each Worker holds its own `wrangler.jsonc` and the repository root has none, so from anywhere else wrangler fails with "Required Worker name missing":
 
 ```sh
+cd workers/data-enricher
 npx wrangler secret put PRODUCT_HUNT_TOKEN
 npx wrangler secret put GITHUB_API_TOKEN
 ```
