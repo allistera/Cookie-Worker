@@ -29,24 +29,30 @@ export function createMockSql(options = {}) {
   /**
    * @param {{text: string, values: unknown[]}[]} sink
    */
-  const tagged = (sink) => (strings, ...values) => {
-    const query = { text: strings.join('?'), values };
-    sink.push(query);
-    if (query.text.includes('SELECT') && query.text.includes('FROM users')) {
-      return Promise.resolve(options.lookupRows ?? [{
-        user_id: 'user-1',
-        is_duplicate: false,
-        thread_id: null,
-      }]);
-    }
-    // Message insert uses RETURNING id to detect concurrent DO NOTHING races.
-    if (query.text.includes('INSERT INTO messages') && query.text.includes('RETURNING')) {
-      return Promise.resolve(options.messageInsertReturns ?? [{ id: 'message-1' }]);
-    }
-    if (query.text.includes('FROM label_rules')) {
-      return Promise.resolve(options.ruleRows ?? []);
-    }
-    return Promise.resolve([]);
+  const tagged = (sink) => {
+    const fn = (strings, ...values) => {
+      const query = { text: strings.join('?'), values };
+      sink.push(query);
+      if (query.text.includes('SELECT') && query.text.includes('FROM users')) {
+        return Promise.resolve(options.lookupRows ?? [{
+          user_id: 'user-1',
+          is_duplicate: false,
+          thread_id: null,
+        }]);
+      }
+      // Message insert uses RETURNING id to detect concurrent DO NOTHING races.
+      if (query.text.includes('INSERT INTO messages') && query.text.includes('RETURNING')) {
+        return Promise.resolve(options.messageInsertReturns ?? [{ id: 'message-1' }]);
+      }
+      if (query.text.includes('FROM label_rules')) {
+        return Promise.resolve(options.ruleRows ?? []);
+      }
+      return Promise.resolve([]);
+    };
+    // Mirrors postgres.js's sql.json: marks a value to be sent as a real jsonb
+    // parameter instead of pre-stringifying it into a jsonb string scalar.
+    fn.json = (value) => ({ __pgJson: value });
+    return fn;
   };
 
   /** @type {any} */

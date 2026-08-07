@@ -1,5 +1,10 @@
 import { applyLabelRules } from './rules.js';
 
+// jsonb writes use tx.json(value), never JSON.stringify(value) bound with a
+// trailing ::jsonb cast: postgres.js sends an already-stringified parameter
+// as jsonb text, which Postgres parses back into a jsonb *string scalar*
+// rather than an object - see data-enricher/src/store.js for the same fix.
+
 /**
  * @param {import('postgres').Sql} sql
  * @param {any} record
@@ -61,9 +66,9 @@ export async function storeEmail(sql, record, ownerEmail) {
       )
       VALUES (
         ${messageUuid}, ${threadId}, ${userId}, ${record.fromName}, ${record.fromAddress},
-        ${JSON.stringify(record.recipients)}::jsonb, ${record.subject}, ${record.snippet},
+        ${tx.json(record.recipients)}, ${record.subject}, ${record.snippet},
         ${record.bodyText}, ${record.bodyHtml}, ${sentAt}, ${record.messageId},
-        ${JSON.stringify(record.headers)}::jsonb, ${record.rawSize}, ${record.truncated},
+        ${tx.json(record.headers)}, ${record.rawSize}, ${record.truncated},
         ${record.envelopeFrom}, ${record.envelopeTo}
       )
       ON CONFLICT (user_id, message_id) WHERE message_id IS NOT NULL DO NOTHING

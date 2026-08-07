@@ -36,6 +36,10 @@ describe('storeEmail', () => {
     expect(sql.transactions[0][0].values).toContain(1);
     expect(sql.transactions[0][1].text).toContain('INSERT INTO messages');
     expect(sql.transactions[0][1].text).toContain('RETURNING');
+    // Must go through tx.json (a real jsonb parameter), not a manually
+    // JSON.stringify'd string cast with ::jsonb - see store.js's comment.
+    expect(sql.transactions[0][1].values).toContainEqual({ __pgJson: { to: [], cc: [], bcc: [] } });
+    expect(sql.transactions[0][1].values).toContainEqual({ __pgJson: [] });
     expect(sql.transactions[0][2].text).toContain('INSERT INTO message_ai');
     expect(sql.transactions[0][3].text).toContain('FROM label_rules');
   });

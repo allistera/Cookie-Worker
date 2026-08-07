@@ -39,6 +39,9 @@ function sqlReturning(result = { outcome: 'inserted', messageUuid: 'message-1' }
     return [];
   });
   sql.end = vi.fn(async () => undefined);
+  // Mirrors postgres.js's sql.json: marks a value to be sent as a real jsonb
+  // parameter instead of pre-stringifying it into a jsonb string scalar.
+  sql.json = (value) => ({ __pgJson: value });
   return sql;
 }
 
@@ -271,6 +274,7 @@ describe('email handler', () => {
       return [];
     });
     sql.end = vi.fn(async () => undefined);
+    sql.json = (value) => ({ __pgJson: value });
     postgres.mockReturnValue(sql);
 
     /** @type {Promise<unknown>[]} */
