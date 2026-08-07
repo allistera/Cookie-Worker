@@ -8,6 +8,9 @@ function mockSql(rows = []) {
     return Promise.resolve(rows);
   };
   sql.calls = calls;
+  // Mirrors postgres.js's sql.json: marks a value to be sent as a real jsonb
+  // parameter instead of pre-stringifying it into a jsonb string scalar.
+  sql.json = (value) => ({ __pgJson: value });
   return /** @type {import('postgres').Sql & {calls: {text: string, values: unknown[]}[]}} */ (
     /** @type {unknown} */ (sql)
   );
@@ -69,6 +72,7 @@ describe('storeSummary', () => {
     expect(sql.calls[0].text).toContain('INSERT INTO summaries');
     expect(sql.calls[0].text).toContain('ON CONFLICT (user_id, message_id, kind)');
     expect(sql.calls[0].values).toEqual(expect.arrayContaining(['msg-9', 'email_tasks', 'gpt-5.6-luna']));
+    expect(sql.calls[0].values).toContainEqual({ __pgJson: { importance: 'high' } });
   });
 });
 
@@ -84,7 +88,9 @@ describe('storeDigest', () => {
     expect(sql.calls[0].values).toEqual(
       expect.arrayContaining(['user-1', 'daily_digest', 'Mostly kitchen news.', 'gpt-5.6-luna']),
     );
-    expect(sql.calls[0].values.some((v) => String(v).includes('daily-digest-v1'))).toBe(true);
+    expect(sql.calls[0].values).toContainEqual({
+      __pgJson: { topics: digest.topics, prompt_version: 'daily-digest-v1' },
+    });
 
     expect(sql.calls[1].text).toContain('DELETE FROM summaries');
     expect(sql.calls[1].text).toContain('message_id IS NULL');
@@ -129,7 +135,9 @@ describe('storeNews', () => {
 
     expect(sql.calls[0].text).toContain('INSERT INTO summaries');
     expect(sql.calls[0].values).toEqual(expect.arrayContaining(['user-1', 'daily_news']));
-    expect(sql.calls[0].values.some((v) => String(v).includes('daily-news-v1'))).toBe(true);
+    expect(sql.calls[0].values).toContainEqual({
+      __pgJson: { sections: news.sections, prompt_version: 'daily-news-v1' },
+    });
     expect(sql.calls[1].text).toContain('DELETE FROM summaries');
     expect(sql.calls[1].values).toEqual(expect.arrayContaining(['user-1', 'daily_news', 'news-2']));
   });

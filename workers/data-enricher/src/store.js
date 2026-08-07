@@ -1,6 +1,12 @@
 import { DIGEST_KIND, DIGEST_PROMPT_VERSION } from './digest.js';
 import { NEWS_KIND, NEWS_PROMPT_VERSION } from './news.js';
 
+// Every jsonb write below uses sql.json(value), never JSON.stringify(value)
+// bound with a trailing ::jsonb cast: postgres.js sends an already-stringified
+// parameter as jsonb text, which Postgres parses back into a jsonb *string
+// scalar* rather than an object, silently breaking any code that reads into it
+// (this is what broke AI Today's digest/news raw.topics / raw.sections).
+
 /**
  * @typedef {{
  *   source: 'todoist' | 'email',
@@ -51,7 +57,7 @@ export async function storeTasks(sql, userId, tasks) {
         ${userId}, ${task.source}, ${task.externalId}, ${task.content},
         ${task.description ?? null}, ${task.dueDate ?? null},
         ${task.priority ?? null}, ${task.url ?? null},
-        ${task.messageId ?? null}, ${JSON.stringify(task.raw ?? {})}::jsonb
+        ${task.messageId ?? null}, ${sql.json(task.raw ?? {})}
       )
       ON CONFLICT (user_id, source, external_id) DO UPDATE SET
         content = EXCLUDED.content,
@@ -77,7 +83,7 @@ export async function storeSummary(sql, userId, record) {
     INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
     VALUES (
       ${userId}, ${record.messageId}, ${record.kind ?? 'email_tasks'},
-      ${record.summary}, ${record.model ?? null}, ${JSON.stringify(record.raw ?? {})}::jsonb
+      ${record.summary}, ${record.model ?? null}, ${sql.json(record.raw ?? {})}
     )
     ON CONFLICT (user_id, message_id, kind) WHERE message_id IS NOT NULL
     DO UPDATE SET
@@ -129,10 +135,10 @@ export async function fetchInterests(sql, userId) {
  * @returns {Promise<string>}
  */
 export async function storeNews(sql, userId, news, model) {
-  const raw = JSON.stringify({ sections: news.sections, prompt_version: NEWS_PROMPT_VERSION });
+  const raw = { sections: news.sections, prompt_version: NEWS_PROMPT_VERSION };
   const [row] = await sql`
     INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
-    VALUES (${userId}, NULL, ${NEWS_KIND}, '', ${model ?? null}, ${raw}::jsonb)
+    VALUES (${userId}, NULL, ${NEWS_KIND}, '', ${model ?? null}, ${sql.json(raw)})
     RETURNING id
   `;
   await sql`
@@ -146,10 +152,10 @@ export async function storeNews(sql, userId, news, model) {
 }
 
 export async function storeDigest(sql, userId, digest, model) {
-  const raw = JSON.stringify({ topics: digest.topics, prompt_version: DIGEST_PROMPT_VERSION });
+  const raw = { topics: digest.topics, prompt_version: DIGEST_PROMPT_VERSION };
   const [row] = await sql`
     INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
-    VALUES (${userId}, NULL, ${DIGEST_KIND}, ${digest.overview}, ${model ?? null}, ${raw}::jsonb)
+    VALUES (${userId}, NULL, ${DIGEST_KIND}, ${digest.overview}, ${model ?? null}, ${sql.json(raw)})
     RETURNING id
   `;
   await sql`
