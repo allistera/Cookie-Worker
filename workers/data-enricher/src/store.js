@@ -57,7 +57,7 @@ export async function storeTasks(sql, userId, tasks) {
         ${userId}, ${task.source}, ${task.externalId}, ${task.content},
         ${task.description ?? null}, ${task.dueDate ?? null},
         ${task.priority ?? null}, ${task.url ?? null},
-        ${task.messageId ?? null}, ${sql.json(task.raw ?? {})}
+        ${task.messageId ?? null}, ${sql.json(/** @type {any} */ (task.raw ?? {}))}
       )
       ON CONFLICT (user_id, source, external_id) DO UPDATE SET
         content = EXCLUDED.content,
@@ -83,7 +83,7 @@ export async function storeSummary(sql, userId, record) {
     INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
     VALUES (
       ${userId}, ${record.messageId}, ${record.kind ?? 'email_tasks'},
-      ${record.summary}, ${record.model ?? null}, ${sql.json(record.raw ?? {})}
+      ${record.summary}, ${record.model ?? null}, ${sql.json(/** @type {any} */ (record.raw ?? {}))}
     )
     ON CONFLICT (user_id, message_id, kind) WHERE message_id IS NOT NULL
     DO UPDATE SET
@@ -138,7 +138,7 @@ export async function storeNews(sql, userId, news, model) {
   const raw = { sections: news.sections, prompt_version: NEWS_PROMPT_VERSION };
   const [row] = await sql`
     INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
-    VALUES (${userId}, NULL, ${NEWS_KIND}, '', ${model ?? null}, ${sql.json(raw)})
+    VALUES (${userId}, NULL, ${NEWS_KIND}, '', ${model ?? null}, ${sql.json(/** @type {any} */ (raw))})
     RETURNING id
   `;
   await sql`
