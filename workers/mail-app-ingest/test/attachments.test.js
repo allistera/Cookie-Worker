@@ -1,5 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
-import { attachmentBlobPath, uploadAttachments } from '../src/attachments.js';
+import {
+  attachmentBlobPath,
+  deleteUploadedAttachments,
+  uploadAttachments,
+} from '../src/attachments.js';
 
 const attachment = {
   filename: 'plan.pdf',
@@ -125,5 +129,52 @@ describe('attachment uploads', () => {
     expect(result.attachments[0]).toMatchObject({ filename: 'plan.pdf', blob_url: null });
     expect(result.attachments[0].content).toBeUndefined();
     expect(result.failures).toEqual([{ index: 0, error }]);
+  });
+
+  test('uploads with bounded concurrency while preserving input order', async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const putBlob = vi.fn(async (pathname) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      const url = `https://store.private.blob.vercel-storage.com/${pathname}`;
+      return {
+        url,
+        downloadUrl: `${url}?download=1`,
+        pathname,
+        contentType: 'application/pdf',
+        contentDisposition: 'inline',
+        etag: 'etag',
+      };
+    });
+
+    const result = await uploadAttachments(
+      Array.from({ length: 9 }, (_, index) => ({ ...attachment, filename: `${index}.pdf` })),
+      '<message@example.com>',
+      'secret-token',
+      putBlob,
+    );
+
+    expect(maximumActive).toBe(4);
+    expect(result.attachments.map(({ filename }) => filename)).toEqual(
+      Array.from({ length: 9 }, (_, index) => `${index}.pdf`),
+    );
+  });
+
+  test('deletes every successfully uploaded blob in one request', async () => {
+    const deleteBlob = vi.fn(async () => undefined);
+    const deleted = await deleteUploadedAttachments(
+      [{ blob_url: 'https://blob.example/one' }, { blob_url: null }, { blob_url: 'https://blob.example/two' }],
+      'secret-token',
+      deleteBlob,
+    );
+
+    expect(deleted).toBe(2);
+    expect(deleteBlob).toHaveBeenCalledWith(
+      ['https://blob.example/one', 'https://blob.example/two'],
+      { token: 'secret-token' },
+    );
   });
 });

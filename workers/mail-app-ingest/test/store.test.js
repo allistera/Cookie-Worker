@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { storeEmail } from '../src/store.js';
+import { emailAlreadyStored, storeEmail } from '../src/store.js';
 import { createMockSql } from './helpers.js';
 
 function record(overrides = {}) {
@@ -25,6 +25,12 @@ function record(overrides = {}) {
 }
 
 describe('storeEmail', () => {
+  test('detects duplicates before attachment work starts', async () => {
+    const sql = createMockSql({ lookupRows: [{ id: 'u', is_duplicate: true }] });
+    await expect(emailAlreadyStored(sql, '<id@example.com>', 'owner@example.com')).resolves.toBe(true);
+    expect(sql.transactions).toHaveLength(0);
+  });
+
   test('inserts a new thread and message', async () => {
     const sql = createMockSql();
     const result = await storeEmail(sql, record(), 'owner@example.com');
@@ -118,9 +124,11 @@ describe('storeEmail', () => {
     }), 'owner@example.com');
     const attachmentStatement = sql.transactions[0].find((statement) => statement.text.includes('INSERT INTO attachments'));
     expect(attachmentStatement.text).toContain('blob_url');
-    expect(attachmentStatement.values).toContain(
-      'https://store.private.blob.vercel-storage.com/mail-attachments/hash/0',
-    );
+    expect(attachmentStatement.values).toContainEqual({
+      __pgJson: [expect.objectContaining({
+        blob_url: 'https://store.private.blob.vercel-storage.com/mail-attachments/hash/0',
+      })],
+    });
   });
 
   test('propagates transaction failures', async () => {

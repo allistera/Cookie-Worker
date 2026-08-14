@@ -1,12 +1,12 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
-import { uploadAttachments } from './attachments.js';
+import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
 import { parseEmail } from './parse.js';
 import {
   captureHandledException, createSentryOptions, isTransientForwardError, redact,
 } from './sentry.js';
-import { storeEmail } from './store.js';
+import { emailAlreadyStored, storeEmail } from './store.js';
 
 export { redact } from './sentry.js';
 
@@ -35,34 +35,43 @@ const worker = {
     let sql = null;
     /** @type {Awaited<ReturnType<typeof storeEmail>> | null} */
     let storeResult = null;
+    /** @type {Awaited<ReturnType<typeof uploadAttachments>> | null} */
+    let uploaded = null;
     /** When true, a waitUntil task owns sql.end — main path must not end it. */
     let sqlOwnedByWaitUntil = false;
 
     try {
       record = await parseEmail(message);
-      const uploaded = await uploadAttachments(
-        record.attachments,
-        record.messageId,
-        env.BLOB_READ_WRITE_TOKEN,
-      );
-      record.attachments = uploaded.attachments;
-      for (const failure of uploaded.failures) {
-        console.log(JSON.stringify({
-          event: 'attachment_upload_failed',
-          index: failure.index,
-          message_id: record.messageId,
-          error: redact(failure.error, env.BLOB_READ_WRITE_TOKEN),
-        }));
-        captureHandledException(
-          'attachment_upload',
-          failure.error,
-          [env.BLOB_READ_WRITE_TOKEN],
-          { message_id: record.messageId, attachment_index: failure.index },
-        );
-      }
       sql = createSql(env.HYPERDRIVE.connectionString);
-      storePromise = storeEmail(sql, record, env.OWNER_EMAIL);
-      storeResult = await withTimeout(storePromise, STORE_BUDGET_MS);
+      if (await emailAlreadyStored(sql, record.messageId, env.OWNER_EMAIL)) {
+        storeResult = { outcome: 'duplicate', messageUuid: null };
+      } else {
+        uploaded = await uploadAttachments(
+          record.attachments,
+          record.messageId,
+          env.BLOB_READ_WRITE_TOKEN,
+        );
+        record.attachments = uploaded.attachments;
+        for (const failure of uploaded.failures) {
+          console.log(JSON.stringify({
+            event: 'attachment_upload_failed',
+            index: failure.index,
+            message_id: record.messageId,
+            error: redact(failure.error, env.BLOB_READ_WRITE_TOKEN),
+          }));
+          captureHandledException(
+            'attachment_upload',
+            failure.error,
+            [env.BLOB_READ_WRITE_TOKEN],
+            { message_id: record.messageId, attachment_index: failure.index },
+          );
+        }
+        storePromise = storeEmail(sql, record, env.OWNER_EMAIL);
+        storeResult = await withTimeout(storePromise, STORE_BUDGET_MS);
+        if (storeResult.outcome === 'duplicate') {
+          await discardUploadedAttachments(uploaded.attachments, env, record.messageId);
+        }
+      }
       console.log(JSON.stringify({
         event: 'stored',
         outcome: storeResult.outcome,
@@ -88,6 +97,8 @@ const worker = {
         const lateSql = sql;
         const lateRecord = record;
         const apiKey = env.OPENAI_API_KEY;
+        const lateAttachments = uploaded?.attachments ?? [];
+        const blobToken = env.BLOB_READ_WRITE_TOKEN;
         const connectionString = env.HYPERDRIVE.connectionString;
         ctx.waitUntil(storePromise
           .then(async (lateResult) => {
@@ -97,16 +108,26 @@ const worker = {
               message_id: lateRecord.messageId,
             }));
             await endSql(lateSql);
+            if (lateResult.outcome === 'duplicate') {
+              await discardUploadedAttachments(lateAttachments, env, lateRecord.messageId);
+            }
             if (lateResult.outcome === 'inserted' && lateResult.messageUuid && apiKey) {
               await runAiEnrichment(env, lateRecord, lateResult.messageUuid, true);
             }
           })
-          .catch((lateErr) => {
+          .catch(async (lateErr) => {
             captureHandledException('store_late', lateErr, [connectionString], {
               message_id: lateRecord.messageId,
             });
+            await discardUploadedAttachments(
+              lateAttachments,
+              { ...env, BLOB_READ_WRITE_TOKEN: blobToken },
+              lateRecord.messageId,
+            );
           })
           .finally(() => endSql(lateSql)));
+      } else if (uploaded?.attachments.length) {
+        await discardUploadedAttachments(uploaded.attachments, env, record?.messageId);
       }
     }
 
@@ -199,6 +220,29 @@ async function runAiEnrichment(env, record, messageUuid, late) {
     ], { message_id: record.messageId, late });
   } finally {
     await endSql(sql);
+  }
+}
+
+/**
+ * @param {{blob_url?: string | null}[]} attachments
+ * @param {Env & {BLOB_READ_WRITE_TOKEN?: string}} env
+ * @param {string | undefined} messageId
+ */
+async function discardUploadedAttachments(attachments, env, messageId) {
+  try {
+    const deleted = await deleteUploadedAttachments(attachments, env.BLOB_READ_WRITE_TOKEN);
+    if (deleted > 0) {
+      console.log(JSON.stringify({ event: 'attachment_blobs_deleted', count: deleted, message_id: messageId }));
+    }
+  } catch (error) {
+    console.log(JSON.stringify({
+      event: 'attachment_blob_cleanup_failed',
+      message_id: messageId,
+      error: redact(error, env.BLOB_READ_WRITE_TOKEN),
+    }));
+    captureHandledException('attachment_cleanup', error, [env.BLOB_READ_WRITE_TOKEN], {
+      message_id: messageId,
+    });
   }
 }
 

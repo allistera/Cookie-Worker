@@ -6,6 +6,32 @@ import { applyLabelRules } from './rules.js';
 // rather than an object - see data-enricher/src/store.js for the same fix.
 
 /**
+ * Fast duplicate check before attachment uploads. storeEmail repeats the
+ * check and keeps its unique-index guard because another delivery can still
+ * win the race after this read.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} messageId
+ * @param {string} ownerEmail
+ */
+export async function emailAlreadyStored(sql, messageId, ownerEmail) {
+  const [row] = await sql`
+    SELECT users.id,
+           EXISTS (
+             SELECT 1 FROM messages
+             WHERE messages.user_id = users.id
+               AND messages.message_id = ${messageId}
+           ) AS is_duplicate
+    FROM users
+    WHERE users.email = ${ownerEmail}
+    ORDER BY users.created_at
+    LIMIT 1
+  `;
+  if (!row) throw new Error('no users row matches OWNER_EMAIL; message not stored');
+  return Boolean(row.is_duplicate);
+}
+
+/**
  * @param {import('postgres').Sql} sql
  * @param {any} record
  * @param {string} ownerEmail
@@ -101,12 +127,22 @@ export async function storeEmail(sql, record, ownerEmail) {
     // rather than the best-effort waitUntil path AI enrichment takes.
     await applyLabelRules(tx, userId, messageUuid, record);
 
-    for (const attachment of record.attachments) {
+    if (record.attachments.length > 0) {
+      const attachmentRows = record.attachments.map((attachment) => ({
+        id: crypto.randomUUID(),
+        message_id: messageUuid,
+        filename: attachment.filename,
+        content_type: attachment.mime_type,
+        size_bytes: attachment.size,
+        blob_url: attachment.blob_url ?? null,
+      }));
       await tx`
         INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, blob_url)
-        VALUES (
-          ${crypto.randomUUID()}, ${messageUuid}, ${attachment.filename},
-          ${attachment.mime_type}, ${attachment.size}, ${attachment.blob_url ?? null}
+        SELECT row.id::uuid, row.message_id::uuid, row.filename, row.content_type,
+               row.size_bytes, row.blob_url
+        FROM json_to_recordset(${tx.json(attachmentRows)}) AS row(
+          id text, message_id text, filename text, content_type text,
+          size_bytes bigint, blob_url text
         )
       `;
     }
