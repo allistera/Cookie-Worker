@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { connectMcp } from './mcp.js';
 import { gatherTodoistTasks } from './todoist.js';
 import { analyzeEmail, fetchImportantMessages } from './analyze.js';
@@ -231,7 +232,7 @@ export default {
     }
     // An unset token keeps the endpoint closed rather than open.
     if (!env.HTTP_TRIGGER_TOKEN
-      || request.headers.get('Authorization') !== `Bearer ${env.HTTP_TRIGGER_TOKEN}`) {
+      || !(await timingSafeEqualStrings(request.headers.get('Authorization'), `Bearer ${env.HTTP_TRIGGER_TOKEN}`))) {
       return new Response('Unauthorized', { status: 401 });
     }
     const phase = url.searchParams.get('phase');

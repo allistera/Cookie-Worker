@@ -7,6 +7,9 @@
 // sent copy, retry/failure bookkeeping). This Worker never touches Postgres
 // or Resend directly.
 
+import { timingSafeEqualStrings } from '../../../shared/auth.js';
+import { fetchWithTimeout } from '../../../shared/fetch.js';
+
 const FLUSH_TIMEOUT_MS = 20_000;
 
 /**
@@ -16,23 +19,17 @@ export async function flushScheduledSends(env) {
   if (!env.COOKIE_WEB_FLUSH_URL) throw new Error('COOKIE_WEB_FLUSH_URL is not configured');
   if (!env.COOKIE_WEB_FLUSH_TOKEN) throw new Error('COOKIE_WEB_FLUSH_TOKEN is not configured');
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FLUSH_TIMEOUT_MS);
-  try {
-    const response = await fetch(env.COOKIE_WEB_FLUSH_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}` },
-      signal: controller.signal,
-    });
+  const result = await fetchWithTimeout(env.COOKIE_WEB_FLUSH_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}` },
+  }, async (response) => {
     if (!response.ok) {
       throw new Error(`Cookie-Web flush responded ${response.status}`);
     }
-    const result = await response.json();
-    console.log(JSON.stringify({ event: 'scheduled_sends_flushed', ...result }));
-    return result;
-  } finally {
-    clearTimeout(timeout);
-  }
+    return response.json();
+  }, FLUSH_TIMEOUT_MS);
+  console.log(JSON.stringify({ event: 'scheduled_sends_flushed', ...result }));
+  return result;
 }
 
 export default {
@@ -61,7 +58,7 @@ export default {
     }
     // An unset token keeps the endpoint closed rather than open.
     if (!env.HTTP_TRIGGER_TOKEN
-      || request.headers.get('Authorization') !== `Bearer ${env.HTTP_TRIGGER_TOKEN}`) {
+      || !(await timingSafeEqualStrings(request.headers.get('Authorization'), `Bearer ${env.HTTP_TRIGGER_TOKEN}`))) {
       return new Response('Unauthorized', { status: 401 });
     }
     try {
