@@ -15,7 +15,6 @@
     "crons": ["*/5 * * * *"]
   },
   "vars": {
-    // TODO: replace with Cookie-Web's real production URL before first deploy.
-    "COOKIE_WEB_FLUSH_URL": "https://cookie-web.vercel.app/api/send?resource=flush"
+    "COOKIE_WEB_FLUSH_URL": "https://mail.infinitywave.online/api/send?resource=flush"
   }
 }
