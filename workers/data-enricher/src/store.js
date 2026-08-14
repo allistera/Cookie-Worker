@@ -1,6 +1,8 @@
 import { DIGEST_KIND, DIGEST_PROMPT_VERSION } from './digest.js';
 import { NEWS_KIND, NEWS_PROMPT_VERSION } from './news.js';
 
+/** @typedef {import('postgres').Sql | import('postgres').TransactionSql} SqlClient */
+
 // Every jsonb write below uses sql.json(value), never JSON.stringify(value)
 // bound with a trailing ::jsonb cast: postgres.js sends an already-stringified
 // parameter as jsonb text, which Postgres parses back into a jsonb *string
@@ -22,7 +24,7 @@ import { NEWS_KIND, NEWS_PROMPT_VERSION } from './news.js';
  */
 
 /**
- * @param {import('postgres').Sql} sql
+ * @param {SqlClient} sql
  * @param {string} ownerEmail
  * @returns {Promise<string>}
  */
@@ -41,7 +43,7 @@ export async function lookupUserId(sql, ownerEmail) {
  * Upsert gathered tasks so the daily cron stays idempotent: re-gathering the
  * same task refreshes its fields and gathered_at instead of duplicating it.
  *
- * @param {import('postgres').Sql} sql
+ * @param {SqlClient} sql
  * @param {string} userId
  * @param {TaskRecord[]} tasks
  * @returns {Promise<number>}
@@ -74,7 +76,7 @@ export async function storeTasks(sql, userId, tasks) {
 }
 
 /**
- * @param {import('postgres').Sql} sql
+ * @param {SqlClient} sql
  * @param {string} userId
  * @param {{messageId: string, summary: string, kind?: string, model?: string | null, raw?: unknown}} record
  */
@@ -94,18 +96,22 @@ export async function storeSummary(sql, userId, record) {
 }
 
 /**
- * Replace the stored daily digest. Digest rows carry no message_id, so the
- * partial unique index on summaries does not apply to them and each run would
- * otherwise append. Insert first and prune afterwards: a failed insert leaves
- * yesterday's digest readable, and a failed prune only leaves a superseded row
- * that the newest-first read ignores.
+ * Store every artifact derived from one email as a unit. The summary is the
+ * marker used by fetchImportantMessages to skip completed analysis, so it is
+ * deliberately written last and committed only with all task upserts.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{overview: string, topics: unknown[]}} digest
- * @param {string | null} [model]
- * @returns {Promise<string>}
+ * @param {{messageId: string, summary: string, kind?: string, model?: string | null, raw?: unknown}} summary
+ * @param {TaskRecord[]} tasks
  */
+export async function storeEmailAnalysis(sql, userId, summary, tasks) {
+  return sql.begin(async (tx) => {
+    await storeTasks(tx, userId, tasks);
+    await storeSummary(tx, userId, summary);
+  });
+}
+
 /**
  * The reader's personalisation topics from users.prefs, written by Cookie-Web's
  * settings pane. Absent or malformed prefs mean "do not personalise".
@@ -125,45 +131,65 @@ export async function fetchInterests(sql, userId) {
 }
 
 /**
- * Replace the stored daily news, on the same insert-then-prune footing as
- * storeDigest.
- *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} kind
+ * @param {string} summary
+ * @param {string | null | undefined} model
+ * @param {unknown} raw
+ * @returns {Promise<string>}
+ */
+async function replaceSingletonSummary(sql, userId, kind, summary, model, raw) {
+  return sql.begin(async (tx) => {
+    // Two refreshes for the same user/kind must not delete one another's new
+    // row. A transaction-scoped advisory lock serializes only that tiny pair.
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${userId}:${kind}`}, 0))`;
+    const [row] = await tx`
+      INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
+      VALUES (${userId}, NULL, ${kind}, ${summary}, ${model ?? null}, ${tx.json(/** @type {any} */ (raw))})
+      RETURNING id
+    `;
+    await tx`
+      DELETE FROM summaries
+      WHERE user_id = ${userId}
+        AND kind = ${kind}
+        AND message_id IS NULL
+        AND id <> ${row.id}
+    `;
+    return row.id;
+  });
+}
+
+/**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {{sections: unknown[]}} news
  * @param {string | null} [model]
- * @returns {Promise<string>}
  */
 export async function storeNews(sql, userId, news, model) {
-  const raw = { sections: news.sections, prompt_version: NEWS_PROMPT_VERSION };
-  const [row] = await sql`
-    INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
-    VALUES (${userId}, NULL, ${NEWS_KIND}, '', ${model ?? null}, ${sql.json(/** @type {any} */ (raw))})
-    RETURNING id
-  `;
-  await sql`
-    DELETE FROM summaries
-    WHERE user_id = ${userId}
-      AND kind = ${NEWS_KIND}
-      AND message_id IS NULL
-      AND id <> ${row.id}
-  `;
-  return row.id;
+  return replaceSingletonSummary(
+    sql,
+    userId,
+    NEWS_KIND,
+    '',
+    model,
+    { sections: news.sections, prompt_version: NEWS_PROMPT_VERSION },
+  );
 }
 
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{overview: string, topics: unknown[]}} digest
+ * @param {string | null} [model]
+ */
 export async function storeDigest(sql, userId, digest, model) {
-  const raw = { topics: digest.topics, prompt_version: DIGEST_PROMPT_VERSION };
-  const [row] = await sql`
-    INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
-    VALUES (${userId}, NULL, ${DIGEST_KIND}, ${digest.overview}, ${model ?? null}, ${sql.json(raw)})
-    RETURNING id
-  `;
-  await sql`
-    DELETE FROM summaries
-    WHERE user_id = ${userId}
-      AND kind = ${DIGEST_KIND}
-      AND message_id IS NULL
-      AND id <> ${row.id}
-  `;
-  return row.id;
+  return replaceSingletonSummary(
+    sql,
+    userId,
+    DIGEST_KIND,
+    digest.overview,
+    model,
+    { topics: digest.topics, prompt_version: DIGEST_PROMPT_VERSION },
+  );
 }

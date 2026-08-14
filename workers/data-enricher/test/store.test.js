@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'vitest';
-import { fetchInterests, lookupUserId, storeDigest, storeNews, storeTasks, storeSummary } from '../src/store.js';
+import {
+  fetchInterests,
+  lookupUserId,
+  storeDigest,
+  storeEmailAnalysis,
+  storeNews,
+  storeTasks,
+  storeSummary,
+} from '../src/store.js';
 
 function mockSql(rows = []) {
   const calls = [];
@@ -11,6 +19,7 @@ function mockSql(rows = []) {
   // Mirrors postgres.js's sql.json: marks a value to be sent as a real jsonb
   // parameter instead of pre-stringifying it into a jsonb string scalar.
   sql.json = (value) => ({ __pgJson: value });
+  sql.begin = async (callback) => callback(sql);
   return /** @type {import('postgres').Sql & {calls: {text: string, values: unknown[]}[]}} */ (
     /** @type {unknown} */ (sql)
   );
@@ -76,6 +85,22 @@ describe('storeSummary', () => {
   });
 });
 
+describe('storeEmailAnalysis', () => {
+  test('writes tasks before the completion summary in one transaction', async () => {
+    const sql = mockSql();
+    await storeEmailAnalysis(
+      sql,
+      'user-1',
+      { messageId: 'msg-9', summary: 'Reply needed.' },
+      [{ source: 'email', externalId: 'msg-9:reply', content: 'Reply', messageId: 'msg-9' }],
+    );
+
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[0].text).toContain('INSERT INTO tasks');
+    expect(sql.calls[1].text).toContain('INSERT INTO summaries');
+  });
+});
+
 describe('storeDigest', () => {
   const digest = { overview: 'Mostly kitchen news.', topics: [{ emoji: '🍳', title: 'Kitchen', items: [] }] };
 
@@ -84,24 +109,25 @@ describe('storeDigest', () => {
     await expect(storeDigest(sql, 'user-1', digest, 'gpt-5.6-luna')).resolves.toBe('digest-2');
 
     // Insert first: a failure here must leave yesterday's digest readable.
-    expect(sql.calls[0].text).toContain('INSERT INTO summaries');
-    expect(sql.calls[0].values).toEqual(
+    expect(sql.calls[0].text).toContain('pg_advisory_xact_lock');
+    expect(sql.calls[1].text).toContain('INSERT INTO summaries');
+    expect(sql.calls[1].values).toEqual(
       expect.arrayContaining(['user-1', 'daily_digest', 'Mostly kitchen news.', 'gpt-5.6-luna']),
     );
-    expect(sql.calls[0].values).toContainEqual({
+    expect(sql.calls[1].values).toContainEqual({
       __pgJson: { topics: digest.topics, prompt_version: 'daily-digest-v1' },
     });
 
-    expect(sql.calls[1].text).toContain('DELETE FROM summaries');
-    expect(sql.calls[1].text).toContain('message_id IS NULL');
-    expect(sql.calls[1].values).toEqual(expect.arrayContaining(['user-1', 'daily_digest', 'digest-2']));
+    expect(sql.calls[2].text).toContain('DELETE FROM summaries');
+    expect(sql.calls[2].text).toContain('message_id IS NULL');
+    expect(sql.calls[2].values).toEqual(expect.arrayContaining(['user-1', 'daily_digest', 'digest-2']));
   });
 
   test('stores an empty digest so a quiet day clears stale topics', async () => {
     const sql = mockSql([{ id: 'digest-3' }]);
     await storeDigest(sql, 'user-1', { overview: '', topics: [] }, null);
-    expect(sql.calls[0].values).toContain('');
-    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[1].values).toContain('');
+    expect(sql.calls).toHaveLength(3);
   });
 });
 
@@ -133,12 +159,13 @@ describe('storeNews', () => {
 
     await expect(storeNews(sql, 'user-1', news, 'gpt-5.6-luna')).resolves.toBe('news-2');
 
-    expect(sql.calls[0].text).toContain('INSERT INTO summaries');
-    expect(sql.calls[0].values).toEqual(expect.arrayContaining(['user-1', 'daily_news']));
-    expect(sql.calls[0].values).toContainEqual({
+    expect(sql.calls[0].text).toContain('pg_advisory_xact_lock');
+    expect(sql.calls[1].text).toContain('INSERT INTO summaries');
+    expect(sql.calls[1].values).toEqual(expect.arrayContaining(['user-1', 'daily_news']));
+    expect(sql.calls[1].values).toContainEqual({
       __pgJson: { sections: news.sections, prompt_version: 'daily-news-v1' },
     });
-    expect(sql.calls[1].text).toContain('DELETE FROM summaries');
-    expect(sql.calls[1].values).toEqual(expect.arrayContaining(['user-1', 'daily_news', 'news-2']));
+    expect(sql.calls[2].text).toContain('DELETE FROM summaries');
+    expect(sql.calls[2].values).toEqual(expect.arrayContaining(['user-1', 'daily_news', 'news-2']));
   });
 });

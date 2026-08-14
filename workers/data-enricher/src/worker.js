@@ -7,9 +7,9 @@ import { buildNews } from './news.js';
 import {
   fetchInterests,
   lookupUserId,
+  storeEmailAnalysis,
   storeDigest,
   storeNews,
-  storeSummary,
   storeTasks,
 } from './store.js';
 
@@ -62,12 +62,6 @@ async function analyzeImportantEmails(sql, env, userId) {
   let extracted = 0;
   for (const message of messages) {
     const analysis = await analyzeEmail(message, apiKey, env.AI_MODEL);
-    await storeSummary(sql, userId, {
-      messageId: message.id,
-      summary: analysis.summary,
-      model: env.AI_MODEL,
-      raw: { ...analysis, prompt_version: 'email-task-analysis-v1' },
-    });
     const tasks = analysis.tasks.map((task) => ({
       source: /** @type {'email'} */ ('email'),
       externalId: `${message.id}:${fingerprint(task.content)}`,
@@ -76,7 +70,17 @@ async function analyzeImportantEmails(sql, env, userId) {
       messageId: message.id,
       raw: task,
     }));
-    await storeTasks(sql, userId, tasks);
+    await storeEmailAnalysis(
+      sql,
+      userId,
+      {
+        messageId: message.id,
+        summary: analysis.summary,
+        model: env.AI_MODEL,
+        raw: { ...analysis, prompt_version: 'email-task-analysis-v1' },
+      },
+      tasks,
+    );
     extracted += tasks.length;
   }
   console.log(JSON.stringify({ event: 'emails_analyzed', messages: messages.length, tasks: extracted }));
