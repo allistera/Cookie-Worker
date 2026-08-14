@@ -165,6 +165,7 @@ export async function createWranglerCommands({
           'types',
           relativePath(worker.typesPath),
           '--config', relativePath(worker.configPath),
+          '--env-file', '.wrangler-types.env',
           '--include-runtime=false',
           ...extraArgs,
         ],

@@ -93,6 +93,25 @@ describe('worker repository interface', () => {
     })).rejects.toThrow('Unknown worker "missing-worker". Available workers: mail-app-ingest');
   });
 
+  test('generates types without loading developer secrets', async () => {
+    const repositoryRoot = await repositoryWithWorkers('data-enricher');
+
+    await expect(createWranglerCommands({
+      repositoryRoot,
+      action: 'types',
+      target: '--all',
+    })).resolves.toEqual([{
+      worker: 'data-enricher',
+      args: [
+        'types',
+        'workers/data-enricher/worker-configuration.d.ts',
+        '--config', 'workers/data-enricher/wrangler.jsonc',
+        '--env-file', '.wrangler-types.env',
+        '--include-runtime=false',
+      ],
+    }]);
+  });
+
   test('isolates TypeScript checks per Worker capsule', async () => {
     const repositoryRoot = await repositoryWithWorkers('mail-app-ingest', 'queue-consumer');
 
