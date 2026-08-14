@@ -4,7 +4,8 @@ import {
   fetchUkHeadlines,
   previousUkDayWindow,
 } from './news-sources.js';
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout } from '../../../shared/fetch.js';
+import { outputText } from '../../../shared/openai.js';
 
 export const NEWS_PROMPT_VERSION = 'daily-news-v1';
 export const NEWS_KIND = 'daily_news';
@@ -30,17 +31,6 @@ const RANKING_SCHEMA = {
   required: ['picks'],
   additionalProperties: false,
 };
-
-/** @param {any} body */
-function outputText(body) {
-  if (typeof body?.output_text === 'string') return body.output_text;
-  for (const item of body?.output || []) {
-    for (const content of item?.content || []) {
-      if (content?.type === 'output_text' && typeof content.text === 'string') return content.text;
-    }
-  }
-  return '';
-}
 
 /**
  * Keep the picks that name a candidate actually offered, in the model's order,

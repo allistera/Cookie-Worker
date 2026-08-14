@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   buildEmbeddingInput,
+  createEmbedding,
   EMBEDDING_DIMENSIONS,
   EMBEDDING_INPUT_CAP,
   EMBEDDING_MODEL,
-  embedMessage,
 } from '../src/embed.js';
-import { createMockSql } from './helpers.js';
 
 function vectorOf(length, value = 0.1) {
   return Array(length).fill(value);
@@ -19,7 +18,7 @@ function mockedFetch() {
   return fetch;
 }
 
-describe('embedMessage', () => {
+describe('createEmbedding', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -28,8 +27,7 @@ describe('embedMessage', () => {
   });
 
   test('posts subject and body to OpenAI with the shared model contract', async () => {
-    const sql = createMockSql();
-    await embedMessage(sql, { messageId: '<id>', subject: 'S', bodyText: 'B' }, 'message-1', 'key');
+    const vector = await createEmbedding({ subject: 'S', bodyText: 'B' }, 'key');
     const request = mockedFetch().mock.calls[0][1];
     const body = JSON.parse(request.body);
     expect(body).toMatchObject({
@@ -37,7 +35,7 @@ describe('embedMessage', () => {
       dimensions: EMBEDDING_DIMENSIONS,
       input: 'S\n\nB',
     });
-    expect(sql.queries.at(-1).text).toContain('AND embedding IS NULL');
+    expect(vector).toHaveLength(EMBEDDING_DIMENSIONS);
   });
 
   test('caps input and turns blank content into one space', () => {
@@ -47,7 +45,7 @@ describe('embedMessage', () => {
 
   test('throws status-only errors for non-2xx responses', async () => {
     mockedFetch().mockResolvedValueOnce({ ok: false, status: 429, text: async () => 'secret body' });
-    await expect(embedMessage(createMockSql(), { messageId: '<id>', subject: 'S', bodyText: 'B' }, 'message-1', 'api-key'))
+    await expect(createEmbedding({ subject: 'S', bodyText: 'B' }, 'api-key'))
       .rejects.toThrow('OpenAI embeddings API responded 429');
   });
 
@@ -56,7 +54,7 @@ describe('embedMessage', () => {
       ok: true,
       json: async () => ({ data: [{ embedding: [0.1, 0.2] }] }),
     });
-    await expect(embedMessage(createMockSql(), { messageId: '<id>', subject: 'S', bodyText: 'B' }, 'message-1', 'key'))
+    await expect(createEmbedding({ subject: 'S', bodyText: 'B' }, 'key'))
       .rejects.toThrow(`expected ${EMBEDDING_DIMENSIONS} dimensions`);
   });
 });

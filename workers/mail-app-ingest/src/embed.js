@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout } from '../../../shared/fetch.js';
 
 export const EMBEDDING_MODEL = 'text-embedding-3-small';
 export const EMBEDDING_DIMENSIONS = 1536;
@@ -14,24 +14,6 @@ export class EmbeddingApiError extends Error {
     this.name = 'EmbeddingApiError';
     this.status = status;
   }
-}
-
-/**
- * @param {import('postgres').Sql} sql
- * @param {{messageId: string, subject?: string | null, bodyText?: string | null}} record
- * @param {string} messageUuid
- * @param {string} apiKey
- */
-export async function embedMessage(sql, record, messageUuid, apiKey) {
-  const vector = await createEmbedding(record, apiKey);
-  await sql`
-    UPDATE messages
-    SET embedding = ${JSON.stringify(vector)}::vector,
-        embedding_model = ${EMBEDDING_MODEL}
-    WHERE id = ${messageUuid}
-      AND embedding IS NULL
-  `;
-  console.log(JSON.stringify({ event: 'embedded', message_id: record.messageId }));
 }
 
 /**

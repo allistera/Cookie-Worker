@@ -49,29 +49,41 @@ export async function lookupUserId(sql, ownerEmail) {
  * @returns {Promise<number>}
  */
 export async function storeTasks(sql, userId, tasks) {
-  for (const task of tasks) {
-    await sql`
-      INSERT INTO tasks (
-        user_id, source, external_id, content, description,
-        due_date, priority, url, message_id, raw
-      )
-      VALUES (
-        ${userId}, ${task.source}, ${task.externalId}, ${task.content},
-        ${task.description ?? null}, ${task.dueDate ?? null},
-        ${task.priority ?? null}, ${task.url ?? null},
-        ${task.messageId ?? null}, ${sql.json(/** @type {any} */ (task.raw ?? {}))}
-      )
-      ON CONFLICT (user_id, source, external_id) DO UPDATE SET
-        content = EXCLUDED.content,
-        description = EXCLUDED.description,
-        due_date = EXCLUDED.due_date,
-        priority = EXCLUDED.priority,
-        url = EXCLUDED.url,
-        message_id = EXCLUDED.message_id,
-        raw = EXCLUDED.raw,
-        gathered_at = now()
-    `;
-  }
+  if (tasks.length === 0) return 0;
+
+  const rows = tasks.map((task) => ({
+    source: task.source,
+    external_id: task.externalId,
+    content: task.content,
+    description: task.description ?? null,
+    due_date: task.dueDate ?? null,
+    priority: task.priority ?? null,
+    url: task.url ?? null,
+    message_id: task.messageId ?? null,
+    raw: task.raw ?? {},
+  }));
+
+  await sql`
+    INSERT INTO tasks (
+      user_id, source, external_id, content, description,
+      due_date, priority, url, message_id, raw
+    )
+    SELECT ${userId}::uuid, row.source, row.external_id, row.content, row.description,
+           row.due_date::date, row.priority::smallint, row.url, row.message_id::uuid, row.raw
+    FROM json_to_recordset(${sql.json(/** @type {any} */ (rows))}) AS row(
+      source text, external_id text, content text, description text,
+      due_date text, priority smallint, url text, message_id text, raw jsonb
+    )
+    ON CONFLICT (user_id, source, external_id) DO UPDATE SET
+      content = EXCLUDED.content,
+      description = EXCLUDED.description,
+      due_date = EXCLUDED.due_date,
+      priority = EXCLUDED.priority,
+      url = EXCLUDED.url,
+      message_id = EXCLUDED.message_id,
+      raw = EXCLUDED.raw,
+      gathered_at = now()
+  `;
   return tasks.length;
 }
 

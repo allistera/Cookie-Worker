@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout } from '../../../shared/fetch.js';
 
 // Source fetchers for AI Today's daily news section, ported from the
 // allistera/daily-news Python project. Each returns plain

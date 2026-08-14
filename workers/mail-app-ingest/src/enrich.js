@@ -1,4 +1,6 @@
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout } from '../../../shared/fetch.js';
+import { outputText } from '../../../shared/openai.js';
+import { createEmbedding, EmbeddingApiError, EMBEDDING_MODEL } from './embed.js';
 
 export const AI_MODEL = 'gpt-5.6-luna';
 export const PROMPT_VERSION = 'email-enrichment-v2';
@@ -30,16 +32,6 @@ const ENRICHMENT_SCHEMA = {
   required: ['labels', 'spam_verdict', 'spam_score', 'spam_reason', 'priority'],
   additionalProperties: false,
 };
-
-function outputText(body) {
-  if (typeof body?.output_text === 'string') return body.output_text;
-  for (const item of body?.output || []) {
-    for (const content of item?.content || []) {
-      if (content?.type === 'output_text' && typeof content.text === 'string') return content.text;
-    }
-  }
-  return '';
-}
 
 /**
  * @param {any} record
@@ -131,7 +123,6 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
   let selectedLabels = 0;
 
   try {
-    const { createEmbedding, EmbeddingApiError, EMBEDDING_MODEL } = await import('./embed.js');
     const skipForbiddenEmbedding = state.error_code === 'embedding_forbidden';
     const [classificationSettled, embeddingSettled] = await Promise.allSettled([
       classificationCompleted ? Promise.resolve(null) : classifyEmail(record, labels, apiKey, model),

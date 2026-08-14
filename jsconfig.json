@@ -13,6 +13,7 @@
     "skipLibCheck": true
   },
   "include": [
+    "shared/**/*.js",
     "test/repository/**/*.js",
     "scripts/**/*.mjs",
     "eslint.config.js",

@@ -40,7 +40,7 @@ describe('lookupUserId', () => {
 });
 
 describe('storeTasks', () => {
-  test('upserts each task keyed by source and external id', async () => {
+  test('upserts all tasks in a single batched statement, keyed by source and external id', async () => {
     const sql = mockSql();
     const stored = await storeTasks(sql, 'user-1', [
       {
@@ -55,11 +55,37 @@ describe('storeTasks', () => {
       { source: 'email', externalId: 'msg-9', content: 'Reply to accountant', messageId: 'msg-9' },
     ]);
     expect(stored).toBe(2);
-    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls).toHaveLength(1);
     expect(sql.calls[0].text).toContain('INSERT INTO tasks');
+    expect(sql.calls[0].text).toContain('FROM json_to_recordset');
     expect(sql.calls[0].text).toContain('ON CONFLICT (user_id, source, external_id)');
-    expect(sql.calls[0].values).toEqual(expect.arrayContaining(['todoist', '8485093748', 'File VAT return', 4]));
-    expect(sql.calls[1].values).toEqual(expect.arrayContaining(['email', 'msg-9', 'msg-9']));
+    expect(sql.calls[0].values).toContain('user-1');
+    expect(sql.calls[0].values).toContainEqual({
+      __pgJson: [
+        {
+          source: 'todoist',
+          external_id: '8485093748',
+          content: 'File VAT return',
+          description: null,
+          due_date: '2026-07-18',
+          priority: 4,
+          url: 'https://app.todoist.com/task/8485093748',
+          message_id: null,
+          raw: { id: '8485093748' },
+        },
+        {
+          source: 'email',
+          external_id: 'msg-9',
+          content: 'Reply to accountant',
+          description: null,
+          due_date: null,
+          priority: null,
+          url: null,
+          message_id: 'msg-9',
+          raw: {},
+        },
+      ],
+    });
   });
 
   test('writes nothing for an empty gather', async () => {

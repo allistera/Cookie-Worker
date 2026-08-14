@@ -1,4 +1,5 @@
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout } from '../../../shared/fetch.js';
+import { outputText } from '../../../shared/openai.js';
 
 export const ANALYSIS_PROMPT_VERSION = 'email-task-analysis-v1';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -24,17 +25,6 @@ const ANALYSIS_SCHEMA = {
   required: ['summary', 'tasks'],
   additionalProperties: false,
 };
-
-/** @param {any} body */
-function outputText(body) {
-  if (typeof body?.output_text === 'string') return body.output_text;
-  for (const item of body?.output || []) {
-    for (const content of item?.content || []) {
-      if (content?.type === 'output_text' && typeof content.text === 'string') return content.text;
-    }
-  }
-  return '';
-}
 
 /**
  * Recent inbound mail the enrichment pipeline classified as high priority and

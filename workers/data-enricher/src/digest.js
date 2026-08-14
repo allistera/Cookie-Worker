@@ -1,4 +1,5 @@
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout } from '../../../shared/fetch.js';
+import { outputText } from '../../../shared/openai.js';
 
 export const DIGEST_PROMPT_VERSION = 'daily-digest-v1';
 export const DIGEST_KIND = 'daily_digest';
@@ -40,17 +41,6 @@ const DIGEST_SCHEMA = {
   required: ['overview', 'topics'],
   additionalProperties: false,
 };
-
-/** @param {any} body */
-function outputText(body) {
-  if (typeof body?.output_text === 'string') return body.output_text;
-  for (const item of body?.output || []) {
-    for (const content of item?.content || []) {
-      if (content?.type === 'output_text' && typeof content.text === 'string') return content.text;
-    }
-  }
-  return '';
-}
 
 /**
  * Unread inbox mail from the last few days: what a "catch up on" digest is
