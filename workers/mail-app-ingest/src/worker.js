@@ -107,7 +107,6 @@ const worker = {
               outcome: lateResult.outcome,
               message_id: lateRecord.messageId,
             }));
-            await endSql(lateSql);
             if (lateResult.outcome === 'duplicate') {
               await discardUploadedAttachments(lateAttachments, env, lateRecord.messageId);
             }
