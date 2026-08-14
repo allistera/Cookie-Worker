@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { fetchWithTimeout } from '../src/fetch.js';
+import { fetchWithTimeout } from './fetch.js';
 
 afterEach(() => {
   vi.useRealTimers();
