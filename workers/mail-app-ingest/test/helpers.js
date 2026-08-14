@@ -40,6 +40,15 @@ export function createMockSql(options = {}) {
           thread_id: null,
         }]);
       }
+      // Transaction-scoped duplicate/thread lookup (post advisory-lock), keyed
+      // on the already-resolved user id rather than a users join.
+      if (query.text.includes('AS is_duplicate') && query.text.includes('AS thread_id')) {
+        return Promise.resolve(options.lookupRows ?? [{
+          user_id: 'user-1',
+          is_duplicate: false,
+          thread_id: null,
+        }]);
+      }
       // Message insert uses RETURNING id to detect concurrent DO NOTHING races.
       if (query.text.includes('INSERT INTO messages') && query.text.includes('RETURNING')) {
         return Promise.resolve(options.messageInsertReturns ?? [{ id: 'message-1' }]);

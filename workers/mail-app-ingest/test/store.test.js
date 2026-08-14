@@ -36,18 +36,20 @@ describe('storeEmail', () => {
     const result = await storeEmail(sql, record(), 'owner@example.com');
     expect(result.outcome).toBe('inserted');
     expect(result.messageUuid).toEqual(expect.any(String));
-    expect(sql.transactions[0]).toHaveLength(4);
-    expect(sql.transactions[0][0].text).toContain('INSERT INTO threads');
-    expect(sql.transactions[0][0].text).toContain('message_count');
-    expect(sql.transactions[0][0].values).toContain(1);
-    expect(sql.transactions[0][1].text).toContain('INSERT INTO messages');
-    expect(sql.transactions[0][1].text).toContain('RETURNING');
+    expect(sql.transactions[0]).toHaveLength(6);
+    expect(sql.transactions[0][0].text).toContain('pg_advisory_xact_lock');
+    expect(sql.transactions[0][1].text).toContain('AS is_duplicate');
+    expect(sql.transactions[0][2].text).toContain('INSERT INTO threads');
+    expect(sql.transactions[0][2].text).toContain('message_count');
+    expect(sql.transactions[0][2].values).toContain(1);
+    expect(sql.transactions[0][3].text).toContain('INSERT INTO messages');
+    expect(sql.transactions[0][3].text).toContain('RETURNING');
     // Must go through tx.json (a real jsonb parameter), not a manually
     // JSON.stringify'd string cast with ::jsonb - see store.js's comment.
-    expect(sql.transactions[0][1].values).toContainEqual({ __pgJson: { to: [], cc: [], bcc: [] } });
-    expect(sql.transactions[0][1].values).toContainEqual({ __pgJson: [] });
-    expect(sql.transactions[0][2].text).toContain('INSERT INTO message_ai');
-    expect(sql.transactions[0][3].text).toContain('FROM label_rules');
+    expect(sql.transactions[0][3].values).toContainEqual({ __pgJson: { to: [], cc: [], bcc: [] } });
+    expect(sql.transactions[0][3].values).toContainEqual({ __pgJson: [] });
+    expect(sql.transactions[0][4].text).toContain('INSERT INTO message_ai');
+    expect(sql.transactions[0][5].text).toContain('FROM label_rules');
   });
 
   test('applies a matching tag rule in the same transaction as the insert', async () => {
@@ -69,17 +71,24 @@ describe('storeEmail', () => {
       outcome: 'duplicate',
       messageUuid: null,
     });
-    expect(sql.transactions).toHaveLength(0);
+    // The lock+lookup still run inside a transaction (needed to serialize
+    // per-user), but nothing is written once is_duplicate comes back true.
+    expect(sql.transactions).toHaveLength(1);
+    expect(sql.transactions[0]).toHaveLength(2);
+    expect(sql.transactions[0][0].text).toContain('pg_advisory_xact_lock');
+    expect(sql.transactions[0][1].text).toContain('AS is_duplicate');
   });
 
   test('reuses referenced thread and bumps counters', async () => {
     const sql = createMockSql({ lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }] });
     await storeEmail(sql, record({ references: ['<parent@example.com>'] }), 'owner@example.com');
-    expect(sql.transactions[0]).toHaveLength(4);
-    expect(sql.transactions[0][0].text).toContain('INSERT INTO messages');
-    expect(sql.transactions[0][1].text).toContain('INSERT INTO message_ai');
-    expect(sql.transactions[0][2].text).toContain('FROM label_rules');
-    expect(sql.transactions[0][3].text).toContain('UPDATE threads');
+    expect(sql.transactions[0]).toHaveLength(6);
+    expect(sql.transactions[0][0].text).toContain('pg_advisory_xact_lock');
+    expect(sql.transactions[0][1].text).toContain('AS is_duplicate');
+    expect(sql.transactions[0][2].text).toContain('INSERT INTO messages');
+    expect(sql.transactions[0][3].text).toContain('INSERT INTO message_ai');
+    expect(sql.transactions[0][4].text).toContain('FROM label_rules');
+    expect(sql.transactions[0][5].text).toContain('UPDATE threads');
   });
 
   test('returns duplicate when concurrent insert wins (RETURNING empty)', async () => {
@@ -92,8 +101,8 @@ describe('storeEmail', () => {
       messageUuid: null,
     });
     // Message insert ran; attachments/counter update did not. Existing thread is kept.
-    expect(sql.transactions[0]).toHaveLength(1);
-    expect(sql.transactions[0][0].text).toContain('INSERT INTO messages');
+    expect(sql.transactions[0]).toHaveLength(3);
+    expect(sql.transactions[0][2].text).toContain('INSERT INTO messages');
   });
 
   test('deletes empty thread when concurrent insert wins on a new thread', async () => {
@@ -102,9 +111,9 @@ describe('storeEmail', () => {
       outcome: 'duplicate',
       messageUuid: null,
     });
-    expect(sql.transactions[0][0].text).toContain('INSERT INTO threads');
-    expect(sql.transactions[0][1].text).toContain('INSERT INTO messages');
-    expect(sql.transactions[0][2].text).toContain('DELETE FROM threads');
+    expect(sql.transactions[0][2].text).toContain('INSERT INTO threads');
+    expect(sql.transactions[0][3].text).toContain('INSERT INTO messages');
+    expect(sql.transactions[0][4].text).toContain('DELETE FROM threads');
   });
 
   test('throws when no user matches', async () => {

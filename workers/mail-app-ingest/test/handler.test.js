@@ -28,6 +28,9 @@ function sqlReturning(result = { outcome: 'inserted', messageUuid: 'message-1' }
     if (text.includes('SELECT') && text.includes('FROM users')) {
       return [{ user_id: 'u', is_duplicate: result.outcome === 'duplicate', thread_id: null }];
     }
+    if (text.includes('AS is_duplicate') && text.includes('AS thread_id')) {
+      return [{ user_id: 'u', is_duplicate: result.outcome === 'duplicate', thread_id: null }];
+    }
     if (text.includes('INSERT INTO messages') && text.includes('RETURNING')) {
       if (result.outcome === 'duplicate') return [];
       return [{ id: result.messageUuid ?? 'message-1' }];

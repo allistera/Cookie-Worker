@@ -40,40 +40,50 @@ export async function emailAlreadyStored(sql, messageId, ownerEmail) {
 export async function storeEmail(sql, record, ownerEmail) {
   const messageUuid = crypto.randomUUID();
   const threadUuid = crypto.randomUUID();
-  const lookup = await sql`
-    SELECT
-      users.id AS user_id,
-      EXISTS (
-        SELECT 1 FROM messages
-        WHERE messages.user_id = users.id
-          AND messages.message_id = ${record.messageId}
-      ) AS is_duplicate,
-      (
-        SELECT messages.thread_id
-        FROM messages
-        WHERE messages.user_id = users.id
-          AND messages.message_id = ANY(${record.references})
-        ORDER BY messages.sent_at DESC
-        LIMIT 1
-      ) AS thread_id
+  const [userRow] = await sql`
+    SELECT users.id AS user_id
     FROM users
     WHERE users.email = ${ownerEmail}
     ORDER BY users.created_at
     LIMIT 1
   `;
-  const row = lookup[0];
-  if (!row) throw new Error('no users row matches OWNER_EMAIL; message not stored');
-  if (row.is_duplicate) return { outcome: 'duplicate', messageUuid: null };
-
-  const userId = row.user_id;
-  const threadId = row.thread_id ?? threadUuid;
+  if (!userRow) throw new Error('no users row matches OWNER_EMAIL; message not stored');
+  const userId = userRow.user_id;
   const sentAt = record.sentAt.toISOString();
-  const isNewThread = !row.thread_id;
 
   /** @type {boolean} */
   let inserted = false;
+  let threadId = threadUuid;
 
   await sql.begin(async (tx) => {
+    // Two inbound emails for the same user can be ingested by concurrent
+    // Worker invocations. Without serializing per user, both could read "no
+    // thread_id yet" for the same references and each insert its own thread
+    // row, splitting one conversation in two. See data-enricher/src/store.js
+    // (replaceSingletonSummary) for the same advisory-lock pattern.
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
+
+    const [row] = await tx`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM messages
+          WHERE messages.user_id = ${userId}
+            AND messages.message_id = ${record.messageId}
+        ) AS is_duplicate,
+        (
+          SELECT messages.thread_id
+          FROM messages
+          WHERE messages.user_id = ${userId}
+            AND messages.message_id = ANY(${record.references})
+          ORDER BY messages.sent_at DESC
+          LIMIT 1
+        ) AS thread_id
+    `;
+    if (row.is_duplicate) return;
+
+    threadId = row.thread_id ?? threadUuid;
+    const isNewThread = !row.thread_id;
+
     if (isNewThread) {
       await tx`
         INSERT INTO threads (id, user_id, subject, last_message_at, message_count)
