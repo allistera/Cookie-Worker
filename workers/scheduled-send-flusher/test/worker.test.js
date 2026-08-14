@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { flushScheduledSends } from '../src/worker.js';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -32,6 +33,21 @@ describe('flushScheduledSends', () => {
   test('throws on a non-OK response', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401 })));
     await expect(flushScheduledSends(env)).rejects.toThrow('Cookie-Web flush responded 401');
+  });
+
+  test('keeps the timeout active while parsing the response body', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async (_url, init) => ({
+      ok: true,
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+      }),
+    })));
+
+    const request = flushScheduledSends(env);
+    const rejection = expect(request).rejects.toThrow('aborted');
+    await vi.advanceTimersByTimeAsync(20_000);
+    await rejection;
   });
 
   test('throws if COOKIE_WEB_FLUSH_URL is not configured', async () => {

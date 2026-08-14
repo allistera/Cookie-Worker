@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from './fetch.js';
+
 export const DIGEST_PROMPT_VERSION = 'daily-digest-v1';
 export const DIGEST_KIND = 'daily_digest';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -112,7 +114,7 @@ export function pruneDigest(digest, knownIds) {
  * @param {string} model
  */
 export async function buildDigest(messages, apiKey, model) {
-  const response = await fetch(RESPONSES_URL, {
+  return fetchWithTimeout(RESPONSES_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -154,10 +156,9 @@ export async function buildDigest(messages, apiKey, model) {
         },
       },
     }),
+  }, async (response) => {
+    if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
+    const parsed = JSON.parse(outputText(await response.json()));
+    return pruneDigest(parsed, new Set(messages.map((message) => message.id)));
   });
-  if (!response.ok) {
-    throw new Error(`OpenAI request failed (${response.status})`);
-  }
-  const parsed = JSON.parse(outputText(await response.json()));
-  return pruneDigest(parsed, new Set(messages.map((message) => message.id)));
 }

@@ -4,6 +4,7 @@ import {
   fetchUkHeadlines,
   previousUkDayWindow,
 } from './news-sources.js';
+import { fetchWithTimeout } from './fetch.js';
 
 export const NEWS_PROMPT_VERSION = 'daily-news-v1';
 export const NEWS_KIND = 'daily_news';
@@ -81,7 +82,7 @@ export async function rankForInterests(candidates, interests, label, apiKey, mod
     return candidates.slice(0, MAX_PICKS_PER_SOURCE).map((c) => ({ ...c, note: '' }));
   }
 
-  const response = await fetch(RESPONSES_URL, {
+  return fetchWithTimeout(RESPONSES_URL, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -113,9 +114,10 @@ export async function rankForInterests(candidates, interests, label, apiKey, mod
         format: { type: 'json_schema', name: 'news_ranking', schema: RANKING_SCHEMA, strict: true },
       },
     }),
+  }, async (response) => {
+    if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
+    return applyRanking(JSON.parse(outputText(await response.json())), candidates);
   });
-  if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
-  return applyRanking(JSON.parse(outputText(await response.json())), candidates);
 }
 
 /**

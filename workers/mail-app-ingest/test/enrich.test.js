@@ -129,7 +129,7 @@ describe('AI enrichment', () => {
     expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(true);
   });
 
-  test('fails the row for retry when embedding fails, without marking completed', async () => {
+  test('keeps completed classification when embedding fails for retry', async () => {
     const sql = createMockSql();
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (String(url).includes('/responses')) {
@@ -147,10 +147,10 @@ describe('AI enrichment', () => {
 
     // No embedding was persisted (its leg failed)...
     expect(sql.queries.find((query) => query.text.includes('SET embedding'))).toBeFalsy();
-    // ...no completed transaction ran...
-    expect(sql.transactions).toHaveLength(0);
-    // ...and the row is marked failed for the cron to retry.
-    expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(true);
+    // ...but the successful classification is retained instead of billed again.
+    expect(sql.transactions).toHaveLength(1);
+    expect(sql.queries.some((query) => query.values.includes('embedding_failed'))).toBe(true);
+    expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(false);
   });
 
   test('completes classification when the embeddings endpoint is forbidden', async () => {
@@ -177,5 +177,51 @@ describe('AI enrichment', () => {
       event: 'embedding_skipped_forbidden',
       message_id: '<id>',
     }));
+  });
+
+  test('skips an embedding already saved by an earlier attempt', async () => {
+    const sql = createMockSql({
+      enrichmentStateRows: [{ status: 'failed', has_embedding: true, error_code: 'enrichment_failed' }],
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ output_text: JSON.stringify(responseResult()) }),
+    })));
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    expect(mockedFetch()).toHaveBeenCalledTimes(1);
+    expect(String(mockedFetch().mock.calls[0][0])).toContain('/responses');
+  });
+
+  test('skips classification when only its embedding needs recovery', async () => {
+    const sql = createMockSql({
+      enrichmentStateRows: [{
+        status: 'completed',
+        spam_verdict: 'inbox',
+        has_embedding: false,
+        error_code: 'embedding_failed',
+      }],
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }),
+    })));
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    expect(mockedFetch()).toHaveBeenCalledTimes(1);
+    expect(String(mockedFetch().mock.calls[0][0])).toContain('/embeddings');
+    expect(sql.transactions).toHaveLength(0);
   });
 });

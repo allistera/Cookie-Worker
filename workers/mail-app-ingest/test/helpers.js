@@ -17,7 +17,7 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[]}} [options]
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], enrichmentStateRows?: unknown[]}} [options]
  * @returns {any}
  */
 export function createMockSql(options = {}) {
@@ -46,6 +46,9 @@ export function createMockSql(options = {}) {
       }
       if (query.text.includes('FROM label_rules')) {
         return Promise.resolve(options.ruleRows ?? []);
+      }
+      if (query.text.includes('m.embedding IS NOT NULL')) {
+        return Promise.resolve(options.enrichmentStateRows ?? []);
       }
       return Promise.resolve([]);
     };

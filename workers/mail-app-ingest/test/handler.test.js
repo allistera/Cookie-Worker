@@ -397,7 +397,11 @@ describe('scheduled recovery', () => {
     await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
     expect(context.waitUntil).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(sql.end).toHaveBeenCalled());
-    expect(sql.mock.calls.some((call) => call[0].join('?').includes('FROM message_ai'))).toBe(true);
+    const recoveryQuery = sql.mock.calls
+      .map((call) => call[0].join('?'))
+      .find((query) => query.includes('FROM message_ai'));
+    expect(recoveryQuery).toContain("ai.status = 'completed'");
+    expect(recoveryQuery).toContain('m.embedding IS NULL');
   });
 });
 

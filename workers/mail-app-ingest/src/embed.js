@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from './fetch.js';
+
 export const EMBEDDING_MODEL = 'text-embedding-3-small';
 export const EMBEDDING_DIMENSIONS = 1536;
 // Character cap, not tokens. text-embedding-3-small allows ~8192 tokens; dense
@@ -40,7 +42,7 @@ export async function embedMessage(sql, record, messageUuid, apiKey) {
  */
 export async function createEmbedding(record, apiKey) {
   const input = buildEmbeddingInput(record.subject, record.bodyText);
-  const response = await fetch(EMBEDDINGS_URL, {
+  return fetchWithTimeout(EMBEDDINGS_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -51,19 +53,17 @@ export async function createEmbedding(record, apiKey) {
       dimensions: EMBEDDING_DIMENSIONS,
       input,
     }),
+  }, async (response) => {
+    if (!response.ok) throw new EmbeddingApiError(response.status);
+    const body = await response.json();
+    const vector = body?.data?.[0]?.embedding;
+    if (!Array.isArray(vector) || vector.length !== EMBEDDING_DIMENSIONS) {
+      throw new Error(
+        `OpenAI embeddings API returned invalid vector (expected ${EMBEDDING_DIMENSIONS} dimensions)`,
+      );
+    }
+    return vector;
   });
-  if (!response.ok) {
-    throw new EmbeddingApiError(response.status);
-  }
-  const body = await response.json();
-  const vector = body?.data?.[0]?.embedding;
-  if (!Array.isArray(vector) || vector.length !== EMBEDDING_DIMENSIONS) {
-    throw new Error(
-      `OpenAI embeddings API returned invalid vector (expected ${EMBEDDING_DIMENSIONS} dimensions)`,
-    );
-  }
-
-  return vector;
 }
 
 /**

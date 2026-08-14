@@ -18,22 +18,21 @@ export async function flushScheduledSends(env) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FLUSH_TIMEOUT_MS);
-  let response;
   try {
-    response = await fetch(env.COOKIE_WEB_FLUSH_URL, {
+    const response = await fetch(env.COOKIE_WEB_FLUSH_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}` },
       signal: controller.signal,
     });
+    if (!response.ok) {
+      throw new Error(`Cookie-Web flush responded ${response.status}`);
+    }
+    const result = await response.json();
+    console.log(JSON.stringify({ event: 'scheduled_sends_flushed', ...result }));
+    return result;
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) {
-    throw new Error(`Cookie-Web flush responded ${response.status}`);
-  }
-  const result = await response.json();
-  console.log(JSON.stringify({ event: 'scheduled_sends_flushed', ...result }));
-  return result;
 }
 
 export default {

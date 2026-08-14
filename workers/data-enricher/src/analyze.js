@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from './fetch.js';
+
 export const ANALYSIS_PROMPT_VERSION = 'email-task-analysis-v1';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const ANALYSIS_INPUT_CAP = 12_000;
@@ -72,7 +74,7 @@ export async function fetchImportantMessages(sql, userId) {
  * @returns {Promise<{summary: string, tasks: Array<{content: string, due_date: string | null}>}>}
  */
 export async function analyzeEmail(message, apiKey, model) {
-  const response = await fetch(RESPONSES_URL, {
+  return fetchWithTimeout(RESPONSES_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -109,9 +111,8 @@ export async function analyzeEmail(message, apiKey, model) {
         },
       },
     }),
+  }, async (response) => {
+    if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
+    return JSON.parse(outputText(await response.json()));
   });
-  if (!response.ok) {
-    throw new Error(`OpenAI request failed (${response.status})`);
-  }
-  return JSON.parse(outputText(await response.json()));
 }

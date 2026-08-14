@@ -260,7 +260,14 @@ export async function recoverPendingEnrichment(env) {
       JOIN messages m ON m.id = ai.message_id
       JOIN users u ON u.id = m.user_id
       WHERE u.email = ${env.OWNER_EMAIL}
-        AND ai.status IN ('pending', 'failed')
+        AND (
+          ai.status IN ('pending', 'failed')
+          OR (
+            ai.status = 'completed'
+            AND m.embedding IS NULL
+            AND coalesce(ai.error_code, '') <> 'embedding_forbidden'
+          )
+        )
         AND ai.updated_at < now() - interval '2 minutes'
       ORDER BY ai.updated_at
       LIMIT 3

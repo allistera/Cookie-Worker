@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from './fetch.js';
+
 // Source fetchers for AI Today's daily news section, ported from the
 // allistera/daily-news Python project. Each returns plain
 // {title, url, description, meta} items; ranking happens in news.js.
@@ -6,8 +8,6 @@ export const GITHUB_SEARCH_URL = 'https://api.github.com/search/repositories';
 export const PRODUCT_HUNT_URL = 'https://api.producthunt.com/v2/api/graphql';
 export const BBC_UK_FEED_URL = 'https://feeds.bbci.co.uk/news/uk/rss.xml';
 export const USER_AGENT = 'cookie-data-enricher';
-
-const FETCH_TIMEOUT_MS = 15_000;
 
 /**
  * Minutes Europe/London is ahead of UTC at `date` (60 under BST, 0 under GMT).
@@ -64,13 +64,13 @@ export function previousUkDayWindow(now = new Date()) {
 
 /** @param {string} url @param {RequestInit} [init] */
 async function fetchJson(url, init = {}) {
-  const response = await fetch(url, {
+  return fetchWithTimeout(url, {
     ...init,
     headers: { 'User-Agent': USER_AGENT, ...(init.headers || {}) },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  }, async (response) => {
+    if (!response.ok) throw new Error(`${new URL(url).host} responded ${response.status}`);
+    return response.json();
   });
-  if (!response.ok) throw new Error(`${new URL(url).host} responded ${response.status}`);
-  return response.json();
 }
 
 /**
@@ -199,11 +199,12 @@ export function parseRssItems(xml) {
  * @param {Date} [now]
  */
 export async function fetchUkHeadlines(count = 8, hours = 24, now = new Date()) {
-  const response = await fetch(BBC_UK_FEED_URL, {
+  const xml = await fetchWithTimeout(BBC_UK_FEED_URL, {
     headers: { 'User-Agent': USER_AGENT },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  }, async (response) => {
+    if (!response.ok) throw new Error(`BBC responded ${response.status}`);
+    return response.text();
   });
-  if (!response.ok) throw new Error(`BBC responded ${response.status}`);
 
   const since = now.getTime() - hours * 3_600_000;
   // Built with a loop rather than filter().sort() so `published` is known to be
@@ -211,7 +212,7 @@ export async function fetchUkHeadlines(count = 8, hours = 24, now = new Date()) 
   // in the window at all.
   /** @type {Array<{title: string, url: string, description: string, published: number}>} */
   const recent = [];
-  for (const item of parseRssItems(await response.text())) {
+  for (const item of parseRssItems(xml)) {
     if (item.published === null || item.published < since) continue;
     recent.push({ ...item, published: item.published });
   }
