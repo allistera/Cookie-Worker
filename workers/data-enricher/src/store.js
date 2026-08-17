@@ -1,4 +1,4 @@
-import { DIGEST_KIND, DIGEST_PROMPT_VERSION } from './digest.js';
+import { DIGEST_KIND, DIGEST_PROMPT_VERSION, TRIAGE_POLICY_SOURCE } from './digest.js';
 import { NEWS_KIND, NEWS_PROMPT_VERSION } from './news.js';
 
 /** @typedef {import('postgres').Sql | import('postgres').TransactionSql} SqlClient */
@@ -192,7 +192,7 @@ export async function storeNews(sql, userId, news, model) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{overview: string, topics: unknown[]}} digest
+ * @param {{overview: string, topics: unknown[], noise?: {count: number, categories: unknown[]}}} digest
  * @param {string | null} [model]
  */
 export async function storeDigest(sql, userId, digest, model) {
@@ -202,6 +202,11 @@ export async function storeDigest(sql, userId, digest, model) {
     DIGEST_KIND,
     digest.overview,
     model,
-    { topics: digest.topics, prompt_version: DIGEST_PROMPT_VERSION },
+    {
+      topics: digest.topics,
+      noise: digest.noise ?? { count: 0, categories: [] },
+      prompt_version: DIGEST_PROMPT_VERSION,
+      policy_source: TRIAGE_POLICY_SOURCE,
+    },
   );
 }

@@ -88,26 +88,27 @@ async function analyzeImportantEmails(sql, env, userId) {
 }
 
 /**
- * Cluster the unread inbox into the topics AI Today lists. Stored whole, so a
- * day with no unread mail replaces the digest with an empty one rather than
- * leaving stale topics on the dashboard.
+ * Triage the last 24 hours of inbox mail into Reply Needed, Review, and Noise.
+ * Reply Needed and Review become the AI Inbox rows; Noise is stored only as
+ * category counts. Stored whole so an empty day replaces stale triage output.
  *
  * @param {import('postgres').Sql} sql
  * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
  * @param {string} userId
  */
-async function buildDailyDigest(sql, env, userId) {
+async function buildDailyTriage(sql, env, userId) {
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
   const messages = await fetchDigestMessages(sql, userId);
-  const digest = messages.length
+  const triage = messages.length
     ? await buildDigest(messages, apiKey, env.AI_MODEL)
-    : { overview: '', topics: [] };
-  await storeDigest(sql, userId, digest, env.AI_MODEL);
+    : { overview: '', topics: [], noise: { count: 0, categories: [] } };
+  await storeDigest(sql, userId, triage, env.AI_MODEL);
   console.log(JSON.stringify({
-    event: 'digest_built',
+    event: 'triage_built',
     messages: messages.length,
-    topics: digest.topics.length,
+    visible: triage.topics.reduce((total, topic) => total + topic.items.length, 0),
+    noise: triage.noise.count,
   }));
 }
 
@@ -177,29 +178,29 @@ async function runPhases(env, phases) {
  * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
  */
 export async function runEnrichment(env) {
-  return runPhases(env, [gatherTodoist, analyzeImportantEmails, buildDailyDigest, buildDailyNews]);
+  return runPhases(env, [gatherTodoist, analyzeImportantEmails, buildDailyTriage, buildDailyNews]);
 }
 
 /**
- * Just the digest. Kept separate from the full run because that one also
+ * Just the inbox triage. Kept separate from the full run because that one also
  * re-gathers Todoist and analyses up to ten emails one at a time — far too
  * slow and too expensive to sit behind a button.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runDigestOnly(env) {
-  return runPhases(env, [buildDailyDigest]);
+  return runPhases(env, [buildDailyTriage]);
 }
 
 /**
- * Both of AI Today's cards, for its refresh control: the mail digest and the
+ * Both of AI Today's cards, for its refresh control: inbox triage and the
  * news. A handful of model calls rather than the nightly run's dozen, so the
  * caller can await it.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runTodayRefresh(env) {
-  return runPhases(env, [buildDailyDigest, buildDailyNews]);
+  return runPhases(env, [buildDailyTriage, buildDailyNews]);
 }
 
 export default {
@@ -215,7 +216,8 @@ export default {
   /**
    * Manual trigger: POST /run with `Authorization: Bearer <HTTP_TRIGGER_TOKEN>`.
    * `?phase=today` rebuilds both AI Today cards, which is what Cookie-Web's
-   * refresh control calls; `?phase=digest` rebuilds only the mail digest; no
+   * refresh control calls; `?phase=digest` rebuilds only inbox triage (the
+   * legacy phase name remains part of the deployed API); no
    * phase runs everything, as the cron does.
    *
    * @param {Request} request

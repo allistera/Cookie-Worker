@@ -128,7 +128,11 @@ describe('storeEmailAnalysis', () => {
 });
 
 describe('storeDigest', () => {
-  const digest = { overview: 'Mostly kitchen news.', topics: [{ emoji: '🍳', title: 'Kitchen', items: [] }] };
+  const digest = {
+    overview: 'One reply and two lower-priority messages.',
+    topics: [{ emoji: '↩️', title: 'Reply Needed', items: [] }],
+    noise: { count: 2, categories: [{ category: 'marketing', count: 2 }] },
+  };
 
   test('inserts the new digest before pruning superseded ones', async () => {
     const sql = mockSql([{ id: 'digest-2' }]);
@@ -138,10 +142,20 @@ describe('storeDigest', () => {
     expect(sql.calls[0].text).toContain('pg_advisory_xact_lock');
     expect(sql.calls[1].text).toContain('INSERT INTO summaries');
     expect(sql.calls[1].values).toEqual(
-      expect.arrayContaining(['user-1', 'daily_digest', 'Mostly kitchen news.', 'gpt-5.6-luna']),
+      expect.arrayContaining([
+        'user-1',
+        'daily_digest',
+        'One reply and two lower-priority messages.',
+        'gpt-5.6-luna',
+      ]),
     );
     expect(sql.calls[1].values).toContainEqual({
-      __pgJson: { topics: digest.topics, prompt_version: 'daily-digest-v1' },
+      __pgJson: {
+        topics: digest.topics,
+        noise: digest.noise,
+        prompt_version: 'email-triage-v1',
+        policy_source: 'ericporres/email-triage-plugin',
+      },
     });
 
     expect(sql.calls[2].text).toContain('DELETE FROM summaries');
@@ -149,7 +163,7 @@ describe('storeDigest', () => {
     expect(sql.calls[2].values).toEqual(expect.arrayContaining(['user-1', 'daily_digest', 'digest-2']));
   });
 
-  test('stores an empty digest so a quiet day clears stale topics', async () => {
+  test('stores empty triage so a quiet day clears stale results', async () => {
     const sql = mockSql([{ id: 'digest-3' }]);
     await storeDigest(sql, 'user-1', { overview: '', topics: [] }, null);
     expect(sql.calls[1].values).toContain('');

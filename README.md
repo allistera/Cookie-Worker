@@ -7,8 +7,10 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | Worker | Triggers | Purpose |
 | --- | --- | --- |
 | [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
-| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily), manual | Stores Todoist tasks due today, AI task analyses of important emails, a daily digest grouping unread mail into topics, and a personalised news round-up (GitHub, Product Hunt, BBC UK). Feeds Cookie-Web's AI Today page. |
+| [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily), manual | Stores Todoist tasks due today, AI task analyses of important emails, three-tier inbox triage, and a personalised news round-up (GitHub, Product Hunt, BBC UK). Feeds Cookie-Web's AI Today page. |
 | [`scheduled-send-flusher`](workers/scheduled-send-flusher) | Scheduled (every 5 minutes) | Calls Cookie-Web's `POST /api/send?resource=flush` so "Send Later" mail actually goes out once due; owns no mail-sending logic itself. |
+
+The `data-enricher` triage policy adapts Eric Porres's MIT-licensed [Email Triage Skill](https://github.com/ericporres/email-triage-plugin): **Reply Needed** and **Review** messages are shown individually, while **Noise** is summarized by category and omitted from AI Inbox rows. Cookie applies the policy to its own Postgres mailbox through the OpenAI Responses API; it does not embed the Claude plugin or depend on Gmail MCP at runtime.
 
 ## Repository structure
 
@@ -161,7 +163,7 @@ Required repository secrets:
 - `SENTRY_DSN`
 - `BLOB_READ_WRITE_TOKEN`
 - `TODOIST_API_TOKEN`
-- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=today` (rebuild both AI Today cards) and `?phase=digest` (the mail digest alone); Cookie-Web's AI Today refresh calls the former through `POST /api/tasks?resource=refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
+- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=today` (rebuild both AI Today cards) and the legacy `?phase=digest` name (inbox triage alone); Cookie-Web's AI Today refresh calls the former through `POST /api/tasks?resource=refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
 `data-enricher`'s news round-up takes two further, optional secrets. These are **not** synced by the `Deploy` workflow — `wrangler-action` fails the entire deploy when a listed secret has no value, and these may legitimately be unset. Set them once; Cloudflare keeps them across later deploys.
 
 Run these from the Worker's own directory. Each Worker holds its own `wrangler.jsonc` and the repository root has none, so from anywhere else wrangler fails with "Required Worker name missing":

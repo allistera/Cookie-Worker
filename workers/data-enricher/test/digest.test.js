@@ -3,8 +3,8 @@ import {
   buildDigest,
   fetchDigestMessages,
   pruneDigest,
-  DIGEST_MAX_TOPICS,
   DIGEST_PROMPT_VERSION,
+  TRIAGE_POLICY_SOURCE,
 } from '../src/digest.js';
 
 afterEach(() => {
@@ -16,41 +16,87 @@ const MESSAGES = [
     id: 'msg-1',
     from_name: 'City Construction',
     from_address: 'updates@cityconstruction.com',
+    envelope_to: 'home@example.com',
     subject: 'Revised Floor Plan',
-    gist: 'A revised design accounting for the bay window.',
+    gist: 'Please approve the revised design by tomorrow.',
+    sent_at: '2026-08-17T08:00:00.000Z',
   },
   {
     id: 'msg-2',
     from_name: null,
     from_address: 'claims@insurer.example',
+    envelope_to: 'finance@example.com',
     subject: 'Claim processed',
     gist: 'Your homeowner claim was processed.',
+    sent_at: '2026-08-17T07:00:00.000Z',
+  },
+  {
+    id: 'msg-3',
+    from_name: 'Shop',
+    from_address: 'offers@shop.example',
+    envelope_to: 'shopping@example.com',
+    subject: 'Weekend sale',
+    gist: 'Save 20 percent this weekend.',
+    sent_at: '2026-08-17T06:00:00.000Z',
   },
 ];
 
-const DIGEST = {
-  overview: 'Mostly kitchen renovation news.',
-  topics: [
+const TRIAGE = {
+  overview: 'One reply, one item to review, and one promotion hidden.',
+  reply_needed: [
     {
-      emoji: '🍳',
-      title: 'Kitchen Renovation',
-      items: [
-        { message_id: 'msg-1', headline: 'Revised Floor Plan', note: 'New design for the bay window.' },
-        { message_id: 'msg-2', headline: 'Claim Processed', note: 'Insurer processed the claim.' },
-      ],
+      message_id: 'msg-1',
+      headline: 'Approve the revised floor plan',
+      note: 'The contractor needs a decision by tomorrow.',
+      suggested_action: 'Reply with approval or requested changes',
     },
   ],
+  review: [
+    {
+      message_id: 'msg-2',
+      headline: 'Insurance claim processed',
+      note: 'Check the final claim outcome.',
+    },
+  ],
+  noise: [{ message_id: 'msg-3', category: 'promotional' }],
 };
 
-describe('buildDigest', () => {
-  test('requests a structured digest and parses it', async () => {
+describe('buildDigest email triage', () => {
+  test('requests structured three-tier triage and converts it for the AI Inbox', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
-      json: async () => ({ output_text: JSON.stringify(DIGEST) }),
+      json: async () => ({ output_text: JSON.stringify(TRIAGE) }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(buildDigest(MESSAGES, 'key', 'gpt-5.6-luna')).resolves.toEqual(DIGEST);
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-5.6-luna')).resolves.toEqual({
+      overview: TRIAGE.overview,
+      topics: [
+        {
+          emoji: '↩️',
+          title: 'Reply Needed',
+          items: [
+            {
+              message_id: 'msg-1',
+              headline: 'Approve the revised floor plan',
+              note: 'The contractor needs a decision by tomorrow. Suggested: Reply with approval or requested changes.',
+            },
+          ],
+        },
+        {
+          emoji: '👀',
+          title: 'Review',
+          items: [
+            {
+              message_id: 'msg-2',
+              headline: 'Insurance claim processed',
+              note: 'Check the final claim outcome.',
+            },
+          ],
+        },
+      ],
+      noise: { count: 1, categories: [{ category: 'promotional', count: 1 }] },
+    });
 
     const [url, init] = /** @type {[string, {headers: Record<string, string>, body: string}]} */ (
       /** @type {unknown} */ (fetchMock.mock.calls[0])
@@ -59,32 +105,10 @@ describe('buildDigest', () => {
     expect(init.headers.Authorization).toBe('Bearer key');
     const body = JSON.parse(init.body);
     expect(body.model).toBe('gpt-5.6-luna');
-    expect(body.text.format.type).toBe('json_schema');
-    // The model sees ids, subjects and gists — never raw bodies.
-    expect(JSON.stringify(body.input)).toContain('Revised Floor Plan');
-    expect(JSON.stringify(body.input)).toContain('msg-1');
-  });
-
-  test('drops items citing a message that was not in the input', async () => {
-    const hallucinated = {
-      overview: 'x',
-      topics: [
-        {
-          emoji: '📣',
-          title: 'Invented',
-          items: [{ message_id: 'msg-999', headline: 'Nope', note: 'Not real.' }],
-        },
-        ...DIGEST.topics,
-      ],
-    };
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ output_text: JSON.stringify(hallucinated) }),
-    })));
-
-    const result = await buildDigest(MESSAGES, 'key', 'gpt-5.6-luna');
-    expect(result.topics).toHaveLength(1);
-    expect(result.topics[0].title).toBe('Kitchen Renovation');
+    expect(body.text.format).toMatchObject({ type: 'json_schema', name: 'email_triage' });
+    expect(body.input[0].content).toContain('Reply Needed, Review, and Noise');
+    expect(body.input[1].content).toContain('home@example.com');
+    expect(body.input[1].content).toContain('msg-1');
   });
 
   test('throws on a non-OK response', async () => {
@@ -94,50 +118,59 @@ describe('buildDigest', () => {
     );
   });
 
-  test('exposes a prompt version for provenance', () => {
-    expect(DIGEST_PROMPT_VERSION).toMatch(/^daily-digest-v/);
+  test('records the adapted policy and prompt version for provenance', () => {
+    expect(TRIAGE_POLICY_SOURCE).toBe('ericporres/email-triage-plugin');
+    expect(DIGEST_PROMPT_VERSION).toMatch(/^email-triage-v/);
   });
 });
 
-describe('pruneDigest', () => {
+describe('pruneDigest triage validation', () => {
   const known = new Set(['a', 'b', 'c']);
-  const topic = (title, ids) => ({
-    emoji: '📣',
-    title,
-    items: ids.map((id) => ({ message_id: id, headline: id, note: id })),
-  });
 
-  test('keeps only known message ids and drops emptied topics', () => {
+  test('shows reply and review items but summarizes noise as category counts', () => {
     const result = pruneDigest(
-      { overview: 'o', topics: [topic('Real', ['a', 'zz']), topic('Bogus', ['yy'])] },
+      {
+        overview: 'Triage complete.',
+        reply_needed: [
+          { message_id: 'a', headline: 'A', note: 'Needs a reply.', suggested_action: 'Reply' },
+        ],
+        review: [{ message_id: 'b', headline: 'B', note: 'Read this.' }],
+        noise: [{ message_id: 'c', category: 'marketing' }],
+      },
       known,
     );
-    expect(result.topics).toHaveLength(1);
-    expect(result.topics[0].items.map((i) => i.message_id)).toEqual(['a']);
+
+    expect(result.topics.map((topic) => topic.title)).toEqual(['Reply Needed', 'Review']);
+    expect(result.topics.flatMap((topic) => topic.items).map((item) => item.message_id))
+      .toEqual(['a', 'b']);
+    expect(result.noise).toEqual({ count: 1, categories: [{ category: 'marketing', count: 1 }] });
   });
 
-  test('lists a message at most once across topics', () => {
-    const result = pruneDigest({ overview: 'o', topics: [topic('One', ['a']), topic('Two', ['a', 'b'])] }, known);
-    expect(result.topics.map((t) => t.items.map((i) => i.message_id))).toEqual([['a'], ['b']]);
-  });
-
-  test('caps the number of topics', () => {
-    const topics = Array.from({ length: DIGEST_MAX_TOPICS + 3 }, () => topic('T', ['a']));
-    // Each topic claims the same id, so only the first survives deduplication.
-    expect(pruneDigest({ overview: 'o', topics }, known).topics).toHaveLength(1);
-
-    const distinct = [topic('A', ['a']), topic('B', ['b']), topic('C', ['c'])];
-    expect(pruneDigest({ overview: 'o', topics: distinct }, known).topics).toHaveLength(3);
-  });
-
-  test('tolerates a malformed payload', () => {
-    expect(pruneDigest({}, known)).toEqual({ overview: '', topics: [] });
-    expect(pruneDigest({ overview: 5, topics: 'nope' }, known)).toEqual({ overview: '', topics: [] });
+  test.each([
+    ['omits an input', { reply_needed: [], review: [], noise: [{ message_id: 'a', category: 'other' }] }],
+    ['repeats an input', {
+      reply_needed: [{ message_id: 'a', headline: 'A', note: 'n', suggested_action: 'Reply' }],
+      review: [{ message_id: 'a', headline: 'A again', note: 'n' }],
+      noise: [{ message_id: 'b', category: 'other' }, { message_id: 'c', category: 'other' }],
+    }],
+    ['invents an input', {
+      reply_needed: [],
+      review: [{ message_id: 'a', headline: 'A', note: 'n' }],
+      noise: [
+        { message_id: 'b', category: 'other' },
+        { message_id: 'c', category: 'other' },
+        { message_id: 'invented', category: 'other' },
+      ],
+    }],
+  ])('rejects model output that %s', (_label, payload) => {
+    expect(() => pruneDigest({ overview: '', ...payload }, known)).toThrow(
+      'Email triage did not classify every message exactly once',
+    );
   });
 });
 
 describe('fetchDigestMessages', () => {
-  test('selects unread inbox mail and excludes archived, sent, deleted and spam', async () => {
+  test('selects the last 24 hours of inbox mail regardless of read state', async () => {
     const calls = [];
     const sql = (strings, ...values) => {
       calls.push({ text: strings.join('$'), values });
@@ -147,7 +180,10 @@ describe('fetchDigestMessages', () => {
     expect(rows).toEqual(MESSAGES);
 
     const { text, values } = calls[0];
-    expect(text).toContain('messages.is_unread');
+    expect(text).not.toContain('messages.is_unread');
+    expect(text).toContain("interval '1 day'");
+    expect(text).toContain('messages.envelope_to');
+    expect(text).toContain('messages.scheduled_for IS NULL');
     expect(text).toContain('NOT messages.is_sent');
     expect(text).toContain('NOT messages.is_archived');
     expect(text).toContain('NOT messages.is_deleted');
