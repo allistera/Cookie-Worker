@@ -21,9 +21,14 @@ vi.mock('../src/analyze.js', () => ({
 }));
 vi.mock('../src/digest.js', () => ({
   fetchDigestMessages: vi.fn(async () => [{ id: 'msg-1' }]),
-  buildDigest: vi.fn(async () => ({ overview: 'o', topics: [] })),
+  buildDigest: vi.fn(async () => ({
+    overview: 'o',
+    topics: [],
+    noise: { count: 1, categories: [{ category: 'automated', count: 1 }] },
+  })),
   DIGEST_KIND: 'daily_digest',
-  DIGEST_PROMPT_VERSION: 'daily-digest-v1',
+  DIGEST_PROMPT_VERSION: 'email-triage-v1',
+  TRIAGE_POLICY_SOURCE: 'ericporres/email-triage-plugin',
 }));
 vi.mock('../src/news.js', () => ({
   buildNews: vi.fn(async () => ({ sections: [] })),
@@ -85,7 +90,7 @@ describe('POST /run phase routing', () => {
   });
 
   // The refresh button must not re-gather Todoist or re-analyse ten emails.
-  test('runs only the digest for ?phase=digest', async () => {
+  test('runs only inbox triage for the legacy ?phase=digest name', async () => {
     const response = await run('?phase=digest');
 
     expect(response.status).toBe(200);
@@ -98,7 +103,7 @@ describe('POST /run phase routing', () => {
   });
 
   // AI Today's refresh rebuilds both of its cards in one trigger.
-  test('runs the digest and the news for ?phase=today', async () => {
+  test('runs inbox triage and news for ?phase=today', async () => {
     const response = await run('?phase=today');
 
     expect(response.status).toBe(200);
