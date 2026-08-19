@@ -166,7 +166,7 @@ npm run dry-run -- --all
 
 ## Deployment
 
-Production deployment is intentionally manual through the GitHub Actions `Deploy` workflow. Select the Worker directory name when dispatching it. The workflow validates the entire repository, dry-runs the selected Worker again, and publishes only that Worker. `mail-app-ingest`, `data-enricher`, and `scheduled-send-flusher` each synchronize their own GitHub secrets during deployment (scoped per Worker in `deploy.yml`), so no Worker receives another Worker's credentials.
+Production deployment is intentionally manual through the GitHub Actions `Deploy` workflow. Keep the default `all` target to validate the repository once and deploy every Worker sequentially, or enter one Worker directory name to publish only that Worker. Individual deployments dry-run the selected Worker again. `mail-app-ingest`, `data-enricher`, and `scheduled-send-flusher` each synchronize their own GitHub secrets during deployment (scoped per Worker in `deploy.yml`), so no Worker receives another Worker's credentials.
 
 Required repository secrets:
 

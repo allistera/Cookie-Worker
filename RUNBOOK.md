@@ -12,7 +12,7 @@ Confirm the Cloudflare Worker has its email route, Hyperdrive binding, required 
 
 ## Deploy
 
-Run the `Deploy` workflow in GitHub Actions and enter `mail-app-ingest` as the Worker. It validates every Worker, uploads this Worker's secrets, and deploys only the selected Wrangler configuration.
+Run the `Deploy` workflow in GitHub Actions. Keep the default `all` target for a coordinated deployment of every Worker, or enter one Worker directory name for an individual deployment. The workflow validates every Worker first, then uploads only each selected Worker's secrets immediately before deploying its Wrangler configuration.
 
 For local validation before deployment:
 
