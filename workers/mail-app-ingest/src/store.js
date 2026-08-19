@@ -150,7 +150,7 @@ export async function storeEmail(sql, record, ownerEmail) {
         INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, blob_url)
         SELECT row.id::uuid, row.message_id::uuid, row.filename, row.content_type,
                row.size_bytes, row.blob_url
-        FROM json_to_recordset(${tx.json(attachmentRows)}) AS row(
+        FROM jsonb_to_recordset(${tx.json(attachmentRows)}) AS row(
           id text, message_id text, filename text, content_type text,
           size_bytes bigint, blob_url text
         )

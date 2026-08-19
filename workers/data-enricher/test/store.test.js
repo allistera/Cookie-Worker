@@ -57,7 +57,7 @@ describe('storeTasks', () => {
     expect(stored).toBe(2);
     expect(sql.calls).toHaveLength(1);
     expect(sql.calls[0].text).toContain('INSERT INTO tasks');
-    expect(sql.calls[0].text).toContain('FROM json_to_recordset');
+    expect(sql.calls[0].text).toContain('FROM jsonb_to_recordset');
     expect(sql.calls[0].text).toContain('ON CONFLICT (user_id, source, external_id)');
     expect(sql.calls[0].values).toContain('user-1');
     expect(sql.calls[0].values).toContainEqual({
