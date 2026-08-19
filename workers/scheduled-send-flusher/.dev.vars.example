@@ -5,3 +5,6 @@ COOKIE_WEB_FLUSH_TOKEN=""
 # Bearer secret required to POST /run on this Worker's own workers.dev URL for
 # manual/ops testing; the deployed Worker gets it from GitHub secrets.
 HTTP_TRIGGER_TOKEN=""
+
+# Optional locally; required in production to send sanitized errors to Sentry.
+SENTRY_DSN=""

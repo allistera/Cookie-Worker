@@ -3,7 +3,8 @@ import worker from '../src/worker.js';
 
 const TOKEN = 'test-trigger-token';
 const env = /** @type {any} */ ({ HTTP_TRIGGER_TOKEN: TOKEN });
-const ctx = /** @type {any} */ ({});
+// The default export is Sentry-wrapped and flushes through ctx.waitUntil.
+const ctx = /** @type {any} */ ({ waitUntil: () => undefined });
 
 /**
  * @param {string} path

@@ -8,6 +8,8 @@ Apply the Cookie Web migrations before deploying Worker changes that depend on t
 
 Confirm the Cloudflare Worker has its email route, Hyperdrive binding, required variables, and the `OPENAI_API_KEY`, `SENTRY_DSN`, and `BLOB_READ_WRITE_TOKEN` secrets.
 
+`data-enricher` and `scheduled-send-flusher` report to the same Sentry project and take the same `SENTRY_DSN` secret; the `Deploy` workflow synchronizes it for all three. Errors are separated by their `service` tag, and by a `trigger` tag distinguishing cron runs from manual `POST /run` calls.
+
 ## Deploy
 
 Run the `Deploy` workflow in GitHub Actions and enter `mail-app-ingest` as the Worker. It validates every Worker, uploads this Worker's secrets, and deploys only the selected Wrangler configuration.

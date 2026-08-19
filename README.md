@@ -50,6 +50,19 @@ To add a Worker, create `workers/<name>/src/index.js`, `wrangler.jsonc`, `jsconf
 
 Python capsules (`main` ending in `.py`, with the `python_workers` compatibility flag) skip `jsconfig.json` and the per-Worker TypeScript check but go through the same discovery, types, and dry-run gates. None exist today — `data-enricher` was prototyped in Python and rewritten in JavaScript because vendored PyPI packages (via pywrangler) pushed the bundle past the free-plan size cap and Python still lacks a Hyperdrive driver. If a Python Worker returns, its deploys must go through `uv run pywrangler deploy` so vendored packages ship with it.
 
+## Error reporting
+
+Every Worker reports uncaught failures to the same Sentry project through `Sentry.withSentry`, and the failures it catches on purpose through explicit captures. The shared policy lives in [`shared/sentry.js`](shared/sentry.js); each Worker adds a thin `src/sentry.js` naming itself and listing the secrets it holds.
+
+- Events carry a `service` tag (the Worker name) and an `operation` tag on captured failures, so one project stays readable.
+- Workers answering more than one trigger tag each invocation `scheduled` or `http`.
+- Request bodies, headers, cookies, query parameters, user identity, AI inputs and outputs, and stack-frame variables are all switched off.
+- Connection strings and API tokens are stripped from messages and stack traces before capture, and from the structured log lines beside them.
+- Sampling is off (`tracesSampleRate: 0`); errors only.
+- Without `SENTRY_DSN` the client stays disabled, so local development and dry runs report nothing.
+
+Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by the `Deploy` workflow) and `SENTRY_ENVIRONMENT` (variable, set in each `wrangler.jsonc`).
+
 ## Mail app ingest
 
 `mail-app-ingest` is Cookie's Cloudflare Email Worker. It parses inbound mail, stores it in Supabase through Hyperdrive, forwards the original, and enriches the stored copy with OpenAI.
