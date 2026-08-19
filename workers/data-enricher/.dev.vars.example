@@ -7,3 +7,6 @@ TODOIST_API_TOKEN=""
 
 # Enables the AI analysis of important emails.
 OPENAI_API_KEY=""
+
+# Optional locally; required in production to send sanitized errors to Sentry.
+SENTRY_DSN=""

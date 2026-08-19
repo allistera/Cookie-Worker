@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { connectMcp } from './mcp.js';
@@ -5,6 +6,9 @@ import { gatherTodoistTasks } from './todoist.js';
 import { analyzeEmail, fetchImportantMessages } from './analyze.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
 import { buildNews } from './news.js';
+import {
+  captureHandledException, createSentryOptions, redact, tagTrigger,
+} from './sentry.js';
 import {
   fetchInterests,
   lookupUserId,
@@ -161,7 +165,11 @@ async function runPhases(env, phases) {
         await phase(sql, env, userId);
       } catch (error) {
         failures.push(/** @type {Error} */ (error));
-        console.log(JSON.stringify({ event: 'phase_failed', phase: phase.name, error: String(error) }));
+        console.log(JSON.stringify({ event: 'phase_failed', phase: phase.name, error: redact(error, env) }));
+        // Reported per phase rather than only through the AggregateError
+        // below: one failing phase is the actionable signal, and the manual
+        // HTTP trigger swallows the aggregate to keep its response generic.
+        captureHandledException(phase.name, error, env);
       }
     }
   } finally {
@@ -203,13 +211,14 @@ export async function runTodayRefresh(env) {
   return runPhases(env, [buildDailyTriage, buildDailyNews]);
 }
 
-export default {
+const worker = {
   /**
    * @param {ScheduledController} _controller
    * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
    * @param {ExecutionContext} _ctx
    */
   async scheduled(_controller, env, _ctx) {
+    tagTrigger('scheduled');
     await runEnrichment(env);
   },
 
@@ -225,6 +234,7 @@ export default {
    * @param {ExecutionContext} _ctx
    */
   async fetch(request, env, _ctx) {
+    tagTrigger('http');
     const url = new URL(request.url);
     if (url.pathname !== '/run') {
       return new Response('Not Found', { status: 404 });
@@ -247,8 +257,16 @@ export default {
       return Response.json({ status: 'ok', phase: phase ?? 'all' });
     } catch (error) {
       // Body stays generic: nested errors may carry connection details.
-      console.log(JSON.stringify({ event: 'http_run_failed', phase: phase ?? 'all', error: String(error) }));
+      console.log(JSON.stringify({ event: 'http_run_failed', phase: phase ?? 'all', error: redact(error, env) }));
+      // An AggregateError means every failure inside it was already captured
+      // by runPhases; anything else (user lookup, the database client) failed
+      // before the phases ran and would otherwise be reported nowhere.
+      if (!(error instanceof AggregateError)) {
+        captureHandledException('http_run', error, env, { phase: phase ?? 'all' });
+      }
       return Response.json({ status: 'failed' }, { status: 500 });
     }
   },
 };
+
+export default Sentry.withSentry(createSentryOptions, worker);

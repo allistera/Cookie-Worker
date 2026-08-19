@@ -7,8 +7,12 @@
 // sent copy, retry/failure bookkeeping). This Worker never touches Postgres
 // or Resend directly.
 
+import * as Sentry from '@sentry/cloudflare';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
+import {
+  captureHandledException, createSentryOptions, redact, tagTrigger,
+} from './sentry.js';
 
 const FLUSH_TIMEOUT_MS = 20_000;
 
@@ -32,13 +36,14 @@ export async function flushScheduledSends(env) {
   return result;
 }
 
-export default {
+const worker = {
   /**
    * @param {ScheduledController} _controller
    * @param {Env & {COOKIE_WEB_FLUSH_URL?: string, COOKIE_WEB_FLUSH_TOKEN?: string}} env
    * @param {ExecutionContext} _ctx
    */
   async scheduled(_controller, env, _ctx) {
+    tagTrigger('scheduled');
     await flushScheduledSends(env);
   },
 
@@ -49,6 +54,7 @@ export default {
    * @param {ExecutionContext} _ctx
    */
   async fetch(request, env, _ctx) {
+    tagTrigger('http');
     const url = new URL(request.url);
     if (url.pathname !== '/run') {
       return new Response('Not Found', { status: 404 });
@@ -66,8 +72,13 @@ export default {
       return Response.json({ status: 'ok', ...result });
     } catch (error) {
       // Body stays generic: nested errors may carry connection details.
-      console.log(JSON.stringify({ event: 'http_run_failed', error: String(error) }));
+      console.log(JSON.stringify({ event: 'http_run_failed', error: redact(error, env) }));
+      // The cron path lets failures escape, so `withSentry` reports them; this
+      // one is answered with a 500 and would otherwise be invisible.
+      captureHandledException('http_run', error, env);
       return Response.json({ status: 'failed' }, { status: 500 });
     }
   },
 };
+
+export default Sentry.withSentry(createSentryOptions, worker);

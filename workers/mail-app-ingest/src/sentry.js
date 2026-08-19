@@ -1,4 +1,9 @@
-import * as Sentry from '@sentry/cloudflare';
+import {
+  captureHandledException as captureShared,
+  createSentryOptions as createSharedOptions,
+} from '../../../shared/sentry.js';
+
+export { redact } from '../../../shared/sentry.js';
 
 const SERVICE = 'mail-app-ingest';
 
@@ -16,27 +21,17 @@ export function isTransientForwardError(err) {
 }
 
 /**
- * Keep error monitoring useful without sending email bodies, headers, user
- * identity, cookies, or stack-frame local variables to Sentry.
+ * Shared private-by-default options, plus the one filter specific to mail:
+ * intentional rethrows for MTA retry are not crashes.
  *
  * @param {Env & {SENTRY_DSN?: string}} env
  * @returns {import('@sentry/cloudflare').CloudflareOptions}
  */
 export function createSentryOptions(env) {
-  return {
-    dsn: env.SENTRY_DSN,
-    enabled: Boolean(env.SENTRY_DSN),
-    environment: env.SENTRY_ENVIRONMENT ?? 'production',
-    tracesSampleRate: 0,
-    dataCollection: {
-      userInfo: false,
-      cookies: false,
-      httpHeaders: { request: false, response: false },
-      httpBodies: [],
-      queryParams: false,
-      genAI: { inputs: false, outputs: false },
-      stackFrameVariables: false,
-    },
+  return createSharedOptions({
+    service: SERVICE,
+    env,
+    trigger: 'email',
     beforeSend(event) {
       // The handler intentionally rethrows transient forward errors so the
       // sending MTA retries; those are expected operations noise, not crashes.
@@ -45,21 +40,9 @@ export function createSentryOptions(env) {
         value.mechanism?.handled === false
         && isTransientForwardError(value.value ?? '')
       ));
-      if (unhandledTransientForward) return null;
-      return {
-        ...event,
-        transaction: `${SERVICE}.email`,
-        request: undefined,
-        user: undefined,
-        breadcrumbs: undefined,
-        tags: {
-          ...event.tags,
-          service: SERVICE,
-          trigger: 'email',
-        },
-      };
+      return unhandledTransientForward ? null : event;
     },
-  };
+  });
 }
 
 /**
@@ -72,45 +55,5 @@ export function createSentryOptions(env) {
  * @param {Record<string, unknown>} [extra]
  */
 export function captureHandledException(operation, err, secrets = [], extra = {}) {
-  Sentry.captureException(sanitizeError(err, secrets), {
-    tags: {
-      service: SERVICE,
-      operation,
-    },
-    extra,
-  });
-}
-
-/**
- * @param {unknown} err
- * @param {...(string | undefined)} secrets
- */
-export function redact(err, ...secrets) {
-  return redactText(err instanceof Error ? err.message : String(err), secrets);
-}
-
-/**
- * Preserve the useful stack while removing connection strings and API keys.
- * @param {unknown} err
- * @param {(string | undefined)[]} secrets
- */
-function sanitizeError(err, secrets) {
-  const safeError = new Error(redact(err, ...secrets));
-  if (err instanceof Error) {
-    safeError.name = err.name;
-    if (err.stack) safeError.stack = redactText(err.stack, secrets);
-  }
-  return safeError;
-}
-
-/**
- * @param {string} text
- * @param {(string | undefined)[]} secrets
- */
-function redactText(text, secrets) {
-  let redacted = text;
-  for (const secret of secrets) {
-    if (secret) redacted = redacted.split(secret).join('[redacted]');
-  }
-  return redacted;
+  captureShared(SERVICE, operation, err, secrets, extra);
 }

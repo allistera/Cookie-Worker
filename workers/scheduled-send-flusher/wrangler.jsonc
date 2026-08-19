@@ -15,6 +15,7 @@
     "crons": ["*/5 * * * *"]
   },
   "vars": {
-    "COOKIE_WEB_FLUSH_URL": "https://mail.infinitywave.online/api/send?resource=flush"
+    "COOKIE_WEB_FLUSH_URL": "https://mail.infinitywave.online/api/send?resource=flush",
+    "SENTRY_ENVIRONMENT": "production"
   }
 }

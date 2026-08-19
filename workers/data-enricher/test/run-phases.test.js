@@ -60,7 +60,8 @@ const env = /** @type {any} */ ({
   AI_MODEL: 'gpt-5.6-luna',
   TODOIST_MCP_URL: 'https://ai.todoist.net/mcp',
 });
-const ctx = /** @type {any} */ ({});
+// The default export is Sentry-wrapped and flushes through ctx.waitUntil.
+const ctx = /** @type {any} */ ({ waitUntil: () => undefined });
 
 function run(query = '') {
   return worker.fetch(
