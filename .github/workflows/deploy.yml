@@ -1,12 +1,13 @@
 name: Deploy
+run-name: Deploy ${{ inputs.worker }}
 
 on:
   workflow_dispatch:
     inputs:
       worker:
-        description: Worker directory name under workers/
+        description: Worker directory name under workers/, or all
         required: true
-        default: mail-app-ingest
+        default: all
         type: string
 
 permissions:
@@ -51,12 +52,13 @@ jobs:
       - run: npm ci
 
       - name: Validate selected Worker
+        if: inputs.worker != 'all'
         env:
           SELECTED_WORKER: ${{ inputs.worker }}
         run: npm run dry-run -- "$SELECTED_WORKER"
 
       - name: Deploy mail-app-ingest and synchronize its secrets
-        if: inputs.worker == 'mail-app-ingest'
+        if: inputs.worker == 'all' || inputs.worker == 'mail-app-ingest'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -73,7 +75,7 @@ jobs:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
 
       - name: Deploy data-enricher and synchronize its secrets
-        if: inputs.worker == 'data-enricher'
+        if: inputs.worker == 'all' || inputs.worker == 'data-enricher'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -96,7 +98,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
       - name: Deploy scheduled-send-flusher and synchronize its secrets
-        if: inputs.worker == 'scheduled-send-flusher'
+        if: inputs.worker == 'all' || inputs.worker == 'scheduled-send-flusher'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -114,6 +116,7 @@ jobs:
 
       - name: Deploy selected Worker
         if: >-
+          inputs.worker != 'all' &&
           inputs.worker != 'mail-app-ingest' &&
           inputs.worker != 'data-enricher' &&
           inputs.worker != 'scheduled-send-flusher'
