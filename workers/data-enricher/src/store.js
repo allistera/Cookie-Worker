@@ -70,7 +70,7 @@ export async function storeTasks(sql, userId, tasks) {
     )
     SELECT ${userId}::uuid, row.source, row.external_id, row.content, row.description,
            row.due_date::date, row.priority::smallint, row.url, row.message_id::uuid, row.raw
-    FROM json_to_recordset(${sql.json(/** @type {any} */ (rows))}) AS row(
+    FROM jsonb_to_recordset(${sql.json(/** @type {any} */ (rows))}) AS row(
       source text, external_id text, content text, description text,
       due_date text, priority smallint, url text, message_id text, raw jsonb
     )
