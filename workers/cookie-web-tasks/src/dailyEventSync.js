@@ -147,7 +147,14 @@ export async function resolveDefaultCalendarId(sql, userId) {
  * @param {any[]} oldBlocks
  * @param {any[]} newBlocks
  */
-export async function syncDailyNoteEvents(sql, userId, documentId, eventDate, oldBlocks, newBlocks) {
+export async function syncDailyNoteEvents(
+  sql,
+  userId,
+  documentId,
+  eventDate,
+  oldBlocks,
+  newBlocks,
+) {
   const oldLines = extractTimeLines(oldBlocks);
   const newLines = extractTimeLines(newBlocks);
 

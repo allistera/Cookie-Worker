@@ -6,17 +6,23 @@ const LABEL_ID = '11111111-1111-1111-1111-111111111111';
 const USER_ID = '99999999-9999-4999-8999-999999999999';
 
 describe('listLabels', () => {
-  test('returns the user\'s labels with message counts', async () => {
-    const sql = createMockSql([[{ id: LABEL_ID, name: 'Work', color: '#2F6BE0', message_count: 3 }]]);
+  test("returns the user's labels with message counts", async () => {
+    const sql = createMockSql([
+      [{ id: LABEL_ID, name: 'Work', color: '#2F6BE0', message_count: 3 }],
+    ]);
     const response = await listLabels(sql, USER_ID);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ labels: [{ id: LABEL_ID, name: 'Work', color: '#2F6BE0', message_count: 3 }] });
+    expect(await response.json()).toEqual({
+      labels: [{ id: LABEL_ID, name: 'Work', color: '#2F6BE0', message_count: 3 }],
+    });
   });
 });
 
 describe('createLabel', () => {
   test('creates a label with a trimmed name and hex color', async () => {
-    const sql = createMockSql([[{ id: LABEL_ID, name: 'Work', color: '#2F6BE0', kind: 'user', message_count: 0 }]]);
+    const sql = createMockSql([
+      [{ id: LABEL_ID, name: 'Work', color: '#2F6BE0', kind: 'user', message_count: 0 }],
+    ]);
     const response = await createLabel(sql, USER_ID, { name: '  Work  ', color: '#2F6BE0' });
     expect(response.status).toBe(201);
     expect((await response.json()).label.name).toBe('Work');
@@ -43,7 +49,9 @@ describe('createLabel', () => {
 
 describe('updateLabel', () => {
   test('renames a label', async () => {
-    const sql = createMockSql([[{ id: LABEL_ID, name: 'Money', color: '#2f9e44', kind: 'user', auto_apply: true }]]);
+    const sql = createMockSql([
+      [{ id: LABEL_ID, name: 'Money', color: '#2f9e44', kind: 'user', auto_apply: true }],
+    ]);
     const response = await updateLabel(sql, USER_ID, { id: LABEL_ID, name: '  Money  ' });
     expect(response.status).toBe(200);
     expect((await response.json()).label.name).toBe('Money');
@@ -51,7 +59,16 @@ describe('updateLabel', () => {
 
   test('updates color and description, including clearing the description', async () => {
     const sql = createMockSql([
-      [{ id: LABEL_ID, name: 'Work', color: '#2F6BE0', kind: 'user', description: null, auto_apply: false }],
+      [
+        {
+          id: LABEL_ID,
+          name: 'Work',
+          color: '#2F6BE0',
+          kind: 'user',
+          description: null,
+          auto_apply: false,
+        },
+      ],
     ]);
     const response = await updateLabel(sql, USER_ID, {
       id: LABEL_ID,
@@ -78,7 +95,9 @@ describe('updateLabel', () => {
 
   test('returns a conflict when the rename collides with an existing label', async () => {
     const sql = createMockSql();
-    sql.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('duplicate'), { code: '23505' })));
+    sql.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error('duplicate'), { code: '23505' })),
+    );
     const response = await updateLabel(sql, USER_ID, { id: LABEL_ID, name: 'Home' });
     expect(response.status).toBe(409);
     expect((await response.json()).error).toMatch(/already exists/i);

@@ -11,9 +11,11 @@ import {
 const temporaryDirectories = [];
 
 afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map(
-    (directory) => rm(directory, { recursive: true, force: true }),
-  ));
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
 async function repositoryWithWorkers(...workers) {
@@ -22,10 +24,13 @@ async function repositoryWithWorkers(...workers) {
   for (const worker of workers) {
     const directory = path.join(repositoryRoot, 'workers', worker);
     await mkdir(path.join(directory, 'src'), { recursive: true });
-    await writeFile(path.join(directory, 'wrangler.jsonc'), JSON.stringify({
-      name: worker,
-      main: 'src/index.js',
-    }));
+    await writeFile(
+      path.join(directory, 'wrangler.jsonc'),
+      JSON.stringify({
+        name: worker,
+        main: 'src/index.js',
+      }),
+    );
     await writeFile(path.join(directory, 'src/index.js'), 'export default {};\n');
     await writeFile(path.join(directory, 'jsconfig.json'), '{}\n');
   }
@@ -45,18 +50,24 @@ describe('worker repository interface', () => {
   test('builds one multi-config dev command and one dry run per worker', async () => {
     const repositoryRoot = await repositoryWithWorkers('mail-app-ingest', 'queue-consumer');
 
-    await expect(createWranglerCommands({
-      repositoryRoot,
-      action: 'dev',
-      target: '--all',
-    })).resolves.toEqual([{
-      worker: 'all',
-      args: [
-        'dev',
-        '--config', 'workers/mail-app-ingest/wrangler.jsonc',
-        '--config', 'workers/queue-consumer/wrangler.jsonc',
-      ],
-    }]);
+    await expect(
+      createWranglerCommands({
+        repositoryRoot,
+        action: 'dev',
+        target: '--all',
+      }),
+    ).resolves.toEqual([
+      {
+        worker: 'all',
+        args: [
+          'dev',
+          '--config',
+          'workers/mail-app-ingest/wrangler.jsonc',
+          '--config',
+          'workers/queue-consumer/wrangler.jsonc',
+        ],
+      },
+    ]);
 
     const dryRuns = await createWranglerCommands({
       repositoryRoot,
@@ -66,19 +77,11 @@ describe('worker repository interface', () => {
     expect(dryRuns).toEqual([
       {
         worker: 'mail-app-ingest',
-        args: [
-          'deploy',
-          '--config', 'workers/mail-app-ingest/wrangler.jsonc',
-          '--dry-run',
-        ],
+        args: ['deploy', '--config', 'workers/mail-app-ingest/wrangler.jsonc', '--dry-run'],
       },
       {
         worker: 'queue-consumer',
-        args: [
-          'deploy',
-          '--config', 'workers/queue-consumer/wrangler.jsonc',
-          '--dry-run',
-        ],
+        args: ['deploy', '--config', 'workers/queue-consumer/wrangler.jsonc', '--dry-run'],
       },
     ]);
   });
@@ -86,30 +89,38 @@ describe('worker repository interface', () => {
   test('rejects an unknown worker before constructing a Wrangler command', async () => {
     const repositoryRoot = await repositoryWithWorkers('mail-app-ingest');
 
-    await expect(createWranglerCommands({
-      repositoryRoot,
-      action: 'deploy',
-      target: 'missing-worker',
-    })).rejects.toThrow('Unknown worker "missing-worker". Available workers: mail-app-ingest');
+    await expect(
+      createWranglerCommands({
+        repositoryRoot,
+        action: 'deploy',
+        target: 'missing-worker',
+      }),
+    ).rejects.toThrow('Unknown worker "missing-worker". Available workers: mail-app-ingest');
   });
 
   test('generates types without loading developer secrets', async () => {
     const repositoryRoot = await repositoryWithWorkers('data-enricher');
 
-    await expect(createWranglerCommands({
-      repositoryRoot,
-      action: 'types',
-      target: '--all',
-    })).resolves.toEqual([{
-      worker: 'data-enricher',
-      args: [
-        'types',
-        'workers/data-enricher/worker-configuration.d.ts',
-        '--config', 'workers/data-enricher/wrangler.jsonc',
-        '--env-file', '.wrangler-types.env',
-        '--include-runtime=false',
-      ],
-    }]);
+    await expect(
+      createWranglerCommands({
+        repositoryRoot,
+        action: 'types',
+        target: '--all',
+      }),
+    ).resolves.toEqual([
+      {
+        worker: 'data-enricher',
+        args: [
+          'types',
+          'workers/data-enricher/worker-configuration.d.ts',
+          '--config',
+          'workers/data-enricher/wrangler.jsonc',
+          '--env-file',
+          '.wrangler-types.env',
+          '--include-runtime=false',
+        ],
+      },
+    ]);
   });
 
   test('isolates TypeScript checks per Worker capsule', async () => {
@@ -131,10 +142,13 @@ describe('worker repository interface', () => {
     const repositoryRoot = await repositoryWithWorkers('mail-app-ingest');
     const directory = path.join(repositoryRoot, 'workers', 'data-enricher');
     await mkdir(path.join(directory, 'src'), { recursive: true });
-    await writeFile(path.join(directory, 'wrangler.jsonc'), JSON.stringify({
-      name: 'data-enricher',
-      main: 'src/entry.py',
-    }));
+    await writeFile(
+      path.join(directory, 'wrangler.jsonc'),
+      JSON.stringify({
+        name: 'data-enricher',
+        main: 'src/entry.py',
+      }),
+    );
     await writeFile(path.join(directory, 'src/entry.py'), 'print("hello world")\n');
 
     await expect(discoverWorkers(repositoryRoot)).resolves.toEqual([

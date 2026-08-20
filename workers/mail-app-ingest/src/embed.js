@@ -24,28 +24,32 @@ export class EmbeddingApiError extends Error {
  */
 export async function createEmbedding(record, apiKey) {
   const input = buildEmbeddingInput(record.subject, record.bodyText);
-  return fetchWithTimeout(EMBEDDINGS_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
+  return fetchWithTimeout(
+    EMBEDDINGS_URL,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: EMBEDDING_MODEL,
+        dimensions: EMBEDDING_DIMENSIONS,
+        input,
+      }),
     },
-    body: JSON.stringify({
-      model: EMBEDDING_MODEL,
-      dimensions: EMBEDDING_DIMENSIONS,
-      input,
-    }),
-  }, async (response) => {
-    if (!response.ok) throw new EmbeddingApiError(response.status);
-    const body = await response.json();
-    const vector = body?.data?.[0]?.embedding;
-    if (!Array.isArray(vector) || vector.length !== EMBEDDING_DIMENSIONS) {
-      throw new Error(
-        `OpenAI embeddings API returned invalid vector (expected ${EMBEDDING_DIMENSIONS} dimensions)`,
-      );
-    }
-    return vector;
-  });
+    async (response) => {
+      if (!response.ok) throw new EmbeddingApiError(response.status);
+      const body = await response.json();
+      const vector = body?.data?.[0]?.embedding;
+      if (!Array.isArray(vector) || vector.length !== EMBEDDING_DIMENSIONS) {
+        throw new Error(
+          `OpenAI embeddings API returned invalid vector (expected ${EMBEDDING_DIMENSIONS} dimensions)`,
+        );
+      }
+      return vector;
+    },
+  );
 }
 
 /**

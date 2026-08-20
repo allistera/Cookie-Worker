@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embedBatch, embedText, embedTextCached } from '../src/embeddings.js';
+import {
+  EMBEDDING_DIMENSIONS,
+  EMBEDDING_MODEL,
+  embedBatch,
+  embedText,
+  embedTextCached,
+} from '../src/embeddings.js';
 
 /** @param {number} fill */
 function vec(fill = 0.1) {
@@ -65,7 +71,10 @@ describe('embedBatch', () => {
   });
 
   it('throws when OpenAI responds with a non-2xx status', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 429 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 429 })),
+    );
     await expect(embedBatch(['a'], 'sk-test')).rejects.toThrow('429');
   });
 });

@@ -22,7 +22,11 @@ const ID_C = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '99999999-9999-9999-9999-999999999999';
 const TASK_ID = '44444444-4444-4444-8444-444444444444';
 
-function digestRow(topics, summary = 'One reply needs you and one message is worth reviewing.', noise) {
+function digestRow(
+  topics,
+  summary = 'One reply needs you and one message is worth reviewing.',
+  noise,
+) {
   return { summary, raw: { topics, noise }, created_at: '2026-08-03T05:00:00.000Z' };
 }
 
@@ -38,11 +42,15 @@ describe('fetchTasks', () => {
     fetchTasks(sql, USER_ID);
 
     expect(sql.calls[0].text).toContain('FROM tasks t');
-    expect(sql.calls[0].text).toContain('LEFT JOIN messages m ON m.id = t.message_id AND m.user_id = t.user_id');
+    expect(sql.calls[0].text).toContain(
+      'LEFT JOIN messages m ON m.id = t.message_id AND m.user_id = t.user_id',
+    );
     expect(sql.calls[0].text).toContain('WHERE t.user_id =');
     expect(sql.calls[0].text).toContain('m.from_address AS reply_to');
     expect(sql.calls[0].text).toContain('m.subject AS message_subject');
-    expect(sql.calls[0].text).toContain('ORDER BY t.due_date ASC NULLS LAST, t.priority DESC NULLS LAST');
+    expect(sql.calls[0].text).toContain(
+      'ORDER BY t.due_date ASC NULLS LAST, t.priority DESC NULLS LAST',
+    );
     expect(sql.calls[0].text).toContain('t.gathered_at');
   });
 
@@ -118,10 +126,12 @@ describe('buildDigest', () => {
         ],
       },
     ]);
-    const digest = nonNull(buildDigest(row, [
-      { id: ID_A, is_unread: true },
-      { id: ID_B, is_unread: false },
-    ]));
+    const digest = nonNull(
+      buildDigest(row, [
+        { id: ID_A, is_unread: true },
+        { id: ID_B, is_unread: false },
+      ]),
+    );
 
     expect(digest.overview).toBe('One reply needs you and one message is worth reviewing.');
     expect(digest.created_at).toBe('2026-08-03T05:00:00.000Z');
@@ -144,13 +154,17 @@ describe('buildDigest', () => {
   });
 
   it('drops items whose message was rescheduled to the future', () => {
-    const row = digestRow([{ emoji: '↩️', title: 'Reply Needed', items: [{ message_id: ID_A }, { message_id: ID_B }] }]);
+    const row = digestRow([
+      { emoji: '↩️', title: 'Reply Needed', items: [{ message_id: ID_A }, { message_id: ID_B }] },
+    ]);
     const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const digest = nonNull(buildDigest(row, [
-      { id: ID_A, is_unread: true, scheduled_for: future },
-      { id: ID_B, is_unread: true, scheduled_for: past },
-    ]));
+    const digest = nonNull(
+      buildDigest(row, [
+        { id: ID_A, is_unread: true, scheduled_for: future },
+        { id: ID_B, is_unread: true, scheduled_for: past },
+      ]),
+    );
 
     expect(digest.topics).toHaveLength(1);
     expect(digest.topics[0].items.map((/** @type {any} */ i) => i.message_id)).toEqual([ID_B]);
@@ -198,7 +212,13 @@ describe('buildNews', () => {
             emoji: '💻',
             title: 'GitHub',
             items: [
-              { title: 'acme/rocket', url: 'https://github.com/acme/rocket', description: 'Fast', note: 'Rust', meta: '★ 10' },
+              {
+                title: 'acme/rocket',
+                url: 'https://github.com/acme/rocket',
+                description: 'Fast',
+                note: 'Rust',
+                meta: '★ 10',
+              },
               { title: 'Bad', url: 'javascript:alert(1)', description: '', note: '', meta: '' },
             ],
           },
@@ -211,7 +231,13 @@ describe('buildNews', () => {
     expect(news.created_at).toBe('2026-08-04T05:00:00.000Z');
     expect(news.sections).toHaveLength(1);
     expect(news.sections[0].items).toEqual([
-      { title: 'acme/rocket', url: 'https://github.com/acme/rocket', description: 'Fast', note: 'Rust', meta: '★ 10' },
+      {
+        title: 'acme/rocket',
+        url: 'https://github.com/acme/rocket',
+        description: 'Fast',
+        note: 'Rust',
+        meta: '★ 10',
+      },
     ]);
   });
 
@@ -298,7 +324,11 @@ describe('rescheduleTodoistTask', () => {
 
 describe('getTasks', () => {
   it("returns the caller's gathered tasks with a null digest/news when unwritten", async () => {
-    const sql = createMockSql([[{ id: TASK_ID, source: 'email', content: 'Reply to Ana' }], [], []]);
+    const sql = createMockSql([
+      [{ id: TASK_ID, source: 'email', content: 'Reply to Ana' }],
+      [],
+      [],
+    ]);
     const response = await getTasks(sql, USER_ID);
     const body = await response.json();
 
@@ -317,7 +347,13 @@ describe('getTasks', () => {
           summary: 'One reply needs you.',
           created_at: '2026-08-03T05:00:00.000Z',
           raw: {
-            topics: [{ emoji: '↩️', title: 'Reply Needed', items: [{ message_id: ID_A, headline: 'Floor plan', note: 'Revised design.' }] }],
+            topics: [
+              {
+                emoji: '↩️',
+                title: 'Reply Needed',
+                items: [{ message_id: ID_A, headline: 'Floor plan', note: 'Revised design.' }],
+              },
+            ],
             noise: { categories: [{ category: 'marketing', count: 2 }] },
           },
         },
@@ -330,7 +366,12 @@ describe('getTasks', () => {
 
     expect(response.status).toBe(200);
     expect(sql.calls[3].text).toContain('m.is_unread');
-    expect(body.digest.topics[0].items[0]).toEqual({ message_id: ID_A, headline: 'Floor plan', note: 'Revised design.', unread: true });
+    expect(body.digest.topics[0].items[0]).toEqual({
+      message_id: ID_A,
+      headline: 'Floor plan',
+      note: 'Revised design.',
+      unread: true,
+    });
   });
 });
 
@@ -353,7 +394,10 @@ describe('postTasks', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, closedInTodoist: true });
-    expect(fetch).toHaveBeenCalledWith('https://api.todoist.com/api/v1/tasks/9001/close', expect.objectContaining({ method: 'POST' }));
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.todoist.com/api/v1/tasks/9001/close',
+      expect.objectContaining({ method: 'POST' }),
+    );
     vi.unstubAllGlobals();
   });
 
@@ -363,7 +407,9 @@ describe('postTasks', () => {
     const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'complete' }, 'tok');
 
     expect(response.status).toBe(502);
-    expect(sql.calls.some((/** @type {any} */ c) => c.text.includes('DELETE FROM tasks'))).toBe(false);
+    expect(sql.calls.some((/** @type {any} */ c) => c.text.includes('DELETE FROM tasks'))).toBe(
+      false,
+    );
     vi.unstubAllGlobals();
   });
 
@@ -375,7 +421,12 @@ describe('postTasks', () => {
 
   it('rejects a malformed id before touching the database', async () => {
     const sql = createMockSql();
-    const response = await postTasks(sql, USER_ID, { id: 'not-a-uuid', action: 'complete' }, undefined);
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: 'not-a-uuid', action: 'complete' },
+      undefined,
+    );
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
   });
@@ -389,19 +440,38 @@ describe('postTasks', () => {
 
   it('reschedules an email-sourced task locally without calling Todoist', async () => {
     vi.stubGlobal('fetch', vi.fn());
-    const sql = createMockSql([[{ id: TASK_ID, source: 'email', external_id: null }], [{ id: TASK_ID, due_date: '2026-08-25' }]]);
-    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' }, undefined);
+    const sql = createMockSql([
+      [{ id: TASK_ID, source: 'email', external_id: null }],
+      [{ id: TASK_ID, due_date: '2026-08-25' }],
+    ]);
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' },
+      undefined,
+    );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, task: { id: TASK_ID, due_date: '2026-08-25' } });
+    expect(await response.json()).toEqual({
+      ok: true,
+      task: { id: TASK_ID, due_date: '2026-08-25' },
+    });
     expect(fetch).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 
   it('reschedules a Todoist-sourced task remotely before updating the local row', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
-    const sql = createMockSql([[{ id: TASK_ID, source: 'todoist', external_id: '9001' }], [{ id: TASK_ID, due_date: '2026-08-25' }]]);
-    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' }, 'tok');
+    const sql = createMockSql([
+      [{ id: TASK_ID, source: 'todoist', external_id: '9001' }],
+      [{ id: TASK_ID, due_date: '2026-08-25' }],
+    ]);
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' },
+      'tok',
+    );
 
     expect(response.status).toBe(200);
     expect(fetch).toHaveBeenCalledWith(
@@ -414,7 +484,12 @@ describe('postTasks', () => {
   it('keeps the original due date when the Todoist reschedule fails', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
     const sql = createMockSql([[{ id: TASK_ID, source: 'todoist', external_id: '9001' }]]);
-    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' }, 'tok');
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' },
+      'tok',
+    );
 
     expect(response.status).toBe(502);
     expect(sql.calls.some((/** @type {any} */ c) => c.text.includes('UPDATE tasks'))).toBe(false);
@@ -423,7 +498,12 @@ describe('postTasks', () => {
 
   it('rejects a malformed due_date before touching the database', async () => {
     const sql = createMockSql();
-    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'reschedule', due_date: 'next tuesday' }, undefined);
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: TASK_ID, action: 'reschedule', due_date: 'next tuesday' },
+      undefined,
+    );
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
   });

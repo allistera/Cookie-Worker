@@ -7,13 +7,9 @@ const encoder = new TextEncoder();
  * @returns {Promise<string>}
  */
 export async function syntheticMessageId(parts) {
-  const joined = [
-    parts.from,
-    parts.to,
-    parts.date,
-    parts.subject,
-    parts.bodyPrefix,
-  ].map((value) => value ?? '').join('|');
+  const joined = [parts.from, parts.to, parts.date, parts.subject, parts.bodyPrefix]
+    .map((value) => value ?? '')
+    .join('|');
   const digest = await crypto.subtle.digest('SHA-256', encoder.encode(joined));
   const hex = [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, '0'))

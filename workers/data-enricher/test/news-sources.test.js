@@ -46,7 +46,10 @@ describe('previousUkDayWindow', () => {
 });
 
 describe('fetchTopRepos', () => {
-  const window = { after: new Date('2026-07-13T23:00:00Z'), before: new Date('2026-07-14T23:00:00Z') };
+  const window = {
+    after: new Date('2026-07-13T23:00:00Z'),
+    before: new Date('2026-07-14T23:00:00Z'),
+  };
 
   test('searches by creation window sorted by stars', async () => {
     const mock = stubFetch({
@@ -96,7 +99,10 @@ describe('fetchTopRepos', () => {
 });
 
 describe('fetchTopLaunches', () => {
-  const window = { after: new Date('2026-07-13T23:00:00Z'), before: new Date('2026-07-14T23:00:00Z') };
+  const window = {
+    after: new Date('2026-07-13T23:00:00Z'),
+    before: new Date('2026-07-14T23:00:00Z'),
+  };
 
   test('queries the GraphQL API by votes and maps the nodes', async () => {
     const mock = stubFetch({
@@ -175,7 +181,11 @@ describe('fetchUkHeadlines', () => {
     const now = new Date('2026-07-15T12:00:00Z');
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => ({ ok: true, status: 200, text: async () => feed('Wed, 15 Jul 2026 09:00:00 GMT') })),
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => feed('Wed, 15 Jul 2026 09:00:00 GMT'),
+      })),
     );
 
     const headlines = await fetchUkHeadlines(8, 24, now);
@@ -190,7 +200,11 @@ describe('fetchUkHeadlines', () => {
   test('drops stories older than the window', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => ({ ok: true, status: 200, text: async () => feed('Sun, 12 Jul 2026 09:00:00 GMT') })),
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => feed('Sun, 12 Jul 2026 09:00:00 GMT'),
+      })),
     );
 
     await expect(fetchUkHeadlines(8, 24, new Date('2026-07-15T12:00:00Z'))).resolves.toEqual([]);

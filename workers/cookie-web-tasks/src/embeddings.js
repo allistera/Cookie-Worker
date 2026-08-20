@@ -83,7 +83,9 @@ export async function embedBatch(texts, apiKey, { signal } = {}) {
   if (!response.ok) {
     throw new Error(`OpenAI embeddings API responded ${response.status}`);
   }
-  const { data } = /** @type {{data: {index: number, embedding: number[]}[]}} */ (await response.json());
+  const { data } = /** @type {{data: {index: number, embedding: number[]}[]}} */ (
+    await response.json()
+  );
   const vectors = data.sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
   if (vectors.some((vector) => vector.length !== EMBEDDING_DIMENSIONS)) {
     throw new Error('OpenAI embeddings API returned an unexpected vector length');

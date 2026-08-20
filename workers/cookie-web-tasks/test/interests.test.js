@@ -1,12 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { fetchInterests, getInterests, MAX_INTEREST_LENGTH, MAX_INTERESTS, normalizeInterests, putInterests, saveInterests } from '../src/interests.js';
+import {
+  fetchInterests,
+  getInterests,
+  MAX_INTEREST_LENGTH,
+  MAX_INTERESTS,
+  normalizeInterests,
+  putInterests,
+  saveInterests,
+} from '../src/interests.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '99999999-9999-9999-9999-999999999999';
 
 describe('normalizeInterests', () => {
   it('trims, drops blanks and de-duplicates case-insensitively', () => {
-    expect(normalizeInterests([' Vue ', 'vue', '', '   ', 'Postgres'])).toEqual(['Vue', 'Postgres']);
+    expect(normalizeInterests([' Vue ', 'vue', '', '   ', 'Postgres'])).toEqual([
+      'Vue',
+      'Postgres',
+    ]);
   });
 
   it('caps the list length', () => {

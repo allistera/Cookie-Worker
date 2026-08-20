@@ -63,7 +63,8 @@ async function route(url, request, sql, userId, env) {
   }
 
   if (sub === 'contacts') {
-    if (request.method !== 'GET') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    if (request.method !== 'GET')
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
     return getContacts(sql, userId);
   }
 
@@ -72,7 +73,8 @@ async function route(url, request, sql, userId, env) {
   }
 
   if (sub === 'attachment') {
-    if (request.method !== 'GET') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    if (request.method !== 'GET')
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
     const id = url.searchParams.get('id');
     return getAttachment(sql, userId, id, {
       issueSignedToken,
@@ -83,7 +85,8 @@ async function route(url, request, sql, userId, env) {
   }
 
   if (sub === 'thread-body') {
-    if (request.method !== 'GET') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    if (request.method !== 'GET')
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
     return getThreadBody(sql, userId, url.searchParams.get('id'));
   }
 
@@ -130,13 +133,20 @@ const worker = {
       try {
         ({ userId } = await verifyAccessToken(request, env, sql));
       } catch (error) {
-        return withCors(authFailureResponse(error), origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
+        return withCors(
+          authFailureResponse(error),
+          origin,
+          env.ALLOWED_ORIGIN,
+          env.SENTRY_ENVIRONMENT,
+        );
       }
 
       const response = await route(url, request, sql, userId, env);
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
-      console.log(JSON.stringify({ event: 'request_failed', path: url.pathname, method: request.method }));
+      console.log(
+        JSON.stringify({ event: 'request_failed', path: url.pathname, method: request.method }),
+      );
       captureHandledException('fetch', error, env, { path: url.pathname, method: request.method });
       return withCors(
         Response.json({ error: 'Request failed' }, { status: 500 }),

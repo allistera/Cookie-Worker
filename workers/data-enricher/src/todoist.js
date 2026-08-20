@@ -4,7 +4,9 @@ const PRIORITY_BY_NAME = { p1: 4, p2: 3, p3: 2, p4: 1 };
 
 /** @param {any} result */
 function textContent(result) {
-  return result.content?.find((/** @type {{type: string}} */ item) => item.type === 'text')?.text ?? '';
+  return (
+    result.content?.find((/** @type {{type: string}} */ item) => item.type === 'text')?.text ?? ''
+  );
 }
 
 /**

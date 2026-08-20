@@ -7,7 +7,9 @@ describe('flattenBlocksToText', () => {
       { type: 'header', data: { text: 'Kickoff notes', level: 2 } },
       { type: 'paragraph', data: { text: 'Ship the <b>widget</b> by Friday.' } },
     ];
-    expect(flattenBlocksToText('Project Plan', blocks)).toBe('Project Plan\nKickoff notes\nShip the widget by Friday.');
+    expect(flattenBlocksToText('Project Plan', blocks)).toBe(
+      'Project Plan\nKickoff notes\nShip the widget by Friday.',
+    );
   });
 
   it('strips inline HTML markup and entities from text', () => {
@@ -27,11 +29,23 @@ describe('flattenBlocksToText', () => {
         },
       },
     ];
-    expect(flattenBlocksToText('Groceries', blocks)).toBe('Groceries\nBuy milk\nWhole\nOrganic\nBuy eggs');
+    expect(flattenBlocksToText('Groceries', blocks)).toBe(
+      'Groceries\nBuy milk\nWhole\nOrganic\nBuy eggs',
+    );
   });
 
   it('flattens table cells row by row', () => {
-    const blocks = [{ type: 'table', data: { content: [['Name', 'Role'], ['Ada', 'Engineer']] } }];
+    const blocks = [
+      {
+        type: 'table',
+        data: {
+          content: [
+            ['Name', 'Role'],
+            ['Ada', 'Engineer'],
+          ],
+        },
+      },
+    ];
     expect(flattenBlocksToText('', blocks)).toBe('Name\nRole\nAda\nEngineer');
   });
 
@@ -71,13 +85,18 @@ describe('flattenBlocksToText', () => {
         type: 'kanban',
         data: {
           lanes: [
-            { title: 'Todo', tasks: [{ title: 'Write docs', description: 'Cover the new block type' }] },
+            {
+              title: 'Todo',
+              tasks: [{ title: 'Write docs', description: 'Cover the new block type' }],
+            },
             { title: 'Done', tasks: [] },
           ],
         },
       },
     ];
-    expect(flattenBlocksToText('Board', blocks)).toBe('Board\nTodo\nWrite docs\nCover the new block type\nDone');
+    expect(flattenBlocksToText('Board', blocks)).toBe(
+      'Board\nTodo\nWrite docs\nCover the new block type\nDone',
+    );
   });
 
   it('skips blocks with no representable text', () => {

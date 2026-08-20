@@ -21,7 +21,12 @@ function normalizeConditions(input) {
     const field = String(raw?.field ?? '');
     const operator = String(raw?.operator ?? '');
     const value = String(raw?.value ?? '').trim();
-    if (!FIELDS.includes(field) || !OPERATORS.includes(operator) || !value || value.length > MAX_VALUE) {
+    if (
+      !FIELDS.includes(field) ||
+      !OPERATORS.includes(operator) ||
+      !value ||
+      value.length > MAX_VALUE
+    ) {
       return null;
     }
     conditions.push({ field, operator, value });
@@ -92,12 +97,18 @@ export async function createRule(sql, userId, body) {
     (action === 'mark_done' && labelId)
   ) {
     return Response.json(
-      { error: 'A valid action (with label_id for apply_label) and 1-10 valid conditions are required' },
+      {
+        error:
+          'A valid action (with label_id for apply_label) and 1-10 valid conditions are required',
+      },
       { status: 400 },
     );
   }
 
-  const positionedConditions = conditions.map((condition, position) => ({ ...condition, position }));
+  const positionedConditions = conditions.map((condition, position) => ({
+    ...condition,
+    position,
+  }));
   let rule;
   try {
     rule = await sql.begin(async (tx) => {
@@ -129,7 +140,12 @@ export async function createRule(sql, userId, body) {
       return inserted;
     });
   } catch (error) {
-    console.log(JSON.stringify({ event: 'create_rule_failed', message: /** @type {Error} */ (error).message }));
+    console.log(
+      JSON.stringify({
+        event: 'create_rule_failed',
+        message: /** @type {Error} */ (error).message,
+      }),
+    );
     return Response.json({ error: 'Failed to create rule' }, { status: 500 });
   }
   if (!rule) {
@@ -182,13 +198,17 @@ export async function updateRule(sql, userId, body) {
   const resultAction = hasAction ? body.action : existing.action;
   // mark_done clears any label, even one already on the rule, since a rule
   // can only carry a label meaningful to its own action.
-  const resultLabelId = resultAction === 'mark_done' ? null : (hasLabelId ? labelId : existing.label_id);
+  const resultLabelId =
+    resultAction === 'mark_done' ? null : hasLabelId ? labelId : existing.label_id;
 
   if (
     (resultAction === 'apply_label' && !resultLabelId) ||
     (resultAction === 'mark_done' && hasLabelId)
   ) {
-    return Response.json({ error: 'apply_label requires label_id; mark_done cannot set one' }, { status: 400 });
+    return Response.json(
+      { error: 'apply_label requires label_id; mark_done cannot set one' },
+      { status: 400 },
+    );
   }
 
   if (hasLabelId && resultAction === 'apply_label') {

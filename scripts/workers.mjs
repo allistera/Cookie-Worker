@@ -37,7 +37,9 @@ export async function discoverWorkers(repositoryRoot = REPOSITORY_ROOT) {
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory()) continue;
     if (!WORKER_ID.test(entry.name)) {
-      throw new Error(`Invalid worker directory "${entry.name}"; use lowercase letters, numbers, and dashes`);
+      throw new Error(
+        `Invalid worker directory "${entry.name}"; use lowercase letters, numbers, and dashes`,
+      );
     }
     const directory = path.join(workersDirectory, entry.name);
     const configPath = path.join(directory, 'wrangler.jsonc');
@@ -53,10 +55,14 @@ export async function discoverWorkers(repositoryRoot = REPOSITORY_ROOT) {
     });
     if (errors.length > 0 || !configuration || typeof configuration !== 'object') {
       const detail = errors.map((error) => printParseErrorCode(error.error)).join(', ');
-      throw new Error(`Invalid Wrangler configuration at ${configPath}${detail ? `: ${detail}` : ''}`);
+      throw new Error(
+        `Invalid Wrangler configuration at ${configPath}${detail ? `: ${detail}` : ''}`,
+      );
     }
     if (configuration.name !== entry.name) {
-      throw new Error(`Worker directory "${entry.name}" must match Wrangler name "${configuration.name}"`);
+      throw new Error(
+        `Worker directory "${entry.name}" must match Wrangler name "${configuration.name}"`,
+      );
     }
     if (typeof configuration.main !== 'string' || configuration.main.length === 0) {
       throw new Error(`Worker "${entry.name}" must declare a main entry point`);
@@ -64,9 +70,9 @@ export async function discoverWorkers(repositoryRoot = REPOSITORY_ROOT) {
     const entryPath = path.resolve(directory, configuration.main);
     const relativeEntryPath = path.relative(directory, entryPath);
     if (
-      relativeEntryPath === ''
-      || relativeEntryPath.startsWith(`..${path.sep}`)
-      || path.isAbsolute(relativeEntryPath)
+      relativeEntryPath === '' ||
+      relativeEntryPath.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativeEntryPath)
     ) {
       throw new Error(`Worker "${entry.name}" main entry point must stay inside its capsule`);
     }
@@ -100,14 +106,16 @@ export async function discoverWorkers(repositoryRoot = REPOSITORY_ROOT) {
 export async function createTypecheckCommands(repositoryRoot = REPOSITORY_ROOT) {
   const workers = await discoverWorkers(repositoryRoot);
   const javascriptWorkers = workers.filter((worker) => !worker.main.endsWith('.py'));
-  return Promise.all(javascriptWorkers.map(async (worker) => {
-    try {
-      await access(worker.typecheckPath);
-    } catch {
-      throw new Error(`Worker "${worker.id}" is missing ${worker.typecheckPath}`);
-    }
-    return { worker: worker.id, args: ['-p', worker.typecheckPath] };
-  }));
+  return Promise.all(
+    javascriptWorkers.map(async (worker) => {
+      try {
+        await access(worker.typecheckPath);
+      } catch {
+        throw new Error(`Worker "${worker.id}" is missing ${worker.typecheckPath}`);
+      }
+      return { worker: worker.id, args: ['-p', worker.typecheckPath] };
+    }),
+  );
 }
 
 /**
@@ -135,20 +143,24 @@ export async function createWranglerCommands({
   if (target !== '--all') {
     const worker = workers.find((candidate) => candidate.id === target);
     if (!worker) {
-      throw new Error(`Unknown worker "${target}". Available workers: ${workers.map(({ id }) => id).join(', ')}`);
+      throw new Error(
+        `Unknown worker "${target}". Available workers: ${workers.map(({ id }) => id).join(', ')}`,
+      );
     }
     selected = [worker];
   }
 
   if (action === 'dev' && target === '--all') {
-    return [{
-      worker: 'all',
-      args: [
-        'dev',
-        ...selected.flatMap(({ configPath }) => ['--config', relativePath(configPath)]),
-        ...extraArgs,
-      ],
-    }];
+    return [
+      {
+        worker: 'all',
+        args: [
+          'dev',
+          ...selected.flatMap(({ configPath }) => ['--config', relativePath(configPath)]),
+          ...extraArgs,
+        ],
+      },
+    ];
   }
 
   return selected.map((worker) => {
@@ -164,8 +176,10 @@ export async function createWranglerCommands({
         args: [
           'types',
           relativePath(worker.typesPath),
-          '--config', relativePath(worker.configPath),
-          '--env-file', '.wrangler-types.env',
+          '--config',
+          relativePath(worker.configPath),
+          '--env-file',
+          '.wrangler-types.env',
           '--include-runtime=false',
           ...extraArgs,
         ],

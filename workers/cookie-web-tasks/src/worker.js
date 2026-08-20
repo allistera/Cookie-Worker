@@ -93,18 +93,21 @@ async function route(url, request, sql, userId, env) {
   }
 
   if (sub === 'refresh') {
-    if (request.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    if (request.method !== 'POST')
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
     return postRefresh(sql, userId, env.ENRICHER_RUN_URL, env.ENRICHER_TRIGGER_TOKEN);
   }
 
   if (sub === 'image-upload') {
-    if (request.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    if (request.method !== 'POST')
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
     return postImageUpload(request, { put, allowRequest, sql, userId }, env.BLOB_READ_WRITE_TOKEN);
   }
 
   if (sub === 'interests') {
     if (request.method === 'GET') return getInterests(sql, userId);
-    if (request.method !== 'PUT') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    if (request.method !== 'PUT')
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
     let body;
     try {
       body = await readJsonBody(request);
@@ -116,7 +119,8 @@ async function route(url, request, sql, userId, env) {
 
   if (sub === 'daily-note-seed') {
     if (request.method === 'GET') return getDailyNoteSeed(sql, userId);
-    if (request.method !== 'PUT') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    if (request.method !== 'PUT')
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
     let body;
     try {
       body = await readJsonBody(request);
@@ -128,7 +132,8 @@ async function route(url, request, sql, userId, env) {
 
   // /tasks itself
   if (request.method === 'GET') return getTasks(sql, userId);
-  if (request.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  if (request.method !== 'POST')
+    return Response.json({ error: 'Method not allowed' }, { status: 405 });
   let body;
   try {
     body = await readJsonBody(request);
@@ -158,13 +163,20 @@ const worker = {
       try {
         ({ userId } = await verifyAccessToken(request, env, sql));
       } catch (error) {
-        return withCors(authFailureResponse(error), origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
+        return withCors(
+          authFailureResponse(error),
+          origin,
+          env.ALLOWED_ORIGIN,
+          env.SENTRY_ENVIRONMENT,
+        );
       }
 
       const response = await route(url, request, sql, userId, env);
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
-      console.log(JSON.stringify({ event: 'request_failed', path: url.pathname, method: request.method }));
+      console.log(
+        JSON.stringify({ event: 'request_failed', path: url.pathname, method: request.method }),
+      );
       captureHandledException('fetch', error, env, { path: url.pathname, method: request.method });
       return withCors(
         Response.json({ error: 'Request failed' }, { status: 500 }),

@@ -6,9 +6,7 @@ import { gatherTodoistTasks } from './todoist.js';
 import { analyzeEmail, fetchImportantMessages } from './analyze.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
 import { buildNews } from './news.js';
-import {
-  captureHandledException, createSentryOptions, redact, tagTrigger,
-} from './sentry.js';
+import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
 import {
   fetchInterests,
   lookupUserId,
@@ -90,7 +88,9 @@ async function analyzeImportantEmails(sql, env, userId) {
     );
     extracted += tasks.length;
   }
-  console.log(JSON.stringify({ event: 'emails_analyzed', messages: messages.length, tasks: extracted }));
+  console.log(
+    JSON.stringify({ event: 'emails_analyzed', messages: messages.length, tasks: extracted }),
+  );
 }
 
 /**
@@ -110,12 +110,14 @@ async function buildDailyTriage(sql, env, userId) {
     ? await buildDigest(messages, apiKey, env.AI_MODEL)
     : { overview: '', topics: [], noise: { count: 0, categories: [] } };
   await storeDigest(sql, userId, triage, env.AI_MODEL);
-  console.log(JSON.stringify({
-    event: 'triage_built',
-    messages: messages.length,
-    visible: triage.topics.reduce((total, topic) => total + topic.items.length, 0),
-    noise: triage.noise.count,
-  }));
+  console.log(
+    JSON.stringify({
+      event: 'triage_built',
+      messages: messages.length,
+      visible: triage.topics.reduce((total, topic) => total + topic.items.length, 0),
+      noise: triage.noise.count,
+    }),
+  );
 }
 
 /**
@@ -143,12 +145,14 @@ async function buildDailyNews(sql, env, userId) {
     productHuntToken: env.PRODUCT_HUNT_TOKEN,
   });
   await storeNews(sql, userId, news, env.AI_MODEL);
-  console.log(JSON.stringify({
-    event: 'news_built',
-    interests: interests.length,
-    sections: news.sections.length,
-    items: news.sections.reduce((total, section) => total + section.items.length, 0),
-  }));
+  console.log(
+    JSON.stringify({
+      event: 'news_built',
+      interests: interests.length,
+      sections: news.sections.length,
+      items: news.sections.reduce((total, section) => total + section.items.length, 0),
+    }),
+  );
 }
 
 /**
@@ -167,7 +171,9 @@ async function runPhases(env, phases) {
         await phase(sql, env, userId);
       } catch (error) {
         failures.push(/** @type {Error} */ (error));
-        console.log(JSON.stringify({ event: 'phase_failed', phase: phase.name, error: redact(error, env) }));
+        console.log(
+          JSON.stringify({ event: 'phase_failed', phase: phase.name, error: redact(error, env) }),
+        );
         // Reported per phase rather than only through the AggregateError
         // below: one failing phase is the actionable signal, and the manual
         // HTTP trigger swallows the aggregate to keep its response generic.
@@ -245,8 +251,13 @@ const worker = {
       return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'POST' } });
     }
     // An unset token keeps the endpoint closed rather than open.
-    if (!env.HTTP_TRIGGER_TOKEN
-      || !(await timingSafeEqualStrings(request.headers.get('Authorization'), `Bearer ${env.HTTP_TRIGGER_TOKEN}`))) {
+    if (
+      !env.HTTP_TRIGGER_TOKEN ||
+      !(await timingSafeEqualStrings(
+        request.headers.get('Authorization'),
+        `Bearer ${env.HTTP_TRIGGER_TOKEN}`,
+      ))
+    ) {
       return new Response('Unauthorized', { status: 401 });
     }
     const phase = url.searchParams.get('phase');
@@ -259,7 +270,13 @@ const worker = {
       return Response.json({ status: 'ok', phase: phase ?? 'all' });
     } catch (error) {
       // Body stays generic: nested errors may carry connection details.
-      console.log(JSON.stringify({ event: 'http_run_failed', phase: phase ?? 'all', error: redact(error, env) }));
+      console.log(
+        JSON.stringify({
+          event: 'http_run_failed',
+          phase: phase ?? 'all',
+          error: redact(error, env),
+        }),
+      );
       // An AggregateError means every failure inside it was already captured
       // by runPhases; anything else (user lookup, the database client) failed
       // before the phases ran and would otherwise be reported nowhere.

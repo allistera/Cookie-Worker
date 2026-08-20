@@ -36,7 +36,8 @@ export async function createLabel(sql, userId, body) {
   const color = String(body?.color ?? '').trim();
   const description = String(body?.description ?? '').trim() || null;
   if (
-    !name || name.length > MAX_NAME ||
+    !name ||
+    name.length > MAX_NAME ||
     !COLOR_RE.test(color) ||
     (description && description.length > MAX_DESCRIPTION)
   ) {

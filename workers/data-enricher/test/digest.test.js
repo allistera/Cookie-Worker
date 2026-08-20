@@ -112,7 +112,10 @@ describe('buildDigest email triage', () => {
   });
 
   test('throws on a non-OK response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 429 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 429 })),
+    );
     await expect(buildDigest(MESSAGES, 'key', 'gpt-5.6-luna')).rejects.toThrow(
       'OpenAI request failed (429)',
     );
@@ -141,27 +144,41 @@ describe('pruneDigest triage validation', () => {
     );
 
     expect(result.topics.map((topic) => topic.title)).toEqual(['Reply Needed', 'Review']);
-    expect(result.topics.flatMap((topic) => topic.items).map((item) => item.message_id))
-      .toEqual(['a', 'b']);
+    expect(result.topics.flatMap((topic) => topic.items).map((item) => item.message_id)).toEqual([
+      'a',
+      'b',
+    ]);
     expect(result.noise).toEqual({ count: 1, categories: [{ category: 'marketing', count: 1 }] });
   });
 
   test.each([
-    ['omits an input', { reply_needed: [], review: [], noise: [{ message_id: 'a', category: 'other' }] }],
-    ['repeats an input', {
-      reply_needed: [{ message_id: 'a', headline: 'A', note: 'n', suggested_action: 'Reply' }],
-      review: [{ message_id: 'a', headline: 'A again', note: 'n' }],
-      noise: [{ message_id: 'b', category: 'other' }, { message_id: 'c', category: 'other' }],
-    }],
-    ['invents an input', {
-      reply_needed: [],
-      review: [{ message_id: 'a', headline: 'A', note: 'n' }],
-      noise: [
-        { message_id: 'b', category: 'other' },
-        { message_id: 'c', category: 'other' },
-        { message_id: 'invented', category: 'other' },
-      ],
-    }],
+    [
+      'omits an input',
+      { reply_needed: [], review: [], noise: [{ message_id: 'a', category: 'other' }] },
+    ],
+    [
+      'repeats an input',
+      {
+        reply_needed: [{ message_id: 'a', headline: 'A', note: 'n', suggested_action: 'Reply' }],
+        review: [{ message_id: 'a', headline: 'A again', note: 'n' }],
+        noise: [
+          { message_id: 'b', category: 'other' },
+          { message_id: 'c', category: 'other' },
+        ],
+      },
+    ],
+    [
+      'invents an input',
+      {
+        reply_needed: [],
+        review: [{ message_id: 'a', headline: 'A', note: 'n' }],
+        noise: [
+          { message_id: 'b', category: 'other' },
+          { message_id: 'c', category: 'other' },
+          { message_id: 'invented', category: 'other' },
+        ],
+      },
+    ],
   ])('rejects model output that %s', (_label, payload) => {
     expect(() => pruneDigest({ overview: '', ...payload }, known)).toThrow(
       'Email triage did not classify every message exactly once',

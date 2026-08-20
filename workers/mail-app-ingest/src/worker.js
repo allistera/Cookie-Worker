@@ -4,7 +4,10 @@ import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
 import { parseEmail } from './parse.js';
 import {
-  captureHandledException, createSentryOptions, isTransientForwardError, redact,
+  captureHandledException,
+  createSentryOptions,
+  isTransientForwardError,
+  redact,
 } from './sentry.js';
 import { emailAlreadyStored, storeEmail } from './store.js';
 
@@ -53,18 +56,18 @@ const worker = {
         );
         record.attachments = uploaded.attachments;
         for (const failure of uploaded.failures) {
-          console.log(JSON.stringify({
-            event: 'attachment_upload_failed',
-            index: failure.index,
-            message_id: record.messageId,
-            error: redact(failure.error, env.BLOB_READ_WRITE_TOKEN),
-          }));
-          captureHandledException(
-            'attachment_upload',
-            failure.error,
-            [env.BLOB_READ_WRITE_TOKEN],
-            { message_id: record.messageId, attachment_index: failure.index },
+          console.log(
+            JSON.stringify({
+              event: 'attachment_upload_failed',
+              index: failure.index,
+              message_id: record.messageId,
+              error: redact(failure.error, env.BLOB_READ_WRITE_TOKEN),
+            }),
           );
+          captureHandledException('attachment_upload', failure.error, [env.BLOB_READ_WRITE_TOKEN], {
+            message_id: record.messageId,
+            attachment_index: failure.index,
+          });
         }
         storePromise = storeEmail(sql, record, env.OWNER_EMAIL);
         storeResult = await withTimeout(storePromise, STORE_BUDGET_MS);
@@ -72,21 +75,25 @@ const worker = {
           await discardUploadedAttachments(uploaded.attachments, env, record.messageId);
         }
       }
-      console.log(JSON.stringify({
-        event: 'stored',
-        outcome: storeResult.outcome,
-        message_id: record.messageId,
-        raw_size: record.rawSize,
-        attachments: record.attachments.length,
-        truncated: record.truncated,
-      }));
+      console.log(
+        JSON.stringify({
+          event: 'stored',
+          outcome: storeResult.outcome,
+          message_id: record.messageId,
+          raw_size: record.rawSize,
+          attachments: record.attachments.length,
+          truncated: record.truncated,
+        }),
+      );
     } catch (err) {
-      console.log(JSON.stringify({
-        event: 'store_failed',
-        error: redact(err, env.HYPERDRIVE.connectionString),
-        message_id: record?.messageId,
-        raw_size: record?.rawSize ?? rawSize,
-      }));
+      console.log(
+        JSON.stringify({
+          event: 'store_failed',
+          error: redact(err, env.HYPERDRIVE.connectionString),
+          message_id: record?.messageId,
+          raw_size: record?.rawSize ?? rawSize,
+        }),
+      );
       captureHandledException('store', err, [env.HYPERDRIVE.connectionString], {
         message_id: record?.messageId,
         raw_size: record?.rawSize ?? rawSize,
@@ -100,31 +107,35 @@ const worker = {
         const lateAttachments = uploaded?.attachments ?? [];
         const blobToken = env.BLOB_READ_WRITE_TOKEN;
         const connectionString = env.HYPERDRIVE.connectionString;
-        ctx.waitUntil(storePromise
-          .then(async (lateResult) => {
-            console.log(JSON.stringify({
-              event: 'stored_late',
-              outcome: lateResult.outcome,
-              message_id: lateRecord.messageId,
-            }));
-            if (lateResult.outcome === 'duplicate') {
-              await discardUploadedAttachments(lateAttachments, env, lateRecord.messageId);
-            }
-            if (lateResult.outcome === 'inserted' && lateResult.messageUuid && apiKey) {
-              await runAiEnrichment(env, lateRecord, lateResult.messageUuid, true);
-            }
-          })
-          .catch(async (lateErr) => {
-            captureHandledException('store_late', lateErr, [connectionString], {
-              message_id: lateRecord.messageId,
-            });
-            await discardUploadedAttachments(
-              lateAttachments,
-              { ...env, BLOB_READ_WRITE_TOKEN: blobToken },
-              lateRecord.messageId,
-            );
-          })
-          .finally(() => endSql(lateSql)));
+        ctx.waitUntil(
+          storePromise
+            .then(async (lateResult) => {
+              console.log(
+                JSON.stringify({
+                  event: 'stored_late',
+                  outcome: lateResult.outcome,
+                  message_id: lateRecord.messageId,
+                }),
+              );
+              if (lateResult.outcome === 'duplicate') {
+                await discardUploadedAttachments(lateAttachments, env, lateRecord.messageId);
+              }
+              if (lateResult.outcome === 'inserted' && lateResult.messageUuid && apiKey) {
+                await runAiEnrichment(env, lateRecord, lateResult.messageUuid, true);
+              }
+            })
+            .catch(async (lateErr) => {
+              captureHandledException('store_late', lateErr, [connectionString], {
+                message_id: lateRecord.messageId,
+              });
+              await discardUploadedAttachments(
+                lateAttachments,
+                { ...env, BLOB_READ_WRITE_TOKEN: blobToken },
+                lateRecord.messageId,
+              );
+            })
+            .finally(() => endSql(lateSql)),
+        );
       } else if (uploaded?.attachments.length) {
         await discardUploadedAttachments(uploaded.attachments, env, record?.messageId);
       }
@@ -149,20 +160,24 @@ const worker = {
         // Transient errors are filtered out of Sentry (see createSentryOptions),
         // so this log line is their only trail.
         if (isTransientForwardError(err)) {
-          console.log(JSON.stringify({
-            event: 'forward_failed_transient',
-            error: redact(err, env.HYPERDRIVE.connectionString),
-            message_id: record?.messageId,
-          }));
+          console.log(
+            JSON.stringify({
+              event: 'forward_failed_transient',
+              error: redact(err, env.HYPERDRIVE.connectionString),
+              message_id: record?.messageId,
+            }),
+          );
         }
         if (sql && !sqlOwnedByWaitUntil) ctx.waitUntil(endSql(sql));
         throw err;
       }
-      console.log(JSON.stringify({
-        event: 'forward_failed_permanent',
-        error: redact(err, env.HYPERDRIVE.connectionString),
-        message_id: record?.messageId,
-      }));
+      console.log(
+        JSON.stringify({
+          event: 'forward_failed_permanent',
+          error: redact(err, env.HYPERDRIVE.connectionString),
+          message_id: record?.messageId,
+        }),
+      );
       captureHandledException('forward', err, [env.HYPERDRIVE.connectionString], {
         message_id: record?.messageId,
         permanent: true,
@@ -170,12 +185,12 @@ const worker = {
     }
 
     if (
-      sql
-      && !sqlOwnedByWaitUntil
-      && record
-      && storeResult?.outcome === 'inserted'
-      && storeResult.messageUuid
-      && env.OPENAI_API_KEY
+      sql &&
+      !sqlOwnedByWaitUntil &&
+      record &&
+      storeResult?.outcome === 'inserted' &&
+      storeResult.messageUuid &&
+      env.OPENAI_API_KEY
     ) {
       // Keep the ownership invariant symmetric with the store-timeout path above:
       // any waitUntil that takes sql sets this flag, even where nothing reads it back.
@@ -184,8 +199,9 @@ const worker = {
       const ingestSql = sql;
       const embedRecord = record;
       const messageUuid = storeResult.messageUuid;
-      ctx.waitUntil(endSql(ingestSql)
-        .then(() => runAiEnrichment(env, embedRecord, messageUuid, false)));
+      ctx.waitUntil(
+        endSql(ingestSql).then(() => runAiEnrichment(env, embedRecord, messageUuid, false)),
+      );
     } else if (sql && !sqlOwnedByWaitUntil) {
       ctx.waitUntil(endSql(sql));
     }
@@ -216,15 +232,19 @@ async function runAiEnrichment(env, record, messageUuid, late) {
   try {
     await enrichMessage(sql, record, messageUuid, env.OPENAI_API_KEY, env.AI_MODEL || AI_MODEL);
   } catch (err) {
-    console.log(JSON.stringify({
-      event: 'ai_enrichment_failed',
-      error: redact(err, env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY),
-      message_id: record.messageId,
-    }));
-    captureHandledException('ai_enrichment', err, [
-      env.HYPERDRIVE.connectionString,
-      env.OPENAI_API_KEY,
-    ], { message_id: record.messageId, late });
+    console.log(
+      JSON.stringify({
+        event: 'ai_enrichment_failed',
+        error: redact(err, env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY),
+        message_id: record.messageId,
+      }),
+    );
+    captureHandledException(
+      'ai_enrichment',
+      err,
+      [env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY],
+      { message_id: record.messageId, late },
+    );
   } finally {
     await endSql(sql);
   }
@@ -239,14 +259,22 @@ async function discardUploadedAttachments(attachments, env, messageId) {
   try {
     const deleted = await deleteUploadedAttachments(attachments, env.BLOB_READ_WRITE_TOKEN);
     if (deleted > 0) {
-      console.log(JSON.stringify({ event: 'attachment_blobs_deleted', count: deleted, message_id: messageId }));
+      console.log(
+        JSON.stringify({
+          event: 'attachment_blobs_deleted',
+          count: deleted,
+          message_id: messageId,
+        }),
+      );
     }
   } catch (error) {
-    console.log(JSON.stringify({
-      event: 'attachment_blob_cleanup_failed',
-      message_id: messageId,
-      error: redact(error, env.BLOB_READ_WRITE_TOKEN),
-    }));
+    console.log(
+      JSON.stringify({
+        event: 'attachment_blob_cleanup_failed',
+        message_id: messageId,
+        error: redact(error, env.BLOB_READ_WRITE_TOKEN),
+      }),
+    );
     captureHandledException('attachment_cleanup', error, [env.BLOB_READ_WRITE_TOKEN], {
       message_id: messageId,
     });
@@ -288,12 +316,21 @@ export async function recoverPendingEnrichment(env) {
     await endSql(sql);
   }
   if (!Array.isArray(rows)) return;
-  await Promise.all(rows.map((row) => runAiEnrichment(env, {
-    messageId: row.message_id || `<${row.id}@recovery.cookie>`,
-    fromAddress: row.from_address,
-    subject: row.subject,
-    bodyText: row.body_text,
-  }, row.id, false)));
+  await Promise.all(
+    rows.map((row) =>
+      runAiEnrichment(
+        env,
+        {
+          messageId: row.message_id || `<${row.id}@recovery.cookie>`,
+          fromAddress: row.from_address,
+          subject: row.subject,
+          bodyText: row.body_text,
+        },
+        row.id,
+        false,
+      ),
+    ),
+  );
   console.log(JSON.stringify({ event: 'ai_recovery_complete', attempted: rows.length }));
 }
 

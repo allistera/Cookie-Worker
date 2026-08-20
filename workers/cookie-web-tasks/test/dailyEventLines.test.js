@@ -9,11 +9,19 @@ function assertMatched(value) {
 
 describe('matchTimeLine', () => {
   it('matches a start-end-title range', () => {
-    expect(matchTimeLine('10:00 - 11:00 - Team sync')).toEqual({ start: '10:00', durationMinutes: 60, title: 'Team sync' });
+    expect(matchTimeLine('10:00 - 11:00 - Team sync')).toEqual({
+      start: '10:00',
+      durationMinutes: 60,
+      title: 'Team sync',
+    });
   });
 
   it('falls back to a single time with a 30-minute default duration', () => {
-    expect(matchTimeLine('9:05 - Standup')).toEqual({ start: '09:05', durationMinutes: 30, title: 'Standup' });
+    expect(matchTimeLine('9:05 - Standup')).toEqual({
+      start: '09:05',
+      durationMinutes: 30,
+      title: 'Standup',
+    });
   });
 
   it('does not let the range pattern swallow the end time into a single-time title', () => {
@@ -42,6 +50,10 @@ describe('matchTimeLine', () => {
   });
 
   it('trims surrounding whitespace before matching', () => {
-    expect(matchTimeLine('   10:00 - 11:00 - Team sync   ')).toEqual({ start: '10:00', durationMinutes: 60, title: 'Team sync' });
+    expect(matchTimeLine('   10:00 - 11:00 - Team sync   ')).toEqual({
+      start: '10:00',
+      durationMinutes: 60,
+      title: 'Team sync',
+    });
   });
 });

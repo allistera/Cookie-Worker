@@ -36,10 +36,9 @@ export function createSentryOptions(env) {
       // The handler intentionally rethrows transient forward errors so the
       // sending MTA retries; those are expected operations noise, not crashes.
       // They stay visible as forward_failed_transient structured logs.
-      const unhandledTransientForward = event.exception?.values?.some((value) => (
-        value.mechanism?.handled === false
-        && isTransientForwardError(value.value ?? '')
-      ));
+      const unhandledTransientForward = event.exception?.values?.some(
+        (value) => value.mechanism?.handled === false && isTransientForwardError(value.value ?? ''),
+      );
       return unhandledTransientForward ? null : event;
     },
   });

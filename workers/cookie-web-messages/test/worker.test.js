@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 // (contacts.js/messages.js) already has its own unit tests against a mock
 // sql, so the database and @vercel/blob are stubbed here rather than
 // exercised.
-const mockQuery = vi.fn(/** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])));
+const mockQuery = vi.fn(
+  /** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])),
+);
 const sqlEnd = vi.fn(async () => undefined);
 vi.mock('postgres', () => ({
   default: () => {
@@ -43,7 +45,9 @@ const env = /** @type {any} */ ({
   ALLOWED_ORIGIN: PRODUCTION,
   BLOB_READ_WRITE_TOKEN: 'blob-token',
 });
-const ctx = /** @type {any} */ ({ waitUntil: (/** @type {Promise<unknown>} */ promise) => promise });
+const ctx = /** @type {any} */ ({
+  waitUntil: (/** @type {Promise<unknown>} */ promise) => promise,
+});
 
 /** @param {string} path @param {RequestInit} [init] */
 function request(path, init = {}) {
@@ -64,7 +68,10 @@ beforeEach(() => {
 describe('CORS preflight', () => {
   test('answers OPTIONS from an allowed origin without touching auth or the database', async () => {
     const response = await worker.fetch(
-      new Request('https://cookie-web-messages.example/messages', { method: 'OPTIONS', headers: { Origin: PRODUCTION } }),
+      new Request('https://cookie-web-messages.example/messages', {
+        method: 'OPTIONS',
+        headers: { Origin: PRODUCTION },
+      }),
       env,
       ctx,
     );
@@ -92,16 +99,28 @@ describe('routing', () => {
 
   test('GET /messages/attachment dispatches to getAttachment with blob deps wired', async () => {
     mockQuery.mockResolvedValueOnce([
-      { filename: 'plan.pdf', content_type: 'application/pdf', blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf' },
+      {
+        filename: 'plan.pdf',
+        content_type: 'application/pdf',
+        blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
+      },
     ]);
     const attachmentId = '33333333-3333-3333-3333-333333333333';
-    const response = await worker.fetch(request(`/messages/attachment?id=${attachmentId}`), env, ctx);
+    const response = await worker.fetch(
+      request(`/messages/attachment?id=${attachmentId}`),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(200);
     expect((await response.json()).filename).toBe('plan.pdf');
   });
 
   test('GET /messages/thread-body dispatches to getThreadBody', async () => {
-    const response = await worker.fetch(request(`/messages/thread-body?id=${MESSAGE_ID}`), env, ctx);
+    const response = await worker.fetch(
+      request(`/messages/thread-body?id=${MESSAGE_ID}`),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(404);
   });
 
@@ -113,7 +132,10 @@ describe('routing', () => {
 
   test('POST /messages dispatches to postMessage', async () => {
     const response = await worker.fetch(
-      request('/messages', { method: 'POST', body: JSON.stringify({ id: MESSAGE_ID, action: 'unsubscribe' }) }),
+      request('/messages', {
+        method: 'POST',
+        body: JSON.stringify({ id: MESSAGE_ID, action: 'unsubscribe' }),
+      }),
       env,
       ctx,
     );
@@ -124,7 +146,10 @@ describe('routing', () => {
 
   test('PATCH /messages dispatches to patchMessage', async () => {
     const response = await worker.fetch(
-      request('/messages', { method: 'PATCH', body: JSON.stringify({ id: MESSAGE_ID, is_starred: true }) }),
+      request('/messages', {
+        method: 'PATCH',
+        body: JSON.stringify({ id: MESSAGE_ID, is_starred: true }),
+      }),
       env,
       ctx,
     );
@@ -147,12 +172,20 @@ describe('routing', () => {
   });
 
   test('POST on /messages/contacts returns 405', async () => {
-    const response = await worker.fetch(request('/messages/contacts', { method: 'POST' }), env, ctx);
+    const response = await worker.fetch(
+      request('/messages/contacts', { method: 'POST' }),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(405);
   });
 
   test('invalid JSON on POST returns 400 before reaching a handler', async () => {
-    const response = await worker.fetch(request('/messages', { method: 'POST', body: '{not json' }), env, ctx);
+    const response = await worker.fetch(
+      request('/messages', { method: 'POST', body: '{not json' }),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(400);
   });
 });

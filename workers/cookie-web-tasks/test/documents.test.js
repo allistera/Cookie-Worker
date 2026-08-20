@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_BLOCKS_BYTES, cleanText, createDocument, deleteDocument, getDocuments, normalizeBlocks, updateDocument } from '../src/documents.js';
+import {
+  MAX_BLOCKS_BYTES,
+  cleanText,
+  createDocument,
+  deleteDocument,
+  getDocuments,
+  normalizeBlocks,
+  updateDocument,
+} from '../src/documents.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '55555555-5555-4555-8555-555555555555';
@@ -75,7 +83,9 @@ describe('GET /documents', () => {
   });
 
   it('returns one owned template with its blocks', async () => {
-    const sql = createMockSql([[{ id: TEMPLATE_ID, title: 'Meeting notes', blocks: [{ type: 'header' }] }]]);
+    const sql = createMockSql([
+      [{ id: TEMPLATE_ID, title: 'Meeting notes', blocks: [{ type: 'header' }] }],
+    ]);
     const response = await getDocuments(sql, USER_ID, url(`?templateId=${TEMPLATE_ID}`), deps());
 
     expect(response.status).toBe(200);
@@ -93,7 +103,12 @@ describe('GET /documents', () => {
 describe('GET /documents?q=… (search)', () => {
   it('429s when the shared ai quota is exhausted', async () => {
     const sql = createMockSql();
-    const response = await getDocuments(sql, USER_ID, url('?q=roadmap'), deps({ openaiApiKey: 'sk-test' }));
+    const response = await getDocuments(
+      sql,
+      USER_ID,
+      url('?q=roadmap'),
+      deps({ openaiApiKey: 'sk-test' }),
+    );
     expect(response.status).toBe(429);
     expect(sql).not.toHaveBeenCalled();
   });
@@ -110,7 +125,12 @@ describe('GET /documents?q=… (search)', () => {
     // tag:"" carries an empty quoted operator value, so it is stripped to
     // blank free text and sets no filter — the query has nothing left to
     // search.
-    const response = await getDocuments(sql, USER_ID, url(`?q=${encodeURIComponent('tag:""')}`), deps());
+    const response = await getDocuments(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:""')}`),
+      deps(),
+    );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ documents: [] });
     expect(sql).not.toHaveBeenCalled();
@@ -129,8 +149,17 @@ describe('GET /documents?q=… (search)', () => {
 
 describe('POST /documents', () => {
   it('creates a document in a folder the caller owns', async () => {
-    const sql = createMockSql([[{ id: USER_ID }], [{ id: FOLDER_ID }], [{ id: DOC_ID, folder_id: FOLDER_ID, title: '', blocks: [] }]]);
-    const response = await createDocument(sql, USER_ID, { kind: 'document', folderId: FOLDER_ID }, deps());
+    const sql = createMockSql([
+      [{ id: USER_ID }],
+      [{ id: FOLDER_ID }],
+      [{ id: DOC_ID, folder_id: FOLDER_ID, title: '', blocks: [] }],
+    ]);
+    const response = await createDocument(
+      sql,
+      USER_ID,
+      { kind: 'document', folderId: FOLDER_ID },
+      deps(),
+    );
 
     expect(response.status).toBe(201);
     expect((await response.json()).document.id).toBe(DOC_ID);
@@ -138,12 +167,19 @@ describe('POST /documents', () => {
   });
 
   it('embeds a non-blank new document and writes content_text + embedding', async () => {
-    const sql = createMockSql([[{ id: USER_ID }], [{ id: DOC_ID, folder_id: null, title: 'Roadmap', blocks: [] }]]);
+    const sql = createMockSql([
+      [{ id: USER_ID }],
+      [{ id: DOC_ID, folder_id: null, title: 'Roadmap', blocks: [] }],
+    ]);
     const response = await createDocument(
       sql,
       USER_ID,
       { kind: 'document', title: 'Roadmap' },
-      deps({ openaiApiKey: 'sk-test', allowRequest: vi.fn(async () => true), embedText: vi.fn(async () => [0.1, 0.2]) }),
+      deps({
+        openaiApiKey: 'sk-test',
+        allowRequest: vi.fn(async () => true),
+        embedText: vi.fn(async () => [0.1, 0.2]),
+      }),
     );
 
     expect(response.status).toBe(201);
@@ -153,11 +189,19 @@ describe('POST /documents', () => {
   });
 
   it('skips embedding for a blank new document without calling allowRequest', async () => {
-    const sql = createMockSql([[{ id: USER_ID }], [{ id: DOC_ID, folder_id: null, title: '', blocks: [] }]]);
+    const sql = createMockSql([
+      [{ id: USER_ID }],
+      [{ id: DOC_ID, folder_id: null, title: '', blocks: [] }],
+    ]);
     const denyIfCalled = vi.fn(async () => {
       throw new Error('allowRequest should not be called for a blank document');
     });
-    const response = await createDocument(sql, USER_ID, { kind: 'document', folderId: null }, deps({ openaiApiKey: 'sk-test', allowRequest: denyIfCalled }));
+    const response = await createDocument(
+      sql,
+      USER_ID,
+      { kind: 'document', folderId: null },
+      deps({ openaiApiKey: 'sk-test', allowRequest: denyIfCalled }),
+    );
 
     expect(response.status).toBe(201);
     expect(denyIfCalled).not.toHaveBeenCalled();
@@ -166,15 +210,29 @@ describe('POST /documents', () => {
 
   it('rejects a folderId the caller does not own', async () => {
     const sql = createMockSql([[{ id: USER_ID }], []]);
-    const response = await createDocument(sql, USER_ID, { kind: 'document', folderId: FOLDER_ID }, deps());
+    const response = await createDocument(
+      sql,
+      USER_ID,
+      { kind: 'document', folderId: FOLDER_ID },
+      deps(),
+    );
 
     expect(response.status).toBe(400);
     expect(sql.calls.some((/** @type {any} */ c) => c.text.includes('INSERT'))).toBe(false);
   });
 
   it('creates a nested folder', async () => {
-    const sql = createMockSql([[{ id: USER_ID }], [{ id: FOLDER_ID }], [{ id: 'new-folder', parent_id: FOLDER_ID, title: 'Sprint Planning' }]]);
-    const response = await createDocument(sql, USER_ID, { kind: 'folder', title: 'Sprint Planning', parentId: FOLDER_ID }, deps());
+    const sql = createMockSql([
+      [{ id: USER_ID }],
+      [{ id: FOLDER_ID }],
+      [{ id: 'new-folder', parent_id: FOLDER_ID, title: 'Sprint Planning' }],
+    ]);
+    const response = await createDocument(
+      sql,
+      USER_ID,
+      { kind: 'folder', title: 'Sprint Planning', parentId: FOLDER_ID },
+      deps(),
+    );
 
     expect(response.status).toBe(201);
     expect((await response.json()).folder.title).toBe('Sprint Planning');
@@ -193,11 +251,18 @@ describe('POST /documents', () => {
   });
 
   it('creates a reusable document template', async () => {
-    const sql = createMockSql([[{ id: USER_ID }], [{ id: TEMPLATE_ID, title: 'Meeting notes', blocks: [{ type: 'header' }] }]]);
+    const sql = createMockSql([
+      [{ id: USER_ID }],
+      [{ id: TEMPLATE_ID, title: 'Meeting notes', blocks: [{ type: 'header' }] }],
+    ]);
     const response = await createDocument(
       sql,
       USER_ID,
-      { kind: 'template', title: 'Meeting notes', blocks: [{ type: 'header', data: { text: 'Agenda' } }] },
+      {
+        kind: 'template',
+        title: 'Meeting notes',
+        blocks: [{ type: 'header', data: { text: 'Agenda' } }],
+      },
       deps(),
     );
 
@@ -212,7 +277,12 @@ describe('POST /documents', () => {
       [{ id: TEMPLATE_ID, title: 'Meeting notes', emoji: '📄', blocks: [{ type: 'header' }] }],
       [{ id: DOC_ID, title: 'Meeting notes', emoji: '📄', blocks: [{ type: 'header' }] }],
     ]);
-    const response = await createDocument(sql, USER_ID, { kind: 'document', templateId: TEMPLATE_ID }, deps());
+    const response = await createDocument(
+      sql,
+      USER_ID,
+      { kind: 'document', templateId: TEMPLATE_ID },
+      deps(),
+    );
 
     expect(response.status).toBe(201);
     expect((await response.json()).document.title).toBe('Meeting notes');
@@ -222,17 +292,33 @@ describe('POST /documents', () => {
 
   it('rejects a template the caller does not own', async () => {
     const sql = createMockSql([[{ id: USER_ID }], []]);
-    const response = await createDocument(sql, USER_ID, { kind: 'document', templateId: TEMPLATE_ID }, deps());
+    const response = await createDocument(
+      sql,
+      USER_ID,
+      { kind: 'document', templateId: TEMPLATE_ID },
+      deps(),
+    );
 
     expect(response.status).toBe(400);
-    expect(sql.calls.some((/** @type {any} */ c) => c.text.includes('INSERT INTO documents'))).toBe(false);
+    expect(sql.calls.some((/** @type {any} */ c) => c.text.includes('INSERT INTO documents'))).toBe(
+      false,
+    );
   });
 });
 
 describe('PATCH /documents', () => {
   it('saves blocks through sql.json and bumps updated_at', async () => {
-    const sql = createMockSql([[{ title: 'Notes', blocks: [] }], [{ folder_id: null, title: 'Notes', blocks: [] }], [{ id: DOC_ID, title: 'Notes', folder_id: null }]]);
-    const response = await updateDocument(sql, USER_ID, { id: DOC_ID, blocks: [{ type: 'paragraph', data: {} }] }, deps());
+    const sql = createMockSql([
+      [{ title: 'Notes', blocks: [] }],
+      [{ folder_id: null, title: 'Notes', blocks: [] }],
+      [{ id: DOC_ID, title: 'Notes', folder_id: null }],
+    ]);
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      { id: DOC_ID, blocks: [{ type: 'paragraph', data: {} }] },
+      deps(),
+    );
 
     expect(response.status).toBe(200);
     expect(sql.calls[1].text).toContain('folder_id');
@@ -252,7 +338,10 @@ describe('PATCH /documents', () => {
     const response = await updateDocument(
       sql,
       USER_ID,
-      { id: DOC_ID, blocks: [{ id: 'block-1', type: 'paragraph', data: { text: '10:00 - 11:00 - Team sync' } }] },
+      {
+        id: DOC_ID,
+        blocks: [{ id: 'block-1', type: 'paragraph', data: { text: '10:00 - 11:00 - Team sync' } }],
+      },
       deps(),
     );
 
@@ -281,7 +370,13 @@ describe('PATCH /documents', () => {
           {
             id: 'list-1',
             type: 'list',
-            data: { style: 'checklist', items: [{ content: '09:00 - Standup', meta: { checked: false } }, { content: 'Plain task, no time', meta: { checked: false } }] },
+            data: {
+              style: 'checklist',
+              items: [
+                { content: '09:00 - Standup', meta: { checked: false } },
+                { content: 'Plain task, no time', meta: { checked: false } },
+              ],
+            },
           },
         ],
       },
@@ -294,11 +389,18 @@ describe('PATCH /documents', () => {
   });
 
   it("does not touch calendar_events for a non-Daily document's blocks", async () => {
-    const sql = createMockSql([[{ title: 'Notes', blocks: [] }], [{ folder_id: FOLDER_ID, title: 'Notes', blocks: [] }], [{ id: DOC_ID, title: 'Notes', folder_id: FOLDER_ID }]]);
+    const sql = createMockSql([
+      [{ title: 'Notes', blocks: [] }],
+      [{ folder_id: FOLDER_ID, title: 'Notes', blocks: [] }],
+      [{ id: DOC_ID, title: 'Notes', folder_id: FOLDER_ID }],
+    ]);
     const response = await updateDocument(
       sql,
       USER_ID,
-      { id: DOC_ID, blocks: [{ id: 'block-1', type: 'paragraph', data: { text: '10:00 - 11:00 - Team sync' } }] },
+      {
+        id: DOC_ID,
+        blocks: [{ id: 'block-1', type: 'paragraph', data: { text: '10:00 - 11:00 - Team sync' } }],
+      },
       deps(),
     );
 
@@ -307,12 +409,20 @@ describe('PATCH /documents', () => {
   });
 
   it('re-embeds and writes the new vector when the save is allowed', async () => {
-    const sql = createMockSql([[{ title: 'Notes', blocks: [] }], [{ folder_id: null, title: 'Notes', blocks: [] }], [{ id: DOC_ID, title: 'Notes', folder_id: null }]]);
+    const sql = createMockSql([
+      [{ title: 'Notes', blocks: [] }],
+      [{ folder_id: null, title: 'Notes', blocks: [] }],
+      [{ id: DOC_ID, title: 'Notes', folder_id: null }],
+    ]);
     const response = await updateDocument(
       sql,
       USER_ID,
       { id: DOC_ID, blocks: [{ type: 'paragraph', data: { text: 'Ship it' } }] },
-      deps({ openaiApiKey: 'sk-test', allowRequest: vi.fn(async () => true), embedText: vi.fn(async () => [0.1, 0.2]) }),
+      deps({
+        openaiApiKey: 'sk-test',
+        allowRequest: vi.fn(async () => true),
+        embedText: vi.fn(async () => [0.1, 0.2]),
+      }),
     );
 
     expect(response.status).toBe(200);
@@ -321,7 +431,10 @@ describe('PATCH /documents', () => {
   });
 
   it('fetches the current blocks to embed a title-only rename', async () => {
-    const sql = createMockSql([[{ title: 'Old title', blocks: [{ type: 'paragraph', data: { text: 'Body text' } }] }], [{ id: DOC_ID, title: 'New title' }]]);
+    const sql = createMockSql([
+      [{ title: 'Old title', blocks: [{ type: 'paragraph', data: { text: 'Body text' } }] }],
+      [{ id: DOC_ID, title: 'New title' }],
+    ]);
     const response = await updateDocument(sql, USER_ID, { id: DOC_ID, title: 'New title' }, deps());
 
     expect(response.status).toBe(200);
@@ -355,7 +468,12 @@ describe('PATCH /documents', () => {
 
   it('normalizes and saves document tags', async () => {
     const sql = createMockSql([[{ id: DOC_ID, tags: ['project-one', 'home'] }]]);
-    const response = await updateDocument(sql, USER_ID, { id: DOC_ID, tags: ['#Project-One', 'home', 'HOME'] }, deps());
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      { id: DOC_ID, tags: ['#Project-One', 'home', 'HOME'] },
+      deps(),
+    );
 
     expect(response.status).toBe(200);
     expect((await response.json()).document.tags).toEqual(['project-one', 'home']);
@@ -364,7 +482,12 @@ describe('PATCH /documents', () => {
 
   it('rejects invalid document tags', async () => {
     const sql = createMockSql();
-    const response = await updateDocument(sql, USER_ID, { id: DOC_ID, tags: ['two words'] }, deps());
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      { id: DOC_ID, tags: ['two words'] },
+      deps(),
+    );
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
   });
@@ -384,7 +507,12 @@ describe('PATCH /documents', () => {
 
   it('renames a folder', async () => {
     const sql = createMockSql([[{ id: FOLDER_ID, title: 'Renamed' }]]);
-    const response = await updateDocument(sql, USER_ID, { kind: 'folder', id: FOLDER_ID, title: 'Renamed' }, deps());
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      { kind: 'folder', id: FOLDER_ID, title: 'Renamed' },
+      deps(),
+    );
 
     expect(response.status).toBe(200);
     expect((await response.json()).folder.title).toBe('Renamed');
@@ -397,11 +525,18 @@ describe('PATCH /documents', () => {
   });
 
   it('updates an owned template title and blocks together', async () => {
-    const sql = createMockSql([[{ id: TEMPLATE_ID, title: 'Weekly notes', blocks: [{ type: 'list' }] }]]);
+    const sql = createMockSql([
+      [{ id: TEMPLATE_ID, title: 'Weekly notes', blocks: [{ type: 'list' }] }],
+    ]);
     const response = await updateDocument(
       sql,
       USER_ID,
-      { kind: 'template', id: TEMPLATE_ID, title: 'Weekly notes', blocks: [{ type: 'list', data: { items: [] } }] },
+      {
+        kind: 'template',
+        id: TEMPLATE_ID,
+        title: 'Weekly notes',
+        blocks: [{ type: 'list', data: { items: [] } }],
+      },
       deps(),
     );
 
@@ -481,4 +616,3 @@ describe('cleanText', () => {
     expect(cleanText(42, 10)).toBeNull();
   });
 });
-

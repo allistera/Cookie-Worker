@@ -116,9 +116,9 @@ describe('failure reporting', () => {
     await run();
 
     expect(sentry.captureException.mock.calls[0][0].message).not.toContain(CONNECTION_STRING);
-    const logged = /** @type {any} */ (console.log).mock.calls.map(
-      (/** @type {any[]} */ call) => call[0],
-    ).join('\n');
+    const logged = /** @type {any} */ (console.log).mock.calls
+      .map((/** @type {any[]} */ call) => call[0])
+      .join('\n');
     expect(logged).toContain('http_run_failed');
     expect(logged).not.toContain(CONNECTION_STRING);
   });

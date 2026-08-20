@@ -14,6 +14,8 @@ describe('syntheticMessageId', () => {
   });
 
   test('tolerates missing components', async () => {
-    await expect(syntheticMessageId({})).resolves.toMatch(/^<synthetic-[a-f0-9]{64}@mail-app-ingest>$/u);
+    await expect(syntheticMessageId({})).resolves.toMatch(
+      /^<synthetic-[a-f0-9]{64}@mail-app-ingest>$/u,
+    );
   });
 });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { fetchDailyNoteSeed, getDailyNoteSeed, putDailyNoteSeed, saveDailyNoteSeed } from '../src/dailyNoteSeed.js';
+import {
+  fetchDailyNoteSeed,
+  getDailyNoteSeed,
+  putDailyNoteSeed,
+  saveDailyNoteSeed,
+} from '../src/dailyNoteSeed.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '99999999-9999-9999-9999-999999999999';

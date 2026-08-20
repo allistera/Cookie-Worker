@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 // (tasks.js/documents.js/interests.js/etc.) already has its own unit tests
 // against a mock sql, so the database, @vercel/blob, and fetch are stubbed
 // here rather than exercised.
-const mockQuery = vi.fn(/** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])));
+const mockQuery = vi.fn(
+  /** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])),
+);
 const sqlEnd = vi.fn(async () => undefined);
 vi.mock('postgres', () => ({
   default: () => {
@@ -47,7 +49,9 @@ const env = /** @type {any} */ ({
   ENRICHER_RUN_URL: 'https://data-enricher.example.workers.dev/run',
   ENRICHER_TRIGGER_TOKEN: 'trigger-secret',
 });
-const ctx = /** @type {any} */ ({ waitUntil: (/** @type {Promise<unknown>} */ promise) => promise });
+const ctx = /** @type {any} */ ({
+  waitUntil: (/** @type {Promise<unknown>} */ promise) => promise,
+});
 
 /** @param {string} path @param {RequestInit} [init] */
 function request(path, init = {}) {
@@ -65,13 +69,19 @@ beforeEach(() => {
   verifyAccessToken.mockResolvedValue({ userId: 'user-1' });
   mockQuery.mockReset().mockResolvedValue([]);
   put.mockResolvedValue({ url: 'https://blob.example/photo.png' });
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200 })));
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: true, status: 200 })),
+  );
 });
 
 describe('CORS preflight', () => {
   test('answers OPTIONS from an allowed origin without touching auth or the database', async () => {
     const response = await worker.fetch(
-      new Request('https://cookie-web-tasks.example/tasks', { method: 'OPTIONS', headers: { Origin: PRODUCTION } }),
+      new Request('https://cookie-web-tasks.example/tasks', {
+        method: 'OPTIONS',
+        headers: { Origin: PRODUCTION },
+      }),
       env,
       ctx,
     );
@@ -98,7 +108,10 @@ describe('routing — /tasks', () => {
 
   test('POST /tasks dispatches to postTasks', async () => {
     const response = await worker.fetch(
-      request('/tasks', { method: 'POST', body: JSON.stringify({ id: TASK_ID, action: 'complete' }) }),
+      request('/tasks', {
+        method: 'POST',
+        body: JSON.stringify({ id: TASK_ID, action: 'complete' }),
+      }),
       env,
       ctx,
     );
@@ -112,7 +125,11 @@ describe('routing — /tasks', () => {
   });
 
   test('invalid JSON on POST /tasks returns 400 before reaching a handler', async () => {
-    const response = await worker.fetch(request('/tasks', { method: 'POST', body: '{not json' }), env, ctx);
+    const response = await worker.fetch(
+      request('/tasks', { method: 'POST', body: '{not json' }),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(400);
   });
 });
@@ -182,7 +199,11 @@ describe('routing — /tasks/image-upload', () => {
         type: 'image/png',
       }),
     );
-    const response = await worker.fetch(request('/tasks/image-upload', { method: 'POST', body: form }), env, ctx);
+    const response = await worker.fetch(
+      request('/tasks/image-upload', { method: 'POST', body: form }),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ url: 'https://blob.example/photo.png' });
     expect(put).toHaveBeenCalledWith(
@@ -207,7 +228,10 @@ describe('routing — /documents', () => {
 
   test('POST /documents dispatches to createDocument', async () => {
     const response = await worker.fetch(
-      request('/documents', { method: 'POST', body: JSON.stringify({ kind: 'folder', title: 'Notes' }) }),
+      request('/documents', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'folder', title: 'Notes' }),
+      }),
       env,
       ctx,
     );
@@ -217,7 +241,10 @@ describe('routing — /documents', () => {
 
   test('PATCH /documents dispatches to updateDocument', async () => {
     const response = await worker.fetch(
-      request('/documents', { method: 'PATCH', body: JSON.stringify({ id: DOC_ID, starred: true }) }),
+      request('/documents', {
+        method: 'PATCH',
+        body: JSON.stringify({ id: DOC_ID, starred: true }),
+      }),
       env,
       ctx,
     );
@@ -235,7 +262,11 @@ describe('routing — /documents', () => {
   });
 
   test('invalid JSON on POST /documents returns 400 before reaching a handler', async () => {
-    const response = await worker.fetch(request('/documents', { method: 'POST', body: '{not json' }), env, ctx);
+    const response = await worker.fetch(
+      request('/documents', { method: 'POST', body: '{not json' }),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(400);
   });
 

@@ -14,7 +14,10 @@ const MESSAGE = {
 
 describe('analyzeEmail', () => {
   test('requests a structured analysis and parses it', async () => {
-    const analysis = { summary: 'Accountant needs receipts by Friday.', tasks: [{ content: 'Send receipts', due_date: '2026-07-24' }] };
+    const analysis = {
+      summary: 'Accountant needs receipts by Friday.',
+      tasks: [{ content: 'Send receipts', due_date: '2026-07-24' }],
+    };
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({ output_text: JSON.stringify(analysis) }),
@@ -35,8 +38,13 @@ describe('analyzeEmail', () => {
   });
 
   test('throws on a non-OK response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 429, text: async () => 'rate limited' })));
-    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).rejects.toThrow('OpenAI request failed (429)');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 429, text: async () => 'rate limited' })),
+    );
+    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).rejects.toThrow(
+      'OpenAI request failed (429)',
+    );
   });
 
   test('exposes a prompt version for provenance', () => {

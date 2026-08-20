@@ -34,20 +34,28 @@ export function createMockSql(options = {}) {
       const query = { text: strings.join('?'), values };
       sink.push(query);
       if (query.text.includes('SELECT') && query.text.includes('FROM users')) {
-        return Promise.resolve(options.lookupRows ?? [{
-          user_id: 'user-1',
-          is_duplicate: false,
-          thread_id: null,
-        }]);
+        return Promise.resolve(
+          options.lookupRows ?? [
+            {
+              user_id: 'user-1',
+              is_duplicate: false,
+              thread_id: null,
+            },
+          ],
+        );
       }
       // Transaction-scoped duplicate/thread lookup (post advisory-lock), keyed
       // on the already-resolved user id rather than a users join.
       if (query.text.includes('AS is_duplicate') && query.text.includes('AS thread_id')) {
-        return Promise.resolve(options.lookupRows ?? [{
-          user_id: 'user-1',
-          is_duplicate: false,
-          thread_id: null,
-        }]);
+        return Promise.resolve(
+          options.lookupRows ?? [
+            {
+              user_id: 'user-1',
+              is_duplicate: false,
+              thread_id: null,
+            },
+          ],
+        );
       }
       // Message insert uses RETURNING id to detect concurrent DO NOTHING races.
       if (query.text.includes('INSERT INTO messages') && query.text.includes('RETURNING')) {

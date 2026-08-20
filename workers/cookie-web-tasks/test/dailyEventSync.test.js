@@ -38,7 +38,11 @@ function assertParsed(value) {
 
 describe('parseTimeLine', () => {
   it('parses a start-end-title range', () => {
-    expect(parseTimeLine('10:00 - 11:00 - Team sync')).toEqual({ start: '10:00', durationMinutes: 60, title: 'Team sync' });
+    expect(parseTimeLine('10:00 - 11:00 - Team sync')).toEqual({
+      start: '10:00',
+      durationMinutes: 60,
+      title: 'Team sync',
+    });
   });
 
   it('does not let the range pattern swallow the end time into a single-time title', () => {
@@ -48,7 +52,11 @@ describe('parseTimeLine', () => {
   });
 
   it('falls back to a single time with a 30-minute default duration', () => {
-    expect(parseTimeLine('9:05 - Standup')).toEqual({ start: '09:05', durationMinutes: 30, title: 'Standup' });
+    expect(parseTimeLine('9:05 - Standup')).toEqual({
+      start: '09:05',
+      durationMinutes: 30,
+      title: 'Standup',
+    });
   });
 
   it('strips inline HTML and decodes entities before matching', () => {
@@ -123,8 +131,16 @@ describe('extractTimeLines', () => {
       },
     ]);
     expect([...lines.keys()]).toEqual(['list-1:0', 'list-1:2']);
-    expect(lines.get('list-1:0')).toEqual({ start: '09:00', durationMinutes: 30, title: 'Standup' });
-    expect(lines.get('list-1:2')).toEqual({ start: '10:00', durationMinutes: 30, title: 'Design review' });
+    expect(lines.get('list-1:0')).toEqual({
+      start: '09:00',
+      durationMinutes: 30,
+      title: 'Standup',
+    });
+    expect(lines.get('list-1:2')).toEqual({
+      start: '10:00',
+      durationMinutes: 30,
+      title: 'Design review',
+    });
   });
 
   it('recurses into nested sub-items with a path-shaped key', () => {
@@ -154,7 +170,11 @@ describe('extractTimeLines', () => {
   it('combines paragraph and list blocks in one document without key collisions', () => {
     const lines = extractTimeLines([
       { id: 'p1', type: 'paragraph', data: { text: '08:00 - Gym' } },
-      { id: 'list-1', type: 'list', data: { style: 'unordered', items: [{ content: '09:00 - Standup' }] } },
+      {
+        id: 'list-1',
+        type: 'list',
+        data: { style: 'unordered', items: [{ content: '09:00 - Standup' }] },
+      },
     ]);
     expect([...lines.keys()].sort()).toEqual(['list-1:0', 'p1']);
   });
@@ -173,18 +193,24 @@ describe('dateKey', () => {
 describe('resolveDailyNoteEventDate', () => {
   it('returns null without a query when the title is not a daily-note title', async () => {
     const sql = queueSql();
-    await expect(resolveDailyNoteEventDate(sql, USER_ID, FOLDER_ID, 'Project notes')).resolves.toBeNull();
+    await expect(
+      resolveDailyNoteEventDate(sql, USER_ID, FOLDER_ID, 'Project notes'),
+    ).resolves.toBeNull();
     expect(sql.statements).toHaveLength(0);
   });
 
   it('returns null when the root folder is not "Daily"', async () => {
     const sql = queueSql([{ title: 'Projects' }]);
-    await expect(resolveDailyNoteEventDate(sql, USER_ID, FOLDER_ID, '14-08-26')).resolves.toBeNull();
+    await expect(
+      resolveDailyNoteEventDate(sql, USER_ID, FOLDER_ID, '14-08-26'),
+    ).resolves.toBeNull();
   });
 
   it('returns the event date when the title and root folder both match', async () => {
     const sql = queueSql([{ title: 'Daily' }]);
-    await expect(resolveDailyNoteEventDate(sql, USER_ID, FOLDER_ID, '14-08-26')).resolves.toBe('2026-08-14');
+    await expect(resolveDailyNoteEventDate(sql, USER_ID, FOLDER_ID, '14-08-26')).resolves.toBe(
+      '2026-08-14',
+    );
   });
 });
 

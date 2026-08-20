@@ -179,14 +179,10 @@ async function replaceSingletonSummary(sql, userId, kind, summary, model, raw) {
  * @param {string | null} [model]
  */
 export async function storeNews(sql, userId, news, model) {
-  return replaceSingletonSummary(
-    sql,
-    userId,
-    NEWS_KIND,
-    '',
-    model,
-    { sections: news.sections, prompt_version: NEWS_PROMPT_VERSION },
-  );
+  return replaceSingletonSummary(sql, userId, NEWS_KIND, '', model, {
+    sections: news.sections,
+    prompt_version: NEWS_PROMPT_VERSION,
+  });
 }
 
 /**
@@ -196,17 +192,10 @@ export async function storeNews(sql, userId, news, model) {
  * @param {string | null} [model]
  */
 export async function storeDigest(sql, userId, digest, model) {
-  return replaceSingletonSummary(
-    sql,
-    userId,
-    DIGEST_KIND,
-    digest.overview,
-    model,
-    {
-      topics: digest.topics,
-      noise: digest.noise ?? { count: 0, categories: [] },
-      prompt_version: DIGEST_PROMPT_VERSION,
-      policy_source: TRIAGE_POLICY_SOURCE,
-    },
-  );
+  return replaceSingletonSummary(sql, userId, DIGEST_KIND, digest.overview, model, {
+    topics: digest.topics,
+    noise: digest.noise ?? { count: 0, categories: [] },
+    prompt_version: DIGEST_PROMPT_VERSION,
+    policy_source: TRIAGE_POLICY_SOURCE,
+  });
 }

@@ -34,8 +34,9 @@ describe('lookupUserId', () => {
   });
 
   test('throws when no user matches', async () => {
-    await expect(lookupUserId(mockSql([]), 'owner@example.com'))
-      .rejects.toThrow('no users row matches OWNER_EMAIL');
+    await expect(lookupUserId(mockSql([]), 'owner@example.com')).rejects.toThrow(
+      'no users row matches OWNER_EMAIL',
+    );
   });
 });
 
@@ -106,7 +107,9 @@ describe('storeSummary', () => {
     });
     expect(sql.calls[0].text).toContain('INSERT INTO summaries');
     expect(sql.calls[0].text).toContain('ON CONFLICT (user_id, message_id, kind)');
-    expect(sql.calls[0].values).toEqual(expect.arrayContaining(['msg-9', 'email_tasks', 'gpt-5.6-luna']));
+    expect(sql.calls[0].values).toEqual(
+      expect.arrayContaining(['msg-9', 'email_tasks', 'gpt-5.6-luna']),
+    );
     expect(sql.calls[0].values).toContainEqual({ __pgJson: { importance: 'high' } });
   });
 });
@@ -114,12 +117,9 @@ describe('storeSummary', () => {
 describe('storeEmailAnalysis', () => {
   test('writes tasks before the completion summary in one transaction', async () => {
     const sql = mockSql();
-    await storeEmailAnalysis(
-      sql,
-      'user-1',
-      { messageId: 'msg-9', summary: 'Reply needed.' },
-      [{ source: 'email', externalId: 'msg-9:reply', content: 'Reply', messageId: 'msg-9' }],
-    );
+    await storeEmailAnalysis(sql, 'user-1', { messageId: 'msg-9', summary: 'Reply needed.' }, [
+      { source: 'email', externalId: 'msg-9:reply', content: 'Reply', messageId: 'msg-9' },
+    ]);
 
     expect(sql.calls).toHaveLength(2);
     expect(sql.calls[0].text).toContain('INSERT INTO tasks');
@@ -160,7 +160,9 @@ describe('storeDigest', () => {
 
     expect(sql.calls[2].text).toContain('DELETE FROM summaries');
     expect(sql.calls[2].text).toContain('message_id IS NULL');
-    expect(sql.calls[2].values).toEqual(expect.arrayContaining(['user-1', 'daily_digest', 'digest-2']));
+    expect(sql.calls[2].values).toEqual(
+      expect.arrayContaining(['user-1', 'daily_digest', 'digest-2']),
+    );
   });
 
   test('stores empty triage so a quiet day clears stale results', async () => {

@@ -10,16 +10,36 @@ const CONDITIONS = [{ field: 'subject', operator: 'contains', value: 'invoice' }
 
 describe('listRules', () => {
   test('groups joined condition rows under their rule', async () => {
-    const sql = createMockSql([[
-      {
-        id: RULE_ID, name: 'Invoices', label_id: LABEL_ID, action: 'apply_label', match_type: 'all', enabled: true,
-        condition_id: 'c1', field: 'subject', operator: 'contains', value: 'invoice', position: 0,
-      },
-      {
-        id: RULE_ID, name: 'Invoices', label_id: LABEL_ID, action: 'apply_label', match_type: 'all', enabled: true,
-        condition_id: 'c2', field: 'from', operator: 'contains', value: 'billing', position: 1,
-      },
-    ]]);
+    const sql = createMockSql([
+      [
+        {
+          id: RULE_ID,
+          name: 'Invoices',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          match_type: 'all',
+          enabled: true,
+          condition_id: 'c1',
+          field: 'subject',
+          operator: 'contains',
+          value: 'invoice',
+          position: 0,
+        },
+        {
+          id: RULE_ID,
+          name: 'Invoices',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          match_type: 'all',
+          enabled: true,
+          condition_id: 'c2',
+          field: 'from',
+          operator: 'contains',
+          value: 'billing',
+          position: 1,
+        },
+      ],
+    ]);
     const response = await listRules(sql, USER_ID);
     expect(response.status).toBe(200);
     const { rules } = await response.json();
@@ -37,7 +57,16 @@ describe('listRules', () => {
 describe('createRule', () => {
   test('creates an apply_label rule and its conditions', async () => {
     const sql = createMockSql([
-      [{ id: RULE_ID, name: 'Invoices', label_id: LABEL_ID, action: 'apply_label', match_type: 'all', enabled: true }],
+      [
+        {
+          id: RULE_ID,
+          name: 'Invoices',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
       [],
     ]);
     const response = await createRule(sql, USER_ID, {
@@ -53,7 +82,16 @@ describe('createRule', () => {
 
   test('creates a mark_done rule with no label', async () => {
     const sql = createMockSql([
-      [{ id: RULE_ID, name: null, label_id: null, action: 'mark_done', match_type: 'any', enabled: true }],
+      [
+        {
+          id: RULE_ID,
+          name: null,
+          label_id: null,
+          action: 'mark_done',
+          match_type: 'any',
+          enabled: true,
+        },
+      ],
       [],
     ]);
     const response = await createRule(sql, USER_ID, {
@@ -66,14 +104,21 @@ describe('createRule', () => {
 
   test('rejects apply_label with no label_id before querying the database', async () => {
     const sql = createMockSql();
-    const response = await createRule(sql, USER_ID, { action: 'apply_label', conditions: CONDITIONS });
+    const response = await createRule(sql, USER_ID, {
+      action: 'apply_label',
+      conditions: CONDITIONS,
+    });
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
   });
 
   test('rejects mark_done that also sets a label_id', async () => {
     const sql = createMockSql();
-    const response = await createRule(sql, USER_ID, { action: 'mark_done', label_id: LABEL_ID, conditions: CONDITIONS });
+    const response = await createRule(sql, USER_ID, {
+      action: 'mark_done',
+      label_id: LABEL_ID,
+      conditions: CONDITIONS,
+    });
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
   });
@@ -85,14 +130,22 @@ describe('createRule', () => {
     [[{ field: 'subject', operator: 'contains', value: '' }]],
   ])('rejects invalid conditions: %o', async (conditions) => {
     const sql = createMockSql();
-    const response = await createRule(sql, USER_ID, { action: 'apply_label', label_id: LABEL_ID, conditions });
+    const response = await createRule(sql, USER_ID, {
+      action: 'apply_label',
+      label_id: LABEL_ID,
+      conditions,
+    });
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
   });
 
   test('returns 404 when the referenced label does not exist or is not user-owned', async () => {
     const sql = createMockSql([[]]);
-    const response = await createRule(sql, USER_ID, { action: 'apply_label', label_id: LABEL_ID, conditions: CONDITIONS });
+    const response = await createRule(sql, USER_ID, {
+      action: 'apply_label',
+      label_id: LABEL_ID,
+      conditions: CONDITIONS,
+    });
     expect(response.status).toBe(404);
   });
 });
@@ -100,8 +153,25 @@ describe('createRule', () => {
 describe('updateRule', () => {
   test('renames a rule', async () => {
     const sql = createMockSql([
-      [{ name: 'Old', label_id: LABEL_ID, action: 'apply_label', match_type: 'all', enabled: true }],
-      [{ id: RULE_ID, name: 'New', label_id: LABEL_ID, action: 'apply_label', match_type: 'all', enabled: true }],
+      [
+        {
+          name: 'Old',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+      [
+        {
+          id: RULE_ID,
+          name: 'New',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
       [],
     ]);
     const response = await updateRule(sql, USER_ID, { id: RULE_ID, name: 'New' });
@@ -111,8 +181,25 @@ describe('updateRule', () => {
 
   test('switching to mark_done clears any existing label', async () => {
     const sql = createMockSql([
-      [{ name: 'Rule', label_id: LABEL_ID, action: 'apply_label', match_type: 'all', enabled: true }],
-      [{ id: RULE_ID, name: 'Rule', label_id: null, action: 'mark_done', match_type: 'all', enabled: true }],
+      [
+        {
+          name: 'Rule',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+      [
+        {
+          id: RULE_ID,
+          name: 'Rule',
+          label_id: null,
+          action: 'mark_done',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
       [],
     ]);
     const response = await updateRule(sql, USER_ID, { id: RULE_ID, action: 'mark_done' });
@@ -130,8 +217,25 @@ describe('updateRule', () => {
 
   test('replaces conditions inside a transaction when conditions are included', async () => {
     const sql = createMockSql([
-      [{ name: 'Rule', label_id: LABEL_ID, action: 'apply_label', match_type: 'all', enabled: true }],
-      [{ id: RULE_ID, name: 'Rule', label_id: LABEL_ID, action: 'apply_label', match_type: 'all', enabled: true }],
+      [
+        {
+          name: 'Rule',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+      [
+        {
+          id: RULE_ID,
+          name: 'Rule',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
     ]);
     const response = await updateRule(sql, USER_ID, { id: RULE_ID, conditions: CONDITIONS });
     expect(response.status).toBe(200);

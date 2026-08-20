@@ -51,7 +51,11 @@ export function matchTimeLine(text) {
     const startMinute = Number(sm);
     const title = rawTitle.trim().slice(0, MAX_TITLE);
     if (!validTime(startHour, startMinute) || !title) return null;
-    return { start: `${pad2(startHour)}:${pad2(startMinute)}`, durationMinutes: DEFAULT_DURATION_MINUTES, title };
+    return {
+      start: `${pad2(startHour)}:${pad2(startMinute)}`,
+      durationMinutes: DEFAULT_DURATION_MINUTES,
+      title,
+    };
   }
 
   return null;

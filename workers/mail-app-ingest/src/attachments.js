@@ -61,7 +61,7 @@ export async function uploadAttachments(attachments, messageId, token, putBlob =
           failures.push({ index, error });
         }
       }
-    }
+    },
   );
   await Promise.all(workers);
 

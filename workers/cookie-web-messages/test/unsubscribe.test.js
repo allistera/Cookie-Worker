@@ -37,7 +37,9 @@ describe('parseListUnsubscribe', () => {
   });
 
   test('parses a url-only List-Unsubscribe', () => {
-    const r = assertParsed(parseListUnsubscribe([h('List-Unsubscribe', '<https://x.example/u?t=1>')]));
+    const r = assertParsed(
+      parseListUnsubscribe([h('List-Unsubscribe', '<https://x.example/u?t=1>')]),
+    );
     expect(r).toEqual({ oneClick: false, url: 'https://x.example/u?t=1', mailto: null });
   });
 
@@ -47,7 +49,9 @@ describe('parseListUnsubscribe', () => {
   });
 
   test('parses a mailto-only List-Unsubscribe', () => {
-    const r = assertParsed(parseListUnsubscribe([h('List-Unsubscribe', '<mailto:unsub@x.example>')]));
+    const r = assertParsed(
+      parseListUnsubscribe([h('List-Unsubscribe', '<mailto:unsub@x.example>')]),
+    );
     expect(r).toEqual({
       oneClick: false,
       url: null,
@@ -56,19 +60,25 @@ describe('parseListUnsubscribe', () => {
   });
 
   test('extracts the subject query param from a mailto', () => {
-    const r = assertParsed(parseListUnsubscribe([h('List-Unsubscribe', '<mailto:unsub@x.example?subject=stop>')]));
+    const r = assertParsed(
+      parseListUnsubscribe([h('List-Unsubscribe', '<mailto:unsub@x.example?subject=stop>')]),
+    );
     expect(r.mailto).toEqual({ address: 'unsub@x.example', subject: 'stop' });
   });
 
   test('decodes an encoded mailto subject', () => {
-    const r = assertParsed(parseListUnsubscribe([h('List-Unsubscribe', '<mailto:unsub@x.example?subject=Unsub%20me>')]));
+    const r = assertParsed(
+      parseListUnsubscribe([h('List-Unsubscribe', '<mailto:unsub@x.example?subject=Unsub%20me>')]),
+    );
     expect(r.mailto?.subject).toBe('Unsub me');
   });
 
   test('parses both a url and a mailto from a comma-separated value', () => {
-    const r = assertParsed(parseListUnsubscribe([
-      h('List-Unsubscribe', '<https://x.example/u?t=1>, <mailto:unsub@x.example?subject=stop>'),
-    ]));
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h('List-Unsubscribe', '<https://x.example/u?t=1>, <mailto:unsub@x.example?subject=stop>'),
+      ]),
+    );
     expect(r).toEqual({
       oneClick: false,
       url: 'https://x.example/u?t=1',
@@ -77,12 +87,14 @@ describe('parseListUnsubscribe', () => {
   });
 
   test('takes the first http(s) URI and the first mailto when several are present', () => {
-    const r = assertParsed(parseListUnsubscribe([
-      h(
-        'List-Unsubscribe',
-        '<https://a.example/1>, <https://b.example/2>, <mailto:one@x.example>, <mailto:two@x.example>',
-      ),
-    ]));
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h(
+          'List-Unsubscribe',
+          '<https://a.example/1>, <https://b.example/2>, <mailto:one@x.example>, <mailto:two@x.example>',
+        ),
+      ]),
+    );
     expect(r.url).toBe('https://a.example/1');
     expect(r.mailto?.address).toBe('one@x.example');
   });
@@ -93,41 +105,53 @@ describe('parseListUnsubscribe', () => {
   });
 
   test('marks oneClick true only with List-Unsubscribe-Post AND an http(s) url', () => {
-    const r = assertParsed(parseListUnsubscribe([
-      h('List-Unsubscribe', '<https://x.example/u>'),
-      h('List-Unsubscribe-Post', 'List-Unsubscribe=One-Click'),
-    ]));
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h('List-Unsubscribe', '<https://x.example/u>'),
+        h('List-Unsubscribe-Post', 'List-Unsubscribe=One-Click'),
+      ]),
+    );
     expect(r.oneClick).toBe(true);
     expect(r.url).toBe('https://x.example/u');
   });
 
   test('matches the List-Unsubscribe-Post value case-insensitively', () => {
-    const r = assertParsed(parseListUnsubscribe([
-      h('List-Unsubscribe', '<https://x.example/u>'),
-      h('list-unsubscribe-post', 'list-unsubscribe=ONE-CLICK'),
-    ]));
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h('List-Unsubscribe', '<https://x.example/u>'),
+        h('list-unsubscribe-post', 'list-unsubscribe=ONE-CLICK'),
+      ]),
+    );
     expect(r.oneClick).toBe(true);
   });
 
   test('does not set oneClick when the Post header value is unexpected', () => {
-    const r = assertParsed(parseListUnsubscribe([
-      h('List-Unsubscribe', '<https://x.example/u>'),
-      h('List-Unsubscribe-Post', 'something-else'),
-    ]));
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h('List-Unsubscribe', '<https://x.example/u>'),
+        h('List-Unsubscribe-Post', 'something-else'),
+      ]),
+    );
     expect(r.oneClick).toBe(false);
   });
 
   test('does not set oneClick when there is only a mailto (no http url)', () => {
-    const r = assertParsed(parseListUnsubscribe([
-      h('List-Unsubscribe', '<mailto:unsub@x.example>'),
-      h('List-Unsubscribe-Post', 'List-Unsubscribe=One-Click'),
-    ]));
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h('List-Unsubscribe', '<mailto:unsub@x.example>'),
+        h('List-Unsubscribe-Post', 'List-Unsubscribe=One-Click'),
+      ]),
+    );
     expect(r.oneClick).toBe(false);
     expect(r.mailto?.address).toBe('unsub@x.example');
   });
 
   test('skips malformed/garbage URIs but keeps usable ones', () => {
-    const r = assertParsed(parseListUnsubscribe([h('List-Unsubscribe', '<not a url>, <ht!tp://bad>, <https://x.example/u>')]));
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h('List-Unsubscribe', '<not a url>, <ht!tp://bad>, <https://x.example/u>'),
+      ]),
+    );
     expect(r.url).toBe('https://x.example/u');
   });
 
@@ -138,12 +162,14 @@ describe('parseListUnsubscribe', () => {
   });
 
   test('tolerates malformed entries in the array (missing key/value)', () => {
-    const r = assertParsed(parseListUnsubscribe([
-      null,
-      { key: 'List-Unsubscribe' },
-      { value: '<https://x.example/u>' },
-      h('List-Unsubscribe', '<https://x.example/u>'),
-    ]));
+    const r = assertParsed(
+      parseListUnsubscribe([
+        null,
+        { key: 'List-Unsubscribe' },
+        { value: '<https://x.example/u>' },
+        h('List-Unsubscribe', '<https://x.example/u>'),
+      ]),
+    );
     expect(r.url).toBe('https://x.example/u');
   });
 });

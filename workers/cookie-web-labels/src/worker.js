@@ -97,13 +97,20 @@ const worker = {
       try {
         ({ userId } = await verifyAccessToken(request, env, sql));
       } catch (error) {
-        return withCors(authFailureResponse(error), origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
+        return withCors(
+          authFailureResponse(error),
+          origin,
+          env.ALLOWED_ORIGIN,
+          env.SENTRY_ENVIRONMENT,
+        );
       }
 
       const response = await route(url, request, sql, userId);
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
-      console.log(JSON.stringify({ event: 'request_failed', path: url.pathname, method: request.method }));
+      console.log(
+        JSON.stringify({ event: 'request_failed', path: url.pathname, method: request.method }),
+      );
       captureHandledException('fetch', error, env, { path: url.pathname, method: request.method });
       return withCors(
         Response.json({ error: 'Request failed' }, { status: 500 }),

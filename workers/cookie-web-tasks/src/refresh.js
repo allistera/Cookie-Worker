@@ -55,7 +55,12 @@ export async function postRefresh(sql, userId, runUrl, triggerToken) {
   try {
     allowed = await allowRequest(sql, userId, 'enricher', RATE_LIMIT);
   } catch (err) {
-    console.log(JSON.stringify({ event: 'refresh_quota_failed', message: /** @type {Error} */ (err).message }));
+    console.log(
+      JSON.stringify({
+        event: 'refresh_quota_failed',
+        message: /** @type {Error} */ (err).message,
+      }),
+    );
     return Response.json({ error: 'Refresh is temporarily unavailable' }, { status: 503 });
   }
   if (!allowed) {
@@ -69,9 +74,14 @@ export async function postRefresh(sql, userId, runUrl, triggerToken) {
     if (err instanceof EnricherNotConfiguredError) {
       // A deployment without the Worker wired up should say so plainly rather
       // than look like a transient failure the user could retry away.
-      return Response.json({ error: 'Refresh is not configured for this deployment' }, { status: 501 });
+      return Response.json(
+        { error: 'Refresh is not configured for this deployment' },
+        { status: 501 },
+      );
     }
-    console.log(JSON.stringify({ event: 'refresh_failed', message: /** @type {Error} */ (err).message }));
+    console.log(
+      JSON.stringify({ event: 'refresh_failed', message: /** @type {Error} */ (err).message }),
+    );
     return Response.json({ error: 'Failed to refresh' }, { status: 502 });
   }
 }

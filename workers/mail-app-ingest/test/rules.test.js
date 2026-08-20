@@ -29,7 +29,12 @@ describe('fieldValue', () => {
 
   test('joins every "to" recipient name and address', () => {
     const withTwo = record({
-      recipients: { to: [{ name: 'Alice', address: 'alice@example.com' }, { name: null, address: 'bob@example.com' }] },
+      recipients: {
+        to: [
+          { name: 'Alice', address: 'alice@example.com' },
+          { name: null, address: 'bob@example.com' },
+        ],
+      },
     });
     expect(fieldValue(withTwo, 'to')).toBe('Alice alice@example.com, bob@example.com');
   });
@@ -42,27 +47,57 @@ describe('fieldValue', () => {
 
 describe('matchesCondition', () => {
   test('contains is case-insensitive', () => {
-    expect(matchesCondition(record(), { field: 'subject', operator: 'contains', value: 'INVOICE' })).toBe(true);
-    expect(matchesCondition(record(), { field: 'subject', operator: 'contains', value: 'refund' })).toBe(false);
+    expect(
+      matchesCondition(record(), { field: 'subject', operator: 'contains', value: 'INVOICE' }),
+    ).toBe(true);
+    expect(
+      matchesCondition(record(), { field: 'subject', operator: 'contains', value: 'refund' }),
+    ).toBe(false);
   });
 
   test('equals requires an exact match', () => {
-    expect(matchesCondition(record(), { field: 'from', operator: 'equals', value: 'billing dept billing@example.com' })).toBe(true);
-    expect(matchesCondition(record(), { field: 'from', operator: 'equals', value: 'billing@example.com' })).toBe(false);
+    expect(
+      matchesCondition(record(), {
+        field: 'from',
+        operator: 'equals',
+        value: 'billing dept billing@example.com',
+      }),
+    ).toBe(true);
+    expect(
+      matchesCondition(record(), {
+        field: 'from',
+        operator: 'equals',
+        value: 'billing@example.com',
+      }),
+    ).toBe(false);
   });
 
   test('starts_with and ends_with anchor to the edges', () => {
-    expect(matchesCondition(record(), { field: 'subject', operator: 'starts_with', value: 'your march' })).toBe(true);
-    expect(matchesCondition(record(), { field: 'subject', operator: 'starts_with', value: 'march' })).toBe(false);
-    expect(matchesCondition(record(), { field: 'subject', operator: 'ends_with', value: 'is ready' })).toBe(true);
+    expect(
+      matchesCondition(record(), {
+        field: 'subject',
+        operator: 'starts_with',
+        value: 'your march',
+      }),
+    ).toBe(true);
+    expect(
+      matchesCondition(record(), { field: 'subject', operator: 'starts_with', value: 'march' }),
+    ).toBe(false);
+    expect(
+      matchesCondition(record(), { field: 'subject', operator: 'ends_with', value: 'is ready' }),
+    ).toBe(true);
   });
 
   test('an empty value never matches', () => {
-    expect(matchesCondition(record(), { field: 'subject', operator: 'contains', value: '' })).toBe(false);
+    expect(matchesCondition(record(), { field: 'subject', operator: 'contains', value: '' })).toBe(
+      false,
+    );
   });
 
   test('an unknown operator never matches', () => {
-    expect(matchesCondition(record(), { field: 'subject', operator: 'regex', value: 'invoice' })).toBe(false);
+    expect(
+      matchesCondition(record(), { field: 'subject', operator: 'regex', value: 'invoice' }),
+    ).toBe(false);
   });
 });
 
@@ -72,11 +107,15 @@ describe('matchesRule', () => {
 
   test('all requires every condition to match', () => {
     expect(matchesRule(record(), { matchType: 'all', conditions: [invoiceCondition] })).toBe(true);
-    expect(matchesRule(record(), { matchType: 'all', conditions: [invoiceCondition, refundCondition] })).toBe(false);
+    expect(
+      matchesRule(record(), { matchType: 'all', conditions: [invoiceCondition, refundCondition] }),
+    ).toBe(false);
   });
 
   test('any requires only one condition to match', () => {
-    expect(matchesRule(record(), { matchType: 'any', conditions: [invoiceCondition, refundCondition] })).toBe(true);
+    expect(
+      matchesRule(record(), { matchType: 'any', conditions: [invoiceCondition, refundCondition] }),
+    ).toBe(true);
     expect(matchesRule(record(), { matchType: 'any', conditions: [refundCondition] })).toBe(false);
   });
 
@@ -89,15 +128,33 @@ describe('applyLabelRules', () => {
   test('applies only rules whose conditions match, tagged with source and rule_id', async () => {
     const sql = createMockSql({
       ruleRows: [
-        { rule_id: 'rule-1', label_id: 'label-1', match_type: 'all', field: 'subject', operator: 'contains', value: 'invoice' },
-        { rule_id: 'rule-2', label_id: 'label-2', match_type: 'all', field: 'subject', operator: 'contains', value: 'refund' },
+        {
+          rule_id: 'rule-1',
+          label_id: 'label-1',
+          match_type: 'all',
+          field: 'subject',
+          operator: 'contains',
+          value: 'invoice',
+        },
+        {
+          rule_id: 'rule-2',
+          label_id: 'label-2',
+          match_type: 'all',
+          field: 'subject',
+          operator: 'contains',
+          value: 'refund',
+        },
       ],
     });
 
-    const applied = await sql.begin(async (tx) => applyLabelRules(tx, 'user-1', 'message-1', record()));
+    const applied = await sql.begin(async (tx) =>
+      applyLabelRules(tx, 'user-1', 'message-1', record()),
+    );
 
     expect(applied).toBe(1);
-    const inserts = sql.transactions[0].filter((q) => q.text.includes('INSERT INTO message_labels'));
+    const inserts = sql.transactions[0].filter((q) =>
+      q.text.includes('INSERT INTO message_labels'),
+    );
     expect(inserts).toHaveLength(1);
     expect(inserts[0].values).toEqual(['message-1', 'label-1', 'rule-1']);
     expect(inserts[0].text).toContain("'rule'");
@@ -106,20 +163,40 @@ describe('applyLabelRules', () => {
   test('groups multiple conditions under one rule and evaluates match_type', async () => {
     const sql = createMockSql({
       ruleRows: [
-        { rule_id: 'rule-1', label_id: 'label-1', match_type: 'any', field: 'subject', operator: 'contains', value: 'refund' },
-        { rule_id: 'rule-1', label_id: 'label-1', match_type: 'any', field: 'from', operator: 'contains', value: 'billing@' },
+        {
+          rule_id: 'rule-1',
+          label_id: 'label-1',
+          match_type: 'any',
+          field: 'subject',
+          operator: 'contains',
+          value: 'refund',
+        },
+        {
+          rule_id: 'rule-1',
+          label_id: 'label-1',
+          match_type: 'any',
+          field: 'from',
+          operator: 'contains',
+          value: 'billing@',
+        },
       ],
     });
 
-    const applied = await sql.begin(async (tx) => applyLabelRules(tx, 'user-1', 'message-1', record()));
+    const applied = await sql.begin(async (tx) =>
+      applyLabelRules(tx, 'user-1', 'message-1', record()),
+    );
 
     expect(applied).toBe(1);
-    expect(sql.transactions[0].filter((q) => q.text.includes('INSERT INTO message_labels'))).toHaveLength(1);
+    expect(
+      sql.transactions[0].filter((q) => q.text.includes('INSERT INTO message_labels')),
+    ).toHaveLength(1);
   });
 
   test('applies nothing when no rules are enabled', async () => {
     const sql = createMockSql({ ruleRows: [] });
-    const applied = await sql.begin(async (tx) => applyLabelRules(tx, 'user-1', 'message-1', record()));
+    const applied = await sql.begin(async (tx) =>
+      applyLabelRules(tx, 'user-1', 'message-1', record()),
+    );
     expect(applied).toBe(0);
     expect(sql.transactions[0]).toHaveLength(1);
   });
@@ -139,7 +216,9 @@ describe('applyLabelRules', () => {
       ],
     });
 
-    const applied = await sql.begin(async (tx) => applyLabelRules(tx, 'user-1', 'message-1', record()));
+    const applied = await sql.begin(async (tx) =>
+      applyLabelRules(tx, 'user-1', 'message-1', record()),
+    );
 
     expect(applied).toBe(1);
     const labels = sql.transactions[0].filter((q) => q.text.includes('INSERT INTO message_labels'));

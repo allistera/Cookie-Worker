@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_DOCUMENT_TAGS, normalizeDocumentTag, normalizeDocumentTags } from '../src/documentTags.js';
+import {
+  MAX_DOCUMENT_TAGS,
+  normalizeDocumentTag,
+  normalizeDocumentTags,
+} from '../src/documentTags.js';
 
 describe('document tags', () => {
   it('normalizes a leading hash, case, whitespace, and duplicates', () => {

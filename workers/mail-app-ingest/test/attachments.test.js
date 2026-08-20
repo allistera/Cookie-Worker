@@ -123,7 +123,9 @@ describe('attachment uploads', () => {
       [attachment],
       '<message@example.com>',
       'secret-token',
-      vi.fn(async () => { throw error; }),
+      vi.fn(async () => {
+        throw error;
+      }),
     );
 
     expect(result.attachments[0]).toMatchObject({ filename: 'plan.pdf', blob_url: null });
@@ -166,7 +168,11 @@ describe('attachment uploads', () => {
   test('deletes every successfully uploaded blob in one request', async () => {
     const deleteBlob = vi.fn(async () => undefined);
     const deleted = await deleteUploadedAttachments(
-      [{ blob_url: 'https://blob.example/one' }, { blob_url: null }, { blob_url: 'https://blob.example/two' }],
+      [
+        { blob_url: 'https://blob.example/one' },
+        { blob_url: null },
+        { blob_url: 'https://blob.example/two' },
+      ],
       'secret-token',
       deleteBlob,
     );

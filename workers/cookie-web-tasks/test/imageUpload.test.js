@@ -14,7 +14,10 @@ function uploadRequest({ name = 'photo.png', type = 'image/png', bytes = pngByte
   new Uint8Array(payload).set(body);
   const form = new FormData();
   form.set('image', new File([payload], name, { type }));
-  return new Request('https://cookie-web-tasks.example/tasks/image-upload', { method: 'POST', body: form });
+  return new Request('https://cookie-web-tasks.example/tasks/image-upload', {
+    method: 'POST',
+    body: form,
+  });
 }
 
 describe('sniffImageType', () => {
@@ -30,7 +33,11 @@ describe('sniffImageType', () => {
 describe('postImageUpload', () => {
   it('stores the image under a generated key and returns its blob URL', async () => {
     const put = vi.fn().mockResolvedValue({ url: 'https://blob.example/photo.png' });
-    const response = await postImageUpload(uploadRequest(), { put, userId: 'user-1' }, 'blob-token');
+    const response = await postImageUpload(
+      uploadRequest(),
+      { put, userId: 'user-1' },
+      'blob-token',
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ url: 'https://blob.example/photo.png' });
@@ -50,7 +57,10 @@ describe('postImageUpload', () => {
     const put = vi.fn();
     const form = new FormData();
     form.set('other', 'x');
-    const request = new Request('https://cookie-web-tasks.example/tasks/image-upload', { method: 'POST', body: form });
+    const request = new Request('https://cookie-web-tasks.example/tasks/image-upload', {
+      method: 'POST',
+      body: form,
+    });
 
     const response = await postImageUpload(request, { put }, 'blob-token');
     expect(response.status).toBe(400);
@@ -73,7 +83,11 @@ describe('postImageUpload', () => {
 
   it('rejects an oversized image without calling Blob storage', async () => {
     const put = vi.fn();
-    const response = await postImageUpload(uploadRequest({ bytes: 5 * 1024 * 1024 + 1 }), { put }, 'blob-token');
+    const response = await postImageUpload(
+      uploadRequest({ bytes: 5 * 1024 * 1024 + 1 }),
+      { put },
+      'blob-token',
+    );
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toContain('5MB limit');
@@ -82,7 +96,11 @@ describe('postImageUpload', () => {
 
   it('rejects bytes that do not match a known image signature', async () => {
     const put = vi.fn();
-    const response = await postImageUpload(uploadRequest({ type: 'image/png', bytes: new Uint8Array(16) }), { put }, 'blob-token');
+    const response = await postImageUpload(
+      uploadRequest({ type: 'image/png', bytes: new Uint8Array(16) }),
+      { put },
+      'blob-token',
+    );
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toContain('Invalid file type');

@@ -19,7 +19,9 @@ describe('buildPrefixQuery', () => {
 describe('parseDocumentSearchQuery', () => {
   it('extracts tag: filters, including quoted tag names', () => {
     expect(parseDocumentSearchQuery('tag:Personal').filters).toEqual({ tag: 'Personal' });
-    expect(parseDocumentSearchQuery('tag:"Close Friends" notes').filters).toEqual({ tag: 'Close Friends' });
+    expect(parseDocumentSearchQuery('tag:"Close Friends" notes').filters).toEqual({
+      tag: 'Close Friends',
+    });
   });
 
   it('extracts is:starred', () => {

@@ -1,5 +1,13 @@
 import { describe, expect, test, vi } from 'vitest';
-import { fetchMessageAttachments, fetchThreadMessages, getAttachment, getMessage, getThreadBody, patchMessage, postMessage } from '../src/messages.js';
+import {
+  fetchMessageAttachments,
+  fetchThreadMessages,
+  getAttachment,
+  getMessage,
+  getThreadBody,
+  patchMessage,
+  postMessage,
+} from '../src/messages.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '99999999-9999-4999-8999-999999999999';
@@ -25,42 +33,74 @@ describe('postMessage — label actions', () => {
       [], // INSERT ... ON CONFLICT DO NOTHING
       [{ name: 'Work', color: '#3b82f6', kind: 'user' }], // labels read-back
     ]);
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID }, unsubscribeDeps());
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID },
+      unsubscribeDeps(),
+    );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ labels: [{ name: 'Work', color: '#3b82f6', kind: 'user' }] });
+    expect(await response.json()).toEqual({
+      labels: [{ name: 'Work', color: '#3b82f6', kind: 'user' }],
+    });
   });
 
   test('removes a label and returns the remaining set', async () => {
     const sql = createMockSql([[{ message: true, label: true }], [], []]);
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'remove_label', label_id: LABEL_ID }, unsubscribeDeps());
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'remove_label', label_id: LABEL_ID },
+      unsubscribeDeps(),
+    );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ labels: [] });
   });
 
   test('rejects a malformed label_id with 400', async () => {
     const sql = createMockSql();
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'add_label', label_id: 'not-a-uuid' }, unsubscribeDeps());
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'add_label', label_id: 'not-a-uuid' },
+      unsubscribeDeps(),
+    );
     expect(response.status).toBe(400);
     expect((await response.json()).error).toMatch(/label_id/);
   });
 
   test('404s when the message is not the caller’s', async () => {
     const sql = createMockSql([[{ message: false, label: true }]]);
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID }, unsubscribeDeps());
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID },
+      unsubscribeDeps(),
+    );
     expect(response.status).toBe(404);
     expect((await response.json()).error).toBe('Message not found');
   });
 
   test('404s when the label is not the caller’s', async () => {
     const sql = createMockSql([[{ message: true, label: false }]]);
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID }, unsubscribeDeps());
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID },
+      unsubscribeDeps(),
+    );
     expect(response.status).toBe(404);
     expect((await response.json()).error).toBe('Label not found');
   });
 
   test('rejects an unknown action with 400', async () => {
     const sql = createMockSql();
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'frobnicate' }, unsubscribeDeps());
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'frobnicate' },
+      unsubscribeDeps(),
+    );
     expect(response.status).toBe(400);
   });
 
@@ -74,39 +114,67 @@ describe('postMessage — label actions', () => {
 
 describe('postMessage — unsubscribe action', () => {
   test('sends one-click unsubscribe through the SSRF-safe request boundary', async () => {
-    const sql = createMockSql([[{
-      headers: [
-        { key: 'List-Unsubscribe', value: '<https://news.example/unsubscribe?id=123>' },
-        { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+    const sql = createMockSql([
+      [
+        {
+          headers: [
+            { key: 'List-Unsubscribe', value: '<https://news.example/unsubscribe?id=123>' },
+            { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+          ],
+        },
       ],
-    }]]);
+    ]);
     const requestPublicHttps = vi.fn().mockResolvedValue({ status: 204 });
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'unsubscribe' }, unsubscribeDeps({ requestPublicHttps }));
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ requestPublicHttps }),
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'one-click' });
     expect(requestPublicHttps).toHaveBeenCalledWith(
       'https://news.example/unsubscribe?id=123',
-      expect.objectContaining({ method: 'POST', body: 'List-Unsubscribe=One-Click', timeoutMs: 10_000 }),
+      expect.objectContaining({
+        method: 'POST',
+        body: 'List-Unsubscribe=One-Click',
+        timeoutMs: 10_000,
+      }),
     );
   });
 
   test('falls back to a manual link when the one-click POST fails', async () => {
-    const sql = createMockSql([[{
-      headers: [
-        { key: 'List-Unsubscribe', value: '<https://news.example/unsubscribe?id=123>' },
-        { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+    const sql = createMockSql([
+      [
+        {
+          headers: [
+            { key: 'List-Unsubscribe', value: '<https://news.example/unsubscribe?id=123>' },
+            { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+          ],
+        },
       ],
-    }]]);
+    ]);
     const requestPublicHttps = vi.fn().mockRejectedValue(new Error('DNS failed'));
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'unsubscribe' }, unsubscribeDeps({ requestPublicHttps }));
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ requestPublicHttps }),
+    );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: 'manual', method: 'link', url: 'https://news.example/unsubscribe?id=123' });
+    expect(await response.json()).toEqual({
+      status: 'manual',
+      method: 'link',
+      url: 'https://news.example/unsubscribe?id=123',
+    });
   });
 
   test('sends a mailto unsubscribe via Resend when configured and there is no one-click link', async () => {
-    const sql = createMockSql([[{ headers: [{ key: 'List-Unsubscribe', value: '<mailto:unsub@example.com>' }] }]]);
+    const sql = createMockSql([
+      [{ headers: [{ key: 'List-Unsubscribe', value: '<mailto:unsub@example.com>' }] }],
+    ]);
     const sendEmail = vi.fn().mockResolvedValue(undefined);
     const response = await postMessage(
       sql,
@@ -117,26 +185,53 @@ describe('postMessage — unsubscribe action', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'mailto' });
-    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'key', to: ['unsub@example.com'] }));
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'key', to: ['unsub@example.com'] }),
+    );
   });
 
   test('hands the client a mailto: URI when Resend is not configured', async () => {
-    const sql = createMockSql([[{ headers: [{ key: 'List-Unsubscribe', value: '<mailto:unsub@example.com?subject=stop>' }] }]]);
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'unsubscribe' }, unsubscribeDeps());
+    const sql = createMockSql([
+      [
+        {
+          headers: [{ key: 'List-Unsubscribe', value: '<mailto:unsub@example.com?subject=stop>' }],
+        },
+      ],
+    ]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps(),
+    );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: 'manual', method: 'mailto', mailto: 'mailto:unsub@example.com?subject=stop' });
+    expect(await response.json()).toEqual({
+      status: 'manual',
+      method: 'mailto',
+      mailto: 'mailto:unsub@example.com?subject=stop',
+    });
   });
 
   test('404s when the message is not the caller’s', async () => {
     const sql = createMockSql([[]]);
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'unsubscribe' }, unsubscribeDeps());
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps(),
+    );
     expect(response.status).toBe(404);
   });
 
   test('422s when the message has no unsubscribe information', async () => {
     const sql = createMockSql([[{ headers: [] }]]);
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'unsubscribe' }, unsubscribeDeps());
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps(),
+    );
     expect(response.status).toBe(422);
   });
 });
@@ -144,12 +239,33 @@ describe('postMessage — unsubscribe action', () => {
 describe('getMessage', () => {
   test('returns the message body plus its thread history and attachments, with headers stripped', async () => {
     const sql = createMockSql([
-      [{ id: MESSAGE_ID, thread_id: 'thread-1', body_html: '<p>Hi</p>', body_text: 'Hi', headers: [] }],
       [
-        { id: 'earlier-id', from_name: 'Alice', snippet: 'Earlier message', sent_at: '2026-01-01T00:00:00Z' },
+        {
+          id: MESSAGE_ID,
+          thread_id: 'thread-1',
+          body_html: '<p>Hi</p>',
+          body_text: 'Hi',
+          headers: [],
+        },
+      ],
+      [
+        {
+          id: 'earlier-id',
+          from_name: 'Alice',
+          snippet: 'Earlier message',
+          sent_at: '2026-01-01T00:00:00Z',
+        },
         { id: MESSAGE_ID, from_name: 'Bob', snippet: 'Hi', sent_at: '2026-01-02T00:00:00Z' },
       ],
-      [{ id: 'att-1', filename: 'plan.pdf', content_type: 'application/pdf', size_bytes: 1024, downloadable: true }],
+      [
+        {
+          id: 'att-1',
+          filename: 'plan.pdf',
+          content_type: 'application/pdf',
+          size_bytes: 1024,
+          downloadable: true,
+        },
+      ],
     ]);
     const response = await getMessage(sql, USER_ID, MESSAGE_ID);
     const body = await response.json();
@@ -159,7 +275,13 @@ describe('getMessage', () => {
     expect(body.thread).toHaveLength(2);
     expect(body.headers).toBeUndefined();
     expect(body.attachments).toEqual([
-      { id: 'att-1', filename: 'plan.pdf', content_type: 'application/pdf', size_bytes: 1024, downloadable: true },
+      {
+        id: 'att-1',
+        filename: 'plan.pdf',
+        content_type: 'application/pdf',
+        size_bytes: 1024,
+        downloadable: true,
+      },
     ]);
   });
 
@@ -195,8 +317,12 @@ describe('getAttachment', () => {
   /** @param {any} [overrides] */
   function blobDeps(overrides = {}) {
     return {
-      issueSignedToken: vi.fn().mockResolvedValue({ clientSigningToken: 'a', delegationToken: 'b' }),
-      presignUrl: vi.fn().mockResolvedValue({ presignedUrl: 'https://blob.vercel-storage.com/signed' }),
+      issueSignedToken: vi
+        .fn()
+        .mockResolvedValue({ clientSigningToken: 'a', delegationToken: 'b' }),
+      presignUrl: vi
+        .fn()
+        .mockResolvedValue({ presignedUrl: 'https://blob.vercel-storage.com/signed' }),
       getDownloadUrl: vi.fn((url) => `${url}?download=1`),
       token: 'blob-token',
       ...overrides,
@@ -204,11 +330,15 @@ describe('getAttachment', () => {
   }
 
   test('issues a signed download URL for an owned attachment', async () => {
-    const sql = createMockSql([[{
-      filename: 'plan.pdf',
-      content_type: 'application/pdf',
-      blob_url: 'https://store123.private.blob.vercel-storage.com/plan.pdf',
-    }]]);
+    const sql = createMockSql([
+      [
+        {
+          filename: 'plan.pdf',
+          content_type: 'application/pdf',
+          blob_url: 'https://store123.private.blob.vercel-storage.com/plan.pdf',
+        },
+      ],
+    ]);
     const response = await getAttachment(sql, USER_ID, ATTACHMENT_ID, blobDeps());
     const body = await response.json();
 
@@ -237,21 +367,41 @@ describe('getAttachment', () => {
   });
 
   test('500s and does not leak details when signing fails', async () => {
-    const sql = createMockSql([[{
-      filename: 'plan.pdf',
-      content_type: 'application/pdf',
-      blob_url: 'https://store123.private.blob.vercel-storage.com/plan.pdf',
-    }]]);
-    const response = await getAttachment(sql, USER_ID, ATTACHMENT_ID, blobDeps({
-      issueSignedToken: vi.fn().mockRejectedValue(new Error('blob API down')),
-    }));
+    const sql = createMockSql([
+      [
+        {
+          filename: 'plan.pdf',
+          content_type: 'application/pdf',
+          blob_url: 'https://store123.private.blob.vercel-storage.com/plan.pdf',
+        },
+      ],
+    ]);
+    const response = await getAttachment(
+      sql,
+      USER_ID,
+      ATTACHMENT_ID,
+      blobDeps({
+        issueSignedToken: vi.fn().mockRejectedValue(new Error('blob API down')),
+      }),
+    );
     expect(response.status).toBe(500);
   });
 });
 
 describe('patchMessage', () => {
   test('updates flags on an owned message', async () => {
-    const sql = createMockSql([[{ id: MESSAGE_ID, is_unread: false, is_starred: true, is_archived: false, is_deleted: false, scheduled_for: null }]]);
+    const sql = createMockSql([
+      [
+        {
+          id: MESSAGE_ID,
+          is_unread: false,
+          is_starred: true,
+          is_archived: false,
+          is_deleted: false,
+          scheduled_for: null,
+        },
+      ],
+    ]);
     const response = await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_starred: true });
     expect(response.status).toBe(200);
     expect((await response.json()).message.is_starred).toBe(true);
@@ -280,7 +430,10 @@ describe('patchMessage', () => {
 
   test('rejects an unparseable scheduled_for', async () => {
     const sql = createMockSql();
-    const response = await patchMessage(sql, USER_ID, { id: MESSAGE_ID, scheduled_for: 'not-a-date' });
+    const response = await patchMessage(sql, USER_ID, {
+      id: MESSAGE_ID,
+      scheduled_for: 'not-a-date',
+    });
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
   });

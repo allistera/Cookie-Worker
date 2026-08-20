@@ -76,7 +76,11 @@ export function buildNews(row) {
         meta: String(item.meta ?? ''),
       }));
     if (items.length > 0) {
-      sections.push({ emoji: String(section.emoji ?? ''), title: String(section.title ?? ''), items });
+      sections.push({
+        emoji: String(section.emoji ?? ''),
+        title: String(section.title ?? ''),
+        items,
+      });
     }
   }
   return { created_at: row.created_at, sections };
@@ -105,7 +109,9 @@ export function fetchMessageStates(sql, userId, ids) {
 export function digestMessageIds(row) {
   const topics = Array.isArray(row?.raw?.topics) ? row.raw.topics : [];
   const ids = topics.flatMap((/** @type {any} */ topic) =>
-    (Array.isArray(topic?.items) ? topic.items : []).map((/** @type {any} */ item) => item?.message_id),
+    (Array.isArray(topic?.items) ? topic.items : []).map(
+      (/** @type {any} */ item) => item?.message_id,
+    ),
   );
   return [...new Set(ids.filter((/** @type {any} */ id) => UUID_RE.test(String(id))))];
 }
@@ -139,14 +145,22 @@ export function buildDigest(row, states) {
     }
   }
   const categories = (Array.isArray(row.raw?.noise?.categories) ? row.raw.noise.categories : [])
-    .map((/** @type {any} */ item) => ({ category: item?.category?.trim?.() ?? '', count: item?.count }))
-    .filter((/** @type {any} */ item) => item.category && Number.isInteger(item.count) && item.count > 0);
+    .map((/** @type {any} */ item) => ({
+      category: item?.category?.trim?.() ?? '',
+      count: item?.count,
+    }))
+    .filter(
+      (/** @type {any} */ item) => item.category && Number.isInteger(item.count) && item.count > 0,
+    );
   return {
     overview: row.summary ?? '',
     created_at: row.created_at,
     topics,
     noise: {
-      count: categories.reduce((/** @type {number} */ total, /** @type {any} */ item) => total + item.count, 0),
+      count: categories.reduce(
+        (/** @type {number} */ total, /** @type {any} */ item) => total + item.count,
+        0,
+      ),
       categories,
     },
   };
@@ -187,11 +201,14 @@ export function updateTaskDueDate(sql, id, userId, dueDate) {
 // deprecated REST v2 base returns 410 Gone. Throws on any non-2xx response.
 /** @param {string} externalId @param {string} token */
 export async function closeTodoistTask(externalId, token) {
-  const response = await fetch(`https://api.todoist.com/api/v1/tasks/${encodeURIComponent(externalId)}/close`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(10000),
-  });
+  const response = await fetch(
+    `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(externalId)}/close`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000),
+    },
+  );
   if (!response.ok) {
     throw new Error(`Todoist close responded ${response.status}`);
   }
@@ -202,15 +219,18 @@ export async function closeTodoistTask(externalId, token) {
 // Throws on any non-2xx response.
 /** @param {string} externalId @param {string} token @param {string} dueDate */
 export async function rescheduleTodoistTask(externalId, token, dueDate) {
-  const response = await fetch(`https://api.todoist.com/api/v1/tasks/${encodeURIComponent(externalId)}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+  const response = await fetch(
+    `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(externalId)}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ due_date: dueDate }),
+      signal: AbortSignal.timeout(10000),
     },
-    body: JSON.stringify({ due_date: dueDate }),
-    signal: AbortSignal.timeout(10000),
-  });
+  );
   if (!response.ok) {
     throw new Error(`Todoist reschedule responded ${response.status}`);
   }
@@ -231,7 +251,12 @@ async function completeTask(sql, userId, task, todoistToken) {
     try {
       await closeTodoistTask(task.external_id, /** @type {string} */ (todoistToken));
     } catch (err) {
-      console.log(JSON.stringify({ event: 'todoist_close_failed', message: /** @type {Error} */ (err).message }));
+      console.log(
+        JSON.stringify({
+          event: 'todoist_close_failed',
+          message: /** @type {Error} */ (err).message,
+        }),
+      );
       return Response.json({ error: 'Failed to close the task in Todoist' }, { status: 502 });
     }
   }
@@ -257,7 +282,12 @@ async function rescheduleTask(sql, userId, task, dueDate, todoistToken) {
     try {
       await rescheduleTodoistTask(task.external_id, todoistToken, dueDate);
     } catch (err) {
-      console.log(JSON.stringify({ event: 'todoist_reschedule_failed', message: /** @type {Error} */ (err).message }));
+      console.log(
+        JSON.stringify({
+          event: 'todoist_reschedule_failed',
+          message: /** @type {Error} */ (err).message,
+        }),
+      );
       return Response.json({ error: 'Failed to reschedule the task in Todoist' }, { status: 502 });
     }
   }

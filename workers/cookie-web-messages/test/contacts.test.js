@@ -10,7 +10,9 @@ describe('getContacts', () => {
     const response = await getContacts(sql, USER_ID);
     expect(response.status).toBe(200);
     expect(response.headers.get('Cache-Control')).toBe('private, max-age=300');
-    expect(await response.json()).toEqual({ contacts: [{ address: 'a@example.com', name: 'Ada' }] });
+    expect(await response.json()).toEqual({
+      contacts: [{ address: 'a@example.com', name: 'Ada' }],
+    });
   });
 
   test('returns an empty list when the user has no contacts', async () => {

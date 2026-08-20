@@ -7,22 +7,22 @@
   "compatibility_flags": ["nodejs_compat"],
   "upload_source_maps": true,
   "observability": {
-    "enabled": true
+    "enabled": true,
   },
   "triggers": {
     // Cron Triggers run on UTC.
-    "crons": ["0 5 * * *"]
+    "crons": ["0 5 * * *"],
   },
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "a276ebeb4ec84d33b050614b6b5020e5"
-    }
+      "id": "a276ebeb4ec84d33b050614b6b5020e5",
+    },
   ],
   "vars": {
     "TODOIST_MCP_URL": "https://ai.todoist.net/mcp",
     "AI_MODEL": "gpt-5.6-luna",
     "OWNER_EMAIL": "allisteraall@gmail.com",
-    "SENTRY_ENVIRONMENT": "production"
-  }
+    "SENTRY_ENVIRONMENT": "production",
+  },
 }

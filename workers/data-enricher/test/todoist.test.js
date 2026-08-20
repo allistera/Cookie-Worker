@@ -46,11 +46,16 @@ const TODAY_TASKS = {
 };
 
 async function connectedClient(handler) {
-  const server = new Server({ name: 'todoist-stub', version: '1.0.0' }, { capabilities: { tools: {} } });
+  const server = new Server(
+    { name: 'todoist-stub', version: '1.0.0' },
+    { capabilities: { tools: {} } },
+  );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [{ name: 'find-tasks-by-date', description: 'stub', inputSchema: { type: 'object' } }],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => handler(request.params.arguments));
+  server.setRequestHandler(CallToolRequestSchema, async (request) =>
+    handler(request.params.arguments),
+  );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   const client = createMcpClient();
@@ -97,6 +102,8 @@ describe('gatherTodoistTasks', () => {
       isError: true,
       content: [{ type: 'text', text: 'rate limited' }],
     }));
-    await expect(gatherTodoistTasks(client)).rejects.toThrow('find-tasks-by-date failed: rate limited');
+    await expect(gatherTodoistTasks(client)).rejects.toThrow(
+      'find-tasks-by-date failed: rate limited',
+    );
   });
 });

@@ -77,11 +77,19 @@ export async function postImageUpload(request, deps, blobToken) {
   }
 
   if (file.size > MAX_IMAGE_BYTES) {
-    return Response.json({ error: `Image size exceeds ${MAX_IMAGE_BYTES / 1024 / 1024}MB limit` }, { status: 400 });
+    return Response.json(
+      { error: `Image size exceeds ${MAX_IMAGE_BYTES / 1024 / 1024}MB limit` },
+      { status: 400 },
+    );
   }
 
   if (deps.allowRequest && deps.sql && deps.userId) {
-    const allowed = await deps.allowRequest(deps.sql, deps.userId, 'image-upload', UPLOAD_RATE_LIMIT);
+    const allowed = await deps.allowRequest(
+      deps.sql,
+      deps.userId,
+      'image-upload',
+      UPLOAD_RATE_LIMIT,
+    );
     if (!allowed) {
       return Response.json({ error: 'Too many uploads, slow down' }, { status: 429 });
     }
@@ -105,7 +113,12 @@ export async function postImageUpload(request, deps, blobToken) {
     });
     return Response.json({ url: blob.url });
   } catch (error) {
-    console.log(JSON.stringify({ event: 'image_upload_failed', message: /** @type {Error} */ (error).message }));
+    console.log(
+      JSON.stringify({
+        event: 'image_upload_failed',
+        message: /** @type {Error} */ (error).message,
+      }),
+    );
     return Response.json({ error: 'Failed to upload image' }, { status: 500 });
   }
 }

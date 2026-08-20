@@ -128,10 +128,14 @@ async function resolveDnsRecords(hostname, type) {
     signal: AbortSignal.timeout(DNS_QUERY_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error('DNS resolution failed');
-  const data = /** @type {{Status: number, Answer?: {type: number, data: string}[]}} */ (await response.json());
+  const data = /** @type {{Status: number, Answer?: {type: number, data: string}[]}} */ (
+    await response.json()
+  );
   if (data.Status !== 0) return [];
   const recordType = type === 'A' ? 1 : 28;
-  return (data.Answer ?? []).filter((record) => record.type === recordType).map((record) => record.data);
+  return (data.Answer ?? [])
+    .filter((record) => record.type === recordType)
+    .map((record) => record.data);
 }
 
 /**

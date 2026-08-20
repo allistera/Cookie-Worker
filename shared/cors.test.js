@@ -18,11 +18,15 @@ describe('isAllowedOrigin', () => {
   });
 
   test('allows any https Vercel preview subdomain', () => {
-    expect(isAllowedOrigin('https://cookie-abc123-allisteras-projects.vercel.app', PRODUCTION)).toBe(true);
+    expect(
+      isAllowedOrigin('https://cookie-abc123-allisteras-projects.vercel.app', PRODUCTION),
+    ).toBe(true);
   });
 
   test('rejects an http Vercel-looking origin (not actually https)', () => {
-    expect(isAllowedOrigin('http://cookie-abc123-allisteras-projects.vercel.app', PRODUCTION)).toBe(false);
+    expect(isAllowedOrigin('http://cookie-abc123-allisteras-projects.vercel.app', PRODUCTION)).toBe(
+      false,
+    );
   });
 
   test('rejects an unrelated origin', () => {

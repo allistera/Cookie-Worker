@@ -16,7 +16,12 @@ afterEach(() => {
 });
 
 const CANDIDATES = [
-  { title: 'acme/rocket', url: 'https://github.com/acme/rocket', description: 'Fast', meta: '★ 10' },
+  {
+    title: 'acme/rocket',
+    url: 'https://github.com/acme/rocket',
+    description: 'Fast',
+    meta: '★ 10',
+  },
   { title: 'acme/slow', url: 'https://github.com/acme/slow', description: 'Slow', meta: '★ 2' },
 ];
 
@@ -32,7 +37,12 @@ function stubRanking(picks) {
 describe('applyRanking', () => {
   test('keeps the model order and attaches its note', () => {
     const picked = applyRanking(
-      { picks: [{ url: CANDIDATES[1].url, note: 'Matches Rust' }, { url: CANDIDATES[0].url, note: 'Fast' }] },
+      {
+        picks: [
+          { url: CANDIDATES[1].url, note: 'Matches Rust' },
+          { url: CANDIDATES[0].url, note: 'Fast' },
+        ],
+      },
       CANDIDATES,
     );
     expect(picked.map((p) => p.title)).toEqual(['acme/slow', 'acme/rocket']);
@@ -43,7 +53,12 @@ describe('applyRanking', () => {
   // These links leave the app, so an invented URL must never be rendered.
   test('drops urls that were not among the candidates', () => {
     const picked = applyRanking(
-      { picks: [{ url: 'https://evil.example/malware', note: 'Trust me' }, { url: CANDIDATES[0].url, note: 'ok' }] },
+      {
+        picks: [
+          { url: 'https://evil.example/malware', note: 'Trust me' },
+          { url: CANDIDATES[0].url, note: 'ok' },
+        ],
+      },
       CANDIDATES,
     );
     expect(picked.map((p) => p.url)).toEqual([CANDIDATES[0].url]);
@@ -51,7 +66,12 @@ describe('applyRanking', () => {
 
   test('lists a candidate at most once', () => {
     const picked = applyRanking(
-      { picks: [{ url: CANDIDATES[0].url, note: 'a' }, { url: CANDIDATES[0].url, note: 'b' }] },
+      {
+        picks: [
+          { url: CANDIDATES[0].url, note: 'a' },
+          { url: CANDIDATES[0].url, note: 'b' },
+        ],
+      },
       CANDIDATES,
     );
     expect(picked).toHaveLength(1);

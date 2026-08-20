@@ -58,10 +58,7 @@ Content-Type: text/plain
 
 Body`;
     const record = await parseEmail(fakeMessage(raw));
-    expect(record.references).toEqual([
-      '<parent@example.com>',
-      '<grandparent@example.com>',
-    ]);
+    expect(record.references).toEqual(['<parent@example.com>', '<grandparent@example.com>']);
   });
 
   test('creates deterministic synthetic ids without Message-ID', async () => {
@@ -73,13 +70,15 @@ Body`;
   });
 
   test('derives text from html-only mail', async () => {
-    const record = await parseEmail(fakeMessage(`From: a@example.com
+    const record = await parseEmail(
+      fakeMessage(`From: a@example.com
 To: b@example.com
 Subject: HTML
 Message-ID: <html@example.com>
 Content-Type: text/html; charset=utf-8
 
-<style>.x{}</style><p>Hello&nbsp;<strong>world</strong></p><script>x()</script>`));
+<style>.x{}</style><p>Hello&nbsp;<strong>world</strong></p><script>x()</script>`),
+    );
     expect(record.bodyText).toBe('Hello world');
     expect(record.bodyHtml).toContain('<p>');
   });
@@ -91,7 +90,8 @@ Content-Type: text/html; charset=utf-8
   });
 
   test('retains attachment bytes and permits null filenames', async () => {
-    const record = await parseEmail(fakeMessage(`From: a@example.com
+    const record = await parseEmail(
+      fakeMessage(`From: a@example.com
 To: b@example.com
 Subject: Attachment
 Message-ID: <attachment@example.com>
@@ -107,27 +107,35 @@ Content-Disposition: inline
 Content-Transfer-Encoding: base64
 
 aGVsbG8=
---x--`));
+--x--`),
+    );
     expect(record.attachments[0]).toMatchObject({ filename: null, mime_type: 'image/png' });
     expect(record.attachments[0].size).toBeGreaterThan(0);
     expect(new TextDecoder().decode(record.attachments[0].content)).toBe('hello');
   });
 
   test('strips NUL values', async () => {
-    const record = await parseEmail(fakeMessage(simpleFixture.replace('Hello there', 'Hello\0there')));
+    const record = await parseEmail(
+      fakeMessage(simpleFixture.replace('Hello there', 'Hello\0there')),
+    );
     expect(record.subject).toBe('Hellothere');
   });
 
   test('replaces oversized Message-ID with synthetic id', async () => {
-    const raw = simpleFixture.replace('<simple@example.com>', `<${'a'.repeat(MAX_MESSAGE_ID)}@example.com>`);
+    const raw = simpleFixture.replace(
+      '<simple@example.com>',
+      `<${'a'.repeat(MAX_MESSAGE_ID)}@example.com>`,
+    );
     const record = await parseEmail(fakeMessage(raw));
     expect(record.messageId).toMatch(/^<synthetic-/u);
   });
 
   test('falls back to envelope sender when From cannot be parsed', async () => {
-    const record = await parseEmail(fakeMessage(simpleFixture.replace('From: Alice <alice@example.com>', 'From: ???'), {
-      from: 'bounce@example.com',
-    }));
+    const record = await parseEmail(
+      fakeMessage(simpleFixture.replace('From: Alice <alice@example.com>', 'From: ???'), {
+        from: 'bounce@example.com',
+      }),
+    );
     expect(record.fromAddress).toBe('bounce@example.com');
   });
 
@@ -149,9 +157,10 @@ aGVsbG8=
   });
 
   test('caps headers at MAX_HEADERS and bounds values', async () => {
-    const extra = Array.from({ length: MAX_HEADERS + 20 }, (_, i) => (
-      `X-Extra-${i}: ${'v'.repeat(MAX_HEADER_VALUE + 50)}`
-    )).join('\n');
+    const extra = Array.from(
+      { length: MAX_HEADERS + 20 },
+      (_, i) => `X-Extra-${i}: ${'v'.repeat(MAX_HEADER_VALUE + 50)}`,
+    ).join('\n');
     const raw = simpleFixture.replace(
       'Content-Type: text/plain; charset=utf-8',
       `${extra}\nContent-Type: text/plain; charset=utf-8`,

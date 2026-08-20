@@ -64,13 +64,17 @@ export function previousUkDayWindow(now = new Date()) {
 
 /** @param {string} url @param {RequestInit} [init] */
 async function fetchJson(url, init = {}) {
-  return fetchWithTimeout(url, {
-    ...init,
-    headers: { 'User-Agent': USER_AGENT, ...(init.headers || {}) },
-  }, async (response) => {
-    if (!response.ok) throw new Error(`${new URL(url).host} responded ${response.status}`);
-    return response.json();
-  });
+  return fetchWithTimeout(
+    url,
+    {
+      ...init,
+      headers: { 'User-Agent': USER_AGENT, ...(init.headers || {}) },
+    },
+    async (response) => {
+      if (!response.ok) throw new Error(`${new URL(url).host} responded ${response.status}`);
+      return response.json();
+    },
+  );
 }
 
 /**
@@ -199,12 +203,16 @@ export function parseRssItems(xml) {
  * @param {Date} [now]
  */
 export async function fetchUkHeadlines(count = 8, hours = 24, now = new Date()) {
-  const xml = await fetchWithTimeout(BBC_UK_FEED_URL, {
-    headers: { 'User-Agent': USER_AGENT },
-  }, async (response) => {
-    if (!response.ok) throw new Error(`BBC responded ${response.status}`);
-    return response.text();
-  });
+  const xml = await fetchWithTimeout(
+    BBC_UK_FEED_URL,
+    {
+      headers: { 'User-Agent': USER_AGENT },
+    },
+    async (response) => {
+      if (!response.ok) throw new Error(`BBC responded ${response.status}`);
+      return response.text();
+    },
+  );
 
   const since = now.getTime() - hours * 3_600_000;
   // Built with a loop rather than filter().sort() so `published` is known to be

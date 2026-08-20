@@ -60,7 +60,10 @@ describe('Sentry configuration', () => {
 
 describe('failure reporting', () => {
   test('reports a failure the HTTP trigger answers with a 500', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 502 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 502 })),
+    );
 
     const response = await run();
 
@@ -75,26 +78,32 @@ describe('failure reporting', () => {
   });
 
   test('keeps the flush token out of Sentry and the logs', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      throw new Error(`upstream rejected Bearer ${FLUSH_TOKEN}`);
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error(`upstream rejected Bearer ${FLUSH_TOKEN}`);
+      }),
+    );
 
     await run();
 
     expect(sentry.captureException.mock.calls[0][0].message).not.toContain(FLUSH_TOKEN);
-    const logged = /** @type {any} */ (console.log).mock.calls.map(
-      (/** @type {any[]} */ call) => call[0],
-    ).join('\n');
+    const logged = /** @type {any} */ (console.log).mock.calls
+      .map((/** @type {any[]} */ call) => call[0])
+      .join('\n');
     expect(logged).toContain('http_run_failed');
     expect(logged).not.toContain(FLUSH_TOKEN);
   });
 
   test('lets scheduled failures escape so the wrapper reports them', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500 })),
+    );
 
-    await expect(
-      worker.scheduled(/** @type {any} */ ({}), env, ctx),
-    ).rejects.toThrow('Cookie-Web flush responded 500');
+    await expect(worker.scheduled(/** @type {any} */ ({}), env, ctx)).rejects.toThrow(
+      'Cookie-Web flush responded 500',
+    );
     expect(sentry.captureException).not.toHaveBeenCalled();
   });
 });

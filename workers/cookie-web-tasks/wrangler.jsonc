@@ -5,16 +5,12 @@
   // enabled alongside the custom domain below for debugging — both reach the
   // same Worker, and CORS/auth apply equally to either.
   "workers_dev": true,
-  "routes": [
-    { "pattern": "tasks-api.infinitywave.online", "custom_domain": true }
-  ],
+  "routes": [{ "pattern": "tasks-api.infinitywave.online", "custom_domain": true }],
   "compatibility_date": "2026-07-09",
   "compatibility_flags": ["nodejs_compat"],
   "upload_source_maps": true,
   "observability": { "enabled": true },
-  "hyperdrive": [
-    { "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }
-  ],
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
   "vars": {
     // Auth0 domain/audience are public identifiers, already shipped in
     // Cookie-Web's own client bundle (VITE_AUTH0_DOMAIN/VITE_AUTH0_AUDIENCE)
@@ -28,6 +24,6 @@
     // data-enricher's own workers.dev URL (confirmed live). Matching secret
     // is ENRICHER_TRIGGER_TOKEN, synced from data-enricher's own
     // HTTP_TRIGGER_TOKEN in .github/workflows/deploy.yml.
-    "ENRICHER_RUN_URL": "https://data-enricher.cloudflare-581.workers.dev/run"
-  }
+    "ENRICHER_RUN_URL": "https://data-enricher.cloudflare-581.workers.dev/run",
+  },
 }

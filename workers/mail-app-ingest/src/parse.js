@@ -204,9 +204,7 @@ function extractReferences(headers) {
   const values = headers
     .filter((header) => ['references', 'in-reply-to'].includes(header.key.toLowerCase()))
     .flatMap((header) => extractReferenceTokens(header.value));
-  const canonical = values
-    .map((token) => canonicalizeMessageId(token))
-    .filter((id) => id !== null);
+  const canonical = values.map((token) => canonicalizeMessageId(token)).filter((id) => id !== null);
   return [...new Set(canonical)].slice(0, MAX_REFERENCES);
 }
 
@@ -216,8 +214,9 @@ function extractReferences(headers) {
  * @param {{from: string, to: string, date: string, subject: string, bodyPrefix: string}} fallback
  */
 async function normalizeMessageId(messageId, headers, fallback) {
-  const headerMessageId = stripNul(messageId)
-    || stripNul(headers.find((header) => header.key.toLowerCase() === 'message-id')?.value ?? '');
+  const headerMessageId =
+    stripNul(messageId) ||
+    stripNul(headers.find((header) => header.key.toLowerCase() === 'message-id')?.value ?? '');
   const canonical = canonicalizeMessageId(headerMessageId);
   if (canonical) return canonical;
   return syntheticMessageId(fallback);
@@ -237,10 +236,14 @@ function makeSnippet(value) {
  */
 function normalizeAttachments(attachments) {
   return attachments.slice(0, MAX_ATTACHMENTS_META).map((attachment) => {
-    const item = /** @type {{filename?: unknown, mimeType?: unknown, contentType?: unknown, content?: unknown}} */ (attachment);
+    const item =
+      /** @type {{filename?: unknown, mimeType?: unknown, contentType?: unknown, content?: unknown}} */ (
+        attachment
+      );
     const content = attachmentContent(item.content);
     return {
-      filename: item.filename === null || item.filename === undefined ? null : stripNul(item.filename),
+      filename:
+        item.filename === null || item.filename === undefined ? null : stripNul(item.filename),
       mime_type: stripNul(item.mimeType ?? item.contentType ?? ''),
       size: content.byteLength,
       content,

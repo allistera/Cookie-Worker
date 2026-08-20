@@ -103,9 +103,7 @@ export function parseListUnsubscribe(headers) {
   }
 
   const oneClick = Boolean(
-    listUnsubPost &&
-      listUnsubPost.trim().toLowerCase() === 'list-unsubscribe=one-click' &&
-      url,
+    listUnsubPost && listUnsubPost.trim().toLowerCase() === 'list-unsubscribe=one-click' && url,
   );
 
   if (url === null && mailto === null) return null;

@@ -27,7 +27,9 @@ function record(overrides = {}) {
 describe('storeEmail', () => {
   test('detects duplicates before attachment work starts', async () => {
     const sql = createMockSql({ lookupRows: [{ id: 'u', is_duplicate: true }] });
-    await expect(emailAlreadyStored(sql, '<id@example.com>', 'owner@example.com')).resolves.toBe(true);
+    await expect(emailAlreadyStored(sql, '<id@example.com>', 'owner@example.com')).resolves.toBe(
+      true,
+    );
     expect(sql.transactions).toHaveLength(0);
   });
 
@@ -55,18 +57,29 @@ describe('storeEmail', () => {
   test('applies a matching tag rule in the same transaction as the insert', async () => {
     const sql = createMockSql({
       ruleRows: [
-        { rule_id: 'rule-1', label_id: 'label-1', match_type: 'all', field: 'subject', operator: 'contains', value: 'subject' },
+        {
+          rule_id: 'rule-1',
+          label_id: 'label-1',
+          match_type: 'all',
+          field: 'subject',
+          operator: 'contains',
+          value: 'subject',
+        },
       ],
     });
     const result = await storeEmail(sql, record(), 'owner@example.com');
 
     expect(result.outcome).toBe('inserted');
-    const ruleInsert = sql.transactions[0].find((q) => q.text.includes('INSERT INTO message_labels'));
+    const ruleInsert = sql.transactions[0].find((q) =>
+      q.text.includes('INSERT INTO message_labels'),
+    );
     expect(ruleInsert.values).toEqual([result.messageUuid, 'label-1', 'rule-1']);
   });
 
   test('returns duplicate without writing', async () => {
-    const sql = createMockSql({ lookupRows: [{ user_id: 'u', is_duplicate: true, thread_id: null }] });
+    const sql = createMockSql({
+      lookupRows: [{ user_id: 'u', is_duplicate: true, thread_id: null }],
+    });
     await expect(storeEmail(sql, record(), 'owner@example.com')).resolves.toEqual({
       outcome: 'duplicate',
       messageUuid: null,
@@ -80,7 +93,9 @@ describe('storeEmail', () => {
   });
 
   test('reuses referenced thread and bumps counters', async () => {
-    const sql = createMockSql({ lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }] });
+    const sql = createMockSql({
+      lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }],
+    });
     await storeEmail(sql, record({ references: ['<parent@example.com>'] }), 'owner@example.com');
     expect(sql.transactions[0]).toHaveLength(6);
     expect(sql.transactions[0][0].text).toContain('pg_advisory_xact_lock');
@@ -118,30 +133,44 @@ describe('storeEmail', () => {
 
   test('throws when no user matches', async () => {
     const sql = createMockSql({ lookupRows: [] });
-    await expect(storeEmail(sql, record(), 'missing@example.com')).rejects.toThrow('no users row matches');
+    await expect(storeEmail(sql, record(), 'missing@example.com')).rejects.toThrow(
+      'no users row matches',
+    );
   });
 
   test('persists an uploaded attachment blob URL', async () => {
     const sql = createMockSql();
-    await storeEmail(sql, record({
-      attachments: [{
-        filename: null,
-        mime_type: 'text/plain',
-        size: 3,
-        blob_url: 'https://store.private.blob.vercel-storage.com/mail-attachments/hash/0',
-      }],
-    }), 'owner@example.com');
-    const attachmentStatement = sql.transactions[0].find((statement) => statement.text.includes('INSERT INTO attachments'));
+    await storeEmail(
+      sql,
+      record({
+        attachments: [
+          {
+            filename: null,
+            mime_type: 'text/plain',
+            size: 3,
+            blob_url: 'https://store.private.blob.vercel-storage.com/mail-attachments/hash/0',
+          },
+        ],
+      }),
+      'owner@example.com',
+    );
+    const attachmentStatement = sql.transactions[0].find((statement) =>
+      statement.text.includes('INSERT INTO attachments'),
+    );
     expect(attachmentStatement.text).toContain('blob_url');
     expect(attachmentStatement.values).toContainEqual({
-      __pgJson: [expect.objectContaining({
-        blob_url: 'https://store.private.blob.vercel-storage.com/mail-attachments/hash/0',
-      })],
+      __pgJson: [
+        expect.objectContaining({
+          blob_url: 'https://store.private.blob.vercel-storage.com/mail-attachments/hash/0',
+        }),
+      ],
     });
   });
 
   test('propagates transaction failures', async () => {
     const sql = createMockSql({ transactionRejects: true });
-    await expect(storeEmail(sql, record(), 'owner@example.com')).rejects.toThrow('transaction failed');
+    await expect(storeEmail(sql, record(), 'owner@example.com')).rejects.toThrow(
+      'transaction failed',
+    );
   });
 });

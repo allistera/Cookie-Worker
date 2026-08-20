@@ -7,7 +7,10 @@ const TOKEN = 'trigger-secret';
 const USER_ID = '11111111-1111-1111-1111-111111111111';
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200 })));
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: true, status: 200 })),
+  );
 });
 
 afterEach(() => {
@@ -26,7 +29,9 @@ describe('triggerDigestRebuild', () => {
   });
 
   it('throws a typed error when the trigger is not configured', async () => {
-    await expect(triggerDigestRebuild(undefined, undefined)).rejects.toBeInstanceOf(EnricherNotConfiguredError);
+    await expect(triggerDigestRebuild(undefined, undefined)).rejects.toBeInstanceOf(
+      EnricherNotConfiguredError,
+    );
     expect(fetch).not.toHaveBeenCalled();
   });
 

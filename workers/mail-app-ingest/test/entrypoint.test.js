@@ -4,9 +4,11 @@ import * as entrypoint from '../src/index.js';
 describe('Cloudflare entrypoint', () => {
   test('exports only the Worker handler', () => {
     expect(Object.keys(entrypoint)).toEqual(['default']);
-    expect(entrypoint.default).toEqual(expect.objectContaining({
-      email: expect.any(Function),
-      scheduled: expect.any(Function),
-    }));
+    expect(entrypoint.default).toEqual(
+      expect.objectContaining({
+        email: expect.any(Function),
+        scheduled: expect.any(Function),
+      }),
+    );
   });
 });

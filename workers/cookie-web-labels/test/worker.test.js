@@ -57,7 +57,10 @@ beforeEach(() => {
 describe('CORS preflight', () => {
   test('answers OPTIONS from an allowed origin without touching auth or the database', async () => {
     const response = await worker.fetch(
-      new Request('https://cookie-web-labels.example/labels', { method: 'OPTIONS', headers: { Origin: PRODUCTION } }),
+      new Request('https://cookie-web-labels.example/labels', {
+        method: 'OPTIONS',
+        headers: { Origin: PRODUCTION },
+      }),
       env,
       ctx,
     );
@@ -108,7 +111,10 @@ describe('routing', () => {
 
   test('POST /labels dispatches to createLabel (reaches its validation)', async () => {
     const response = await worker.fetch(
-      request('/labels', { method: 'POST', body: JSON.stringify({ name: 'Work', color: '#2F6BE0' }) }),
+      request('/labels', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Work', color: '#2F6BE0' }),
+      }),
       env,
       ctx,
     );
@@ -128,7 +134,11 @@ describe('routing', () => {
   });
 
   test('invalid JSON returns 400 before reaching a handler', async () => {
-    const response = await worker.fetch(request('/labels', { method: 'POST', body: '{not json' }), env, ctx);
+    const response = await worker.fetch(
+      request('/labels', { method: 'POST', body: '{not json' }),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(400);
   });
 });

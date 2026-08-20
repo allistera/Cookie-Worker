@@ -162,8 +162,15 @@ export async function getAttachment(sql, userId, id, blob) {
       }),
     );
   } catch (error) {
-    console.log(JSON.stringify({ event: 'attachment_download_failed', message: /** @type {Error} */ (error).message }));
-    return noStore(Response.json({ error: 'Failed to prepare attachment download' }, { status: 500 }));
+    console.log(
+      JSON.stringify({
+        event: 'attachment_download_failed',
+        message: /** @type {Error} */ (error).message,
+      }),
+    );
+    return noStore(
+      Response.json({ error: 'Failed to prepare attachment download' }, { status: 500 }),
+    );
   }
 }
 
@@ -191,7 +198,12 @@ export async function getMessage(sql, userId, id) {
     thread_id ? fetchThreadMessages(sql, thread_id, userId) : [],
     fetchMessageAttachments(sql, id),
   ]);
-  return Response.json({ ...rest, unsubscribe: parseListUnsubscribe(headers), thread, attachments });
+  return Response.json({
+    ...rest,
+    unsubscribe: parseListUnsubscribe(headers),
+    thread,
+    attachments,
+  });
 }
 
 /**
@@ -333,7 +345,12 @@ async function unsubscribe(sql, userId, id, deps) {
       }
       console.log(JSON.stringify({ event: 'one_click_unsubscribe_failed', status: resp.status }));
     } catch (error) {
-      console.log(JSON.stringify({ event: 'one_click_unsubscribe_error', message: /** @type {Error} */ (error).message }));
+      console.log(
+        JSON.stringify({
+          event: 'one_click_unsubscribe_error',
+          message: /** @type {Error} */ (error).message,
+        }),
+      );
     }
     // fall through to the fallbacks below on any failure/timeout — never 500.
   }
@@ -350,7 +367,12 @@ async function unsubscribe(sql, userId, id, deps) {
       });
       return Response.json({ status: 'unsubscribed', method: 'mailto' });
     } catch (error) {
-      console.log(JSON.stringify({ event: 'mailto_unsubscribe_failed', message: /** @type {Error} */ (error).message }));
+      console.log(
+        JSON.stringify({
+          event: 'mailto_unsubscribe_failed',
+          message: /** @type {Error} */ (error).message,
+        }),
+      );
       // Resend failed — try the link fallback, else 502.
       if (url && isSafeUnsubscribeUrl(url)) {
         return Response.json({ status: 'manual', method: 'link', url });
@@ -367,7 +389,9 @@ async function unsubscribe(sql, userId, id, deps) {
   // 4. mailto with no Resend key: hand the client a mailto: URI to open.
   if (mailto) {
     const mailtoUri =
-      'mailto:' + mailto.address + (mailto.subject ? '?subject=' + encodeURIComponent(mailto.subject) : '');
+      'mailto:' +
+      mailto.address +
+      (mailto.subject ? '?subject=' + encodeURIComponent(mailto.subject) : '');
     return Response.json({ status: 'manual', method: 'mailto', mailto: mailtoUri });
   }
 
@@ -421,7 +445,10 @@ export async function patchMessage(sql, userId, body) {
     !hasScheduledChange || scheduledFor === null || Number.isFinite(Date.parse(scheduledFor));
   const hasChange = flags.some((f) => f === true || f === false) || hasScheduledChange;
   if (!id || !flagsValid || !scheduledForValid || !hasChange) {
-    return Response.json({ error: 'id and at least one valid change are required' }, { status: 400 });
+    return Response.json(
+      { error: 'id and at least one valid change are required' },
+      { status: 400 },
+    );
   }
 
   const rows = await sql`

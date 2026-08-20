@@ -151,11 +151,12 @@ function fetchSearchDocuments(sql, userId, ids) {
  */
 async function computeSearchFields(sql, userId, { title, blocks }, deps) {
   const contentText = flattenBlocksToText(title, blocks);
-  const fields = /** @type {{content_text: string, embedding: number[] | null, embedding_model: string | null}} */ ({
-    content_text: contentText,
-    embedding: null,
-    embedding_model: null,
-  });
+  const fields =
+    /** @type {{content_text: string, embedding: number[] | null, embedding_model: string | null}} */ ({
+      content_text: contentText,
+      embedding: null,
+      embedding_model: null,
+    });
   if (!contentText.trim() || !deps.openaiApiKey) return fields;
   try {
     const allowed = await deps.allowRequest(sql, userId, 'doc-embed', EMBED_RATE_LIMIT);
@@ -165,7 +166,12 @@ async function computeSearchFields(sql, userId, { title, blocks }, deps) {
     });
     fields.embedding_model = EMBEDDING_MODEL;
   } catch (err) {
-    console.log(JSON.stringify({ event: 'document_embedding_failed', message: /** @type {Error} */ (err).message }));
+    console.log(
+      JSON.stringify({
+        event: 'document_embedding_failed',
+        message: /** @type {Error} */ (err).message,
+      }),
+    );
   }
   return fields;
 }
@@ -218,7 +224,8 @@ export async function getDocuments(sql, userId, url, deps) {
 
   const id = url.searchParams.get('id');
   if (id) {
-    if (!isUuid(id)) return Response.json({ error: 'A valid document id is required' }, { status: 400 });
+    if (!isUuid(id))
+      return Response.json({ error: 'A valid document id is required' }, { status: 400 });
     const [document] = await fetchDocument(sql, userId, id);
     if (!document) return Response.json({ error: 'Document not found' }, { status: 404 });
     return Response.json({ document });
@@ -262,7 +269,12 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
     try {
       allowed = await deps.allowRequest(sql, userId, 'ai', SEARCH_RATE_LIMIT);
     } catch (err) {
-      console.log(JSON.stringify({ event: 'document_search_quota_failed', message: /** @type {Error} */ (err).message }));
+      console.log(
+        JSON.stringify({
+          event: 'document_search_quota_failed',
+          message: /** @type {Error} */ (err).message,
+        }),
+      );
       return Response.json({ error: 'Search is temporarily unavailable' }, { status: 503 });
     }
     if (!allowed) {
@@ -278,7 +290,12 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
       const vector = JSON.stringify(await deps.embedTextCached(spec.text, deps.openaiApiKey));
       return await vectorLeg(sql, userId, vector, spec.filters, SEARCH_CANDIDATES);
     } catch (err) {
-      console.log(JSON.stringify({ event: 'document_search_vector_leg_failed', message: /** @type {Error} */ (err).message }));
+      console.log(
+        JSON.stringify({
+          event: 'document_search_vector_leg_failed',
+          message: /** @type {Error} */ (err).message,
+        }),
+      );
       return [];
     }
   };
@@ -286,10 +303,18 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
   // Free-text queries rank purely by relevance (keyword + semantic);
   // recency is only the keyword leg's tie-breaker. A filters-only query has
   // no relevance signal, so it falls back to the recency leg newest-first.
-  const keywordIds = spec.text ? keywordLeg(sql, userId, spec, SEARCH_CANDIDATES) : Promise.resolve([]);
-  const recencyIds = spec.text ? Promise.resolve([]) : recencyLeg(sql, userId, spec, SEARCH_CANDIDATES);
+  const keywordIds = spec.text
+    ? keywordLeg(sql, userId, spec, SEARCH_CANDIDATES)
+    : Promise.resolve([]);
+  const recencyIds = spec.text
+    ? Promise.resolve([])
+    : recencyLeg(sql, userId, spec, SEARCH_CANDIDATES);
 
-  const [keywordRows, recencyRows, vectorRows] = await Promise.all([keywordIds, recencyIds, semanticIds()]);
+  const [keywordRows, recencyRows, vectorRows] = await Promise.all([
+    keywordIds,
+    recencyIds,
+    semanticIds(),
+  ]);
 
   const ids = fuseRankings([
     keywordRows.map((/** @type {any} */ r) => r.id),
@@ -341,7 +366,10 @@ export async function createDocument(sql, userId, body, deps) {
     const title = cleanText(body.title, MAX_TITLE_LENGTH);
     const blocks = normalizeBlocks(body.blocks ?? []);
     if (!title || !blocks) {
-      return Response.json({ error: 'A template title and valid blocks are required' }, { status: 400 });
+      return Response.json(
+        { error: 'A template title and valid blocks are required' },
+        { status: 400 },
+      );
     }
     const emoji = cleanText(body.emoji, MAX_EMOJI_LENGTH) || '📄';
     const [template] = await sql`
@@ -363,11 +391,17 @@ export async function createDocument(sql, userId, body, deps) {
     let template = null;
     if (body.templateId !== undefined && body.templateId !== null) {
       if (!isUuid(body.templateId)) {
-        return Response.json({ error: 'templateId must be one of your templates' }, { status: 400 });
+        return Response.json(
+          { error: 'templateId must be one of your templates' },
+          { status: 400 },
+        );
       }
       [template] = await fetchTemplate(sql, userId, body.templateId);
       if (!template) {
-        return Response.json({ error: 'templateId must be one of your templates' }, { status: 400 });
+        return Response.json(
+          { error: 'templateId must be one of your templates' },
+          { status: 400 },
+        );
       }
     }
     const title = cleanText(body.title, MAX_TITLE_LENGTH) ?? template?.title ?? '';
@@ -396,7 +430,10 @@ export async function createDocument(sql, userId, body, deps) {
     return Response.json({ document }, { status: 201 });
   }
 
-  return Response.json({ error: "kind must be 'folder', 'document', or 'template'" }, { status: 400 });
+  return Response.json(
+    { error: "kind must be 'folder', 'document', or 'template'" },
+    { status: 400 },
+  );
 }
 
 /**
@@ -428,7 +465,10 @@ export async function updateDocument(sql, userId, body, deps) {
     const title = cleanText(body.title, MAX_TITLE_LENGTH);
     const blocks = normalizeBlocks(body.blocks);
     if (!title || !blocks) {
-      return Response.json({ error: 'A template title and valid blocks are required' }, { status: 400 });
+      return Response.json(
+        { error: 'A template title and valid blocks are required' },
+        { status: 400 },
+      );
     }
     const [template] = await sql`
       UPDATE document_templates t
@@ -453,7 +493,8 @@ export async function updateDocument(sql, userId, body, deps) {
   }
   if (Object.hasOwn(body, 'emoji')) {
     const emoji = cleanText(body.emoji, MAX_EMOJI_LENGTH);
-    if (!emoji) return Response.json({ error: 'emoji must be a non-empty string' }, { status: 400 });
+    if (!emoji)
+      return Response.json({ error: 'emoji must be a non-empty string' }, { status: 400 });
     updates.emoji = emoji;
   }
   if (Object.hasOwn(body, 'starred')) {
@@ -472,7 +513,8 @@ export async function updateDocument(sql, userId, body, deps) {
   }
   if (Object.hasOwn(body, 'blocks')) {
     const blocks = normalizeBlocks(body.blocks);
-    if (!blocks) return Response.json({ error: 'blocks must be an array of block objects' }, { status: 400 });
+    if (!blocks)
+      return Response.json({ error: 'blocks must be an array of block objects' }, { status: 400 });
     // sql.json, never a pre-stringified string: postgres.js would store that
     // as a jsonb string scalar rather than the array itself.
     updates.blocks = sql.json(blocks);
@@ -480,7 +522,11 @@ export async function updateDocument(sql, userId, body, deps) {
   }
   if (Object.hasOwn(body, 'tags')) {
     const tags = normalizeDocumentTags(body.tags);
-    if (!tags) return Response.json({ error: 'tags must be an array of valid document tags' }, { status: 400 });
+    if (!tags)
+      return Response.json(
+        { error: 'tags must be an array of valid document tags' },
+        { status: 400 },
+      );
     updates.tags = sql.array(tags);
   }
   if (Object.keys(updates).length === 0) {
@@ -506,12 +552,18 @@ export async function updateDocument(sql, userId, body, deps) {
     /** @type {any} */
     let effectiveBlocks = touchesBlocks ? newBlocks : undefined;
     if (!touchesTitle || !touchesBlocks) {
-      const [current] = await sql`SELECT title, blocks FROM documents WHERE id = ${body.id} AND user_id = ${userId}`;
+      const [current] =
+        await sql`SELECT title, blocks FROM documents WHERE id = ${body.id} AND user_id = ${userId}`;
       if (!current) return Response.json({ error: 'Document not found' }, { status: 404 });
       if (!touchesTitle) effectiveTitle = current.title;
       if (!touchesBlocks) effectiveBlocks = current.blocks;
     }
-    const searchFields = await computeSearchFields(sql, userId, { title: effectiveTitle, blocks: effectiveBlocks }, deps);
+    const searchFields = await computeSearchFields(
+      sql,
+      userId,
+      { title: effectiveTitle, blocks: effectiveBlocks },
+      deps,
+    );
     updates.content_text = searchFields.content_text;
     if (searchFields.embedding) {
       updates.embedding_model = searchFields.embedding_model;
@@ -519,48 +571,69 @@ export async function updateDocument(sql, userId, body, deps) {
     }
   }
 
-  const [document] = await sql.begin(async (/** @type {import('postgres').TransactionSql<any>} */ sql) => {
-    // Only needed to diff against the post-update blocks below; skip the
-    // extra round trip when this save doesn't touch blocks at all.
-    const previous = newBlocks
-      ? (await sql`SELECT folder_id, title, blocks FROM documents WHERE id = ${body.id} AND user_id = ${userId}`)[0]
-      : null;
+  const [document] = await sql.begin(
+    async (/** @type {import('postgres').TransactionSql<any>} */ sql) => {
+      // Only needed to diff against the post-update blocks below; skip the
+      // extra round trip when this save doesn't touch blocks at all.
+      const previous = newBlocks
+        ? (
+            await sql`SELECT folder_id, title, blocks FROM documents WHERE id = ${body.id} AND user_id = ${userId}`
+          )[0]
+        : null;
 
-    // Branches into two full statements (rather than a conditionally-nested
-    // embedding fragment) since the vector column needs an explicit
-    // ::extensions.vector cast that only applies when there is a new vector
-    // to write — a rate-limited or skipped embed must leave the existing
-    // column untouched, not null it out.
-    const expectedUpdatedAt = typeof body.updatedAt === 'string' && body.updatedAt ? body.updatedAt : null;
-    const rows = embeddingVector
-      ? await sql`
+      // Branches into two full statements (rather than a conditionally-nested
+      // embedding fragment) since the vector column needs an explicit
+      // ::extensions.vector cast that only applies when there is a new vector
+      // to write — a rate-limited or skipped embed must leave the existing
+      // column untouched, not null it out.
+      const expectedUpdatedAt =
+        typeof body.updatedAt === 'string' && body.updatedAt ? body.updatedAt : null;
+      const rows = embeddingVector
+        ? await sql`
           UPDATE documents d
           SET ${sql(updates)}, updated_at = now(), embedding = ${JSON.stringify(embeddingVector)}::extensions.vector
           WHERE d.id = ${body.id} AND d.user_id = ${userId}
             AND (${expectedUpdatedAt}::timestamptz IS NULL OR d.updated_at = ${expectedUpdatedAt}::timestamptz)
           RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
         `
-      : await sql`
+        : await sql`
           UPDATE documents d
           SET ${sql(updates)}, updated_at = now()
           WHERE d.id = ${body.id} AND d.user_id = ${userId}
             AND (${expectedUpdatedAt}::timestamptz IS NULL OR d.updated_at = ${expectedUpdatedAt}::timestamptz)
           RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
         `;
-    const updated = rows[0];
-    if (updated && previous) {
-      const eventDate = await resolveDailyNoteEventDate(sql, userId, updated.folder_id, updated.title);
-      if (eventDate) {
-        await syncDailyNoteEvents(sql, userId, updated.id, eventDate, previous.blocks, /** @type {any[]} */ (newBlocks));
+      const updated = rows[0];
+      if (updated && previous) {
+        const eventDate = await resolveDailyNoteEventDate(
+          sql,
+          userId,
+          updated.folder_id,
+          updated.title,
+        );
+        if (eventDate) {
+          await syncDailyNoteEvents(
+            sql,
+            userId,
+            updated.id,
+            eventDate,
+            previous.blocks,
+            /** @type {any[]} */ (newBlocks),
+          );
+        }
       }
-    }
-    return rows;
-  });
+      return rows;
+    },
+  );
   if (!document) {
     if (typeof body.updatedAt === 'string' && body.updatedAt) {
-      const [existing] = await sql`SELECT 1 FROM documents d WHERE d.id = ${body.id} AND d.user_id = ${userId}`;
+      const [existing] =
+        await sql`SELECT 1 FROM documents d WHERE d.id = ${body.id} AND d.user_id = ${userId}`;
       if (existing) {
-        return Response.json({ error: 'Document was updated elsewhere — reload and retry' }, { status: 409 });
+        return Response.json(
+          { error: 'Document was updated elsewhere — reload and retry' },
+          { status: 409 },
+        );
       }
     }
     return Response.json({ error: 'Document not found' }, { status: 404 });
@@ -600,7 +673,8 @@ export async function deleteDocument(sql, userId, body) {
           RETURNING d.id
         `;
   if (!result.length) {
-    const subject = body.kind === 'folder' ? 'Folder' : body.kind === 'template' ? 'Template' : 'Document';
+    const subject =
+      body.kind === 'folder' ? 'Folder' : body.kind === 'template' ? 'Template' : 'Document';
     return Response.json({ error: `${subject} not found` }, { status: 404 });
   }
   return Response.json({ ok: true });

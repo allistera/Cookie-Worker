@@ -87,23 +87,29 @@ describe('email handler', () => {
     postgres.mockReset();
     sentry.captureException.mockReset();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.stubGlobal('fetch', vi.fn(async (url) => {
-      if (String(url).includes('/responses')) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url) => {
+        if (String(url).includes('/responses')) {
+          return {
+            ok: true,
+            json: async () => ({
+              output_text: JSON.stringify({
+                labels: [],
+                spam_verdict: 'inbox',
+                spam_score: 0.01,
+                spam_reason: 'legitimate',
+                priority: 'normal',
+              }),
+            }),
+          };
+        }
         return {
           ok: true,
-          json: async () => ({
-            output_text: JSON.stringify({
-              labels: [], spam_verdict: 'inbox', spam_score: 0.01,
-              spam_reason: 'legitimate', priority: 'normal',
-            }),
-          }),
+          json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }),
         };
-      }
-      return {
-        ok: true,
-        json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }),
-      };
-    }));
+      }),
+    );
   });
 
   test('stores and forwards exactly once', async () => {
@@ -112,15 +118,20 @@ describe('email handler', () => {
     const message = fakeMessage(simpleFixture);
     await worker.email(message, env(), ctx());
     expect(message.forward).toHaveBeenCalledExactlyOnceWith('forward@example.com');
-    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({ event: 'stored', outcome: 'inserted' });
+    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({
+      event: 'stored',
+      outcome: 'inserted',
+    });
     expect(sql.end).toHaveBeenCalled();
   });
 
   test('configures private Sentry error monitoring for email invocations', () => {
-    const options = createSentryOptions(env({
-      SENTRY_DSN: 'https://public@example.ingest.sentry.io/1',
-      SENTRY_ENVIRONMENT: 'production',
-    }));
+    const options = createSentryOptions(
+      env({
+        SENTRY_DSN: 'https://public@example.ingest.sentry.io/1',
+        SENTRY_ENVIRONMENT: 'production',
+      }),
+    );
 
     expect(options).toMatchObject({
       dsn: 'https://public@example.ingest.sentry.io/1',
@@ -139,13 +150,18 @@ describe('email handler', () => {
     });
 
     const beforeSend = /** @type {NonNullable<typeof options.beforeSend>} */ (options.beforeSend);
-    expect(beforeSend({
-      type: undefined,
-      transaction: 'Handle Email private@example.com',
-      request: { data: 'email body' },
-      user: { email: 'private@example.com' },
-      tags: { existing: 'tag' },
-    }, {})).toMatchObject({
+    expect(
+      beforeSend(
+        {
+          type: undefined,
+          transaction: 'Handle Email private@example.com',
+          request: { data: 'email body' },
+          user: { email: 'private@example.com' },
+          tags: { existing: 'tag' },
+        },
+        {},
+      ),
+    ).toMatchObject({
       transaction: 'mail-app-ingest.email',
       request: undefined,
       user: undefined,
@@ -158,54 +174,93 @@ describe('email handler', () => {
   });
 
   test('drops unhandled transient forward errors so MTA retries are not Sentry noise', () => {
-    const options = createSentryOptions(env({ SENTRY_DSN: 'https://public@example.ingest.sentry.io/1' }));
+    const options = createSentryOptions(
+      env({ SENTRY_DSN: 'https://public@example.ingest.sentry.io/1' }),
+    );
     const beforeSend = /** @type {NonNullable<typeof options.beforeSend>} */ (options.beforeSend);
-    const transientMessage = 'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail';
+    const transientMessage =
+      'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail';
 
     // The intentional rethrow for MTA retry must not report as a crash.
-    expect(beforeSend(/** @type {any} */ ({
-      exception: {
-        values: [{
-          type: 'Error',
-          value: transientMessage,
-          mechanism: { type: 'auto.faas.cloudflare.email', handled: false },
-        }],
-      },
-    }), {})).toBeNull();
+    expect(
+      beforeSend(
+        /** @type {any} */ ({
+          exception: {
+            values: [
+              {
+                type: 'Error',
+                value: transientMessage,
+                mechanism: { type: 'auto.faas.cloudflare.email', handled: false },
+              },
+            ],
+          },
+        }),
+        {},
+      ),
+    ).toBeNull();
 
     // Explicitly captured (handled) events keep flowing even with the same text.
-    expect(beforeSend(/** @type {any} */ ({
-      exception: {
-        values: [{ type: 'Error', value: transientMessage, mechanism: { type: 'generic', handled: true } }],
-      },
-    }), {})).not.toBeNull();
+    expect(
+      beforeSend(
+        /** @type {any} */ ({
+          exception: {
+            values: [
+              {
+                type: 'Error',
+                value: transientMessage,
+                mechanism: { type: 'generic', handled: true },
+              },
+            ],
+          },
+        }),
+        {},
+      ),
+    ).not.toBeNull();
 
     // Permanent SMTP failures and unknown crashes still report.
-    expect(beforeSend(/** @type {any} */ ({
-      exception: {
-        values: [{
-          type: 'Error',
-          value: 'could not send email: Unknown error: permanent error (550): rejected',
-          mechanism: { type: 'auto.faas.cloudflare.email', handled: false },
-        }],
-      },
-    }), {})).not.toBeNull();
-    expect(beforeSend(/** @type {any} */ ({
-      exception: {
-        values: [{ type: 'TypeError', value: 'x is not a function', mechanism: { handled: false } }],
-      },
-    }), {})).not.toBeNull();
+    expect(
+      beforeSend(
+        /** @type {any} */ ({
+          exception: {
+            values: [
+              {
+                type: 'Error',
+                value: 'could not send email: Unknown error: permanent error (550): rejected',
+                mechanism: { type: 'auto.faas.cloudflare.email', handled: false },
+              },
+            ],
+          },
+        }),
+        {},
+      ),
+    ).not.toBeNull();
+    expect(
+      beforeSend(
+        /** @type {any} */ ({
+          exception: {
+            values: [
+              { type: 'TypeError', value: 'x is not a function', mechanism: { handled: false } },
+            ],
+          },
+        }),
+        {},
+      ),
+    ).not.toBeNull();
   });
 
   test('does not forward when storage fails so the MTA retries', async () => {
     const sql = sqlReturning();
-    sql.begin = vi.fn(async () => { throw new Error('boom'); });
+    sql.begin = vi.fn(async () => {
+      throw new Error('boom');
+    });
     postgres.mockReturnValue(sql);
     const message = fakeMessage(simpleFixture);
     const context = ctx();
     await expect(worker.email(message, env(), context)).rejects.toThrow('boom');
     expect(message.forward).not.toHaveBeenCalled();
-    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({ event: 'store_failed' });
+    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({
+      event: 'store_failed',
+    });
     // Hard failure: no late-store waitUntil — only sql.end cleanup.
     expect(context.waitUntil).toHaveBeenCalledOnce();
     expect(sql.end).toHaveBeenCalled();
@@ -222,13 +277,19 @@ describe('email handler', () => {
     await worker.email(message, env(), ctx());
     expect(postgres).not.toHaveBeenCalled();
     expect(message.forward).toHaveBeenCalledOnce();
-    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({ event: 'store_skipped_oversize' });
+    expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({
+      event: 'store_skipped_oversize',
+    });
   });
 
   test('does not log bodies or connection strings on failure', async () => {
-    postgres.mockImplementation(() => { throw new Error('bad postgres://user:pass@example/db'); });
+    postgres.mockImplementation(() => {
+      throw new Error('bad postgres://user:pass@example/db');
+    });
     await expect(worker.email(fakeMessage(simpleFixture), env(), ctx())).rejects.toThrow();
-    const logged = mockedConsoleLog().mock.calls.map((call) => call[0]).join('\n');
+    const logged = mockedConsoleLog()
+      .mock.calls.map((call) => call[0])
+      .join('\n');
     expect(logged).not.toContain('simple message body');
     expect(logged).not.toContain('postgres://user:pass@example/db');
     expect(logged).toContain('database connection string is not valid');
@@ -242,7 +303,8 @@ describe('email handler', () => {
     const slow = new Promise((resolve) => setTimeout(() => resolve([]), 6000));
     /** @type {any} */
     const sql = vi.fn(async (strings) => {
-      if (strings.join('?').includes('SELECT')) return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
+      if (strings.join('?').includes('SELECT'))
+        return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
       if (strings.join('?').includes('RETURNING')) return [{ id: 'message-1' }];
       return [];
     });
@@ -270,7 +332,8 @@ describe('email handler', () => {
     });
     /** @type {any} */
     const sql = vi.fn(async (strings) => {
-      if (strings.join('?').includes('SELECT')) return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
+      if (strings.join('?').includes('SELECT'))
+        return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
       if (strings.join('?').includes('RETURNING')) return [{ id: 'message-1' }];
       return [];
     });
@@ -323,9 +386,11 @@ describe('email handler', () => {
   test('logs transient forward failures before rethrowing for MTA retry', async () => {
     postgres.mockReturnValue(sqlReturning());
     const message = fakeMessage(simpleFixture);
-    message.forward.mockRejectedValueOnce(new Error(
-      'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail',
-    ));
+    message.forward.mockRejectedValueOnce(
+      new Error(
+        'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail',
+      ),
+    );
     await expect(worker.email(message, env(), ctx())).rejects.toThrow('transient error (421)');
     expect(messageFromLog('forward_failed_transient')).toMatchObject({
       event: 'forward_failed_transient',
@@ -336,9 +401,13 @@ describe('email handler', () => {
   test('swallows permanent forward errors once the message is stored', async () => {
     postgres.mockReturnValue(sqlReturning());
     const message = fakeMessage(simpleFixture);
-    message.forward.mockRejectedValueOnce(new Error('non-authenticated emails cannot be forwarded'));
+    message.forward.mockRejectedValueOnce(
+      new Error('non-authenticated emails cannot be forwarded'),
+    );
     await worker.email(message, env(), ctx());
-    expect(messageFromLog('forward_failed_permanent')).toMatchObject({ event: 'forward_failed_permanent' });
+    expect(messageFromLog('forward_failed_permanent')).toMatchObject({
+      event: 'forward_failed_permanent',
+    });
   });
 
   test('swallows permanent forward errors for duplicates', async () => {
@@ -346,15 +415,21 @@ describe('email handler', () => {
     const message = fakeMessage(simpleFixture);
     message.forward.mockRejectedValueOnce(new Error('destination address not verified'));
     await worker.email(message, env(), ctx());
-    expect(messageFromLog('forward_failed_permanent')).toMatchObject({ event: 'forward_failed_permanent' });
+    expect(messageFromLog('forward_failed_permanent')).toMatchObject({
+      event: 'forward_failed_permanent',
+    });
   });
 
   test('rethrows permanent forward errors when storage also failed', async () => {
     const sql = sqlReturning();
-    sql.begin = vi.fn(async () => { throw new Error('boom'); });
+    sql.begin = vi.fn(async () => {
+      throw new Error('boom');
+    });
     postgres.mockReturnValue(sql);
     const message = fakeMessage(simpleFixture);
-    message.forward.mockRejectedValueOnce(new Error('non-authenticated emails cannot be forwarded'));
+    message.forward.mockRejectedValueOnce(
+      new Error('non-authenticated emails cannot be forwarded'),
+    );
     await expect(worker.email(message, env(), ctx())).rejects.toThrow('boom');
     expect(message.forward).not.toHaveBeenCalled();
   });
@@ -382,9 +457,11 @@ describe('email handler', () => {
     mockedFetch().mockRejectedValueOnce(new Error('embed broke'));
     postgres.mockReturnValue(sqlReturning());
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), ctx());
-    await vi.waitFor(() => expect(messageFromLog('ai_enrichment_failed')).toMatchObject({
-      event: 'ai_enrichment_failed',
-    }));
+    await vi.waitFor(() =>
+      expect(messageFromLog('ai_enrichment_failed')).toMatchObject({
+        event: 'ai_enrichment_failed',
+      }),
+    );
     expect(sentry.captureException).toHaveBeenCalledOnce();
     expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
       tags: { service: 'mail-app-ingest', operation: 'ai_enrichment' },
@@ -425,15 +502,23 @@ describe('helpers', () => {
 
   test('isTransientForwardError matches SMTP 4xx forward errors only', async () => {
     const { isTransientForwardError } = await import('../src/sentry.js');
-    expect(isTransientForwardError(new Error(
-      'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail',
-    ))).toBe(true);
-    expect(isTransientForwardError(new Error(
-      'could not send email: Unknown error: transient error (451): try again later',
-    ))).toBe(true);
-    expect(isTransientForwardError(new Error(
-      'could not send email: Unknown error: permanent error (550): rejected',
-    ))).toBe(false);
+    expect(
+      isTransientForwardError(
+        new Error(
+          'could not send email: Temporary Unknown error: transient error (421): 4.7.28 Gmail has detected an unusual rate of unsolicited mail',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isTransientForwardError(
+        new Error('could not send email: Unknown error: transient error (451): try again later'),
+      ),
+    ).toBe(true);
+    expect(
+      isTransientForwardError(
+        new Error('could not send email: Unknown error: permanent error (550): rejected'),
+      ),
+    ).toBe(false);
     expect(isTransientForwardError(new Error('transient error (421)'))).toBe(false);
     expect(isTransientForwardError(new Error('boom'))).toBe(false);
     expect(isTransientForwardError('not an error')).toBe(false);
@@ -448,8 +533,8 @@ describe('helpers', () => {
  * @param {string} event
  */
 function messageFromLog(event) {
-  const line = mockedConsoleLog().mock.calls
-    .map((/** @type {unknown[]} */ call) => call[0])
+  const line = mockedConsoleLog()
+    .mock.calls.map((/** @type {unknown[]} */ call) => call[0])
     .find((entry) => typeof entry === 'string' && entry.includes(`"event":"${event}"`));
   return JSON.parse(/** @type {string} */ (line));
 }

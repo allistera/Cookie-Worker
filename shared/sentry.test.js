@@ -7,9 +7,8 @@ vi.mock('@sentry/cloudflare', () => ({
 
 /** @type {any} */
 const sentry = await import('@sentry/cloudflare');
-const {
-  captureHandledException, createSentryOptions, redact, tagTrigger,
-} = await import('./sentry.js');
+const { captureHandledException, createSentryOptions, redact, tagTrigger } =
+  await import('./sentry.js');
 
 const DSN = 'https://public@example.ingest.sentry.io/1';
 
@@ -33,10 +32,12 @@ describe('createSentryOptions', () => {
       enabled: false,
       environment: 'production',
     });
-    expect(createSentryOptions({
-      service: 'a-worker',
-      env: { SENTRY_DSN: DSN, SENTRY_ENVIRONMENT: 'staging' },
-    })).toMatchObject({ dsn: DSN, enabled: true, environment: 'staging' });
+    expect(
+      createSentryOptions({
+        service: 'a-worker',
+        env: { SENTRY_DSN: DSN, SENTRY_ENVIRONMENT: 'staging' },
+      }),
+    ).toMatchObject({ dsn: DSN, enabled: true, environment: 'staging' });
   });
 
   test('opts out of every category of personal data', () => {
@@ -57,13 +58,18 @@ describe('createSentryOptions', () => {
   test('strips request, user, and breadcrumbs and tags the service', () => {
     const { beforeSend } = createSentryOptions({ service: 'a-worker', env: { SENTRY_DSN: DSN } });
 
-    expect(beforeSend?.(errorEvent({
-      transaction: 'POST /run',
-      request: { data: 'body' },
-      user: { email: 'private@example.com' },
-      breadcrumbs: [{ message: 'a query' }],
-      tags: { existing: 'tag' },
-    }), {})).toMatchObject({
+    expect(
+      beforeSend?.(
+        errorEvent({
+          transaction: 'POST /run',
+          request: { data: 'body' },
+          user: { email: 'private@example.com' },
+          breadcrumbs: [{ message: 'a query' }],
+          tags: { existing: 'tag' },
+        }),
+        {},
+      ),
+    ).toMatchObject({
       // Multi-trigger Workers keep Sentry's own transaction name.
       transaction: 'POST /run',
       request: undefined,
@@ -80,11 +86,12 @@ describe('createSentryOptions', () => {
       trigger: 'email',
     });
 
-    expect(beforeSend?.(errorEvent({ transaction: 'Handle Email private@example.com' }), {}))
-      .toMatchObject({
-        transaction: 'a-worker.email',
-        tags: { service: 'a-worker', trigger: 'email' },
-      });
+    expect(
+      beforeSend?.(errorEvent({ transaction: 'Handle Email private@example.com' }), {}),
+    ).toMatchObject({
+      transaction: 'a-worker.email',
+      tags: { service: 'a-worker', trigger: 'email' },
+    });
   });
 
   test('lets a Worker drop its own expected events', () => {
@@ -133,8 +140,9 @@ describe('captureHandledException', () => {
 
 describe('redact', () => {
   test('replaces every occurrence and ignores unset secrets', () => {
-    expect(redact(new Error('token abc and abc again'), 'abc', undefined))
-      .toBe('token [redacted] and [redacted] again');
+    expect(redact(new Error('token abc and abc again'), 'abc', undefined)).toBe(
+      'token [redacted] and [redacted] again',
+    );
   });
 });
 
