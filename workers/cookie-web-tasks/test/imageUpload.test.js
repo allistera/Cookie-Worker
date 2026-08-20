@@ -10,8 +10,10 @@ function pngBytes(length = 16) {
 /** @param {{name?: string, type?: string, bytes?: Uint8Array | number}} [opts] */
 function uploadRequest({ name = 'photo.png', type = 'image/png', bytes = pngBytes() } = {}) {
   const body = typeof bytes === 'number' ? new Uint8Array(bytes) : bytes;
+  const payload = new ArrayBuffer(body.byteLength);
+  new Uint8Array(payload).set(body);
   const form = new FormData();
-  form.set('image', new File([body], name, { type }));
+  form.set('image', new File([payload], name, { type }));
   return new Request('https://cookie-web-tasks.example/tasks/image-upload', { method: 'POST', body: form });
 }
 

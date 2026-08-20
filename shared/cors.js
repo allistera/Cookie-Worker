@@ -10,6 +10,8 @@ const ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
  * @param {string | null} origin The request's Origin header.
  * @param {string | undefined} productionOrigin Cookie-Web's exact production
  *   origin, from the Worker's ALLOWED_ORIGIN var.
+ * @param {string | undefined} [environment] Worker environment. Localhost is
+ *   allowed unless this is `'production'`.
  */
 export function isAllowedOrigin(origin, productionOrigin, environment) {
   if (!origin) return false;
@@ -29,6 +31,7 @@ export function isAllowedOrigin(origin, productionOrigin, environment) {
 /**
  * @param {string | null} origin
  * @param {string | undefined} productionOrigin
+ * @param {string | undefined} [environment]
  * @returns {Record<string, string> | null} null when the origin is not allowed.
  */
 export function corsHeaders(origin, productionOrigin, environment) {
@@ -48,6 +51,7 @@ export function corsHeaders(origin, productionOrigin, environment) {
  *
  * @param {string | null} origin
  * @param {string | undefined} productionOrigin
+ * @param {string | undefined} [environment]
  */
 export function preflightResponse(origin, productionOrigin, environment) {
   const headers = corsHeaders(origin, productionOrigin, environment);
@@ -62,6 +66,7 @@ export function preflightResponse(origin, productionOrigin, environment) {
  * @param {Response} response
  * @param {string | null} origin
  * @param {string | undefined} productionOrigin
+ * @param {string | undefined} [environment]
  */
 export function withCors(response, origin, productionOrigin, environment) {
   const headers = corsHeaders(origin, productionOrigin, environment);

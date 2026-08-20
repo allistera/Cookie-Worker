@@ -36,7 +36,7 @@ export function sniffImageType(buffer) {
       }
       continue;
     }
-    if (signature.bytes.every((value, index) => bytes[index] === value)) {
+    if (signature.bytes?.every((value, index) => bytes[index] === value)) {
       return { type: signature.type, ext: signature.ext };
     }
   }
