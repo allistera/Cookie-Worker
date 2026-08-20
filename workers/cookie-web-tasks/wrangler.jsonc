@@ -21,12 +21,10 @@
     // Cookie-Web's production origin, for the CORS allowlist. Update once
     // this Worker moves off the shared allow-any-*.vercel.app fallback.
     "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
-    "SENTRY_ENVIRONMENT": "production"
-    // ENRICHER_RUN_URL is deliberately not set here: it names the
-    // data-enricher Worker's own workers.dev/custom-domain URL, which
-    // depends on how that Worker is actually deployed and isn't recorded
-    // anywhere else in this repo to copy from. POST /tasks/refresh degrades
-    // to a 501 "not configured" response until it's added — see
-    // ENRICHER_TRIGGER_TOKEN below for the matching secret.
+    "SENTRY_ENVIRONMENT": "production",
+    // data-enricher's own workers.dev URL (confirmed live). Matching secret
+    // is ENRICHER_TRIGGER_TOKEN, synced from data-enricher's own
+    // HTTP_TRIGGER_TOKEN in .github/workflows/deploy.yml.
+    "ENRICHER_RUN_URL": "https://data-enricher.cloudflare-581.workers.dev/run"
   }
 }
