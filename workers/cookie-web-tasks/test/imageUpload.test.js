@@ -1,25 +1,47 @@
 import { describe, expect, it, vi } from 'vitest';
-import { postImageUpload } from '../src/imageUpload.js';
+import { postImageUpload, sniffImageType } from '../src/imageUpload.js';
 
-/** @param {{name?: string, type?: string, bytes?: number}} [opts] */
-function uploadRequest({ name = 'photo.png', type = 'image/png', bytes = 10 } = {}) {
+function pngBytes(length = 16) {
+  const bytes = new Uint8Array(Math.max(length, 8));
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  return bytes;
+}
+
+/** @param {{name?: string, type?: string, bytes?: Uint8Array | number}} [opts] */
+function uploadRequest({ name = 'photo.png', type = 'image/png', bytes = pngBytes() } = {}) {
+  const body = typeof bytes === 'number' ? new Uint8Array(bytes) : bytes;
   const form = new FormData();
-  form.set('image', new File([new Uint8Array(bytes)], name, { type }));
+  form.set('image', new File([body], name, { type }));
   return new Request('https://cookie-web-tasks.example/tasks/image-upload', { method: 'POST', body: form });
 }
 
+describe('sniffImageType', () => {
+  it('recognizes a PNG signature', () => {
+    expect(sniffImageType(pngBytes().buffer)).toEqual({ type: 'image/png', ext: 'png' });
+  });
+
+  it('rejects bytes that are not an image', () => {
+    expect(sniffImageType(new Uint8Array([0x00, 0x01, 0x02, 0x03]).buffer)).toBeNull();
+  });
+});
+
 describe('postImageUpload', () => {
-  it('stores the image and returns its blob URL', async () => {
+  it('stores the image under a generated key and returns its blob URL', async () => {
     const put = vi.fn().mockResolvedValue({ url: 'https://blob.example/photo.png' });
-    const response = await postImageUpload(uploadRequest(), { put }, 'blob-token');
+    const response = await postImageUpload(uploadRequest(), { put, userId: 'user-1' }, 'blob-token');
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ url: 'https://blob.example/photo.png' });
-    expect(put).toHaveBeenCalledWith('photo.png', expect.any(ArrayBuffer), {
-      access: 'public',
-      contentType: 'image/png',
-      token: 'blob-token',
-    });
+    expect(put).toHaveBeenCalledWith(
+      expect.stringMatching(/^documents\/user-1\/[0-9a-f-]{36}\.png$/),
+      expect.any(ArrayBuffer),
+      {
+        access: 'public',
+        contentType: 'image/png',
+        token: 'blob-token',
+        addRandomSuffix: true,
+      },
+    );
   });
 
   it('rejects a request with no image field', async () => {
@@ -56,29 +78,20 @@ describe('postImageUpload', () => {
     expect(put).not.toHaveBeenCalled();
   });
 
-  it('rejects an unsupported image type without calling Blob storage', async () => {
+  it('rejects bytes that do not match a known image signature', async () => {
     const put = vi.fn();
-    const response = await postImageUpload(uploadRequest({ type: 'image/svg+xml' }), { put }, 'blob-token');
+    const response = await postImageUpload(uploadRequest({ type: 'image/png', bytes: new Uint8Array(16) }), { put }, 'blob-token');
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toContain('Invalid file type');
     expect(put).not.toHaveBeenCalled();
   });
 
-  it('falls back to image/jpeg when the file carries no type', async () => {
-    // A real multipart round-trip normalizes a typeless part to
-    // application/octet-stream (there's no way to encode "no Content-Type"
-    // as an empty string in the wire format), so this stubs formData()
-    // directly to exercise the `file.type || 'image/jpeg'` fallback itself.
-    const form = new FormData();
-    form.set('image', new File([new Uint8Array(10)], 'photo.png', { type: '' }));
-    const request = /** @type {any} */ ({ formData: async () => form });
-
-    const put = vi.fn().mockResolvedValue({ url: 'https://blob.example/photo' });
-    const response = await postImageUpload(request, { put }, 'blob-token');
-
-    expect(response.status).toBe(200);
-    expect(put).toHaveBeenCalledWith('photo.png', expect.any(ArrayBuffer), expect.objectContaining({ contentType: 'image/jpeg' }));
+  it('503s when Blob storage is not configured', async () => {
+    const put = vi.fn();
+    const response = await postImageUpload(uploadRequest(), { put }, undefined);
+    expect(response.status).toBe(503);
+    expect(put).not.toHaveBeenCalled();
   });
 
   it('500s and does not leak details when Blob storage fails', async () => {

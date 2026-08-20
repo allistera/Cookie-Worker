@@ -13,6 +13,10 @@ describe('isAllowedOrigin', () => {
     expect(isAllowedOrigin('http://localhost:8787', PRODUCTION)).toBe(true);
   });
 
+  test('rejects localhost when the Worker is in production', () => {
+    expect(isAllowedOrigin('http://localhost:5173', PRODUCTION, 'production')).toBe(false);
+  });
+
   test('allows any https Vercel preview subdomain', () => {
     expect(isAllowedOrigin('https://cookie-abc123-allisteras-projects.vercel.app', PRODUCTION)).toBe(true);
   });

@@ -101,6 +101,7 @@ const BLOCKED_IPV6_RANGES = /** @type {[string, number][]} */ ([
   ['2001:db8::', 32],
   ['2002::', 16],
   ['3fff::', 20],
+  ['64:ff9b::', 96],
 ]);
 
 /** @param {string} address */
@@ -173,6 +174,7 @@ export async function requestPublicHttps(rawUrl, options = {}) {
     method,
     headers,
     body: body ?? undefined,
+    redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
   });
   return { status: response.status, headers: response.headers };

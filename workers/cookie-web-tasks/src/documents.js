@@ -25,7 +25,7 @@ export const MAX_TITLE_LENGTH = 300;
 export const MAX_EMOJI_LENGTH = 16;
 // Blocks are stored verbatim, including base64 images, so the cap is generous
 // but still bounds a single row (and request) to something sane.
-export const MAX_BLOCKS_BYTES = 6 * 1024 * 1024;
+export const MAX_BLOCKS_BYTES = 4 * 1024 * 1024;
 
 const MAX_SEARCH_QUERY_CHARS = 500;
 const SEARCH_CANDIDATES = 40; // per leg, before fusion
@@ -531,17 +531,20 @@ export async function updateDocument(sql, userId, body, deps) {
     // ::extensions.vector cast that only applies when there is a new vector
     // to write — a rate-limited or skipped embed must leave the existing
     // column untouched, not null it out.
+    const expectedUpdatedAt = typeof body.updatedAt === 'string' && body.updatedAt ? body.updatedAt : null;
     const rows = embeddingVector
       ? await sql`
           UPDATE documents d
           SET ${sql(updates)}, updated_at = now(), embedding = ${JSON.stringify(embeddingVector)}::extensions.vector
           WHERE d.id = ${body.id} AND d.user_id = ${userId}
+            AND (${expectedUpdatedAt}::timestamptz IS NULL OR d.updated_at = ${expectedUpdatedAt}::timestamptz)
           RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
         `
       : await sql`
           UPDATE documents d
           SET ${sql(updates)}, updated_at = now()
           WHERE d.id = ${body.id} AND d.user_id = ${userId}
+            AND (${expectedUpdatedAt}::timestamptz IS NULL OR d.updated_at = ${expectedUpdatedAt}::timestamptz)
           RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
         `;
     const updated = rows[0];
@@ -553,7 +556,15 @@ export async function updateDocument(sql, userId, body, deps) {
     }
     return rows;
   });
-  if (!document) return Response.json({ error: 'Document not found' }, { status: 404 });
+  if (!document) {
+    if (typeof body.updatedAt === 'string' && body.updatedAt) {
+      const [existing] = await sql`SELECT 1 FROM documents d WHERE d.id = ${body.id} AND d.user_id = ${userId}`;
+      if (existing) {
+        return Response.json({ error: 'Document was updated elsewhere — reload and retry' }, { status: 409 });
+      }
+    }
+    return Response.json({ error: 'Document not found' }, { status: 404 });
+  }
   return Response.json({ document });
 }
 

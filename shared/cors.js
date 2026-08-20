@@ -11,10 +11,12 @@ const ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
  * @param {string | undefined} productionOrigin Cookie-Web's exact production
  *   origin, from the Worker's ALLOWED_ORIGIN var.
  */
-export function isAllowedOrigin(origin, productionOrigin) {
+export function isAllowedOrigin(origin, productionOrigin, environment) {
   if (!origin) return false;
   if (origin === productionOrigin) return true;
-  if (origin.startsWith('http://localhost:')) return true;
+  if (origin.startsWith('http://localhost:')) {
+    return environment !== 'production';
+  }
   try {
     const url = new URL(origin);
     // Vercel preview deployments get an unpredictable per-PR subdomain.
@@ -29,8 +31,8 @@ export function isAllowedOrigin(origin, productionOrigin) {
  * @param {string | undefined} productionOrigin
  * @returns {Record<string, string> | null} null when the origin is not allowed.
  */
-export function corsHeaders(origin, productionOrigin) {
-  if (!isAllowedOrigin(origin, productionOrigin)) return null;
+export function corsHeaders(origin, productionOrigin, environment) {
+  if (!isAllowedOrigin(origin, productionOrigin, environment)) return null;
   return {
     'Access-Control-Allow-Origin': /** @type {string} */ (origin),
     'Access-Control-Allow-Methods': ALLOWED_METHODS,
@@ -47,8 +49,8 @@ export function corsHeaders(origin, productionOrigin) {
  * @param {string | null} origin
  * @param {string | undefined} productionOrigin
  */
-export function preflightResponse(origin, productionOrigin) {
-  const headers = corsHeaders(origin, productionOrigin);
+export function preflightResponse(origin, productionOrigin, environment) {
+  const headers = corsHeaders(origin, productionOrigin, environment);
   return new Response(null, { status: headers ? 204 : 403, headers: headers ?? {} });
 }
 
@@ -61,8 +63,8 @@ export function preflightResponse(origin, productionOrigin) {
  * @param {string | null} origin
  * @param {string | undefined} productionOrigin
  */
-export function withCors(response, origin, productionOrigin) {
-  const headers = corsHeaders(origin, productionOrigin);
+export function withCors(response, origin, productionOrigin, environment) {
+  const headers = corsHeaders(origin, productionOrigin, environment);
   if (!headers) return response;
   const merged = new Headers(response.headers);
   for (const [key, value] of Object.entries(headers)) merged.set(key, value);
