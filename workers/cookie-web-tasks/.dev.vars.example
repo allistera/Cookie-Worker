@@ -1,0 +1,25 @@
+# The database connection comes from the Hyperdrive binding, not a secret.
+# For local dev, export this before `npm run dev` (dev Supabase project, session pooler):
+#   export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
+
+# Powers document search embeddings and query-time semantic search. Without
+# it, document search still works (keyword + recency legs), just without the
+# semantic leg, and document saves store content_text with no embedding.
+OPENAI_API_KEY=""
+
+# Lets task complete/reschedule sync back to the real Todoist task. Without
+# it, complete/reschedule only update Cookie's own copy.
+TODOIST_API_TOKEN=""
+
+# Lets POST /tasks/refresh trigger the data-enricher Worker's on-demand
+# rebuild. Both must be set together; without them, refresh responds 501.
+ENRICHER_RUN_URL=""
+ENRICHER_TRIGGER_TOKEN=""
+
+# Upload access for document images and /tasks/image-upload. Same store,
+# same token as mail-app-ingest's and cookie-web-messages's
+# BLOB_READ_WRITE_TOKEN.
+BLOB_READ_WRITE_TOKEN=""
+
+# Optional locally; required in production to send sanitized errors to Sentry.
+SENTRY_DSN=""

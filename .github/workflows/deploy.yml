@@ -91,6 +91,35 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
 
+      - name: Deploy cookie-web-tasks and synchronize its secrets
+        if: inputs.worker == 'all' || inputs.worker == 'cookie-web-tasks'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/cookie-web-tasks
+          command: deploy
+          # ENRICHER_TRIGGER_TOKEN reuses data-enricher's own HTTP_TRIGGER_TOKEN
+          # secret value: POST /tasks/refresh calls data-enricher's POST /run
+          # directly now (Cookie-Web previously made that same call itself, so
+          # this moves the token from Cookie-Web's Vercel env to here). The
+          # matching ENRICHER_RUN_URL is a plain var, not a secret, and is left
+          # unset in wrangler.jsonc — see that file's comment; refresh responds
+          # 501 "not configured" until it's set once with `wrangler deploy` or
+          # the dashboard.
+          secrets: |
+            OPENAI_API_KEY
+            TODOIST_API_TOKEN
+            ENRICHER_TRIGGER_TOKEN
+            BLOB_READ_WRITE_TOKEN
+            SENTRY_DSN
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
+          ENRICHER_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
       - name: Deploy mail-app-ingest and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'mail-app-ingest'
         uses: cloudflare/wrangler-action@v3
@@ -153,6 +182,7 @@ jobs:
           inputs.worker != 'all' &&
           inputs.worker != 'cookie-web-labels' &&
           inputs.worker != 'cookie-web-messages' &&
+          inputs.worker != 'cookie-web-tasks' &&
           inputs.worker != 'mail-app-ingest' &&
           inputs.worker != 'data-enricher' &&
           inputs.worker != 'scheduled-send-flusher'
