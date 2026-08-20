@@ -19,6 +19,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@sentry/cloudflare": "^10.70.0",
     "@vercel/blob": "^2.8.0",
+    "jose": "^6.2.3",
     "postal-mime": "^2.7.6",
     "postgres": "^3.4.9"
   },

@@ -6,6 +6,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 
 | Worker | Triggers | Purpose |
 | --- | --- | --- |
+| [`cookie-web-labels`](workers/cookie-web-labels) | HTTP (browser) | Label and label-rule CRUD for Cookie-Web's SPA — `GET/POST/PATCH/DELETE /labels` and `/labels/rules`. Previously multiplexed behind `api/labels.js?resource=rules` in Cookie-Web's own Vercel deployment purely to stay under Vercel Hobby's 12-function cap; here each is its own clean route. |
 | [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
 | [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily), manual | Stores Todoist tasks due today, AI task analyses of important emails, three-tier inbox triage, and a personalised news round-up (GitHub, Product Hunt, BBC UK). Feeds Cookie-Web's AI Today page. |
 | [`scheduled-send-flusher`](workers/scheduled-send-flusher) | Scheduled (every 5 minutes) | Calls Cookie-Web's `POST /api/send?resource=flush` so "Send Later" mail actually goes out once due; owns no mail-sending logic itself. |
@@ -62,6 +63,17 @@ Every Worker reports uncaught failures to the same Sentry project through `Sentr
 - Without `SENTRY_DSN` the client stays disabled, so local development and dry runs report nothing.
 
 Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by the `Deploy` workflow) and `SENTRY_ENVIRONMENT` (variable, set in each `wrangler.jsonc`).
+
+## Cookie Web API Workers
+
+`cookie-web-labels` is different from the other three Workers here: it's called directly by Cookie-Web's browser SPA (a real `fetch()` from user-facing JavaScript), not server-to-server over a bearer token. Two things follow from that:
+
+- **CORS**: every response carries `Access-Control-Allow-Origin` for allowed origins only (Cookie-Web's own production origin, any `http://localhost:*` for local dev, and any `https://*.vercel.app` preview deployment), and `OPTIONS` preflight requests are answered before auth runs. This logic lives in [`shared/cors.js`](shared/cors.js) — the other three Workers have never needed it.
+- **Auth**: it verifies the same Auth0-issued access token Cookie-Web's own Vercel API already does, via `jose`'s JWKS/JWT verification (pure Web Crypto, so it runs unchanged on Workers). See [`workers/cookie-web-labels/src/auth.js`](workers/cookie-web-labels/src/auth.js), ported from Cookie-Web's `api/_lib/auth.js`.
+
+It replaces `api/labels.js` and `api/_lib/label-rules.js` — Cookie-Web's Vercel API routed `?resource=rules` to the latter purely to stay under the Hobby plan's 12-serverless-function cap. This Worker has no such limit, so the routes are plain: `GET/POST/PATCH/DELETE /labels` and `/labels/rules`.
+
+Not yet on a custom domain — it deploys to its `workers.dev` URL (`workers_dev: true`) until Cookie-Web's frontend fetch base URL and this Worker's `ALLOWED_ORIGIN` var are pointed at a real one.
 
 ## Mail app ingest
 
