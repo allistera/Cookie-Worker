@@ -1,8 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
-import { verifyAccessToken } from '../src/auth.js';
+import { verifyAccessToken } from './auth-jwt.js';
 
 const env = { AUTH0_DOMAIN: 'tenant.example.auth0.com', AUTH0_AUDIENCE: 'https://cookie-web/api' };
-const request = new Request('https://cookie-web-labels.example/labels', {
+const request = new Request('https://cookie-web-api.example/labels', {
   headers: { Authorization: 'Bearer signed-token' },
 });
 
@@ -81,7 +81,7 @@ describe('verifyAccessToken identity binding', () => {
   });
 
   test('rejects a missing bearer token before any lookup', async () => {
-    const anonymous = new Request('https://cookie-web-labels.example/labels');
+    const anonymous = new Request('https://cookie-web-api.example/labels');
     const sql = fakeSql(() => undefined);
     await expect(verifyAccessToken(anonymous, env, sql)).rejects.toThrow(/bearer token/i);
     expect(sql).not.toHaveBeenCalled();

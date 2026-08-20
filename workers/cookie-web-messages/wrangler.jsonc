@@ -1,0 +1,26 @@
+{
+  "name": "cookie-web-messages",
+  "main": "src/index.js",
+  // Called directly by Cookie-Web's SPA from the browser. Not on a custom
+  // domain yet — reachable at its workers.dev URL until Cookie-Web's fetch
+  // base URL and this ALLOWED_ORIGIN var are wired up to a real one.
+  "workers_dev": true,
+  "compatibility_date": "2026-07-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": { "enabled": true },
+  "hyperdrive": [
+    { "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }
+  ],
+  "vars": {
+    // Auth0 domain/audience are public identifiers, already shipped in
+    // Cookie-Web's own client bundle (VITE_AUTH0_DOMAIN/VITE_AUTH0_AUDIENCE)
+    // — not secrets.
+    "AUTH0_DOMAIN": "dev-ixcl1rgxrlgeqrvs.us.auth0.com",
+    "AUTH0_AUDIENCE": "https://cookie-web/api",
+    // Cookie-Web's production origin, for the CORS allowlist. Update once
+    // this Worker moves off the shared allow-any-*.vercel.app fallback.
+    "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
+    "SENTRY_ENVIRONMENT": "production"
+  }
+}

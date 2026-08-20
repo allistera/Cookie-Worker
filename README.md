@@ -7,6 +7,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | Worker | Triggers | Purpose |
 | --- | --- | --- |
 | [`cookie-web-labels`](workers/cookie-web-labels) | HTTP (browser) | Label and label-rule CRUD for Cookie-Web's SPA — `GET/POST/PATCH/DELETE /labels` and `/labels/rules`. Previously multiplexed behind `api/labels.js?resource=rules` in Cookie-Web's own Vercel deployment purely to stay under Vercel Hobby's 12-function cap; here each is its own clean route. |
+| [`cookie-web-messages`](workers/cookie-web-messages) | HTTP (browser) | Message read/label/flag/unsubscribe and attachment download for Cookie-Web's SPA — `GET/POST/PATCH /messages`, plus `/messages/attachment`, `/messages/thread-body`, `/messages/contacts`. Previously multiplexed behind `api/messages.js?resource=...` for the same Vercel Hobby function-cap reason as `cookie-web-labels`. |
 | [`mail-app-ingest`](workers/mail-app-ingest) | Email, scheduled | Parse and store inbound mail, forward the original, and enrich the stored copy. |
 | [`data-enricher`](workers/data-enricher) | Scheduled (05:00 UTC daily), manual | Stores Todoist tasks due today, AI task analyses of important emails, three-tier inbox triage, and a personalised news round-up (GitHub, Product Hunt, BBC UK). Feeds Cookie-Web's AI Today page. |
 | [`scheduled-send-flusher`](workers/scheduled-send-flusher) | Scheduled (every 5 minutes) | Calls Cookie-Web's `POST /api/send?resource=flush` so "Send Later" mail actually goes out once due; owns no mail-sending logic itself. |
@@ -66,14 +67,19 @@ Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by th
 
 ## Cookie Web API Workers
 
-`cookie-web-labels` is different from the other three Workers here: it's called directly by Cookie-Web's browser SPA (a real `fetch()` from user-facing JavaScript), not server-to-server over a bearer token. Two things follow from that:
+`cookie-web-labels` and `cookie-web-messages` are different from the other three Workers here: they're called directly by Cookie-Web's browser SPA (a real `fetch()` from user-facing JavaScript), not server-to-server over a bearer token. Two things follow from that, shared by both:
 
-- **CORS**: every response carries `Access-Control-Allow-Origin` for allowed origins only (Cookie-Web's own production origin, any `http://localhost:*` for local dev, and any `https://*.vercel.app` preview deployment), and `OPTIONS` preflight requests are answered before auth runs. This logic lives in [`shared/cors.js`](shared/cors.js) — the other three Workers have never needed it.
-- **Auth**: it verifies the same Auth0-issued access token Cookie-Web's own Vercel API already does, via `jose`'s JWKS/JWT verification (pure Web Crypto, so it runs unchanged on Workers). See [`workers/cookie-web-labels/src/auth.js`](workers/cookie-web-labels/src/auth.js), ported from Cookie-Web's `api/_lib/auth.js`.
+- **CORS**: every response carries `Access-Control-Allow-Origin` for allowed origins only (Cookie-Web's own production origin, any `http://localhost:*` for local dev, and any `https://*.vercel.app` preview deployment), and `OPTIONS` preflight requests are answered before auth runs. This logic lives in [`shared/cors.js`](shared/cors.js).
+- **Auth**: both verify the same Auth0-issued access token Cookie-Web's own Vercel API already does, via `jose`'s JWKS/JWT verification (pure Web Crypto, so it runs unchanged on Workers). See [`shared/auth-jwt.js`](shared/auth-jwt.js), ported from Cookie-Web's `api/_lib/auth.js`.
 
-It replaces `api/labels.js` and `api/_lib/label-rules.js` — Cookie-Web's Vercel API routed `?resource=rules` to the latter purely to stay under the Hobby plan's 12-serverless-function cap. This Worker has no such limit, so the routes are plain: `GET/POST/PATCH/DELETE /labels` and `/labels/rules`.
+Both replace a Vercel API file that routed multiple resources through a `?resource=` query param purely to stay under the Hobby plan's 12-serverless-function cap. Neither Worker has that limit, so the routes are plain:
 
-Not yet on a custom domain — it deploys to its `workers.dev` URL (`workers_dev: true`) until Cookie-Web's frontend fetch base URL and this Worker's `ALLOWED_ORIGIN` var are pointed at a real one.
+- `cookie-web-labels` replaces `api/labels.js` + `api/_lib/label-rules.js`: `GET/POST/PATCH/DELETE /labels` and `/labels/rules`.
+- `cookie-web-messages` replaces `api/messages.js` + `api/_lib/contacts.js`: `GET/POST/PATCH /messages`, plus `/messages/attachment`, `/messages/thread-body`, `/messages/contacts`.
+
+`cookie-web-messages`'s one-click-unsubscribe POST (a server-side request to a URL taken from an untrusted email header) needed a genuine redesign, not a mechanical port. Cookie-Web's original `api/_lib/safe-https.js` resolves the hostname itself and pins the actual HTTPS connection to that exact verified IP (Node's `https.request({ lookup })`) — closing a DNS-rebinding attack where a malicious domain answers with a safe IP for the check and a private one moments later for the real connection. Workers' `fetch()` has no equivalent pinning primitive, so [`workers/cookie-web-messages/src/safeHttps.js`](workers/cookie-web-messages/src/safeHttps.js) instead pre-resolves via Cloudflare's DNS-over-HTTPS resolver and rejects if any A/AAAA record is private — blocking the common case (a domain that just points at an internal address) without closing the narrower, timing-dependent DNS-rebinding gap. Documented as an explicit trade-off in that file.
+
+Neither is yet on a custom domain — both deploy to their `workers.dev` URL (`workers_dev: true`) until Cookie-Web's frontend fetch base URL and each Worker's `ALLOWED_ORIGIN` var are pointed at a real one.
 
 ## Mail app ingest
 

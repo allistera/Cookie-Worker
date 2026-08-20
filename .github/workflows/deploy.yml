@@ -70,6 +70,27 @@ jobs:
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
+      - name: Deploy cookie-web-messages and synchronize its secrets
+        if: inputs.worker == 'all' || inputs.worker == 'cookie-web-messages'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/cookie-web-messages
+          command: deploy
+          # RESEND_API_KEY is not synced here: unsubscribe already falls back
+          # gracefully without it (a manual link/mailto: URI instead of a
+          # sent email), and wrangler-action fails the whole deploy if a
+          # *listed* secret has no value. Set it once with `wrangler secret
+          # put` if/when mailto unsubscribe sends should go live; Cloudflare
+          # keeps it across later deploys either way.
+          secrets: |
+            SENTRY_DSN
+            BLOB_READ_WRITE_TOKEN
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+
       - name: Deploy mail-app-ingest and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'mail-app-ingest'
         uses: cloudflare/wrangler-action@v3
@@ -131,6 +152,7 @@ jobs:
         if: >-
           inputs.worker != 'all' &&
           inputs.worker != 'cookie-web-labels' &&
+          inputs.worker != 'cookie-web-messages' &&
           inputs.worker != 'mail-app-ingest' &&
           inputs.worker != 'data-enricher' &&
           inputs.worker != 'scheduled-send-flusher'

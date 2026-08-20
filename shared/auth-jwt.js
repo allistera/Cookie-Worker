@@ -5,6 +5,9 @@
 // already-connected sql client instead of this module lazily creating one
 // (a Worker invocation creates its own short-lived Hyperdrive connection;
 // there is no long-lived process to cache a singleton pool in).
+//
+// Shared because every Worker that Cookie-Web's SPA calls directly (rather
+// than server-to-server over a bearer token) needs the exact same check.
 
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 

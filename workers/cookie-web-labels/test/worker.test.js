@@ -18,7 +18,7 @@ vi.mock('postgres', () => ({
 }));
 
 const verifyAccessToken = vi.fn();
-vi.mock('../src/auth.js', () => ({ verifyAccessToken: (...args) => verifyAccessToken(...args) }));
+vi.mock('../../../shared/auth-jwt.js', () => ({ verifyAccessToken: (...args) => verifyAccessToken(...args) }));
 
 const captureHandledException = vi.fn();
 vi.mock('../src/sentry.js', () => ({
