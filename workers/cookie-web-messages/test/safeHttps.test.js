@@ -105,5 +105,7 @@ describe('requestPublicHttps', () => {
       timeoutMs: 5000,
     });
     expect(response.status).toBe(200);
+    const targetCall = vi.mocked(fetch).mock.calls.find(([url]) => String(url).startsWith('https://x.example'));
+    expect(targetCall?.[1]).toMatchObject({ redirect: 'manual' });
   });
 });

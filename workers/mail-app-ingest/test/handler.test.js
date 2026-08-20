@@ -197,14 +197,14 @@ describe('email handler', () => {
     }), {})).not.toBeNull();
   });
 
-  test('still forwards when storage fails', async () => {
+  test('does not forward when storage fails so the MTA retries', async () => {
     const sql = sqlReturning();
     sql.begin = vi.fn(async () => { throw new Error('boom'); });
     postgres.mockReturnValue(sql);
     const message = fakeMessage(simpleFixture);
     const context = ctx();
-    await worker.email(message, env(), context);
-    expect(message.forward).toHaveBeenCalledOnce();
+    await expect(worker.email(message, env(), context)).rejects.toThrow('boom');
+    expect(message.forward).not.toHaveBeenCalled();
     expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({ event: 'store_failed' });
     // Hard failure: no late-store waitUntil — only sql.end cleanup.
     expect(context.waitUntil).toHaveBeenCalledOnce();
@@ -227,7 +227,7 @@ describe('email handler', () => {
 
   test('does not log bodies or connection strings on failure', async () => {
     postgres.mockImplementation(() => { throw new Error('bad postgres://user:pass@example/db'); });
-    await worker.email(fakeMessage(simpleFixture), env(), ctx());
+    await expect(worker.email(fakeMessage(simpleFixture), env(), ctx())).rejects.toThrow();
     const logged = mockedConsoleLog().mock.calls.map((call) => call[0]).join('\n');
     expect(logged).not.toContain('simple message body');
     expect(logged).not.toContain('postgres://user:pass@example/db');
@@ -237,7 +237,7 @@ describe('email handler', () => {
     expect(captured.stack).not.toContain('postgres://user:pass@example/db');
   });
 
-  test('hands a slow store to waitUntil and forwards', async () => {
+  test('hands a slow store to waitUntil and rethrows so the MTA retries', async () => {
     vi.useFakeTimers();
     const slow = new Promise((resolve) => setTimeout(() => resolve([]), 6000));
     /** @type {any} */
@@ -250,9 +250,12 @@ describe('email handler', () => {
     sql.end = vi.fn(async () => undefined);
     postgres.mockReturnValue(sql);
     const context = ctx();
-    const run = worker.email(fakeMessage(simpleFixture), env(), context);
+    const message = fakeMessage(simpleFixture);
+    const run = worker.email(message, env(), context);
+    const settled = expect(run).rejects.toThrow();
     await vi.advanceTimersByTimeAsync(5000);
-    await run;
+    await settled;
+    expect(message.forward).not.toHaveBeenCalled();
     expect(context.waitUntil).toHaveBeenCalled();
     expect(messageFromLog('store_failed')).toMatchObject({ event: 'store_failed' });
     vi.useRealTimers();
@@ -291,8 +294,9 @@ describe('email handler', () => {
     };
 
     const run = worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), context);
+    const settled = expect(run).rejects.toThrow();
     await vi.advanceTimersByTimeAsync(5000);
-    await run;
+    await settled;
     expect(messageFromLog('store_failed')).toMatchObject({ event: 'store_failed' });
     expect(mockedFetch()).not.toHaveBeenCalled();
 
@@ -351,7 +355,8 @@ describe('email handler', () => {
     postgres.mockReturnValue(sql);
     const message = fakeMessage(simpleFixture);
     message.forward.mockRejectedValueOnce(new Error('non-authenticated emails cannot be forwarded'));
-    await expect(worker.email(message, env(), ctx())).rejects.toThrow('non-authenticated');
+    await expect(worker.email(message, env(), ctx())).rejects.toThrow('boom');
+    expect(message.forward).not.toHaveBeenCalled();
   });
 
   test('schedules AI enrichment only for inserted rows when OPENAI_API_KEY is set', async () => {

@@ -1,7 +1,7 @@
 import * as Sentry from '@sentry/cloudflare';
 import { getDownloadUrl, issueSignedToken, presignUrl } from '@vercel/blob';
 import postgres from 'postgres';
-import { verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { getContacts } from './contacts.js';
 import { getAttachment, getMessage, getThreadBody, patchMessage, postMessage } from './messages.js';
@@ -21,13 +21,20 @@ export function createSql(databaseUrl) {
   return postgres(databaseUrl, {
     prepare: false,
     max: 1,
+    idle_timeout: 20,
+    connect_timeout: 10,
   });
 }
 
 /** @param {Request} request */
 async function readJsonBody(request) {
-  const raw = await request.text();
-  if (raw.length > MAX_BODY_BYTES) throw new Error('Request body too large');
+  const contentLength = Number(request.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    throw new Error('Request body too large');
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > MAX_BODY_BYTES) throw new Error('Request body too large');
+  const raw = new TextDecoder().decode(bytes);
   return raw ? JSON.parse(raw) : {};
 }
 
@@ -113,7 +120,7 @@ const worker = {
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {
-      return preflightResponse(origin, env.ALLOWED_ORIGIN);
+      return preflightResponse(origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     }
 
     const url = new URL(request.url);
@@ -122,16 +129,21 @@ const worker = {
       let userId;
       try {
         ({ userId } = await verifyAccessToken(request, env, sql));
-      } catch {
-        return withCors(Response.json({ error: 'Unauthorized' }, { status: 401 }), origin, env.ALLOWED_ORIGIN);
+      } catch (error) {
+        return withCors(authFailureResponse(error), origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
       }
 
       const response = await route(url, request, sql, userId, env);
-      return withCors(response, origin, env.ALLOWED_ORIGIN);
+      return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(JSON.stringify({ event: 'request_failed', path: url.pathname, method: request.method }));
       captureHandledException('fetch', error, env, { path: url.pathname, method: request.method });
-      return withCors(Response.json({ error: 'Request failed' }, { status: 500 }), origin, env.ALLOWED_ORIGIN);
+      return withCors(
+        Response.json({ error: 'Request failed' }, { status: 500 }),
+        origin,
+        env.ALLOWED_ORIGIN,
+        env.SENTRY_ENVIRONMENT,
+      );
     } finally {
       await sql.end({ timeout: 2 }).catch(() => undefined);
     }

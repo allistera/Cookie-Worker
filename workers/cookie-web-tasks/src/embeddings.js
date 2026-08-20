@@ -43,7 +43,7 @@ export async function embedTextCached(text, apiKey) {
     queryCache.set(text, vector); // refresh recency
     return vector;
   }
-  const vector = await embedText(text, apiKey);
+  const vector = await embedText(text, apiKey, { signal: AbortSignal.timeout(8000) });
   queryCache.set(text, vector);
   if (queryCache.size > QUERY_CACHE_MAX) {
     queryCache.delete(queryCache.keys().next().value);
@@ -84,5 +84,9 @@ export async function embedBatch(texts, apiKey, { signal } = {}) {
     throw new Error(`OpenAI embeddings API responded ${response.status}`);
   }
   const { data } = /** @type {{data: {index: number, embedding: number[]}[]}} */ (await response.json());
-  return data.sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
+  const vectors = data.sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
+  if (vectors.some((vector) => vector.length !== EMBEDDING_DIMENSIONS)) {
+    throw new Error('OpenAI embeddings API returned an unexpected vector length');
+  }
+  return vectors;
 }

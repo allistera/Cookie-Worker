@@ -15,9 +15,10 @@ const MAX_DESCRIPTION = 200;
 export async function listLabels(sql, userId) {
   const labels = await sql`
     SELECT l.id, l.name, l.color, l.kind, l.description, l.auto_apply,
-           count(ml.message_id)::int AS message_count
+           count(m.id)::int AS message_count
     FROM labels l
     LEFT JOIN message_labels ml ON ml.label_id = l.id
+    LEFT JOIN messages m ON m.id = ml.message_id AND NOT m.is_deleted
     WHERE l.user_id = ${userId}
     GROUP BY l.id
     ORDER BY l.name

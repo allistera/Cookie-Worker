@@ -22,7 +22,10 @@ vi.mock('@vercel/blob', () => ({
 }));
 
 const verifyAccessToken = vi.fn();
-vi.mock('../../../shared/auth-jwt.js', () => ({ verifyAccessToken: (/** @type {any[]} */ ...args) => verifyAccessToken(...args) }));
+vi.mock('../../../shared/auth-jwt.js', () => ({
+  verifyAccessToken: (/** @type {any[]} */ ...args) => verifyAccessToken(...args),
+  authFailureResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }),
+}));
 
 const captureHandledException = vi.fn();
 vi.mock('../src/sentry.js', () => ({

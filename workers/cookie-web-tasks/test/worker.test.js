@@ -22,7 +22,11 @@ const put = vi.fn().mockResolvedValue({ url: 'https://blob.example/photo.png' })
 vi.mock('@vercel/blob', () => ({ put: (/** @type {any[]} */ ...args) => put(...args) }));
 
 const verifyAccessToken = vi.fn();
-vi.mock('../../../shared/auth-jwt.js', () => ({ verifyAccessToken: (/** @type {any[]} */ ...args) => verifyAccessToken(...args) }));
+vi.mock('../../../shared/auth-jwt.js', () => ({
+  verifyAccessToken: (/** @type {any[]} */ ...args) => verifyAccessToken(...args),
+  authFailureResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }),
+}));
+vi.mock('../src/rateLimit.js', () => ({ allowRequest: async () => true }));
 
 const captureHandledException = vi.fn();
 vi.mock('../src/sentry.js', () => ({
@@ -172,11 +176,20 @@ describe('routing — /tasks/daily-note-seed', () => {
 describe('routing — /tasks/image-upload', () => {
   test('POST /tasks/image-upload dispatches to postImageUpload with blob deps wired', async () => {
     const form = new FormData();
-    form.set('image', new File([new Uint8Array(10)], 'photo.png', { type: 'image/png' }));
+    form.set(
+      'image',
+      new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], 'photo.png', {
+        type: 'image/png',
+      }),
+    );
     const response = await worker.fetch(request('/tasks/image-upload', { method: 'POST', body: form }), env, ctx);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ url: 'https://blob.example/photo.png' });
-    expect(put).toHaveBeenCalledWith('photo.png', expect.any(ArrayBuffer), expect.objectContaining({ token: 'blob-token' }));
+    expect(put).toHaveBeenCalledWith(
+      expect.stringMatching(/^documents\/.+\/[0-9a-f-]{36}\.png$/),
+      expect.any(ArrayBuffer),
+      expect.objectContaining({ token: 'blob-token' }),
+    );
   });
 
   test('GET on /tasks/image-upload returns 405', async () => {

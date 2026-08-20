@@ -21,6 +21,12 @@ export async function connectMcp(url, { bearerToken } = {}) {
     ? { requestInit: { headers: { Authorization: `Bearer ${bearerToken}` } } }
     : undefined);
   const client = createMcpClient();
-  await client.connect(transport);
+  const timeoutMs = 15_000;
+  await Promise.race([
+    client.connect(transport),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('MCP connect timed out')), timeoutMs);
+    }),
+  ]);
   return client;
 }

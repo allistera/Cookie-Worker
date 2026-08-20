@@ -108,7 +108,12 @@ describe('postMessage — unsubscribe action', () => {
   test('sends a mailto unsubscribe via Resend when configured and there is no one-click link', async () => {
     const sql = createMockSql([[{ headers: [{ key: 'List-Unsubscribe', value: '<mailto:unsub@example.com>' }] }]]);
     const sendEmail = vi.fn().mockResolvedValue(undefined);
-    const response = await postMessage(sql, USER_ID, { id: MESSAGE_ID, action: 'unsubscribe' }, unsubscribeDeps({ resendApiKey: 'key', sendEmail }));
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ resendApiKey: 'key', emailFrom: 'Cookie <mail@example.com>', sendEmail }),
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'mailto' });
@@ -321,6 +326,8 @@ describe('fetchThreadMessages', () => {
     fetchThreadMessages(/** @type {any} */ (sql), 'thread-1', USER_ID);
 
     expect(query).toContain('m.snippet');
+    expect(query).toContain('NOT m.is_deleted');
+    expect(query).toContain('LIMIT');
     expect(query).not.toContain('m.body_text');
   });
 });

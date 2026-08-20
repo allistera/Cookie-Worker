@@ -13,6 +13,26 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 
 const jwksByIssuer = new Map();
 
+export class AuthFailure extends Error {
+  /**
+   * @param {string} message
+   * @param {401 | 403 | 503} status
+   */
+  constructor(message, status) {
+    super(message);
+    this.name = 'AuthFailure';
+    this.status = status;
+  }
+}
+
+/** @param {unknown} error */
+export function authFailureResponse(error) {
+  const status = error instanceof AuthFailure ? error.status : 401;
+  const message =
+    status === 503 ? 'Authentication unavailable' : status === 403 ? 'Forbidden' : 'Unauthorized';
+  return Response.json({ error: message }, { status });
+}
+
 /**
  * Validates the request's Bearer token against the Auth0 tenant's JWKS.
  * Resolves the verified issuer + subject to a provisioned local user. Email
@@ -28,12 +48,12 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
   const domain = env.AUTH0_DOMAIN;
   const audience = env.AUTH0_AUDIENCE;
   if (!domain || !audience) {
-    throw new Error('AUTH0_DOMAIN and AUTH0_AUDIENCE must be set');
+    throw new AuthFailure('AUTH0_DOMAIN and AUTH0_AUDIENCE must be set', 503);
   }
 
   const [scheme, token] = (request.headers.get('Authorization') ?? '').split(' ');
   if (scheme !== 'Bearer' || !token) {
-    throw new Error('Missing bearer token');
+    throw new AuthFailure('Missing bearer token', 401);
   }
 
   const issuer = `https://${domain}/`;
@@ -47,26 +67,36 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
   }
 
   const verifyJwt = overrides.jwtVerify ?? jwtVerify;
-  const { payload } = await verifyJwt(token, keySet, {
-    issuer,
-    audience,
-    algorithms: ['RS256'],
-    clockTolerance: 5,
-  });
+  let payload;
+  try {
+    ({ payload } = await verifyJwt(token, keySet, {
+      issuer,
+      audience,
+      algorithms: ['RS256'],
+      clockTolerance: 5,
+    }));
+  } catch {
+    throw new AuthFailure('Invalid access token', 401);
+  }
 
   const subject = String(payload.sub ?? '').trim();
   if (!subject) {
-    throw new Error('Access token has no subject');
+    throw new AuthFailure('Access token has no subject', 401);
   }
 
-  const [user] = await sql`
-    SELECT id, lower(email) AS email
-    FROM users
-    WHERE auth0_sub = ${subject}
-    LIMIT 1
-  `;
+  let user;
+  try {
+    [user] = await sql`
+      SELECT id, lower(email) AS email
+      FROM users
+      WHERE auth0_sub = ${subject}
+      LIMIT 1
+    `;
+  } catch {
+    throw new AuthFailure('Mailbox lookup failed', 503);
+  }
   if (!user?.id || !user?.email) {
-    throw new Error('Access token subject is not provisioned');
+    throw new AuthFailure('Access token subject is not provisioned', 403);
   }
 
   return { ...payload, sub: subject, userId: user.id, email: user.email };

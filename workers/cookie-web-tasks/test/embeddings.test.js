@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embedBatch, embedText, embedTextCached } from '../src/embeddings.js';
 
+/** @param {number} fill */
+function vec(fill = 0.1) {
+  return Array(EMBEDDING_DIMENSIONS).fill(fill);
+}
+
 /** @param {number[][]} vectors */
 function fetchOk(vectors) {
   return vi.fn(async () => ({
@@ -10,7 +15,7 @@ function fetchOk(vectors) {
 }
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', fetchOk([[0.1, 0.2]]));
+  vi.stubGlobal('fetch', fetchOk([vec(0.1)]));
 });
 
 afterEach(() => {
@@ -19,7 +24,7 @@ afterEach(() => {
 
 describe('embedBatch', () => {
   it('sends every input in one call and returns vectors in input order', async () => {
-    vi.stubGlobal('fetch', fetchOk([[0.3], [0.1], [0.2]]));
+    vi.stubGlobal('fetch', fetchOk([vec(0.3), vec(0.1), vec(0.2)]));
     const vectors = await embedBatch(['a', 'b', 'c'], 'sk-test');
     expect(vectors).toHaveLength(3);
 
@@ -39,13 +44,13 @@ describe('embedBatch', () => {
         ok: true,
         json: async () => ({
           data: [
-            { index: 1, embedding: [1] },
-            { index: 0, embedding: [0] },
+            { index: 1, embedding: vec(1) },
+            { index: 0, embedding: vec(0) },
           ],
         }),
       })),
     );
-    expect(await embedBatch(['first', 'second'], 'sk-test')).toEqual([[0], [1]]);
+    expect(await embedBatch(['first', 'second'], 'sk-test')).toEqual([vec(0), vec(1)]);
   });
 
   it('substitutes a placeholder for blank input, since OpenAI rejects empty strings', async () => {
@@ -67,14 +72,14 @@ describe('embedBatch', () => {
 
 describe('embedText', () => {
   it('embeds one string and returns its vector', async () => {
-    vi.stubGlobal('fetch', fetchOk([[0.5, 0.6]]));
-    await expect(embedText('hello', 'sk-test')).resolves.toEqual([0.5, 0.6]);
+    vi.stubGlobal('fetch', fetchOk([vec(0.5)]));
+    await expect(embedText('hello', 'sk-test')).resolves.toEqual(vec(0.5));
   });
 });
 
 describe('embedTextCached', () => {
   it('returns a cached vector for a repeated query without calling fetch again', async () => {
-    vi.stubGlobal('fetch', fetchOk([[0.1, 0.2]]));
+    vi.stubGlobal('fetch', fetchOk([vec(0.1)]));
     const first = await embedTextCached('roadmap', 'sk-test');
     expect(fetch).toHaveBeenCalledOnce();
 
@@ -84,8 +89,8 @@ describe('embedTextCached', () => {
   });
 
   it('embeds a new query normally', async () => {
-    vi.stubGlobal('fetch', fetchOk([[0.9]]));
-    await expect(embedTextCached('a brand new query', 'sk-test')).resolves.toEqual([0.9]);
+    vi.stubGlobal('fetch', fetchOk([vec(0.9)]));
+    await expect(embedTextCached('a brand new query', 'sk-test')).resolves.toEqual(vec(0.9));
     expect(fetch).toHaveBeenCalledOnce();
   });
 });

@@ -49,13 +49,16 @@ export function parseTimeLine(text) {
  * @param {string} keyPrefix
  * @param {Map<string, any>} lines
  */
-function collectListItemLines(items, keyPrefix, lines) {
+const MAX_LIST_DEPTH = 16;
+
+function collectListItemLines(items, keyPrefix, lines, depth = 0) {
+  if (depth > MAX_LIST_DEPTH) return;
   items.forEach((item, index) => {
     const key = `${keyPrefix}:${index}`;
     const line = parseTimeLine(item?.content);
     if (line) lines.set(key, line);
     if (Array.isArray(item?.items) && item.items.length > 0) {
-      collectListItemLines(item.items, key, lines);
+      collectListItemLines(item.items, key, lines, depth + 1);
     }
   });
 }
@@ -152,7 +155,9 @@ export async function syncDailyNoteEvents(sql, userId, documentId, eventDate, ol
     if (!newLines.has(blockId)) {
       await sql`
         DELETE FROM calendar_events
-        WHERE source_document_id = ${documentId} AND source_block_id = ${blockId}
+        WHERE source_document_id = ${documentId}
+          AND source_block_id = ${blockId}
+          AND user_id = ${userId}
       `;
     }
   }

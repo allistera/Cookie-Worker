@@ -26,7 +26,7 @@ export function fetchOwnedMessageBody(sql, id, userId) {
     SELECT m.id, m.thread_id, m.body_html, m.body_text, m.headers, ai.summary
     FROM messages m
     LEFT JOIN message_ai ai ON ai.message_id = m.id
-    WHERE m.id = ${id} AND m.user_id = ${userId}
+    WHERE m.id = ${id} AND m.user_id = ${userId} AND NOT m.is_deleted
   `;
 }
 
@@ -40,12 +40,16 @@ export function fetchOwnedMessageBody(sql, id, userId) {
  * @param {string} threadId
  * @param {string} userId
  */
+export const MAX_THREAD_MESSAGES = 50;
+
 export function fetchThreadMessages(sql, threadId, userId) {
   return sql`
     SELECT m.id, m.from_name, m.from_address, m.snippet, m.sent_at, m.is_sent
     FROM messages m
     WHERE m.thread_id = ${threadId} AND m.user_id = ${userId}
+      AND NOT m.is_deleted
     ORDER BY m.sent_at ASC
+    LIMIT ${MAX_THREAD_MESSAGES}
   `;
 }
 
@@ -58,7 +62,7 @@ export function fetchOwnedMessageText(sql, id, userId) {
   return sql`
     SELECT m.body_text
     FROM messages m
-    WHERE m.id = ${id} AND m.user_id = ${userId}
+    WHERE m.id = ${id} AND m.user_id = ${userId} AND NOT m.is_deleted
   `;
 }
 
@@ -335,11 +339,11 @@ async function unsubscribe(sql, userId, id, deps) {
   }
 
   // 2. mailto unsubscribe via Resend (when configured).
-  if (mailto && deps.resendApiKey) {
+  if (mailto && deps.resendApiKey && deps.emailFrom) {
     try {
       await deps.sendEmail({
         apiKey: deps.resendApiKey,
-        from: deps.emailFrom || 'Allister <me@allisterantosik.com>',
+        from: deps.emailFrom,
         to: [mailto.address],
         subject: mailto.subject || 'unsubscribe',
         text: 'Please unsubscribe me from this mailing list.',

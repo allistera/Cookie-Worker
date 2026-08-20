@@ -24,7 +24,10 @@ export async function parseEmail(message) {
 
   const rawText = stripNul(parsed.text ?? '');
   const rawHtml = stripNul(parsed.html ?? '');
-  const textSource = rawText || htmlToText(rawHtml);
+  // Cap HTML before the regex stripper so a multi-megabyte HTML-only
+  // message cannot pin CPU on nested tag rewrites.
+  const htmlForText = capString(rawHtml, BODY_CAP_BYTES).value;
+  const textSource = rawText || htmlToText(htmlForText);
   const textCap = capString(textSource, BODY_CAP_BYTES);
   const htmlCap = capString(rawHtml, BODY_CAP_BYTES);
   const sentAt = normalizeSentAt(parsed.date);

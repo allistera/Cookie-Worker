@@ -62,10 +62,12 @@ export function matchesRule(record, rule) {
 }
 
 /**
- * Fetches the user's enabled rules and applies every match as a
- * source = 'rule' label, tagged with the rule that applied it. Runs inside
- * the caller's storage transaction so a rule tag either lands with the
- * message or not at all.
+ * Fetches the user's enabled rules and applies every match. `apply_label`
+ * tags the message; `mark_done` archives it (the same terminal state the
+ * reader "Done" action sets). Runs inside the caller's storage transaction
+ * so a rule either lands with the message or not at all — a null label_id
+ * must never be inserted into message_labels (NOT NULL), which would roll
+ * back the whole ingest.
  *
  * @param {import('postgres').TransactionSql} tx
  * @param {string} userId
@@ -75,7 +77,7 @@ export function matchesRule(record, rule) {
  */
 export async function applyLabelRules(tx, userId, messageUuid, record) {
   const rows = await tx`
-    SELECT r.id AS rule_id, r.label_id, r.match_type,
+    SELECT r.id AS rule_id, r.label_id, r.action, r.match_type,
            c.field, c.operator, c.value
     FROM label_rules r
     JOIN label_rule_conditions c ON c.rule_id = r.id
@@ -83,12 +85,18 @@ export async function applyLabelRules(tx, userId, messageUuid, record) {
     ORDER BY r.id, c.position
   `;
 
-  /** @type {Map<string, {id: string, labelId: string, matchType: string, conditions: {field: string, operator: string, value: string}[]}>} */
+  /** @type {Map<string, {id: string, labelId: string | null, action: string, matchType: string, conditions: {field: string, operator: string, value: string}[]}>} */
   const rules = new Map();
   for (const row of rows) {
     let rule = rules.get(row.rule_id);
     if (!rule) {
-      rule = { id: row.rule_id, labelId: row.label_id, matchType: row.match_type, conditions: [] };
+      rule = {
+        id: row.rule_id,
+        labelId: row.label_id,
+        action: row.action || 'apply_label',
+        matchType: row.match_type,
+        conditions: [],
+      };
       rules.set(row.rule_id, rule);
     }
     rule.conditions.push({ field: row.field, operator: row.operator, value: row.value });
@@ -97,6 +105,16 @@ export async function applyLabelRules(tx, userId, messageUuid, record) {
   let applied = 0;
   for (const rule of rules.values()) {
     if (!matchesRule(record, rule)) continue;
+    if (rule.action === 'mark_done') {
+      await tx`
+        UPDATE messages
+        SET is_archived = true, is_unread = false
+        WHERE id = ${messageUuid} AND user_id = ${userId}
+      `;
+      applied += 1;
+      continue;
+    }
+    if (!rule.labelId) continue;
     await tx`
       INSERT INTO message_labels (message_id, label_id, source, rule_id)
       VALUES (${messageUuid}, ${rule.labelId}, 'rule', ${rule.id})

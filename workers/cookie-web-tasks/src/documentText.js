@@ -30,12 +30,15 @@ function pushIf(lines, text) {
 
 // @editorjs/list nests items arbitrarily deep via item.items; each item's own
 // text lives in item.content.
-/** @param {any[]} items @param {string[]} lines */
-function listItemLines(items, lines) {
+const MAX_LIST_DEPTH = 16;
+
+/** @param {any[]} items @param {string[]} lines @param {number} [depth] */
+function listItemLines(items, lines, depth = 0) {
+  if (depth > MAX_LIST_DEPTH) return;
   for (const item of items ?? []) {
     pushIf(lines, plainText(item?.content));
     if (Array.isArray(item?.items) && item.items.length > 0) {
-      listItemLines(item.items, lines);
+      listItemLines(item.items, lines, depth + 1);
     }
   }
 }

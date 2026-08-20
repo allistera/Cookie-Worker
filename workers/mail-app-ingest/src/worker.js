@@ -128,6 +128,14 @@ const worker = {
       } else if (uploaded?.attachments.length) {
         await discardUploadedAttachments(uploaded.attachments, env, record?.messageId);
       }
+      // Storage did not commit. Accepting (and forwarding) would drop the
+      // message from Cookie with no MTA retry. Idempotent store makes a
+      // retry safe, including when a timed-out write later commits via
+      // waitUntil.
+      if (!storeResult) {
+        if (sql && !sqlOwnedByWaitUntil) ctx.waitUntil(endSql(sql));
+        throw err;
+      }
     }
 
     try {
@@ -271,9 +279,15 @@ export async function recoverPendingEnrichment(env) {
       ORDER BY ai.updated_at
       LIMIT 3
     `;
+  } catch (err) {
+    captureHandledException('ai_recovery', err, [env.HYPERDRIVE.connectionString], {
+      owner_email: env.OWNER_EMAIL,
+    });
+    return;
   } finally {
     await endSql(sql);
   }
+  if (!Array.isArray(rows)) return;
   await Promise.all(rows.map((row) => runAiEnrichment(env, {
     messageId: row.message_id || `<${row.id}@recovery.cookie>`,
     fromAddress: row.from_address,
@@ -341,12 +355,18 @@ export function endSql(sql) {
  * @returns {Promise<T>}
  */
 export function withTimeout(promise, ms) {
-  /** @type {ReturnType<typeof setTimeout> | undefined} */
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`store timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+    const timer = setTimeout(() => finish(reject, new Error(`store timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
   });
 }

@@ -97,34 +97,44 @@ export async function createRule(sql, userId, body) {
     );
   }
 
-  let rule;
-  if (action === 'apply_label') {
-    [rule] = await sql`
-      INSERT INTO label_rules (user_id, label_id, name, action, match_type, enabled)
-      SELECT ${userId}, ${labelId}, ${name}, ${action}, ${matchType}, ${enabled}
-      WHERE EXISTS (
-        SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
-      )
-      RETURNING id, name, label_id, action, match_type, enabled
-    `;
-    if (!rule) {
-      return Response.json({ error: 'Label not found' }, { status: 404 });
-    }
-  } else {
-    [rule] = await sql`
-      INSERT INTO label_rules (user_id, label_id, name, action, match_type, enabled)
-      VALUES (${userId}, NULL, ${name}, ${action}, ${matchType}, ${enabled})
-      RETURNING id, name, label_id, action, match_type, enabled
-    `;
-  }
-
   const positionedConditions = conditions.map((condition, position) => ({ ...condition, position }));
-  await sql`
-    INSERT INTO label_rule_conditions (rule_id, field, operator, value, position)
-    SELECT ${rule.id}, row.field, row.operator, row.value, row.position
-    FROM json_to_recordset(${positionedConditions}::json)
-      AS row(field text, operator text, value text, position int)
-  `;
+  let rule;
+  try {
+    rule = await sql.begin(async (tx) => {
+      let inserted;
+      if (action === 'apply_label') {
+        [inserted] = await tx`
+          INSERT INTO label_rules (user_id, label_id, name, action, match_type, enabled)
+          SELECT ${userId}, ${labelId}, ${name}, ${action}, ${matchType}, ${enabled}
+          WHERE EXISTS (
+            SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
+          )
+          RETURNING id, name, label_id, action, match_type, enabled
+        `;
+        if (!inserted) return null;
+      } else {
+        [inserted] = await tx`
+          INSERT INTO label_rules (user_id, label_id, name, action, match_type, enabled)
+          VALUES (${userId}, NULL, ${name}, ${action}, ${matchType}, ${enabled})
+          RETURNING id, name, label_id, action, match_type, enabled
+        `;
+      }
+
+      await tx`
+        INSERT INTO label_rule_conditions (rule_id, field, operator, value, position)
+        SELECT ${inserted.id}, row.field, row.operator, row.value, row.position
+        FROM json_to_recordset(${positionedConditions}::json)
+          AS row(field text, operator text, value text, position int)
+      `;
+      return inserted;
+    });
+  } catch (error) {
+    console.log(JSON.stringify({ event: 'create_rule_failed', message: /** @type {Error} */ (error).message }));
+    return Response.json({ error: 'Failed to create rule' }, { status: 500 });
+  }
+  if (!rule) {
+    return Response.json({ error: 'Label not found' }, { status: 404 });
+  }
 
   return Response.json({ rule: { ...rule, conditions: positionedConditions } }, { status: 201 });
 }
@@ -191,24 +201,23 @@ export async function updateRule(sql, userId, body) {
     }
   }
 
-  const [rule] = await sql`
-    UPDATE label_rules r
-    SET name = ${hasName ? name : existing.name},
-        label_id = ${resultLabelId},
-        action = ${resultAction},
-        match_type = ${hasMatchType ? body.match_type : existing.match_type},
-        enabled = ${hasEnabled ? body.enabled : existing.enabled},
-        updated_at = now()
-    WHERE r.id = ${id} AND r.user_id = ${userId}
-    RETURNING r.id, r.name, r.label_id, r.action, r.match_type, r.enabled
-  `;
-
   const positionedConditions = hasConditions
     ? /** @type {any[]} */ (conditions).map((condition, position) => ({ ...condition, position }))
     : null;
 
-  if (positionedConditions) {
-    await sql.begin(async (tx) => {
+  const [rule] = await sql.begin(async (tx) => {
+    const rows = await tx`
+      UPDATE label_rules r
+      SET name = ${hasName ? name : existing.name},
+          label_id = ${resultLabelId},
+          action = ${resultAction},
+          match_type = ${hasMatchType ? body.match_type : existing.match_type},
+          enabled = ${hasEnabled ? body.enabled : existing.enabled},
+          updated_at = now()
+      WHERE r.id = ${id} AND r.user_id = ${userId}
+      RETURNING r.id, r.name, r.label_id, r.action, r.match_type, r.enabled
+    `;
+    if (positionedConditions) {
       await tx`DELETE FROM label_rule_conditions WHERE rule_id = ${id}`;
       await tx`
         INSERT INTO label_rule_conditions (rule_id, field, operator, value, position)
@@ -216,8 +225,9 @@ export async function updateRule(sql, userId, body) {
         FROM json_to_recordset(${positionedConditions}::json)
           AS row(field text, operator text, value text, position int)
       `;
-    });
-  }
+    }
+    return rows;
+  });
 
   const rows =
     positionedConditions ??

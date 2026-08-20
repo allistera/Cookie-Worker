@@ -123,4 +123,30 @@ describe('applyLabelRules', () => {
     expect(applied).toBe(0);
     expect(sql.transactions[0]).toHaveLength(1);
   });
+
+  test('archives matching mail for mark_done instead of inserting a null label', async () => {
+    const sql = createMockSql({
+      ruleRows: [
+        {
+          rule_id: 'rule-done',
+          label_id: null,
+          action: 'mark_done',
+          match_type: 'all',
+          field: 'subject',
+          operator: 'contains',
+          value: 'invoice',
+        },
+      ],
+    });
+
+    const applied = await sql.begin(async (tx) => applyLabelRules(tx, 'user-1', 'message-1', record()));
+
+    expect(applied).toBe(1);
+    const labels = sql.transactions[0].filter((q) => q.text.includes('INSERT INTO message_labels'));
+    expect(labels).toHaveLength(0);
+    const archives = sql.transactions[0].filter((q) => q.text.includes('UPDATE messages'));
+    expect(archives).toHaveLength(1);
+    expect(archives[0].text).toContain('is_archived');
+    expect(archives[0].values).toEqual(['message-1', 'user-1']);
+  });
 });
