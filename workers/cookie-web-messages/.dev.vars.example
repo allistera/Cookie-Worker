@@ -1,0 +1,14 @@
+# The database connection comes from the Hyperdrive binding, not a secret.
+# For local dev, export this before `npm run dev` (dev Supabase project, session pooler):
+#   export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
+
+# Upload/signed-URL access to Cookie-Web's private attachment Blob store.
+# Same store, same token as mail-app-ingest's BLOB_READ_WRITE_TOKEN.
+BLOB_READ_WRITE_TOKEN=""
+
+# Enables mailto: unsubscribe sends. Without it, the mailto fallback hands
+# the client a mailto: URI to open instead.
+RESEND_API_KEY=""
+
+# Optional locally; required in production to send sanitized errors to Sentry.
+SENTRY_DSN=""
