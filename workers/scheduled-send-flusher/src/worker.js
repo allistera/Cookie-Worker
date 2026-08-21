@@ -13,6 +13,7 @@ import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
 
 const FLUSH_TIMEOUT_MS = 20_000;
+const MAX_FLUSH_ERROR_BODY_LENGTH = 200;
 
 /**
  * @param {Env & {COOKIE_WEB_FLUSH_URL?: string, COOKIE_WEB_FLUSH_TOKEN?: string}} env
@@ -29,7 +30,19 @@ export async function flushScheduledSends(env) {
     },
     async (response) => {
       if (!response.ok) {
-        throw new Error(`Cookie-Web flush responded ${response.status}`);
+        let message = `Cookie-Web flush responded ${response.status}`;
+        if (typeof response.text === 'function') {
+          try {
+            const body = redact(
+              (await response.text()).slice(0, MAX_FLUSH_ERROR_BODY_LENGTH),
+              env,
+            );
+            if (body.trim()) message += `: ${body}`;
+          } catch {
+            // Keep the upstream status when its error body cannot be read.
+          }
+        }
+        throw new Error(message);
       }
       return response.json();
     },

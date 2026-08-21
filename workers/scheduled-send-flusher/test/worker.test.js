@@ -38,6 +38,52 @@ describe('flushScheduledSends', () => {
     await expect(flushScheduledSends(env)).rejects.toThrow('Cookie-Web flush responded 401');
   });
 
+  test('includes the upstream error body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        text: async () => '{"error":"Email sending is not configured"}',
+      })),
+    );
+
+    await expect(flushScheduledSends(env)).rejects.toThrow(
+      'Cookie-Web flush responded 503: {"error":"Email sending is not configured"}',
+    );
+  });
+
+  test('redacts the flush token from the upstream error body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        text: async () => `{"error":"Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}"}`,
+      })),
+    );
+
+    await expect(flushScheduledSends(env)).rejects.not.toThrow(env.COOKIE_WEB_FLUSH_TOKEN);
+  });
+
+  test('keeps the bare status when the upstream error body cannot be read', async () => {
+    for (const response of [
+      { ok: false, status: 502 },
+      {
+        ok: false,
+        status: 503,
+        text: async () => {
+          throw new Error('body read failed');
+        },
+      },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn(async () => response));
+      await expect(flushScheduledSends(env)).rejects.toThrow(
+        `Cookie-Web flush responded ${response.status}`,
+      );
+    }
+  });
+
   test('keeps the timeout active while parsing the response body', async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
