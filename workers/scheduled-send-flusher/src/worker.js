@@ -33,10 +33,7 @@ export async function flushScheduledSends(env) {
         let message = `Cookie-Web flush responded ${response.status}`;
         if (typeof response.text === 'function') {
           try {
-            const body = redact(
-              (await response.text()).slice(0, MAX_FLUSH_ERROR_BODY_LENGTH),
-              env,
-            );
+            const body = redact((await response.text()).slice(0, MAX_FLUSH_ERROR_BODY_LENGTH), env);
             if (body.trim()) message += `: ${body}`;
           } catch {
             // Keep the upstream status when its error body cannot be read.
