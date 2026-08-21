@@ -70,22 +70,28 @@ describe('flushScheduledSends', () => {
     expect(error.message).not.toContain(env.COOKIE_WEB_FLUSH_TOKEN);
   });
 
+  test('keeps the bare status when the upstream response has no text method', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 502 })),
+    );
+
+    await expect(flushScheduledSends(env)).rejects.toThrow('Cookie-Web flush responded 502');
+  });
+
   test('keeps the bare status when the upstream error body cannot be read', async () => {
-    for (const response of [
-      { ok: false, status: 502 },
-      {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
         ok: false,
         status: 503,
         text: async () => {
           throw new Error('body read failed');
         },
-      },
-    ]) {
-      vi.stubGlobal('fetch', vi.fn(async () => response));
-      await expect(flushScheduledSends(env)).rejects.toThrow(
-        `Cookie-Web flush responded ${response.status}`,
-      );
-    }
+      })),
+    );
+
+    await expect(flushScheduledSends(env)).rejects.toThrow('Cookie-Web flush responded 503');
   });
 
   test('keeps the timeout active while parsing the response body', async () => {
