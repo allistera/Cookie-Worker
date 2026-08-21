@@ -63,7 +63,11 @@ describe('flushScheduledSends', () => {
       })),
     );
 
-    await expect(flushScheduledSends(env)).rejects.not.toThrow(env.COOKIE_WEB_FLUSH_TOKEN);
+    const error = await flushScheduledSends(env).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('Cookie-Web flush responded 503');
+    expect(error.message).not.toContain(env.COOKIE_WEB_FLUSH_TOKEN);
   });
 
   test('keeps the bare status when the upstream error body cannot be read', async () => {
