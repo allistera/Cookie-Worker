@@ -28,11 +28,22 @@ export async function connectMcp(url, { bearerToken } = {}) {
   );
   const client = createMcpClient();
   const timeoutMs = 15_000;
-  await Promise.race([
-    client.connect(transport),
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('MCP connect timed out')), timeoutMs);
-    }),
-  ]);
+  let timer;
+  try {
+    await Promise.race([
+      client.connect(transport),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('MCP connect timed out')), timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    // A timed-out connect throws before the caller ever receives the client,
+    // so its `finally { client.close() }` never runs — close the half-open
+    // client/transport here or the socket leaks in the isolate until eviction.
+    await client.close().catch(() => {});
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   return client;
 }

@@ -24,7 +24,17 @@ export async function gatherTodoistTasks(client) {
   if (result.isError) {
     throw new Error(`find-tasks-by-date failed: ${textContent(result)}`);
   }
-  const payload = result.structuredContent ?? JSON.parse(textContent(result) || '{}');
+  // structuredContent is the normal path; a server that only returns text
+  // gets one guarded parse so a malformed payload fails with a clear error
+  // instead of a bare SyntaxError from deep inside the gather phase.
+  let payload = result.structuredContent;
+  if (!payload) {
+    try {
+      payload = JSON.parse(textContent(result) || '{}');
+    } catch {
+      throw new Error('Todoist MCP returned a non-JSON text payload');
+    }
+  }
   const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
   return tasks
     .filter((task) => !task.checked)

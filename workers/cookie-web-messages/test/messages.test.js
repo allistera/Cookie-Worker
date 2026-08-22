@@ -118,7 +118,7 @@ describe('postMessage — unsubscribe action', () => {
       [
         {
           headers: [
-            { key: 'List-Unsubscribe', value: '<https://news.example/unsubscribe?id=123>' },
+            { key: 'List-Unsubscribe', value: '<https://news.list-manage.com/unsubscribe?id=123>' },
             { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
           ],
         },
@@ -135,7 +135,7 @@ describe('postMessage — unsubscribe action', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'one-click' });
     expect(requestPublicHttps).toHaveBeenCalledWith(
-      'https://news.example/unsubscribe?id=123',
+      'https://news.list-manage.com/unsubscribe?id=123',
       expect.objectContaining({
         method: 'POST',
         body: 'List-Unsubscribe=One-Click',
@@ -149,7 +149,7 @@ describe('postMessage — unsubscribe action', () => {
       [
         {
           headers: [
-            { key: 'List-Unsubscribe', value: '<https://news.example/unsubscribe?id=123>' },
+            { key: 'List-Unsubscribe', value: '<https://news.list-manage.com/unsubscribe?id=123>' },
             { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
           ],
         },
@@ -167,7 +167,7 @@ describe('postMessage — unsubscribe action', () => {
     expect(await response.json()).toEqual({
       status: 'manual',
       method: 'link',
-      url: 'https://news.example/unsubscribe?id=123',
+      url: 'https://news.list-manage.com/unsubscribe?id=123',
     });
   });
 
@@ -188,6 +188,58 @@ describe('postMessage — unsubscribe action', () => {
     expect(sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({ apiKey: 'key', to: ['unsub@example.com'] }),
     );
+  });
+
+  test('skips the server-side POST for hosts outside the one-click allowlist', async () => {
+    const sql = createMockSql([
+      [
+        {
+          headers: [
+            { key: 'List-Unsubscribe', value: '<https://attacker.example/unsubscribe?id=123>' },
+            { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+          ],
+        },
+      ],
+    ]);
+    const requestPublicHttps = vi.fn().mockResolvedValue({ status: 204 });
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ requestPublicHttps }),
+    );
+
+    // Falls through to the manual link — no server-side request is made.
+    expect(requestPublicHttps).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({
+      status: 'manual',
+      method: 'link',
+      url: 'https://attacker.example/unsubscribe?id=123',
+    });
+  });
+
+  test('sends one-click to an operator-extended allowlist entry', async () => {
+    const sql = createMockSql([
+      [
+        {
+          headers: [
+            { key: 'List-Unsubscribe', value: '<https://unsub.acme-esp.example/u?id=1>' },
+            { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+          ],
+        },
+      ],
+    ]);
+    const requestPublicHttps = vi.fn().mockResolvedValue({ status: 204 });
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ requestPublicHttps, oneClickAllowlist: ['acme-esp.example'] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'one-click' });
+    expect(requestPublicHttps).toHaveBeenCalledTimes(1);
   });
 
   test('hands the client a mailto: URI when Resend is not configured', async () => {

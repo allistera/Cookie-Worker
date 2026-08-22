@@ -17,10 +17,24 @@ describe('isAllowedOrigin', () => {
     expect(isAllowedOrigin('http://localhost:5173', PRODUCTION, 'production')).toBe(false);
   });
 
-  test('allows any https Vercel preview subdomain', () => {
+  test('allows any https Vercel preview subdomain outside production', () => {
     expect(
       isAllowedOrigin('https://cookie-abc123-allisteras-projects.vercel.app', PRODUCTION),
     ).toBe(true);
+  });
+
+  test('rejects Vercel preview subdomains in production (exact origin only)', () => {
+    expect(
+      isAllowedOrigin(
+        'https://cookie-abc123-allisteras-projects.vercel.app',
+        PRODUCTION,
+        'production',
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects a lookalike suffix domain that merely ends in vercel.app text', () => {
+    expect(isAllowedOrigin('https://evil-vercel.app', PRODUCTION)).toBe(false);
   });
 
   test('rejects an http Vercel-looking origin (not actually https)', () => {

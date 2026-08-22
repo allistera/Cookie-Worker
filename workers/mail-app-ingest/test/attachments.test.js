@@ -1,5 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  MAX_ATTACHMENT_UPLOADS,
+  UPLOAD_SUBREQUEST_BUDGET,
   attachmentBlobPath,
   deleteUploadedAttachments,
   uploadAttachments,
@@ -163,6 +165,58 @@ describe('attachment uploads', () => {
     expect(result.attachments.map(({ filename }) => filename)).toEqual(
       Array.from({ length: 9 }, (_, index) => `${index}.pdf`),
     );
+  });
+
+  test('caps uploads at the hard limit and stores the rest metadata-only', async () => {
+    const putBlob = vi.fn(async (pathname) => ({
+      url: `https://store.private.blob.vercel-storage.com/${pathname}`,
+      downloadUrl: `https://store.private.blob.vercel-storage.com/${pathname}?download=1`,
+      pathname,
+      contentType: 'application/pdf',
+      contentDisposition: 'inline',
+      etag: 'etag',
+    }));
+    const many = Array.from({ length: MAX_ATTACHMENT_UPLOADS + 10 }, (_, index) => ({
+      ...attachment,
+      filename: `${index}.pdf`,
+    }));
+
+    const result = await uploadAttachments(many, '<message@example.com>', 'secret-token', putBlob);
+
+    expect(putBlob).toHaveBeenCalledTimes(MAX_ATTACHMENT_UPLOADS);
+    expect(result.skipped).toBe(10);
+    expect(result.failures).toEqual([]);
+    for (let index = 0; index < MAX_ATTACHMENT_UPLOADS; index += 1) {
+      expect(result.attachments[index].blob_url).toMatch(/private\.blob\.vercel-storage\.com/u);
+    }
+    for (let index = MAX_ATTACHMENT_UPLOADS; index < many.length; index += 1) {
+      expect(result.attachments[index]).toMatchObject({ filename: `${index}.pdf`, blob_url: null });
+      expect(result.attachments[index].content).toBeUndefined();
+    }
+  });
+
+  test('reserves extra subrequest budget for multipart uploads', async () => {
+    const putBlob = vi.fn(async (pathname) => ({
+      url: `https://store.private.blob.vercel-storage.com/${pathname}`,
+      downloadUrl: `https://store.private.blob.vercel-storage.com/${pathname}?download=1`,
+      pathname,
+      contentType: 'application/pdf',
+      contentDisposition: 'inline',
+      etag: 'etag',
+    }));
+    // Each multipart upload is estimated at 4 subrequests, so the budget
+    // admits fewer of them than the hard upload cap would allow.
+    const large = Array.from({ length: UPLOAD_SUBREQUEST_BUDGET }, (_, index) => ({
+      ...attachment,
+      filename: `${index}.pdf`,
+      size: 5 * 1024 * 1024,
+    }));
+
+    const result = await uploadAttachments(large, '<message@example.com>', 'secret-token', putBlob);
+
+    expect(putBlob).toHaveBeenCalledTimes(Math.floor(UPLOAD_SUBREQUEST_BUDGET / 4));
+    expect(result.skipped).toBe(large.length - Math.floor(UPLOAD_SUBREQUEST_BUDGET / 4));
+    expect(putBlob.mock.calls.every(([, , options]) => options.multipart === true)).toBe(true);
   });
 
   test('deletes every successfully uploaded blob in one request', async () => {

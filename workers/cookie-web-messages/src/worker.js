@@ -6,7 +6,7 @@ import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { getContacts } from './contacts.js';
 import { getAttachment, getMessage, getThreadBody, patchMessage, postMessage } from './messages.js';
 import { sendEmail } from './resend.js';
-import { requestPublicHttps } from './safeHttps.js';
+import { requestPublicHttps, parseAllowlistOverride } from './safeHttps.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 // Matches Cookie-Web's own api/_lib/body.js limit (Vercel's ~4.5 MB request
@@ -102,11 +102,14 @@ async function route(url, request, sql, userId, env) {
   }
 
   if (request.method === 'POST') {
+    const allowlistOverride = parseAllowlistOverride(env.UNSUBSCRIBE_ONE_CLICK_ALLOWLIST);
     return postMessage(sql, userId, body, {
       requestPublicHttps,
       resendApiKey: env.RESEND_API_KEY,
       emailFrom: env.EMAIL_FROM,
       sendEmail,
+      // Empty override falls back to the built-in ESP suffix list.
+      oneClickAllowlist: allowlistOverride.length ? allowlistOverride : undefined,
     });
   }
 

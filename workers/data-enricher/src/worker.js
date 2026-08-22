@@ -55,6 +55,8 @@ async function gatherTodoist(sql, env, userId) {
   console.log(JSON.stringify({ event: 'todoist_gathered', count: tasks.length }));
 }
 
+const ANALYZE_CONCURRENCY = 3;
+
 /**
  * @param {import('postgres').Sql} sql
  * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
@@ -65,29 +67,42 @@ async function analyzeImportantEmails(sql, env, userId) {
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
   const messages = await fetchImportantMessages(sql, userId);
   let extracted = 0;
-  for (const message of messages) {
-    const analysis = await analyzeEmail(message, apiKey, env.AI_MODEL);
-    const tasks = analysis.tasks.map((task) => ({
-      source: /** @type {'email'} */ ('email'),
-      externalId: `${message.id}:${fingerprint(task.content)}`,
-      content: task.content,
-      dueDate: task.due_date ?? null,
-      messageId: message.id,
-      raw: task,
-    }));
-    await storeEmailAnalysis(
-      sql,
-      userId,
-      {
-        messageId: message.id,
-        summary: analysis.summary,
-        model: env.AI_MODEL,
-        raw: { ...analysis, prompt_version: 'email-task-analysis-v1' },
-      },
-      tasks,
-    );
-    extracted += tasks.length;
-  }
+  // Small pool instead of a serial loop: each message is an independent
+  // classify+embed pair and its own per-message store transaction, so three
+  // in flight cuts the worst-case wall time (~15s per LLM call) without
+  // approaching the subrequest budget.
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(ANALYZE_CONCURRENCY, messages.length) },
+    async () => {
+      while (nextIndex < messages.length) {
+        const message = messages[nextIndex];
+        nextIndex += 1;
+        const analysis = await analyzeEmail(message, apiKey, env.AI_MODEL);
+        const tasks = analysis.tasks.map((task) => ({
+          source: /** @type {'email'} */ ('email'),
+          externalId: `${message.id}:${fingerprint(task.content)}`,
+          content: task.content,
+          dueDate: task.due_date ?? null,
+          messageId: message.id,
+          raw: task,
+        }));
+        await storeEmailAnalysis(
+          sql,
+          userId,
+          {
+            messageId: message.id,
+            summary: analysis.summary,
+            model: env.AI_MODEL,
+            raw: { ...analysis, prompt_version: 'email-task-analysis-v1' },
+          },
+          tasks,
+        );
+        extracted += tasks.length;
+      }
+    },
+  );
+  await Promise.all(workers);
   console.log(
     JSON.stringify({ event: 'emails_analyzed', messages: messages.length, tasks: extracted }),
   );
@@ -143,6 +158,7 @@ async function buildDailyNews(sql, env, userId) {
     // raises the search rate limit, and we make one request a day.
     githubToken: env.GITHUB_API_TOKEN,
     productHuntToken: env.PRODUCT_HUNT_TOKEN,
+    env,
   });
   await storeNews(sql, userId, news, env.AI_MODEL);
   console.log(

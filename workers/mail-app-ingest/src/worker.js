@@ -82,6 +82,7 @@ const worker = {
           message_id: record.messageId,
           raw_size: record.rawSize,
           attachments: record.attachments.length,
+          attachments_skipped: uploaded?.skipped ?? 0,
           truncated: record.truncated,
         }),
       );
@@ -289,24 +290,40 @@ export async function recoverPendingEnrichment(env) {
   const sql = createSql(env.HYPERDRIVE.connectionString);
   let rows;
   try {
-    rows = await sql`
-      SELECT m.id, m.message_id, m.from_address, m.subject, m.body_text
-      FROM message_ai ai
-      JOIN messages m ON m.id = ai.message_id
-      JOIN users u ON u.id = m.user_id
-      WHERE u.email = ${env.OWNER_EMAIL}
-        AND (
-          ai.status IN ('pending', 'failed')
-          OR (
-            ai.status = 'completed'
-            AND m.embedding IS NULL
-            AND coalesce(ai.error_code, '') <> 'embedding_forbidden'
+    rows = await sql.begin(async (tx) => {
+      const candidates = await tx`
+        SELECT m.id, m.message_id, m.from_address, m.subject, m.body_text
+        FROM message_ai ai
+        JOIN messages m ON m.id = ai.message_id
+        JOIN users u ON u.id = m.user_id
+        WHERE u.email = ${env.OWNER_EMAIL}
+          AND (
+            ai.status IN ('pending', 'failed')
+            OR (
+              ai.status = 'completed'
+              AND m.embedding IS NULL
+              AND coalesce(ai.error_code, '') <> 'embedding_forbidden'
+            )
           )
-        )
-        AND ai.updated_at < now() - interval '2 minutes'
-      ORDER BY ai.updated_at
-      LIMIT 3
-    `;
+          AND ai.updated_at < now() - interval '2 minutes'
+        ORDER BY ai.updated_at
+        LIMIT 3
+        FOR UPDATE OF ai SKIP LOCKED
+      `;
+      if (candidates.length > 0) {
+        // Re-stamp updated_at while holding the row locks: this doubles as a
+        // lease, so a concurrent cron's staleness filter (updated_at < now()
+        // - 2 minutes) skips these rows instead of enriching them twice.
+        // Writes downstream stay idempotent either way — the lease only
+        // avoids duplicated OpenAI spend.
+        await tx`
+          UPDATE message_ai
+          SET updated_at = now()
+          WHERE message_id IN ${tx(candidates.map((row) => row.id))}
+        `;
+      }
+      return candidates;
+    });
   } catch (err) {
     captureHandledException('ai_recovery', err, [env.HYPERDRIVE.connectionString], {
       owner_email: env.OWNER_EMAIL,

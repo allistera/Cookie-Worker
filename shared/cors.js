@@ -10,22 +10,29 @@ const ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
  * @param {string | null} origin The request's Origin header.
  * @param {string | undefined} productionOrigin Cookie-Web's exact production
  *   origin, from the Worker's ALLOWED_ORIGIN var.
- * @param {string | undefined} [environment] Worker environment. Localhost is
- *   allowed unless this is `'production'`.
+ * @param {string | undefined} [environment] Worker environment. Localhost and
+ *   Vercel preview subdomains are allowed unless this is `'production'`.
  */
 export function isAllowedOrigin(origin, productionOrigin, environment) {
   if (!origin) return false;
   if (origin === productionOrigin) return true;
-  if (origin.startsWith('http://localhost:')) {
-    return environment !== 'production';
-  }
+  let url;
   try {
-    const url = new URL(origin);
-    // Vercel preview deployments get an unpredictable per-PR subdomain.
-    return url.protocol === 'https:' && url.hostname.endsWith('.vercel.app');
+    url = new URL(origin);
   } catch {
     return false;
   }
+  // Development conveniences only: localhost ports and Vercel's unpredictable
+  // per-PR preview subdomains. Every SPA worker now also has a custom domain,
+  // so production trusts exactly ALLOWED_ORIGIN — a wildcard suffix match on
+  // *.vercel.app would otherwise approve any third-party Vercel site.
+  if (
+    (url.protocol === 'http:' && url.hostname === 'localhost') ||
+    (url.protocol === 'https:' && url.hostname.endsWith('.vercel.app'))
+  ) {
+    return environment !== 'production';
+  }
+  return false;
 }
 
 /**
