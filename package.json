@@ -22,7 +22,7 @@
     "@sentry/cloudflare": "^10.70.0",
     "@vercel/blob": "^2.8.0",
     "jose": "^6.2.10",
-    "postal-mime": "^2.7.6",
+    "postal-mime": "^3.0.0",
     "postgres": "^3.4.9"
   },
   "devDependencies": {
