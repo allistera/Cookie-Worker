@@ -9,15 +9,87 @@ export const MAX_ATTACHMENTS_META = 100;
 export const MAX_REFERENCES = 50;
 export const MAX_MESSAGE_ID = 998;
 export const MAX_FUTURE_MS = 24 * 60 * 60 * 1000;
+// Decoded-metadata bounds. The 10 MiB raw cap and per-header caps don't bound
+// MIME-decoded fields (an encoded-word Subject or a huge To list expands after
+// header truncation), so every decoded field gets its own conservative cap
+// before storage or indexing.
+export const MAX_SUBJECT_BYTES = 2048;
+export const MAX_ADDRESS_CHARS = 320;
+export const MAX_ADDRESS_NAME_CHARS = 256;
+export const MAX_ADDRESSES_PER_FIELD = 100;
+export const MAX_ADDRESS_GROUP_DEPTH = 5;
+export const MAX_FILENAME_CHARS = 255;
+export const MAX_MIME_TYPE_CHARS = 255;
+
+// PostalMime allocates a node per boundary delimiter line, so a small raw
+// message packed with boundary lines ("--b\n" repeated) can build an enormous
+// MIME tree despite the 10 MiB raw cap. This bounds the tree before it is
+// built. Real messages have at most a few dozen boundary lines; the scan
+// over-counts (any body line starting "--" matches) but never under-counts,
+// which is the safe direction for an admission bound.
+export const MAX_MIME_BOUNDARY_LINES = 2000;
+
+export class MimePartLimitError extends Error {
+  /** @param {number} boundaryLines */
+  constructor(boundaryLines) {
+    super(`message has ${boundaryLines}+ MIME boundary lines (max ${MAX_MIME_BOUNDARY_LINES})`);
+    this.name = 'MimePartLimitError';
+    this.boundaryLines = boundaryLines;
+  }
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
+ * @param {string | ArrayBuffer | ReadableStream | Uint8Array} raw
+ * @returns {Promise<string | ArrayBuffer | Uint8Array>}
+ */
+async function materializeRaw(raw) {
+  if (typeof raw === 'string' || raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+    return raw;
+  }
+  // ReadableStream (the production ForwardableEmailMessage shape). rawSize is
+  // checked against MAX_PARSE_BYTES before parseEmail is called, so this
+  // materializes at most that much.
+  return await new Response(raw).arrayBuffer();
+}
+
+/**
+ * Counts lines beginning with "--" (candidate MIME boundary delimiters),
+ * stopping as soon as the limit is exceeded. Exported for testing.
+ *
+ * @param {string | ArrayBuffer | Uint8Array} raw
+ */
+export function countBoundaryLines(raw) {
+  const bytes =
+    typeof raw === 'string'
+      ? encoder.encode(raw)
+      : raw instanceof ArrayBuffer
+        ? new Uint8Array(raw)
+        : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+  let count = 0;
+  let atLineStart = true;
+  for (let i = 0; i < bytes.length; i++) {
+    if (atLineStart && bytes[i] === 0x2d && bytes[i + 1] === 0x2d) {
+      count++;
+      if (count > MAX_MIME_BOUNDARY_LINES) return count;
+    }
+    atLineStart = bytes[i] === 0x0a;
+  }
+  return count;
+}
+
+/**
  * @param {ForwardableEmailMessage | {from?: string, to?: string, raw: string | ArrayBuffer | ReadableStream, rawSize?: number}} message
  */
 export async function parseEmail(message) {
-  const parsed = await PostalMime.parse(message.raw);
+  const raw = await materializeRaw(message.raw);
+  const boundaryLines = countBoundaryLines(raw);
+  if (boundaryLines > MAX_MIME_BOUNDARY_LINES) {
+    throw new MimePartLimitError(boundaryLines);
+  }
+  const parsed = await PostalMime.parse(raw);
   const envelopeFrom = stripNul(message.from ?? '');
   const envelopeTo = stripNul(message.to ?? '');
   const headers = normalizeHeaders(parsed.headers);
@@ -52,14 +124,14 @@ export async function parseEmail(message) {
       cc: flattenAddresses(parsed.cc),
       bcc: flattenAddresses(parsed.bcc),
     },
-    subject: stripNul(parsed.subject ?? ''),
+    subject: capString(parsed.subject ?? '', MAX_SUBJECT_BYTES).value,
     snippet: makeSnippet(textCap.value),
     bodyText: textCap.value,
     bodyHtml: htmlCap.value || null,
     sentAt,
     headers,
     attachments: normalizeAttachments(parsed.attachments ?? []),
-    rawSize: message.rawSize ?? rawByteLength(message.raw),
+    rawSize: message.rawSize ?? rawByteLength(raw),
     truncated: textCap.truncated || htmlCap.truncated,
     envelopeFrom,
     envelopeTo,
@@ -126,18 +198,20 @@ function normalizeSentAt(dateValue) {
  * @param {unknown} entries
  * @returns {{name: string | null, address: string}[]}
  */
-function flattenAddresses(entries) {
+function flattenAddresses(entries, depth = 0) {
+  if (depth > MAX_ADDRESS_GROUP_DEPTH) return [];
   const list = Array.isArray(entries) ? entries : entries ? [entries] : [];
-  return list.flatMap((entry) => {
+  const flattened = list.flatMap((entry) => {
     if (!entry || typeof entry !== 'object') return [];
     if ('group' in entry && Array.isArray(entry.group)) {
-      return flattenAddresses(entry.group);
+      return flattenAddresses(entry.group, depth + 1);
     }
-    const address = stripNul('address' in entry ? entry.address : '');
+    const address = stripNul('address' in entry ? entry.address : '').slice(0, MAX_ADDRESS_CHARS);
     if (!address) return [];
-    const name = stripNul('name' in entry ? entry.name : '');
+    const name = stripNul('name' in entry ? entry.name : '').slice(0, MAX_ADDRESS_NAME_CHARS);
     return [{ name: name || null, address }];
   });
+  return flattened.slice(0, MAX_ADDRESSES_PER_FIELD);
 }
 
 /**
@@ -243,8 +317,10 @@ function normalizeAttachments(attachments) {
     const content = attachmentContent(item.content);
     return {
       filename:
-        item.filename === null || item.filename === undefined ? null : stripNul(item.filename),
-      mime_type: stripNul(item.mimeType ?? item.contentType ?? ''),
+        item.filename === null || item.filename === undefined
+          ? null
+          : stripNul(item.filename).slice(0, MAX_FILENAME_CHARS),
+      mime_type: stripNul(item.mimeType ?? item.contentType ?? '').slice(0, MAX_MIME_TYPE_CHARS),
       size: content.byteLength,
       content,
     };
@@ -278,6 +354,6 @@ function copyBytes(bytes) {
  */
 function rawByteLength(raw) {
   if (typeof raw === 'string') return encoder.encode(raw).byteLength;
-  if (raw instanceof ArrayBuffer) return raw.byteLength;
+  if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) return raw.byteLength;
   return 0;
 }

@@ -17,6 +17,7 @@ const SERVICE = 'cookie-web-tasks';
  *   TODOIST_API_TOKEN?: string,
  *   ENRICHER_RUN_URL?: string,
  *   ENRICHER_TRIGGER_TOKEN?: string,
+ *   OWNER_EMAIL?: string,
  *   BLOB_READ_WRITE_TOKEN?: string,
  * }} TasksEnv
  */

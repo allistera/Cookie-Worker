@@ -34,10 +34,11 @@ export async function getContacts(sql, userId) {
   const rows = await fetchContacts(sql, userId);
   return Response.json(
     { contacts: rows.map((/** @type {any} */ row) => ({ address: row.address, name: row.name })) },
-    // The contacts view aggregates the whole mailbox per read (jsonb-unnesting
-    // every sent message), and autocomplete tolerates staleness — let the
-    // browser reuse the response for a few minutes. private: per-user data,
-    // must never land in a shared cache.
-    { headers: { 'Cache-Control': 'private, max-age=300' } },
+    // no-store: the browser HTTP cache is keyed by URL, not by account, so a
+    // cached response could leak one account's correspondents to the next
+    // account signed in on the same profile. The inbox store already keeps
+    // its own in-memory copy per session (contactsLoaded), which is dropped
+    // with the store on account change — that's the only cache we want.
+    { headers: { 'Cache-Control': 'private, no-store' } },
   );
 }

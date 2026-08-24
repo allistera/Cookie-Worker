@@ -25,5 +25,8 @@
     // is ENRICHER_TRIGGER_TOKEN, synced from data-enricher's own
     // HTTP_TRIGGER_TOKEN in .github/workflows/deploy.yml.
     "ENRICHER_RUN_URL": "https://data-enricher.cloudflare-581.workers.dev/run",
+    // Must match data-enricher's OWNER_EMAIL: /tasks/refresh rebuilds that
+    // fixed mailbox's AI state, so only this account may trigger it.
+    "OWNER_EMAIL": "allisteraall@gmail.com",
   },
 }

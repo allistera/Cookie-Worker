@@ -48,6 +48,7 @@ const env = /** @type {any} */ ({
   TODOIST_API_TOKEN: 'todoist-token',
   ENRICHER_RUN_URL: 'https://data-enricher.example.workers.dev/run',
   ENRICHER_TRIGGER_TOKEN: 'trigger-secret',
+  OWNER_EMAIL: 'owner@example.com',
 });
 const ctx = /** @type {any} */ ({
   waitUntil: (/** @type {Promise<unknown>} */ promise) => promise,
@@ -66,7 +67,7 @@ const DOC_ID = '22222222-2222-2222-2222-222222222222';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  verifyAccessToken.mockResolvedValue({ userId: 'user-1' });
+  verifyAccessToken.mockResolvedValue({ userId: 'user-1', email: 'owner@example.com' });
   mockQuery.mockReset().mockResolvedValue([]);
   put.mockResolvedValue({ url: 'https://blob.example/photo.png' });
   vi.stubGlobal(
@@ -145,6 +146,24 @@ describe('routing — /tasks/refresh', () => {
   test('GET on /tasks/refresh returns 405', async () => {
     const response = await worker.fetch(request('/tasks/refresh'), env, ctx);
     expect(response.status).toBe(405);
+  });
+
+  // The enricher rebuilds the fixed OWNER_EMAIL mailbox's AI state, so a
+  // provisioned non-owner must not be able to spend that owner's budget.
+  test('POST /tasks/refresh from a non-owner account returns 403', async () => {
+    verifyAccessToken.mockResolvedValue({ userId: 'user-2', email: 'guest@example.com' });
+    const response = await worker.fetch(request('/tasks/refresh', { method: 'POST' }), env, ctx);
+    expect(response.status).toBe(403);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test('POST /tasks/refresh without OWNER_EMAIL configured returns 403', async () => {
+    const response = await worker.fetch(
+      request('/tasks/refresh', { method: 'POST' }),
+      { ...env, OWNER_EMAIL: undefined },
+      ctx,
+    );
+    expect(response.status).toBe(403);
   });
 });
 

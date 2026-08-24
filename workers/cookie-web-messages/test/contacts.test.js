@@ -9,7 +9,7 @@ describe('getContacts', () => {
     const sql = createMockSql([[{ address: 'a@example.com', name: 'Ada' }]]);
     const response = await getContacts(sql, USER_ID);
     expect(response.status).toBe(200);
-    expect(response.headers.get('Cache-Control')).toBe('private, max-age=300');
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
     expect(await response.json()).toEqual({
       contacts: [{ address: 'a@example.com', name: 'Ada' }],
     });

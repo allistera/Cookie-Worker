@@ -2,7 +2,7 @@ import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
-import { parseEmail } from './parse.js';
+import { MimePartLimitError, parseEmail } from './parse.js';
 import {
   captureHandledException,
   createSentryOptions,
@@ -87,6 +87,21 @@ const worker = {
         }),
       );
     } catch (err) {
+      // A boundary-line bomb is a permanent property of the message: storing
+      // it would build an enormous MIME tree, and rethrowing would make the
+      // MTA redeliver it forever. Treat it like the oversize case — skip
+      // storage, forward once, accept.
+      if (err instanceof MimePartLimitError) {
+        console.log(
+          JSON.stringify({
+            event: 'store_skipped_mime_parts',
+            boundary_lines: err.boundaryLines,
+            raw_size: rawSize,
+          }),
+        );
+        await message.forward(env.FORWARD_TO);
+        return;
+      }
       console.log(
         JSON.stringify({
           event: 'store_failed',

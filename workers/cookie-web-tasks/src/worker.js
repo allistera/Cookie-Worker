@@ -57,8 +57,9 @@ async function readJsonBody(request) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {import('./sentry.js').TasksEnv} env
+ * @param {string} [email] The verified caller's email (lowercased).
  */
-async function route(url, request, sql, userId, env) {
+async function route(url, request, sql, userId, env, email) {
   const segments = url.pathname.split('/').filter(Boolean);
 
   if (segments[0] === 'documents') {
@@ -95,6 +96,13 @@ async function route(url, request, sql, userId, env) {
   if (sub === 'refresh') {
     if (request.method !== 'POST')
       return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    // The enricher rebuilds state for the fixed OWNER_EMAIL mailbox, so only
+    // that owner may trigger it — any other provisioned account would be
+    // spending the owner's AI budget and racing the owner's generated state.
+    const ownerEmail = String(env.OWNER_EMAIL ?? '').toLowerCase();
+    if (!ownerEmail || !email || email.toLowerCase() !== ownerEmail) {
+      return Response.json({ error: 'Refresh is limited to the mailbox owner' }, { status: 403 });
+    }
     return postRefresh(sql, userId, env.ENRICHER_RUN_URL, env.ENRICHER_TRIGGER_TOKEN);
   }
 
@@ -160,8 +168,9 @@ const worker = {
     const sql = createSql(env.HYPERDRIVE.connectionString);
     try {
       let userId;
+      let email;
       try {
-        ({ userId } = await verifyAccessToken(request, env, sql));
+        ({ userId, email } = await verifyAccessToken(request, env, sql));
       } catch (error) {
         return withCors(
           authFailureResponse(error),
@@ -171,7 +180,7 @@ const worker = {
         );
       }
 
-      const response = await route(url, request, sql, userId, env);
+      const response = await route(url, request, sql, userId, env, email);
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(
