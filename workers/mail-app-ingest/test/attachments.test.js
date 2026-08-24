@@ -196,7 +196,9 @@ describe('attachment uploads', () => {
   });
 
   test('reserves extra subrequest budget for multipart uploads', async () => {
-    const putBlob = vi.fn(async (pathname) => ({
+    // The full three-argument signature (matching @vercel/blob's put) so the
+    // options assertion below can destructure mock.calls without type errors.
+    const putBlob = vi.fn(async (pathname, _content, _options) => ({
       url: `https://store.private.blob.vercel-storage.com/${pathname}`,
       downloadUrl: `https://store.private.blob.vercel-storage.com/${pathname}?download=1`,
       pathname,
@@ -216,7 +218,7 @@ describe('attachment uploads', () => {
 
     expect(putBlob).toHaveBeenCalledTimes(Math.floor(UPLOAD_SUBREQUEST_BUDGET / 4));
     expect(result.skipped).toBe(large.length - Math.floor(UPLOAD_SUBREQUEST_BUDGET / 4));
-    expect(putBlob.mock.calls.every(([, , options]) => options.multipart === true)).toBe(true);
+    expect(putBlob.mock.calls.every(([, , options]) => options?.multipart === true)).toBe(true);
   });
 
   test('deletes every successfully uploaded blob in one request', async () => {

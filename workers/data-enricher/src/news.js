@@ -127,7 +127,7 @@ export async function rankForInterests(candidates, interests, label, apiKey, mod
  * Each source is independent — one being unavailable or unconfigured must not
  * cost the others, so a failure drops that section and keeps the rest.
  *
- * @param {{interests: string[], apiKey: string, model: string, githubToken?: string, productHuntToken?: string, env?: EnricherEnv}} options
+ * @param {{interests: string[], apiKey: string, model: string, githubToken?: string, productHuntToken?: string, env?: import('./sentry.js').EnricherEnv}} options
  */
 export async function buildNews({ interests, apiKey, model, githubToken, productHuntToken, env }) {
   const window = previousUkDayWindow();
