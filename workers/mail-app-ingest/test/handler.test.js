@@ -523,8 +523,15 @@ describe('scheduled recovery', () => {
       code: '08006',
     });
     const clients = [sqlReturning(), sqlReturning(), sqlReturning()];
-    for (const sql of clients) sql.begin = vi.fn(async () => { throw error; });
-    postgres.mockReturnValueOnce(clients[0]).mockReturnValueOnce(clients[1]).mockReturnValueOnce(clients[2]);
+    for (const sql of clients) {
+      sql.begin = vi.fn(async () => {
+        throw error;
+      });
+    }
+    postgres
+      .mockReturnValueOnce(clients[0])
+      .mockReturnValueOnce(clients[1])
+      .mockReturnValueOnce(clients[2]);
 
     const recovery = recoverPendingEnrichment(env({ OPENAI_API_KEY: 'key' }));
     await vi.advanceTimersByTimeAsync(3000);
