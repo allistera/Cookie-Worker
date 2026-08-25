@@ -38,6 +38,53 @@ describe('flushScheduledSends', () => {
     await expect(flushScheduledSends(env)).rejects.toThrow('Cookie-Web flush responded 401');
   });
 
+  test('includes the upstream error body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 401,
+        text: async () => '{"error":"Email sending is not configured"}',
+      })),
+    );
+
+    await expect(flushScheduledSends(env)).rejects.toThrow(
+      'Cookie-Web flush responded 401: {"error":"Email sending is not configured"}',
+    );
+  });
+
+  test('redacts the flush token from the upstream error body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 401,
+        text: async () => `{"error":"Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}"}`,
+      })),
+    );
+
+    const error = await flushScheduledSends(env).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('Cookie-Web flush responded 401');
+    expect(error.message).not.toContain(env.COOKIE_WEB_FLUSH_TOKEN);
+  });
+
+  test('keeps the bare status when the upstream error body cannot be read', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 401,
+        text: async () => {
+          throw new Error('body stream already read');
+        },
+      })),
+    );
+
+    await expect(flushScheduledSends(env)).rejects.toThrow('Cookie-Web flush responded 401');
+  });
+
   test('retries a server error and succeeds', async () => {
     vi.useFakeTimers();
     const fetchMock = vi

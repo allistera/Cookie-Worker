@@ -14,11 +14,17 @@ import { retryWithBackoff } from '../../../shared/retry.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
 
 const FLUSH_TIMEOUT_MS = 20_000;
+const MAX_FLUSH_ERROR_BODY_LENGTH = 200;
 
 class FlushHttpError extends Error {
-  /** @param {number} status */
-  constructor(status) {
-    super(`Cookie-Web flush responded ${status}`);
+  /** @param {number} status @param {string} [detail] */
+  constructor(status, detail) {
+    // The `Cookie-Web flush responded <status>` prefix is load-bearing: it is
+    // what Sentry groups on, and what the retry classifier's tests assert.
+    // The detail distinguishes Cookie-Web's own error responses (e.g. "Email
+    // sending is not configured") from bare platform-level 5xxs, which a
+    // status code alone cannot.
+    super(`Cookie-Web flush responded ${status}${detail ? `: ${detail}` : ''}`);
     this.name = 'FlushHttpError';
     this.status = status;
   }
@@ -45,7 +51,19 @@ async function fetchFlush(env) {
     },
     async (response) => {
       if (!response.ok) {
-        throw new FlushHttpError(response.status);
+        let detail = '';
+        if (typeof response.text === 'function') {
+          try {
+            // Best-effort, still inside the fetchWithTimeout deadline. The
+            // body goes through this Worker's env-aware redact before it can
+            // reach Sentry — Cookie-Web echoes request details in some error
+            // responses, and the flush token must never leave the isolate.
+            detail = redact((await response.text()).slice(0, MAX_FLUSH_ERROR_BODY_LENGTH), env);
+          } catch {
+            // Keep the upstream status when its error body cannot be read.
+          }
+        }
+        throw new FlushHttpError(response.status, detail.trim() || undefined);
       }
       return response.json();
     },
