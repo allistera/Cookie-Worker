@@ -40,22 +40,23 @@ export async function flushScheduledSends(env) {
   if (!env.COOKIE_WEB_FLUSH_URL) throw new Error('COOKIE_WEB_FLUSH_URL is not configured');
   if (!env.COOKIE_WEB_FLUSH_TOKEN) throw new Error('COOKIE_WEB_FLUSH_TOKEN is not configured');
 
-  const result = await retryWithBackoff(
-    () =>
-      fetchWithTimeout(
-        env.COOKIE_WEB_FLUSH_URL,
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}` },
-        },
-        async (response) => {
-          if (!response.ok) throw new FlushHttpError(response.status);
-          return response.json();
-        },
-        FLUSH_TIMEOUT_MS,
-      ),
-    { attempts: 3, isRetryable: isRetryableFlushError },
-  );
+  const fetchFlush = () =>
+    fetchWithTimeout(
+      env.COOKIE_WEB_FLUSH_URL,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}` },
+      },
+      async (response) => {
+        if (!response.ok) throw new FlushHttpError(response.status);
+        return response.json();
+      },
+      FLUSH_TIMEOUT_MS,
+    );
+  const result = await retryWithBackoff(fetchFlush, {
+    attempts: 3,
+    isRetryable: isRetryableFlushError,
+  });
   console.log(JSON.stringify({ event: 'scheduled_sends_flushed', ...result }));
   return result;
 }
