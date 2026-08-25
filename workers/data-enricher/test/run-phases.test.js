@@ -82,8 +82,8 @@ beforeEach(() => {
 describe('POST /run phase routing', () => {
   test('retries transient Todoist MCP failures and closes each client', async () => {
     vi.useFakeTimers();
-    const firstClient = { close: vi.fn(async () => undefined) };
-    const secondClient = { close: vi.fn(async () => undefined) };
+    const firstClient = /** @type {any} */ ({ close: vi.fn(async () => undefined) });
+    const secondClient = /** @type {any} */ ({ close: vi.fn(async () => undefined) });
     vi.mocked(connectMcp).mockResolvedValueOnce(firstClient).mockResolvedValueOnce(secondClient);
     vi.mocked(gatherTodoistTasks)
       .mockRejectedValueOnce(new Error('Streamable HTTP error: error code: 502'))

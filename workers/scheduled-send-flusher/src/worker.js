@@ -60,10 +60,10 @@ export async function flushScheduledSends(env) {
   if (!env.COOKIE_WEB_FLUSH_URL) throw new Error('COOKIE_WEB_FLUSH_URL is not configured');
   if (!env.COOKIE_WEB_FLUSH_TOKEN) throw new Error('COOKIE_WEB_FLUSH_TOKEN is not configured');
 
-  const result = await retryWithBackoff(
-    () => fetchFlush(env),
-    { attempts: 3, isRetryable: isRetryableFlushError },
-  );
+  const result = await retryWithBackoff(() => fetchFlush(env), {
+    attempts: 3,
+    isRetryable: isRetryableFlushError,
+  });
   console.log(JSON.stringify({ event: 'scheduled_sends_flushed', ...result }));
   return result;
 }
