@@ -48,7 +48,9 @@ export async function flushScheduledSends(env) {
         headers: { Authorization: `Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}` },
       },
       async (response) => {
-        if (!response.ok) throw new FlushHttpError(response.status);
+        if (!response.ok) {
+          throw new FlushHttpError(response.status);
+        }
         return response.json();
       },
       FLUSH_TIMEOUT_MS,
