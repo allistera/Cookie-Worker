@@ -85,7 +85,6 @@ afterEach(() => {
 
 describe('POST /run phase routing', () => {
   test('retries transient Todoist MCP failures and closes each client', async () => {
-    vi.useFakeTimers();
     const firstClient = /** @type {any} */ ({ close: vi.fn(async () => undefined) });
     const secondClient = /** @type {any} */ ({ close: vi.fn(async () => undefined) });
     vi.mocked(connectMcp).mockResolvedValueOnce(firstClient).mockResolvedValueOnce(secondClient);
@@ -94,7 +93,6 @@ describe('POST /run phase routing', () => {
       .mockResolvedValueOnce([]);
 
     const runPromise = run();
-    await vi.runAllTimersAsync();
     await runPromise;
 
     expect(connectMcp).toHaveBeenCalledTimes(2);
