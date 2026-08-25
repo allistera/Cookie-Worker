@@ -1,0 +1,26 @@
+{
+  "name": "cookie-web-receipts",
+  "main": "src/index.js",
+  // Two kinds of caller: Cookie-Web's SPA reads receipt status from the
+  // browser (cross-origin, CORS + Auth0 like the other SPA Workers), and
+  // recipients' email clients fetch the tracking pixel — unauthenticated by
+  // design, from arbitrary origins. workers.dev stays enabled alongside the
+  // custom domain below for debugging.
+  "workers_dev": true,
+  "routes": [{ "pattern": "receipts-api.infinitywave.online", "custom_domain": true }],
+  "compatibility_date": "2026-08-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": { "enabled": true },
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
+  "vars": {
+    // Auth0 domain/audience are public identifiers, already shipped in
+    // Cookie-Web's own client bundle (VITE_AUTH0_DOMAIN/VITE_AUTH0_AUDIENCE)
+    // — not secrets.
+    "AUTH0_DOMAIN": "dev-ixcl1rgxrlgeqrvs.us.auth0.com",
+    "AUTH0_AUDIENCE": "https://cookie-web/api",
+    // Cookie-Web's production origin, for the CORS allowlist.
+    "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
+    "SENTRY_ENVIRONMENT": "production",
+  },
+}
