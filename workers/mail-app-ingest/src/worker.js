@@ -3,6 +3,7 @@ import postgres from 'postgres';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
 import {
   captureHandledException,
   createSentryOptions,
@@ -302,50 +303,57 @@ async function discardUploadedAttachments(attachments, env, messageId) {
  */
 export async function recoverPendingEnrichment(env) {
   if (!env.OPENAI_API_KEY) return;
-  const sql = createSql(env.HYPERDRIVE.connectionString);
   let rows;
   try {
-    rows = await sql.begin(async (tx) => {
-      const candidates = await tx`
-        SELECT m.id, m.message_id, m.from_address, m.subject, m.body_text
-        FROM message_ai ai
-        JOIN messages m ON m.id = ai.message_id
-        JOIN users u ON u.id = m.user_id
-        WHERE u.email = ${env.OWNER_EMAIL}
-          AND (
-            ai.status IN ('pending', 'failed')
-            OR (
-              ai.status = 'completed'
-              AND m.embedding IS NULL
-              AND coalesce(ai.error_code, '') <> 'embedding_forbidden'
-            )
-          )
-          AND ai.updated_at < now() - interval '2 minutes'
-        ORDER BY ai.updated_at
-        LIMIT 3
-        FOR UPDATE OF ai SKIP LOCKED
-      `;
-      if (candidates.length > 0) {
-        // Re-stamp updated_at while holding the row locks: this doubles as a
-        // lease, so a concurrent cron's staleness filter (updated_at < now()
-        // - 2 minutes) skips these rows instead of enriching them twice.
-        // Writes downstream stay idempotent either way — the lease only
-        // avoids duplicated OpenAI spend.
-        await tx`
-          UPDATE message_ai
-          SET updated_at = now()
-          WHERE message_id IN ${tx(candidates.map((row) => row.id))}
-        `;
-      }
-      return candidates;
-    });
+    rows = await retryWithBackoff(
+      async () => {
+        const sql = createSql(env.HYPERDRIVE.connectionString);
+        try {
+          return await sql.begin(async (tx) => {
+            const candidates = await tx`
+              SELECT m.id, m.message_id, m.from_address, m.subject, m.body_text
+              FROM message_ai ai
+              JOIN messages m ON m.id = ai.message_id
+              JOIN users u ON u.id = m.user_id
+              WHERE u.email = ${env.OWNER_EMAIL}
+                AND (
+                  ai.status IN ('pending', 'failed')
+                  OR (
+                    ai.status = 'completed'
+                    AND m.embedding IS NULL
+                    AND coalesce(ai.error_code, '') <> 'embedding_forbidden'
+                  )
+                )
+                AND ai.updated_at < now() - interval '2 minutes'
+              ORDER BY ai.updated_at
+              LIMIT 3
+              FOR UPDATE OF ai SKIP LOCKED
+            `;
+            if (candidates.length > 0) {
+              // Re-stamp updated_at while holding the row locks: this doubles as a
+              // lease, so a concurrent cron's staleness filter (updated_at < now()
+              // - 2 minutes) skips these rows instead of enriching them twice.
+              // Writes downstream stay idempotent either way — the lease only
+              // avoids duplicated OpenAI spend.
+              await tx`
+                UPDATE message_ai
+                SET updated_at = now()
+                WHERE message_id IN ${tx(candidates.map((row) => row.id))}
+              `;
+            }
+            return candidates;
+          });
+        } finally {
+          await endSql(sql);
+        }
+      },
+      { attempts: 3, isRetryable: isTransientDbError },
+    );
   } catch (err) {
     captureHandledException('ai_recovery', err, [env.HYPERDRIVE.connectionString], {
       owner_email: env.OWNER_EMAIL,
     });
     return;
-  } finally {
-    await endSql(sql);
   }
   if (!Array.isArray(rows)) return;
   await Promise.all(
@@ -386,6 +394,20 @@ export function isPermanentForwardError(err) {
  */
 export function isStoreTimeout(err) {
   return err instanceof Error && err.message.startsWith('store timed out');
+}
+
+/**
+ * @param {unknown} err
+ */
+export function isTransientDbError(err) {
+  const code = /** @type {{code?: unknown}} */ (err)?.code;
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    code === 'CONNECT_TIMEOUT' ||
+    code === '08006' ||
+    code === '08001' ||
+    /Failed to connect to database|CONNECT_TIMEOUT|timed? ?out/i.test(message)
+  );
 }
 
 /**

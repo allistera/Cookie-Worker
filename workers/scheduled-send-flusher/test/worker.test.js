@@ -38,6 +38,57 @@ describe('flushScheduledSends', () => {
     await expect(flushScheduledSends(env)).rejects.toThrow('Cookie-Web flush responded 401');
   });
 
+  test('retries a server error and succeeds', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ claimed: 1, sent: 1 }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = flushScheduledSends(env);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(request).resolves.toEqual({ claimed: 1, sent: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('throws after persistent server errors', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 502 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = flushScheduledSends(env);
+    const rejection = expect(request).rejects.toThrow('Cookie-Web flush responded 502');
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await rejection;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  test('retries an aborted fetch and succeeds', async () => {
+    vi.useFakeTimers();
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(abortError)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ claimed: 1, sent: 1 }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = flushScheduledSends(env);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(request).resolves.toEqual({ claimed: 1, sent: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   test('keeps the timeout active while parsing the response body', async () => {
     vi.useFakeTimers();
     vi.stubGlobal(

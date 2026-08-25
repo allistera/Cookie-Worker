@@ -1,6 +1,7 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
 import { connectMcp } from './mcp.js';
 import { gatherTodoistTasks } from './todoist.js';
 import { analyzeEmail, fetchImportantMessages } from './analyze.js';
@@ -43,16 +44,33 @@ function fingerprint(content) {
  * @param {string} userId
  */
 async function gatherTodoist(sql, env, userId) {
-  const client = await connectMcp(env.TODOIST_MCP_URL, { bearerToken: env.TODOIST_API_TOKEN });
-  /** @type {import('./store.js').TaskRecord[]} */
-  let tasks;
-  try {
-    tasks = await gatherTodoistTasks(client);
-  } finally {
-    await client.close();
-  }
+  const tasks = await retryWithBackoff(
+    async () => {
+      let client;
+      try {
+        client = await connectMcp(env.TODOIST_MCP_URL, { bearerToken: env.TODOIST_API_TOKEN });
+        return await gatherTodoistTasks(client);
+      } finally {
+        await client?.close();
+      }
+    },
+    { attempts: 3, isRetryable: isTransientMcpError },
+  );
   await storeTasks(sql, userId, tasks);
   console.log(JSON.stringify({ event: 'todoist_gathered', count: tasks.length }));
+}
+
+/**
+ * @param {unknown} err
+ */
+export function isTransientMcpError(err) {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    (/Streamable HTTP error/i.test(message) && /error code: 5\d\d|\b5\d\d\b/.test(message)) ||
+    /MCP connect timed out/i.test(message) ||
+    (err instanceof Error && err.name === 'AbortError') ||
+    err instanceof TypeError
+  );
 }
 
 const ANALYZE_CONCURRENCY = 3;

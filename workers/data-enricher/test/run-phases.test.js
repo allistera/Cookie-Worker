@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 // The phases are stubbed at the module boundary so the routing can be asserted
 // without a database, an MCP server or OpenAI.
@@ -45,6 +45,7 @@ vi.mock('../src/store.js', () => ({
 }));
 
 import worker from '../src/worker.js';
+import { connectMcp } from '../src/mcp.js';
 import { gatherTodoistTasks } from '../src/todoist.js';
 import { fetchImportantMessages } from '../src/analyze.js';
 import { buildDigest } from '../src/digest.js';
@@ -78,7 +79,39 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('POST /run phase routing', () => {
+  test('retries transient Todoist MCP failures and closes each client', async () => {
+    const firstClient = /** @type {any} */ ({ close: vi.fn(async () => undefined) });
+    const secondClient = /** @type {any} */ ({ close: vi.fn(async () => undefined) });
+    vi.mocked(connectMcp).mockResolvedValueOnce(firstClient).mockResolvedValueOnce(secondClient);
+    vi.mocked(gatherTodoistTasks)
+      .mockRejectedValueOnce(new Error('Streamable HTTP error: error code: 502'))
+      .mockResolvedValueOnce([]);
+
+    const runPromise = run();
+    await runPromise;
+
+    expect(connectMcp).toHaveBeenCalledTimes(2);
+    expect(firstClient.close).toHaveBeenCalledOnce();
+    expect(secondClient.close).toHaveBeenCalledOnce();
+  });
+
+  test('does not retry Todoist tool validation errors', async () => {
+    vi.mocked(gatherTodoistTasks).mockRejectedValueOnce(
+      new Error('find-tasks-by-date failed: invalid result'),
+    );
+
+    const response = await run();
+
+    expect(response.status).toBe(500);
+    expect(gatherTodoistTasks).toHaveBeenCalledOnce();
+    expect(connectMcp).toHaveBeenCalledOnce();
+  });
+
   test('runs every phase when no phase is given', async () => {
     const response = await run();
 
