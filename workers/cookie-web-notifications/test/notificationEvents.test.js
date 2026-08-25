@@ -156,6 +156,37 @@ describe('ack', () => {
   });
 });
 
+// Ported from Cookie-Web's api/_lib/__tests__/notification-event.test.js —
+// the query-shape assertions that guarded ownership and eligibility checks.
+describe('query shapes', () => {
+  test('claim atomically leases only an eligible event owned by the authenticated user', async () => {
+    await handleNotificationEvent(sql, USER_ID, { action: 'claim', eventId: EVENT_ID });
+
+    const claim = sql.calls[0];
+    expect(claim.text).toContain('UPDATE browser_notification_events event');
+    expect(claim.text).toContain('event.claimed_until < now()');
+    expect(claim.text).toContain('event.user_id = ?');
+    expect(claim.text).toContain('NOT message.is_deleted');
+    expect(claim.text).toContain("COALESCE(ai.spam_verdict, 'inbox') <> 'spam'");
+    expect(claim.text).toContain('RETURNING event.event_id, event.claim_token');
+    expect(claim.values).toContain(USER_ID);
+  });
+
+  test('ack deletes only the matching lease owned by the authenticated user', async () => {
+    await handleNotificationEvent(sql, USER_ID, {
+      action: 'ack',
+      eventId: EVENT_ID,
+      claimToken: CLAIM_TOKEN,
+    });
+
+    const ack = sql.calls[0];
+    expect(ack.text).toContain('DELETE FROM browser_notification_events event');
+    expect(ack.text).toContain('event.claim_token =');
+    expect(ack.text).toContain('event.user_id =');
+    expect(ack.values).toEqual([EVENT_ID, CLAIM_TOKEN, USER_ID]);
+  });
+});
+
 describe('validation', () => {
   test.each([
     ['an unknown action', { action: 'peek', eventId: EVENT_ID }],
