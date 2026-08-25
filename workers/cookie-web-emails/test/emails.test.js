@@ -74,7 +74,12 @@ describe('handleList', () => {
   });
 
   test('answers 500 without leaking details when the query fails', async () => {
-    const sql = () => Promise.reject(new Error('connection reset'));
+    // Throws synchronously: fetchEmails interpolates nested sql`` fragments
+    // whose promises are never awaited, so a rejecting stub would leak
+    // unhandled rejections that fail the suite in CI.
+    const sql = () => {
+      throw new Error('connection reset');
+    };
     const response = await handleList(/** @type {any} */ (sql), USER_ID, listUrl());
 
     expect(response.status).toBe(500);
