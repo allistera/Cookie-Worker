@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import worker, { MAX_PARSE_BYTES, isStoreTimeout, redact, withTimeout } from '../src/worker.js';
+import worker, {
+  MAX_PARSE_BYTES,
+  isStoreTimeout,
+  isTransientDbError,
+  recoverPendingEnrichment,
+  redact,
+  withTimeout,
+} from '../src/worker.js';
 import { simpleFixture, fakeMessage } from './helpers.js';
 
 vi.mock('postgres', () => ({
@@ -488,6 +495,47 @@ describe('scheduled recovery', () => {
     expect(recoveryQuery).toContain("ai.status = 'completed'");
     expect(recoveryQuery).toContain('m.embedding IS NULL');
   });
+
+  test('retries a transient connection failure with a fresh client', async () => {
+    vi.useFakeTimers();
+    const firstSql = sqlReturning();
+    firstSql.begin = vi.fn(async () => {
+      throw Object.assign(new Error('Failed to connect to database: timeout'), {
+        code: 'CONNECT_TIMEOUT',
+      });
+    });
+    const secondSql = sqlReturning();
+    postgres.mockReturnValueOnce(firstSql).mockReturnValueOnce(secondSql);
+
+    const recovery = recoverPendingEnrichment(env({ OPENAI_API_KEY: 'key' }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await recovery;
+
+    expect(postgres).toHaveBeenCalledTimes(2);
+    expect(firstSql.end).toHaveBeenCalledOnce();
+    expect(secondSql.end).toHaveBeenCalledOnce();
+    expect(sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  test('captures a persistent recovery connection failure once', async () => {
+    vi.useFakeTimers();
+    const error = Object.assign(new Error('Failed to connect to database'), {
+      code: '08006',
+    });
+    const clients = [sqlReturning(), sqlReturning(), sqlReturning()];
+    for (const sql of clients) sql.begin = vi.fn(async () => { throw error; });
+    postgres.mockReturnValueOnce(clients[0]).mockReturnValueOnce(clients[1]).mockReturnValueOnce(clients[2]);
+
+    const recovery = recoverPendingEnrichment(env({ OPENAI_API_KEY: 'key' }));
+    await vi.advanceTimersByTimeAsync(3000);
+    await recovery;
+
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { service: 'mail-app-ingest', operation: 'ai_recovery' },
+    });
+    expect(clients.every((sql) => sql.end.mock.calls.length === 1)).toBe(true);
+  });
 });
 
 describe('helpers', () => {
@@ -498,6 +546,14 @@ describe('helpers', () => {
   test('isStoreTimeout matches budget errors only', () => {
     expect(isStoreTimeout(new Error('store timed out after 5000ms'))).toBe(true);
     expect(isStoreTimeout(new Error('boom'))).toBe(false);
+  });
+
+  test('isTransientDbError matches connection failures only', () => {
+    expect(isTransientDbError(Object.assign(new Error('database down'), { code: '08001' }))).toBe(
+      true,
+    );
+    expect(isTransientDbError(new Error('write timed out'))).toBe(true);
+    expect(isTransientDbError(new Error('syntax error'))).toBe(false);
   });
 
   test('isTransientForwardError matches SMTP 4xx forward errors only', async () => {

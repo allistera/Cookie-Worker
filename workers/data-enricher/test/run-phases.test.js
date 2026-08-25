@@ -45,6 +45,7 @@ vi.mock('../src/store.js', () => ({
 }));
 
 import worker from '../src/worker.js';
+import { connectMcp } from '../src/mcp.js';
 import { gatherTodoistTasks } from '../src/todoist.js';
 import { fetchImportantMessages } from '../src/analyze.js';
 import { buildDigest } from '../src/digest.js';
@@ -79,6 +80,37 @@ beforeEach(() => {
 });
 
 describe('POST /run phase routing', () => {
+  test('retries transient Todoist MCP failures and closes each client', async () => {
+    vi.useFakeTimers();
+    const firstClient = { close: vi.fn(async () => undefined) };
+    const secondClient = { close: vi.fn(async () => undefined) };
+    vi.mocked(connectMcp).mockResolvedValueOnce(firstClient).mockResolvedValueOnce(secondClient);
+    vi.mocked(gatherTodoistTasks)
+      .mockRejectedValueOnce(new Error('Streamable HTTP error: error code: 502'))
+      .mockResolvedValueOnce([]);
+
+    const runPromise = run();
+    await vi.advanceTimersByTimeAsync(1000);
+    await runPromise;
+    vi.useRealTimers();
+
+    expect(connectMcp).toHaveBeenCalledTimes(2);
+    expect(firstClient.close).toHaveBeenCalledOnce();
+    expect(secondClient.close).toHaveBeenCalledOnce();
+  });
+
+  test('does not retry Todoist tool validation errors', async () => {
+    vi.mocked(gatherTodoistTasks).mockRejectedValueOnce(
+      new Error('find-tasks-by-date failed: invalid result'),
+    );
+
+    const response = await run();
+
+    expect(response.status).toBe(500);
+    expect(gatherTodoistTasks).toHaveBeenCalledOnce();
+    expect(connectMcp).toHaveBeenCalledOnce();
+  });
+
   test('runs every phase when no phase is given', async () => {
     const response = await run();
 
