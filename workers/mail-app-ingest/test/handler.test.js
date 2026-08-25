@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import worker, {
   MAX_PARSE_BYTES,
   isStoreTimeout,
@@ -23,6 +23,10 @@ const postgres = (await import('postgres')).default;
 /** @type {any} */
 const sentry = await import('@sentry/cloudflare');
 const { createSentryOptions } = await import('../src/sentry.js');
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * @param {{outcome?: 'inserted' | 'duplicate', messageUuid?: string | null}} [result]
