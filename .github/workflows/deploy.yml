@@ -57,6 +57,19 @@ jobs:
           SELECTED_WORKER: ${{ inputs.worker }}
         run: npm run dry-run -- "$SELECTED_WORKER"
 
+      - name: Deploy cookie-web-emails and synchronize its secrets
+        if: inputs.worker == 'all' || inputs.worker == 'cookie-web-emails'
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/cookie-web-emails
+          command: deploy
+          secrets: |
+            SENTRY_DSN
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
       - name: Deploy cookie-web-labels and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-labels'
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
@@ -206,6 +219,7 @@ jobs:
       - name: Deploy selected Worker
         if: >-
           inputs.worker != 'all' &&
+          inputs.worker != 'cookie-web-emails' &&
           inputs.worker != 'cookie-web-labels' &&
           inputs.worker != 'cookie-web-messages' &&
           inputs.worker != 'cookie-web-notifications' &&
