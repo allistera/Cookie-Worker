@@ -62,9 +62,10 @@ describe('flushScheduledSends', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const request = flushScheduledSends(env);
+    const rejection = expect(request).rejects.toThrow('Cookie-Web flush responded 502');
     await vi.advanceTimersByTimeAsync(3000);
 
-    await expect(request).rejects.toThrow('Cookie-Web flush responded 502');
+    await rejection;
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 // The phases are stubbed at the module boundary so the routing can be asserted
 // without a database, an MCP server or OpenAI.
@@ -79,6 +79,10 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('POST /run phase routing', () => {
   test('retries transient Todoist MCP failures and closes each client', async () => {
     vi.useFakeTimers();
@@ -90,9 +94,8 @@ describe('POST /run phase routing', () => {
       .mockResolvedValueOnce([]);
 
     const runPromise = run();
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.runAllTimersAsync();
     await runPromise;
-    vi.useRealTimers();
 
     expect(connectMcp).toHaveBeenCalledTimes(2);
     expect(firstClient.close).toHaveBeenCalledOnce();
