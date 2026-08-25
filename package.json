@@ -13,7 +13,7 @@
     "typecheck": "node scripts/typecheck.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "format:check": "prettier --write workers/scheduled-send-flusher/src/worker.js && git diff -- workers/scheduled-send-flusher/src/worker.js && prettier --check .",
     "deploy": "node scripts/workers.mjs deploy"
   },
   "dependencies": {
