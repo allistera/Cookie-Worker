@@ -91,6 +91,19 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
 
+      - name: Deploy cookie-web-notifications and synchronize its secrets
+        if: inputs.worker == 'all' || inputs.worker == 'cookie-web-notifications'
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/cookie-web-notifications
+          command: deploy
+          secrets: |
+            SENTRY_DSN
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
       - name: Deploy cookie-web-tasks and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-tasks'
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
@@ -182,6 +195,7 @@ jobs:
           inputs.worker != 'all' &&
           inputs.worker != 'cookie-web-labels' &&
           inputs.worker != 'cookie-web-messages' &&
+          inputs.worker != 'cookie-web-notifications' &&
           inputs.worker != 'cookie-web-tasks' &&
           inputs.worker != 'mail-app-ingest' &&
           inputs.worker != 'data-enricher' &&
