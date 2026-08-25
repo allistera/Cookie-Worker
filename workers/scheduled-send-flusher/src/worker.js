@@ -28,7 +28,7 @@ class FlushHttpError extends Error {
 function isRetryableFlushError(error) {
   return (
     (error instanceof FlushHttpError && error.status >= 500) ||
-    (error instanceof TypeError) ||
+    error instanceof TypeError ||
     (error instanceof Error && error.name === 'AbortError')
   );
 }
