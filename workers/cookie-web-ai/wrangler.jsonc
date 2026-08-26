@@ -1,0 +1,26 @@
+{
+  "name": "cookie-web-ai",
+  "main": "src/index.js",
+  // Called directly by Cookie-Web's SPA from the browser. workers.dev stays
+  // enabled alongside the custom domain below for debugging — both reach the
+  // same Worker, and CORS/auth apply equally to either.
+  "workers_dev": true,
+  "routes": [{ "pattern": "ai-api.infinitywave.online", "custom_domain": true }],
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": { "enabled": true },
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
+  "vars": {
+    // Auth0 domain/audience are public identifiers, already shipped in
+    // Cookie-Web's own client bundle (VITE_AUTH0_DOMAIN/VITE_AUTH0_AUDIENCE)
+    // — not secrets.
+    "AUTH0_DOMAIN": "dev-ixcl1rgxrlgeqrvs.us.auth0.com",
+    "AUTH0_AUDIENCE": "https://cookie-web/api",
+    // Cookie-Web's production origin, for the CORS allowlist.
+    "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
+    "SENTRY_ENVIRONMENT": "production",
+    // OPENAI_COMPOSE_MODEL / OPENAI_SUMMARY_MODEL are optional overrides for
+    // the defaults in src/openai.js — set here or in the dashboard if needed.
+  },
+}

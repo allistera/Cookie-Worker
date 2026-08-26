@@ -1,0 +1,153 @@
+import * as Sentry from '@sentry/cloudflare';
+import postgres from 'postgres';
+import { preflightResponse, withCors } from '../../../shared/cors.js';
+import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { allowRequest } from '../../../shared/rate-limit.js';
+import { RATE_LIMIT } from './openai.js';
+import { handleCompose } from './compose.js';
+import { handleSummarize } from './summarize.js';
+import { captureHandledException, createSentryOptions } from './sentry.js';
+
+// Matches Cookie-Web's own api/_lib/body.js limit (Vercel's ~4.5 MB request
+// body cap), so a request that would be rejected there behaves the same way
+// here.
+const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
+
+/** @param {string} databaseUrl */
+export function createSql(databaseUrl) {
+  // No ssl option: Hyperdrive terminates TLS to the origin database itself;
+  // asking the driver for TLS makes every connect fail (see data-enricher).
+  return postgres(databaseUrl, {
+    prepare: false,
+    max: 1,
+    idle_timeout: 20,
+    connect_timeout: 10,
+  });
+}
+
+/** @param {Request} request */
+async function readJsonBody(request) {
+  const contentLength = Number(request.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    throw new Error('Request body too large');
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > MAX_BODY_BYTES) throw new Error('Request body too large');
+  const raw = new TextDecoder().decode(bytes);
+  return raw ? JSON.parse(raw) : {};
+}
+
+// Cookie-Web's api/compose.js and api/summarize.js were separate files only
+// because of Vercel's function-per-file model — they share the same auth, the
+// same OPENAI_API_KEY, and the same 'ai' rate-limit scope, so here they are
+// two routes on one Worker. Per-route wording matches the originals exactly.
+const ROUTES = {
+  compose: {
+    handler: handleCompose,
+    notConfigured: 'AI compose is not configured',
+    unavailable: 'AI compose is temporarily unavailable',
+    tooMany: 'Too many compose requests, slow down',
+  },
+  summarize: {
+    handler: handleSummarize,
+    notConfigured: 'AI summarization is not configured',
+    unavailable: 'AI summarization is temporarily unavailable',
+    tooMany: 'Too many summary requests, slow down',
+  },
+};
+
+/**
+ * @param {URL} url
+ * @param {Request} request
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {import('./sentry.js').AiEnv} env
+ */
+async function route(url, request, sql, userId, env) {
+  const segments = url.pathname.split('/').filter(Boolean);
+  const config =
+    segments.length === 1 ? ROUTES[/** @type {keyof typeof ROUTES} */ (segments[0])] : undefined;
+  if (!config) {
+    return Response.json({ error: 'Not Found' }, { status: 404 });
+  }
+  if (request.method !== 'POST') {
+    return Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    );
+  }
+
+  if (!env.OPENAI_API_KEY) {
+    return Response.json({ error: config.notConfigured }, { status: 503 });
+  }
+  let allowed;
+  try {
+    allowed = await allowRequest(sql, userId, 'ai', RATE_LIMIT);
+  } catch (err) {
+    console.error(
+      `POST ${url.pathname} quota enforcement failed:`,
+      /** @type {Error} */ (err).message,
+    );
+    return Response.json({ error: config.unavailable }, { status: 503 });
+  }
+  if (!allowed) {
+    return Response.json({ error: config.tooMany }, { status: 429 });
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request);
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  return config.handler(sql, userId, body, /** @type {any} */ (env));
+}
+
+const worker = {
+  /**
+   * @param {Request} request
+   * @param {import('./sentry.js').AiEnv} env
+   * @param {ExecutionContext} _ctx
+   */
+  async fetch(request, env, _ctx) {
+    const origin = request.headers.get('Origin');
+
+    if (request.method === 'OPTIONS') {
+      return preflightResponse(origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
+    }
+
+    const url = new URL(request.url);
+    const sql = createSql(env.HYPERDRIVE.connectionString);
+    try {
+      let userId;
+      try {
+        ({ userId } = await verifyAccessToken(request, env, sql));
+      } catch (error) {
+        return withCors(
+          authFailureResponse(error),
+          origin,
+          env.ALLOWED_ORIGIN,
+          env.SENTRY_ENVIRONMENT,
+        );
+      }
+
+      const response = await route(url, request, sql, userId, env);
+      return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
+    } catch (error) {
+      console.log(
+        JSON.stringify({ event: 'request_failed', path: url.pathname, method: request.method }),
+      );
+      captureHandledException('fetch', error, env, { path: url.pathname, method: request.method });
+      return withCors(
+        Response.json({ error: 'Request failed' }, { status: 500 }),
+        origin,
+        env.ALLOWED_ORIGIN,
+        env.SENTRY_ENVIRONMENT,
+      );
+    } finally {
+      await sql.end({ timeout: 2 }).catch(() => undefined);
+    }
+  },
+};
+
+export default Sentry.withSentry(createSentryOptions, worker);

@@ -1,0 +1,9 @@
+# The database connection comes from the Hyperdrive binding, not a secret.
+# For local dev, export this before `npm run dev` (dev Supabase project, session pooler):
+#   export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
+
+# Required for both routes to answer anything but 503.
+OPENAI_API_KEY=""
+
+# Optional locally; required in production to send sanitized errors to Sentry.
+SENTRY_DSN=""
