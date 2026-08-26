@@ -1,5 +1,6 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { outputText } from '../../../shared/openai.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
 
 // The stored kind and exported DIGEST_* names are retained for compatibility
 // with Cookie-Web deployments that predate triage. The payload now follows
@@ -14,6 +15,7 @@ export const DIGEST_TEXT_CAP = 400;
 export const DIGEST_MAX_TOPICS = 2;
 
 const NOISE_CATEGORIES = ['marketing', 'social', 'automated', 'promotional', 'other'];
+export const UNCLASSIFIED_NOTE = 'Triage did not classify this message; shown for review.';
 
 const BASE_ITEM_PROPERTIES = {
   message_id: { type: 'string' },
@@ -95,24 +97,27 @@ export async function fetchDigestMessages(sql, userId) {
   );
 }
 
+/** A model response with incomplete or invalid message coverage. */
+export class TriageCoverageError extends Error {
+  constructor() {
+    super('Email triage did not classify every message exactly once');
+    this.name = 'TriageCoverageError';
+  }
+}
+
 /**
- * Convert the model's three tiers into the legacy topics shape Cookie-Web can
- * render during a rolling deploy. Reply Needed and Review remain visible;
- * Noise is counted by category and deliberately omitted from the email rows.
- * Every input id must appear exactly once, otherwise fail the phase instead of
- * silently hiding a message because of malformed model output.
- *
  * @param {{overview?: unknown, reply_needed?: unknown, review?: unknown, noise?: unknown}} digest
  * @param {Set<string>} knownIds
+ * @returns {{replyNeeded: Array<{message_id: string, headline: string, note: string}>, review: Array<{message_id: string, headline: string, note: string}>, noiseItems: Array<{message_id: string, category: string}>, seen: Set<string>, invalidClaims: number}}
  */
-export function pruneDigest(digest, knownIds) {
+function collectTiers(digest, knownIds) {
   const seen = new Set();
-  let invalidCoverage = false;
+  let invalidClaims = 0;
 
   const claim = (item) => {
     const id = item?.message_id;
     if (!knownIds.has(id) || seen.has(id)) {
-      invalidCoverage = true;
+      invalidClaims += 1;
       return false;
     }
     seen.add(id);
@@ -137,10 +142,13 @@ export function pruneDigest(digest, knownIds) {
   }));
   const noiseItems = (Array.isArray(digest?.noise) ? digest.noise : []).filter(claim);
 
-  if (invalidCoverage || seen.size !== knownIds.size) {
-    throw new Error('Email triage did not classify every message exactly once');
-  }
+  return { replyNeeded, review, noiseItems, seen, invalidClaims };
+}
 
+/**
+ * @param {{overview?: unknown, replyNeeded: Array<{message_id: string, headline: string, note: string}>, review: Array<{message_id: string, headline: string, note: string}>, noiseItems: Array<{message_id: string, category: string}>}} digest
+ */
+function shapeDigest({ overview, replyNeeded, review, noiseItems }) {
   const counts = new Map();
   for (const item of noiseItems) {
     const category = NOISE_CATEGORIES.includes(item.category) ? item.category : 'other';
@@ -155,7 +163,7 @@ export function pruneDigest(digest, knownIds) {
     topics.push({ emoji: '👀', title: 'Review', items: review });
   }
   return {
-    overview: typeof digest?.overview === 'string' ? digest.overview : '',
+    overview: typeof overview === 'string' ? overview : '',
     topics,
     noise: {
       count: noiseItems.length,
@@ -165,15 +173,63 @@ export function pruneDigest(digest, knownIds) {
 }
 
 /**
- * Triage the last 24 hours of inbox mail using the three-tier policy from the
- * Email Triage Skill. The snippet-first payload keeps the run bounded; full
- * bodies and threads remain the concern of later, user-requested drafting.
+ * Convert a model response into the legacy topics shape, rejecting malformed
+ * coverage so callers can retry or repair it.
  *
+ * @param {{overview?: unknown, reply_needed?: unknown, review?: unknown, noise?: unknown}} digest
+ * @param {Set<string>} knownIds
+ */
+export function pruneDigest(digest, knownIds) {
+  const tiers = collectTiers(digest, knownIds);
+  if (tiers.invalidClaims > 0 || tiers.seen.size !== knownIds.size) {
+    throw new TriageCoverageError();
+  }
+  return shapeDigest({
+    overview: digest?.overview,
+    replyNeeded: tiers.replyNeeded,
+    review: tiers.review,
+    noiseItems: tiers.noiseItems,
+  });
+}
+
+/**
+ * @param {{overview?: unknown, reply_needed?: unknown, review?: unknown, noise?: unknown}} digest
+ * @param {Array<{id: string, from_name: string | null, from_address: string, subject: string | null}>} messages
+ */
+export function repairDigest(digest, messages) {
+  const knownIds = new Set(messages.map((message) => message.id));
+  const { replyNeeded, review, noiseItems, seen, invalidClaims } = collectTiers(digest, knownIds);
+  const unclassified = messages.filter((message) => !seen.has(message.id));
+  const repairedReview = [
+    ...review,
+    ...unclassified.map((message) => ({
+      message_id: message.id,
+      headline: message.subject || message.from_name || message.from_address,
+      note: UNCLASSIFIED_NOTE,
+    })),
+  ];
+
+  console.log(
+    JSON.stringify({
+      event: 'triage_coverage_repaired',
+      unclassified: unclassified.length,
+      dropped: invalidClaims,
+    }),
+  );
+  return shapeDigest({
+    overview: digest?.overview,
+    replyNeeded,
+    review: repairedReview,
+    noiseItems,
+  });
+}
+
+/**
  * @param {Array<{id: string, from_name: string | null, from_address: string, envelope_to: string | null, subject: string | null, gist: string | null, sent_at: string}>} messages
  * @param {string} apiKey
  * @param {string} model
  */
-export async function buildDigest(messages, apiKey, model) {
+async function requestTriage(messages, apiKey, model) {
   return fetchWithTimeout(
     RESPONSES_URL,
     {
@@ -225,8 +281,38 @@ export async function buildDigest(messages, apiKey, model) {
     },
     async (response) => {
       if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
-      const parsed = JSON.parse(outputText(await response.json()));
-      return pruneDigest(parsed, new Set(messages.map((message) => message.id)));
+      return JSON.parse(outputText(await response.json()));
     },
   );
+}
+
+/**
+ * Triage the last 24 hours of inbox mail using the three-tier policy from the
+ * Email Triage Skill. The snippet-first payload keeps the run bounded; full
+ * bodies and threads remain the concern of later, user-requested drafting.
+ *
+ * @param {Array<{id: string, from_name: string | null, from_address: string, envelope_to: string | null, subject: string | null, gist: string | null, sent_at: string}>} messages
+ * @param {string} apiKey
+ * @param {string} model
+ */
+export async function buildDigest(messages, apiKey, model) {
+  const knownIds = new Set(messages.map((message) => message.id));
+  let lastParsed;
+  try {
+    return await retryWithBackoff(
+      async () => {
+        const parsed = await requestTriage(messages, apiKey, model);
+        lastParsed = parsed;
+        return pruneDigest(parsed, knownIds);
+      },
+      {
+        attempts: 2,
+        baseDelayMs: 500,
+        isRetryable: (error) => error instanceof TriageCoverageError,
+      },
+    );
+  } catch (error) {
+    if (!(error instanceof TriageCoverageError)) throw error;
+    return repairDigest(lastParsed, messages);
+  }
 }
