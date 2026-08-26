@@ -23,8 +23,9 @@
     // Cookie-Web's production origin, for the CORS allowlist.
     "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
     "SENTRY_ENVIRONMENT": "production",
-    // The visible From for all outbound mail. An address, not a secret —
-    // mirrors the EMAIL_FROM Vercel env this Worker replaces.
-    "EMAIL_FROM": "[SENSITIVE]",
   },
+  // EMAIL_FROM (the visible From for outbound mail) and RESEND_API_KEY are
+  // Worker secrets set once via `wrangler secret put`, not vars: Vercel marks
+  // both sensitive, so they cannot be pulled into config or CI. See the
+  // deploy workflow's cookie-web-send step for the full secret inventory.
 }

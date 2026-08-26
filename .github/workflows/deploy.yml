@@ -183,11 +183,12 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers/cookie-web-send
           command: deploy
-          # RESEND_API_KEY is not synced here: no matching GitHub secret
-          # exists, and wrangler-action fails the whole deploy if a *listed*
-          # secret has no value. It was set once with `wrangler secret put`
-          # (from the retired Vercel deployment's env) and Cloudflare keeps it
-          # across later deploys. SCHEDULED_SEND_FLUSH_TOKEN reuses the
+          # RESEND_API_KEY and EMAIL_FROM are not synced here: no matching
+          # GitHub secrets exist (Vercel marked both sensitive, so they cannot
+          # be exported), and wrangler-action fails the whole deploy if a
+          # *listed* secret has no value. Both were set once with `wrangler
+          # secret put` and Cloudflare keeps them across later deploys.
+          # SCHEDULED_SEND_FLUSH_TOKEN reuses the
           # COOKIE_WEB_FLUSH_TOKEN secret the flusher already holds — the two
           # ends of the flush handshake stay on one value.
           secrets: |
