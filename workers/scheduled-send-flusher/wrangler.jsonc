@@ -15,8 +15,13 @@
     // Later" email can go out past its scheduled time.
     "crons": ["*/5 * * * *"],
   },
+  // The flush call goes over a service binding to cookie-web-send: zero-cost,
+  // never leaves Cloudflare. The COOKIE_WEB_FLUSH_TOKEN secret still rides
+  // along because /send/flush is also publicly routable on its own domain and
+  // must stay protected there (cookie-web-send syncs the same value as
+  // SCHEDULED_SEND_FLUSH_TOKEN).
+  "services": [{ "binding": "SEND", "service": "cookie-web-send" }],
   "vars": {
-    "COOKIE_WEB_FLUSH_URL": "https://mail.infinitywave.online/api/send?resource=flush",
     "SENTRY_ENVIRONMENT": "production",
   },
 }

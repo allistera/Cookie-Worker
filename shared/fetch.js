@@ -2,19 +2,27 @@ export const FETCH_TIMEOUT_MS = 15_000;
 
 /**
  * Keep one deadline active through both response headers and body parsing.
+ * `fetchImpl` lets a service binding's fetch flow through the same deadline.
  *
  * @template T
  * @param {string | URL | Request} input
  * @param {RequestInit} init
  * @param {(response: Response) => Promise<T>} consume
  * @param {number} [timeoutMs]
+ * @param {typeof fetch} [fetchImpl]
  * @returns {Promise<T>}
  */
-export async function fetchWithTimeout(input, init, consume, timeoutMs = FETCH_TIMEOUT_MS) {
+export async function fetchWithTimeout(
+  input,
+  init,
+  consume,
+  timeoutMs = FETCH_TIMEOUT_MS,
+  fetchImpl = fetch,
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(input, { ...init, signal: controller.signal });
+    const response = await fetchImpl(input, { ...init, signal: controller.signal });
     return await consume(response);
   } finally {
     clearTimeout(timer);

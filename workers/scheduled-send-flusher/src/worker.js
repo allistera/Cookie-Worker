@@ -2,10 +2,12 @@
 // column) needs something to actually call the mail provider once a
 // scheduled row is due — unlike inbound snooze, whose due rows just become
 // visible again the next time they're queried. This Worker is that clock:
-// on a cron tick it calls Cookie-Web's POST /api/send?resource=flush, which
-// owns every bit of the real logic (claiming due rows, Resend, storing the
-// sent copy, retry/failure bookkeeping). This Worker never touches Postgres
-// or Resend directly.
+// on a cron tick it calls cookie-web-send's POST /send/flush over the SEND
+// service binding; that Worker owns every bit of the real logic (claiming
+// due rows, Resend, storing the sent copy, retry/failure bookkeeping). This
+// Worker never touches Postgres or Resend directly. (The Sentry-grouped
+// "Cookie-Web flush responded <status>" message prefix predates the flush
+// endpoint's own move off Vercel and is kept for issue continuity.)
 
 import * as Sentry from '@sentry/cloudflare';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
@@ -39,12 +41,15 @@ function isRetryableFlushError(error) {
   );
 }
 
+// The hostname is only an addressing formality the service binding requires.
+const FLUSH_URL = 'https://cookie-web-send/send/flush';
+
 /**
- * @param {Env & {COOKIE_WEB_FLUSH_URL?: string, COOKIE_WEB_FLUSH_TOKEN?: string}} env
+ * @param {Env & {COOKIE_WEB_FLUSH_TOKEN?: string}} env
  */
 async function fetchFlush(env) {
   return fetchWithTimeout(
-    env.COOKIE_WEB_FLUSH_URL,
+    FLUSH_URL,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${env.COOKIE_WEB_FLUSH_TOKEN}` },
@@ -68,14 +73,15 @@ async function fetchFlush(env) {
       return response.json();
     },
     FLUSH_TIMEOUT_MS,
+    (input, init) => env.SEND.fetch(input, init),
   );
 }
 
 /**
- * @param {Env & {COOKIE_WEB_FLUSH_URL?: string, COOKIE_WEB_FLUSH_TOKEN?: string}} env
+ * @param {Env & {COOKIE_WEB_FLUSH_TOKEN?: string}} env
  */
 export async function flushScheduledSends(env) {
-  if (!env.COOKIE_WEB_FLUSH_URL) throw new Error('COOKIE_WEB_FLUSH_URL is not configured');
+  if (!env.SEND) throw new Error('The SEND service binding is not configured');
   if (!env.COOKIE_WEB_FLUSH_TOKEN) throw new Error('COOKIE_WEB_FLUSH_TOKEN is not configured');
 
   const result = await retryWithBackoff(() => fetchFlush(env), {
@@ -89,7 +95,7 @@ export async function flushScheduledSends(env) {
 const worker = {
   /**
    * @param {ScheduledController} _controller
-   * @param {Env & {COOKIE_WEB_FLUSH_URL?: string, COOKIE_WEB_FLUSH_TOKEN?: string}} env
+   * @param {Env & {COOKIE_WEB_FLUSH_TOKEN?: string}} env
    * @param {ExecutionContext} _ctx
    */
   async scheduled(_controller, env, _ctx) {
@@ -100,7 +106,7 @@ const worker = {
   /**
    * Manual trigger: POST /run with `Authorization: Bearer <HTTP_TRIGGER_TOKEN>`.
    * @param {Request} request
-   * @param {Env & {COOKIE_WEB_FLUSH_URL?: string, COOKIE_WEB_FLUSH_TOKEN?: string, HTTP_TRIGGER_TOKEN?: string}} env
+   * @param {Env & {COOKIE_WEB_FLUSH_TOKEN?: string, HTTP_TRIGGER_TOKEN?: string}} env
    * @param {ExecutionContext} _ctx
    */
   async fetch(request, env, _ctx) {

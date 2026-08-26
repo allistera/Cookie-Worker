@@ -13,8 +13,9 @@ const worker = (await import('../src/worker.js')).default;
 
 const TOKEN = 'test-trigger-token';
 const FLUSH_TOKEN = 'flush-secret';
+const sendFetch = vi.fn();
 const env = /** @type {any} */ ({
-  COOKIE_WEB_FLUSH_URL: 'https://cookie-web.example/api/send?resource=flush',
+  SEND: { fetch: (/** @type {any[]} */ ...args) => sendFetch(...args) },
   COOKIE_WEB_FLUSH_TOKEN: FLUSH_TOKEN,
   HTTP_TRIGGER_TOKEN: TOKEN,
   SENTRY_DSN: 'https://public@example.ingest.sentry.io/1',
@@ -60,10 +61,7 @@ describe('Sentry configuration', () => {
 
 describe('failure reporting', () => {
   test('reports a failure the HTTP trigger answers with a 500', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ ok: false, status: 502 })),
-    );
+    sendFetch.mockResolvedValue({ ok: false, status: 502 });
 
     const response = await run();
 
@@ -78,12 +76,9 @@ describe('failure reporting', () => {
   });
 
   test('keeps the flush token out of Sentry and the logs', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new Error(`upstream rejected Bearer ${FLUSH_TOKEN}`);
-      }),
-    );
+    sendFetch.mockImplementation(async () => {
+      throw new Error(`upstream rejected Bearer ${FLUSH_TOKEN}`);
+    });
 
     await run();
 
@@ -96,10 +91,7 @@ describe('failure reporting', () => {
   });
 
   test('lets scheduled failures escape so the wrapper reports them', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ ok: false, status: 500 })),
-    );
+    sendFetch.mockResolvedValue({ ok: false, status: 500 });
 
     await expect(worker.scheduled(/** @type {any} */ ({}), env, ctx)).rejects.toThrow(
       'Cookie-Web flush responded 500',
