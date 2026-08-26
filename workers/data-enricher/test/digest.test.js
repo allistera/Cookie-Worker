@@ -189,7 +189,7 @@ describe('buildDigest email triage', () => {
       'msg-2',
       'msg-3',
     ]);
-    expect(result.topics[1].items[2]).toEqual({
+    expect(result.topics[1].items[1]).toEqual({
       message_id: 'msg-3',
       headline: 'Weekend sale',
       note: UNCLASSIFIED_NOTE,
