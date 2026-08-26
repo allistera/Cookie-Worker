@@ -97,13 +97,17 @@ describe('storeEmail', () => {
       lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }],
     });
     await storeEmail(sql, record({ references: ['<parent@example.com>'] }), 'owner@example.com');
-    expect(sql.transactions[0]).toHaveLength(6);
+    expect(sql.transactions[0]).toHaveLength(7);
     expect(sql.transactions[0][0].text).toContain('pg_advisory_xact_lock');
     expect(sql.transactions[0][1].text).toContain('AS is_duplicate');
     expect(sql.transactions[0][2].text).toContain('INSERT INTO messages');
-    expect(sql.transactions[0][3].text).toContain('INSERT INTO message_ai');
-    expect(sql.transactions[0][4].text).toContain('FROM label_rules');
-    expect(sql.transactions[0][5].text).toContain('UPDATE threads');
+    expect(sql.transactions[0][3].text).toContain('SET follow_up_at = NULL');
+    expect(sql.transactions[0][3].text).toContain('user_id =');
+    expect(sql.transactions[0][3].text).toContain('thread_id =');
+    expect(sql.transactions[0][3].text).toContain('sent_at <');
+    expect(sql.transactions[0][4].text).toContain('INSERT INTO message_ai');
+    expect(sql.transactions[0][5].text).toContain('FROM label_rules');
+    expect(sql.transactions[0][6].text).toContain('UPDATE threads');
   });
 
   test('returns duplicate when concurrent insert wins (RETURNING empty)', async () => {

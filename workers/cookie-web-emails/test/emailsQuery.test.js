@@ -41,6 +41,7 @@ describe('fetchEmails', () => {
     expect(capture.query()).toContain('ai.summary');
     expect(capture.query()).toContain('AS has_ai_summary');
     expect(capture.query()).toContain('m.scheduled_for');
+    expect(capture.query()).toContain('m.follow_up_at');
     expect(capture.query()).toContain('m.scheduled_for IS NULL OR m.scheduled_for <= now()');
   });
 
@@ -96,8 +97,28 @@ describe('fetchEmails', () => {
 
     fetchEmails(capture.sql, USER_ID, 50, null, 'inbox');
 
-    expect(capture.query()).toContain('NOT m.is_archived AND NOT m.is_sent');
+    expect(capture.query()).toContain('NOT m.is_archived AND (');
+    expect(capture.query()).toContain('NOT m.is_sent');
     expect(capture.query()).not.toContain("? = 'inbox'");
+  });
+
+  test('includes due sent follow-ups without a later inbound reply and sorts by reminder time', () => {
+    const capture = captureQuery();
+
+    fetchEmails(capture.sql, USER_ID, 50, null, 'inbox');
+
+    expect(capture.query()).toContain('m.is_sent');
+    expect(capture.query()).toContain('m.follow_up_at <= now()');
+    expect(capture.query()).toContain('FROM messages reply');
+    expect(capture.query()).toContain('reply.user_id = m.user_id');
+    expect(capture.query()).toContain('reply.thread_id = m.thread_id');
+    expect(capture.query()).toContain('reply.sent_at > m.sent_at');
+    expect(capture.query()).toContain(
+      'CASE WHEN m.is_sent THEN m.follow_up_at ELSE m.sent_at END AS sort_at',
+    );
+    expect(capture.query()).toContain(
+      'ORDER BY CASE WHEN m.is_sent THEN m.follow_up_at ELSE m.sent_at END DESC',
+    );
   });
 
   test('selects starred messages as a real folder rather than a client filter', () => {

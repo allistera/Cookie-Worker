@@ -49,13 +49,22 @@ describe('handleList', () => {
 
   test('pages by handing back the last row as the next cursor', async () => {
     const rows = [
-      { id: '11111111-1111-4111-8111-111111111111', sent_at: new Date('2026-08-02T00:00:00Z') },
-      { id: '22222222-2222-4222-8222-222222222222', sent_at: new Date('2026-08-01T00:00:00Z') },
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        sent_at: new Date('2026-07-02T00:00:00Z'),
+        sort_at: new Date('2026-08-02T00:00:00Z'),
+      },
+      {
+        id: '22222222-2222-4222-8222-222222222222',
+        sent_at: new Date('2026-08-01T00:00:00Z'),
+        sort_at: new Date('2026-08-01T00:00:00Z'),
+      },
     ];
     const response = await handleList(stubSql(rows), USER_ID, listUrl('?limit=1'));
 
     const body = await response.json();
     expect(body.emails).toHaveLength(1);
+    expect(body.emails[0]).not.toHaveProperty('sort_at');
     expect(body.nextCursor).toBe('2026-08-02T00:00:00.000Z|11111111-1111-4111-8111-111111111111');
   });
 
