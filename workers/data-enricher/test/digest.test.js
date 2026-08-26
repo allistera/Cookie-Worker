@@ -3,8 +3,10 @@ import {
   buildDigest,
   fetchDigestMessages,
   pruneDigest,
+  repairDigest,
   DIGEST_PROMPT_VERSION,
   TRIAGE_POLICY_SOURCE,
+  UNCLASSIFIED_NOTE,
 } from '../src/digest.js';
 
 afterEach(() => {
@@ -121,6 +123,80 @@ describe('buildDigest email triage', () => {
     );
   });
 
+  test('retries once after bad coverage and returns the valid result', async () => {
+    const incomplete = {
+      ...TRIAGE,
+      noise: [],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ output_text: JSON.stringify(incomplete) }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ output_text: JSON.stringify(TRIAGE) }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-5.6-luna')).resolves.toEqual({
+      overview: TRIAGE.overview,
+      topics: [
+        {
+          emoji: '↩️',
+          title: 'Reply Needed',
+          items: [
+            {
+              message_id: 'msg-1',
+              headline: 'Approve the revised floor plan',
+              note: 'The contractor needs a decision by tomorrow. Suggested: Reply with approval or requested changes.',
+            },
+          ],
+        },
+        {
+          emoji: '👀',
+          title: 'Review',
+          items: [
+            {
+              message_id: 'msg-2',
+              headline: 'Insurance claim processed',
+              note: 'Check the final claim outcome.',
+            },
+          ],
+        },
+      ],
+      noise: { count: 1, categories: [{ category: 'promotional', count: 1 }] },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('repairs the last response after both attempts have bad coverage', async () => {
+    const incomplete = {
+      ...TRIAGE,
+      noise: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ output_text: JSON.stringify(incomplete) }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await buildDigest(MESSAGES, 'key', 'gpt-5.6-luna');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.topics.flatMap((topic) => topic.items).map((item) => item.message_id)).toEqual([
+      'msg-1',
+      'msg-2',
+      'msg-3',
+    ]);
+    expect(result.topics[1].items[2]).toEqual({
+      message_id: 'msg-3',
+      headline: 'Weekend sale',
+      note: UNCLASSIFIED_NOTE,
+    });
+    expect(result.noise).toEqual({ count: 0, categories: [] });
+  });
+
   test('records the adapted policy and prompt version for provenance', () => {
     expect(TRIAGE_POLICY_SOURCE).toBe('ericporres/email-triage-plugin');
     expect(DIGEST_PROMPT_VERSION).toMatch(/^email-triage-v/);
@@ -183,6 +259,74 @@ describe('pruneDigest triage validation', () => {
     expect(() => pruneDigest({ overview: '', ...payload }, known)).toThrow(
       'Email triage did not classify every message exactly once',
     );
+  });
+});
+
+describe('repairDigest triage coverage', () => {
+  const resultIds = (result) =>
+    result.topics.flatMap((topic) => topic.items).map((item) => item.message_id);
+
+  test('moves an omitted id into Review', () => {
+    const result = repairDigest(
+      {
+        overview: '',
+        reply_needed: [
+          { message_id: 'msg-1', headline: 'A', note: 'n', suggested_action: 'Reply' },
+        ],
+        review: [{ message_id: 'msg-2', headline: 'B', note: 'n' }],
+        noise: [],
+      },
+      MESSAGES,
+    );
+
+    expect(resultIds(result)).toEqual(['msg-1', 'msg-2', 'msg-3']);
+    expect(result.topics[1].items[1]).toMatchObject({
+      message_id: 'msg-3',
+      note: UNCLASSIFIED_NOTE,
+    });
+    expect(result.noise.count + resultIds(result).length).toBe(MESSAGES.length);
+  });
+
+  test('keeps the first occurrence when an id is repeated', () => {
+    const result = repairDigest(
+      {
+        overview: '',
+        reply_needed: [
+          { message_id: 'msg-1', headline: 'First', note: 'n', suggested_action: 'Reply' },
+        ],
+        review: [
+          { message_id: 'msg-1', headline: 'Duplicate', note: 'n' },
+          { message_id: 'msg-2', headline: 'B', note: 'n' },
+        ],
+        noise: [{ message_id: 'msg-3', category: 'other' }],
+      },
+      MESSAGES,
+    );
+
+    expect(resultIds(result)).toEqual(['msg-1', 'msg-2']);
+    expect(result.topics[0].items[0].headline).toBe('First');
+    expect(result.noise.count + resultIds(result).length).toBe(MESSAGES.length);
+  });
+
+  test('drops an invented id', () => {
+    const result = repairDigest(
+      {
+        overview: '',
+        reply_needed: [
+          { message_id: 'msg-1', headline: 'A', note: 'n', suggested_action: 'Reply' },
+        ],
+        review: [{ message_id: 'msg-2', headline: 'B', note: 'n' }],
+        noise: [
+          { message_id: 'msg-3', category: 'other' },
+          { message_id: 'invented', category: 'other' },
+        ],
+      },
+      MESSAGES,
+    );
+
+    expect(resultIds(result)).toEqual(['msg-1', 'msg-2']);
+    expect(result.noise).toEqual({ count: 1, categories: [{ category: 'other', count: 1 }] });
+    expect(result.noise.count + resultIds(result).length).toBe(MESSAGES.length);
   });
 });
 
