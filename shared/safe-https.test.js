@@ -4,7 +4,7 @@ import {
   isPublicIPv6,
   requestPublicHttps,
   resolvePublicHttpsUrl,
-} from '../src/safeHttps.js';
+} from './safe-https.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();

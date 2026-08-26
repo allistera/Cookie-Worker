@@ -5,7 +5,7 @@
 // are passed in rather than pulled from a services object, so each handler
 // stays a plain, testable function.
 
-import { DEFAULT_ONE_CLICK_ALLOWLIST, hostMatchesSuffixes } from './safeHttps.js';
+import { DEFAULT_ONE_CLICK_ALLOWLIST, hostMatchesSuffixes } from '../../../shared/safe-https.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
