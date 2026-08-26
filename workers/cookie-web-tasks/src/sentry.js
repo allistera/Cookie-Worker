@@ -15,7 +15,6 @@ const SERVICE = 'cookie-web-tasks';
  *   AUTH0_AUDIENCE?: string,
  *   OPENAI_API_KEY?: string,
  *   TODOIST_API_TOKEN?: string,
- *   ENRICHER_RUN_URL?: string,
  *   ENRICHER_TRIGGER_TOKEN?: string,
  *   OWNER_EMAIL?: string,
  *   BLOB_READ_WRITE_TOKEN?: string,

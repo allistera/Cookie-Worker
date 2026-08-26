@@ -1,5 +1,6 @@
-// Ported from Cookie-Web's api/_lib/enricher.js — the run URL and trigger
-// token are passed in explicitly (env bindings) rather than read from
+// Ported from Cookie-Web's api/_lib/enricher.js — the enricher is reached
+// over a service binding (env.ENRICHER) rather than its public URL, the
+// trigger token is passed in explicitly (env binding) rather than read from
 // process.env, and (req, res) handling becomes returning a Response.
 
 import { allowRequest } from './rateLimit.js';
@@ -21,17 +22,19 @@ export class EnricherNotConfiguredError extends Error {
 }
 
 // Ask the data-enricher Worker to rebuild both AI Today cards — mail triage
-// and the news round-up — and nothing else. The URL and token come from this
-// Worker's own environment, never from the request, so this is not an SSRF
-// surface and needs no safe-https treatment; the token stays server-side so
-// the browser never holds a Worker credential.
-/** @param {string | undefined} runUrl @param {string | undefined} token */
-export async function triggerDigestRebuild(runUrl, token) {
-  if (!runUrl || !token) throw new EnricherNotConfiguredError();
+// and the news round-up — and nothing else. The call goes over a service
+// binding, so it never touches the public internet; the hostname below is
+// only an addressing formality the binding requires. The token still rides
+// along because /run also answers on data-enricher's public workers.dev URL
+// and must stay protected there; it comes from this Worker's own
+// environment, never from the request, so the browser never holds it.
+/** @param {Fetcher | undefined} enricher @param {string | undefined} token */
+export async function triggerDigestRebuild(enricher, token) {
+  if (!enricher || !token) throw new EnricherNotConfiguredError();
 
-  const url = new URL(runUrl);
+  const url = new URL('https://data-enricher/run');
   url.searchParams.set('phase', 'today');
-  const response = await fetch(url, {
+  const response = await enricher.fetch(url.toString(), {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -47,10 +50,10 @@ export async function triggerDigestRebuild(runUrl, token) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {string | undefined} runUrl
+ * @param {Fetcher | undefined} enricher
  * @param {string | undefined} triggerToken
  */
-export async function postRefresh(sql, userId, runUrl, triggerToken) {
+export async function postRefresh(sql, userId, enricher, triggerToken) {
   let allowed;
   try {
     allowed = await allowRequest(sql, userId, 'enricher', RATE_LIMIT);
@@ -68,7 +71,7 @@ export async function postRefresh(sql, userId, runUrl, triggerToken) {
   }
 
   try {
-    await triggerDigestRebuild(runUrl, triggerToken);
+    await triggerDigestRebuild(enricher, triggerToken);
     return Response.json({ ok: true });
   } catch (err) {
     if (err instanceof EnricherNotConfiguredError) {

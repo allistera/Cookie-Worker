@@ -12,8 +12,9 @@ OPENAI_API_KEY=""
 TODOIST_API_TOKEN=""
 
 # Lets POST /tasks/refresh trigger the data-enricher Worker's on-demand
-# rebuild. Both must be set together; without them, refresh responds 501.
-ENRICHER_RUN_URL=""
+# rebuild over the ENRICHER service binding (run `npm run dev -- data-enricher`
+# alongside so wrangler can connect the two locally). Without the token,
+# refresh responds 501.
 ENRICHER_TRIGGER_TOKEN=""
 
 # Upload access for document images and /tasks/image-upload. Same store,

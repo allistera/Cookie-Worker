@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from '../../../shared/fetch.js';
+import { fetchWithTimeout, readTextCapped } from '../../../shared/fetch.js';
 
 // Source fetchers for AI Today's daily news section, ported from the
 // allistera/daily-news Python project. Each returns plain
@@ -7,6 +7,8 @@ import { fetchWithTimeout } from '../../../shared/fetch.js';
 export const GITHUB_SEARCH_URL = 'https://api.github.com/search/repositories';
 export const PRODUCT_HUNT_URL = 'https://api.producthunt.com/v2/api/graphql';
 export const BBC_UK_FEED_URL = 'https://feeds.bbci.co.uk/news/uk/rss.xml';
+// BBC's UK feed is ~30KB; 5MB means something is very wrong upstream.
+const MAX_FEED_BYTES = 5 * 1024 * 1024;
 export const USER_AGENT = 'cookie-data-enricher';
 
 /**
@@ -210,7 +212,8 @@ export async function fetchUkHeadlines(count = 8, hours = 24, now = new Date()) 
     },
     async (response) => {
       if (!response.ok) throw new Error(`BBC responded ${response.status}`);
-      return response.text();
+      // The only fully-buffered read of a body we don't control — cap it.
+      return readTextCapped(response, MAX_FEED_BYTES);
     },
   );
 

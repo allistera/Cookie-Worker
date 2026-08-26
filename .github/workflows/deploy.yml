@@ -185,12 +185,9 @@ jobs:
           command: deploy
           # ENRICHER_TRIGGER_TOKEN reuses data-enricher's own HTTP_TRIGGER_TOKEN
           # secret value: POST /tasks/refresh calls data-enricher's POST /run
-          # directly now (Cookie-Web previously made that same call itself, so
-          # this moves the token from Cookie-Web's Vercel env to here). The
-          # matching ENRICHER_RUN_URL is a plain var, not a secret, and is left
-          # unset in wrangler.jsonc — see that file's comment; refresh responds
-          # 501 "not configured" until it's set once with `wrangler deploy` or
-          # the dashboard.
+          # over the ENRICHER service binding (wrangler.jsonc), but /run also
+          # answers on data-enricher's public workers.dev URL, so the token
+          # stays required end to end.
           secrets: |
             OPENAI_API_KEY
             TODOIST_API_TOKEN

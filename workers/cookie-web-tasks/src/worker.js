@@ -103,7 +103,7 @@ async function route(url, request, sql, userId, env, email) {
     if (!ownerEmail || !email || email.toLowerCase() !== ownerEmail) {
       return Response.json({ error: 'Refresh is limited to the mailbox owner' }, { status: 403 });
     }
-    return postRefresh(sql, userId, env.ENRICHER_RUN_URL, env.ENRICHER_TRIGGER_TOKEN);
+    return postRefresh(sql, userId, env.ENRICHER, env.ENRICHER_TRIGGER_TOKEN);
   }
 
   if (sub === 'image-upload') {

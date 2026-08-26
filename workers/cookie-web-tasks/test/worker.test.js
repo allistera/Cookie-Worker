@@ -46,7 +46,7 @@ const env = /** @type {any} */ ({
   ALLOWED_ORIGIN: PRODUCTION,
   BLOB_READ_WRITE_TOKEN: 'blob-token',
   TODOIST_API_TOKEN: 'todoist-token',
-  ENRICHER_RUN_URL: 'https://data-enricher.example.workers.dev/run',
+  ENRICHER: { fetch: vi.fn(async () => ({ ok: true, status: 200 })) },
   ENRICHER_TRIGGER_TOKEN: 'trigger-secret',
   OWNER_EMAIL: 'owner@example.com',
 });

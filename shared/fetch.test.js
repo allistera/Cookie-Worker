@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout, readTextCapped } from './fetch.js';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -24,5 +24,22 @@ describe('fetchWithTimeout', () => {
     const rejection = expect(request).rejects.toThrow('aborted');
     await vi.advanceTimersByTimeAsync(50);
     await rejection;
+  });
+});
+
+describe('readTextCapped', () => {
+  test('reads a streamed body under the cap', async () => {
+    await expect(readTextCapped(new Response('hello feed'), 1024)).resolves.toBe('hello feed');
+  });
+
+  test('aborts a streamed body that exceeds the cap', async () => {
+    await expect(readTextCapped(new Response('x'.repeat(2048)), 1024)).rejects.toThrow(
+      'exceeded 1024 bytes',
+    );
+  });
+
+  test('enforces the cap on non-streaming stand-ins too', async () => {
+    const stub = /** @type {any} */ ({ body: null, text: async () => 'y'.repeat(2048) });
+    await expect(readTextCapped(stub, 1024)).rejects.toThrow('exceeded 1024 bytes');
   });
 });

@@ -22,4 +22,11 @@ export default [
       eqeqeq: ['error', 'always'],
     },
   },
+  // A type-aware @typescript-eslint/no-floating-promises block belongs here,
+  // but typescript-eslint (8.x) caps its TypeScript peer at <6.1 and this
+  // repo typechecks with TypeScript 7 (the native compiler), whose JS API
+  // typescript-eslint cannot drive yet. npm also refuses to nest a second
+  // TypeScript to satisfy the peer. Revisit when typescript-eslint supports
+  // TS 7; until then floating promises are covered by review convention:
+  // every Promise is awaited, returned, or handed to ctx.waitUntil().
 ];
