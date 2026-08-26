@@ -127,6 +127,18 @@ export async function storeEmail(sql, record, ownerEmail) {
 
     inserted = true;
 
+    if (!isNewThread) {
+      await tx`
+        UPDATE messages
+        SET follow_up_at = NULL
+        WHERE user_id = ${userId}
+          AND thread_id = ${threadId}
+          AND is_sent
+          AND follow_up_at IS NOT NULL
+          AND sent_at < ${sentAt}::timestamptz
+      `;
+    }
+
     await tx`
       INSERT INTO message_ai (message_id, status, provider, prompt_version)
       VALUES (${messageUuid}, 'pending', 'openai', 'email-enrichment-v1')

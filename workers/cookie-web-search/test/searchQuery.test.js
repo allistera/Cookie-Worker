@@ -20,6 +20,7 @@ describe('fetchSearchEmails', () => {
     expect(query).toContain('GROUP BY m.id, ai.spam_score');
     expect(query).toContain('NOT m.is_deleted');
     expect(query).toContain('m.is_sent');
+    expect(query).toContain('m.follow_up_at');
     expect(query).toContain('AS has_html');
     expect(query).toContain('AS has_attachments');
     expect(query).toContain("'kind', l.kind");

@@ -38,14 +38,37 @@ export function folderPredicate(sql, folder, labelName) {
         AND tagged_l.name = ${labelName}
     )`;
   }
-  return sql`NOT m.is_archived AND NOT m.is_sent
-    AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
-    AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())`;
+  return sql`NOT m.is_archived AND (
+    (
+      NOT m.is_sent
+      AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+      AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())
+    )
+    OR (
+      m.is_sent
+      AND m.follow_up_at <= now()
+      AND NOT EXISTS (
+        SELECT 1
+        FROM messages reply
+        WHERE reply.user_id = m.user_id
+          AND reply.thread_id = m.thread_id
+          AND NOT reply.is_sent
+          AND NOT reply.is_deleted
+          AND reply.sent_at > m.sent_at
+      )
+    )
+  )`;
 }
 
-// Keyset pagination on (sent_at, id) DESC. The cursor is "<sent_at>|<id>" of
-// the last row of the previous page — stable under concurrent inserts, unlike
-// OFFSET. fetch one extra row to learn whether another page exists.
+function sortExpression(sql, folder) {
+  return folder === 'inbox'
+    ? sql`CASE WHEN m.is_sent THEN m.follow_up_at ELSE m.sent_at END`
+    : sql`m.sent_at`;
+}
+
+// Keyset pagination on (sort_at, id) DESC. Inbox reminders use follow_up_at;
+// other rows use sent_at. The cursor is "<sort_at>|<id>" of the previous page.
+// Fetch one extra row to learn whether another page exists.
 // folder selects inbox, sent/outbox, high-confidence AI spam, snoozed, or
 // archived (Done) mail. Recipients let the client render "To: <address>" for
 // outbound rows.
@@ -60,14 +83,15 @@ export function folderPredicate(sql, folder, labelName) {
  * @param {string} [labelName]
  */
 export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') {
+  const sortAt = sortExpression(sql, folder);
   return sql`
     SELECT m.id, m.from_name, m.from_address,
            CASE WHEN jsonb_typeof(m.recipients) = 'string'
                 THEN (m.recipients #>> '{}')::jsonb
                 ELSE m.recipients END AS recipients,
-           m.subject, m.snippet,
+           m.subject, m.snippet, ${sortAt} AS sort_at,
            m.sent_at, m.is_unread, m.is_starred,
-           m.is_sent, m.scheduled_for, ai.spam_score,
+           m.is_sent, m.scheduled_for, m.follow_up_at, ai.spam_score,
            BOOL_OR(NULLIF(BTRIM(ai.summary), '') IS NOT NULL) AS has_ai_summary,
            (m.body_html IS NOT NULL) AS has_html,
            EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
@@ -84,9 +108,9 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
     WHERE m.user_id = ${userId}
       AND NOT m.is_deleted
       AND (${folderPredicate(sql, folder, labelName)})
-      ${cursor ? sql`AND (m.sent_at, m.id) < (${cursor.sentAt}::timestamptz, ${cursor.id}::uuid)` : sql``}
+      ${cursor ? sql`AND (${sortAt}, m.id) < (${cursor.sentAt}::timestamptz, ${cursor.id}::uuid)` : sql``}
     GROUP BY m.id, ai.spam_score
-    ORDER BY m.sent_at DESC, m.id DESC
+    ORDER BY ${sortAt} DESC, m.id DESC
     LIMIT ${limit + 1}
   `;
 }
@@ -181,12 +205,17 @@ export async function handleList(sql, userId, url) {
     const hasMore = rows.length > limit;
     const emails = hasMore ? rows.slice(0, limit) : rows;
     const last = emails[emails.length - 1];
+    const publicEmails = emails.map((row) => {
+      const email = { ...row };
+      delete email.sort_at;
+      return email;
+    });
     /** @type {Record<string, unknown>} */
     const payload = {
-      emails,
+      emails: publicEmails,
       // toISOString keeps millisecond precision; Date's default toString
       // truncates to seconds, which can skip same-second rows on page breaks.
-      nextCursor: hasMore ? `${last.sent_at.toISOString()}|${last.id}` : null,
+      nextCursor: hasMore ? `${last.sort_at.toISOString()}|${last.id}` : null,
       readReceiptsAvailable: folder === 'sent',
     };
     if (!cursor) {
