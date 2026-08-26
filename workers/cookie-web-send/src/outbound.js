@@ -1,0 +1,436 @@
+// Ported from Cookie-Web's api/send.js — the immediate-send half. Behaviorally
+// identical (same queries, validation, quota semantics, idempotency keys, and
+// status codes), with three runtime translations: node:crypto's createHash
+// becomes Web Crypto (so the idempotency key is now computed asynchronously),
+// Buffer.byteLength becomes TextEncoder, and the fire-and-forget sent-mail
+// embedding becomes a ctx.waitUntil task with its own short-lived database
+// connection (the request's connection closes when the response returns).
+
+import { EMBEDDING_MODEL } from '../../../shared/embeddings.js';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SNIPPET_LENGTH = 100;
+export const MAX_OUTBOUND_RECIPIENTS = 20;
+export const MAX_OUTBOUND_SUBJECT_BYTES = 998;
+export const MAX_OUTBOUND_TEXT_BYTES = 100_000;
+export const MAX_OUTBOUND_HTML_BYTES = 200_000;
+export const MAX_OUTBOUND_TOTAL_BYTES = 256_000;
+const OUTBOUND_SENDS_PER_MINUTE = 10;
+
+/** @param {string} value */
+function escapeHtml(value) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+// The pixel endpoint lives on the cookie-web-receipts Worker — a public
+// identifier like Cookie-Web's apiWorkers.js URLs, not configuration. Unlike
+// the Vercel handler this replaces, there is no "deployed environment" gate:
+// this Worker only exists deployed (dev/e2e mail goes through fixtures), so
+// every send gets a pixel.
+const READ_RECEIPTS_PIXEL_BASE = 'https://receipts-api.infinitywave.online/read-receipts';
+
+/** @param {string} token */
+export function buildReadReceiptUrl(token) {
+  if (!UUID_RE.test(token)) return null;
+  const url = new URL(READ_RECEIPTS_PIXEL_BASE);
+  url.searchParams.set('token', token);
+  return url.toString();
+}
+
+/**
+ * @param {string | null} html
+ * @param {string} text
+ * @param {string | null} receiptUrl
+ */
+export function appendReadReceipt(html, text, receiptUrl) {
+  if (!receiptUrl) return html;
+  const content = html || escapeHtml(text).replaceAll('\n', '<br>');
+  return `${content}<img src="${receiptUrl}" width="1" height="1" alt="" style="display:none;width:1px;height:1px;border:0" />`;
+}
+
+/** @param {string} text */
+function makeSnippet(text) {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  return collapsed.length > SNIPPET_LENGTH ? `${collapsed.slice(0, SNIPPET_LENGTH)}...` : collapsed;
+}
+
+/** @param {{EMAIL_FROM?: string}} env */
+export function configuredEmailFrom(env) {
+  const from = String(env.EMAIL_FROM || '').trim();
+  if (!from) throw new Error('EMAIL_FROM is not configured');
+  return from;
+}
+
+// "Name <addr@example.com>" -> { name, address }; bare address -> name null.
+/** @param {string} from */
+function parseFromEnv(from) {
+  const match = /^(.*)<([^>]+)>\s*$/.exec(from);
+  if (match) {
+    return { name: match[1].trim() || null, address: match[2].trim() };
+  }
+  return { name: null, address: from.trim() };
+}
+
+// The "to" field is a comma-separated list of addresses; returns the trimmed,
+// non-empty ones. Exported for testing.
+// Longest representation a valid list can take: MAX_OUTBOUND_RECIPIENTS
+// addresses of at most 320 chars, plus separators and generous whitespace.
+// Enforced before split() so a multi-megabyte comma flood is rejected in O(1)
+// instead of being expanded into millions of array entries first.
+const MAX_RECIPIENTS_FIELD_CHARS = MAX_OUTBOUND_RECIPIENTS * 512;
+
+/** @param {unknown} to */
+export function parseRecipients(to) {
+  if (!(/** @type {any} */ (to)?.split instanceof Function)) return [];
+  if (String(to).length > MAX_RECIPIENTS_FIELD_CHARS) return [];
+  const recipients = /** @type {string} */ (to)
+    .split(',')
+    .map((address) => address.trim())
+    .filter(Boolean);
+  if (recipients.length > MAX_OUTBOUND_RECIPIENTS) return [];
+  return recipients;
+}
+
+// Pragmatic RFC 5322 subset: one @, no whitespace or control characters, no
+// header-significant punctuation, and a dotted domain. Resend would reject
+// malformed values anyway, but rejecting here keeps CRLF/control-character
+// payloads (classic SMTP header-injection shapes) out of the provider payload,
+// the stored recipients column, and the scheduled-send queue.
+const ADDRESS_RE =
+  /^[A-Za-z0-9!#$%&'*+/=?^_`{|}.-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+
+/** @param {string} value */
+function hasControlChars(value) {
+  for (const character of value) {
+    const code = /** @type {number} */ (character.codePointAt(0));
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** @param {string} address */
+function validOutboundAddress(address) {
+  return address.length <= 320 && ADDRESS_RE.test(address);
+}
+
+const byteLength = (/** @type {string} */ value) => new TextEncoder().encode(value).length;
+
+/** @param {{to: unknown, subject: unknown, text: unknown, html: unknown}} message */
+export function validateOutboundMessage({ to, subject, text, html }) {
+  const recipients = parseRecipients(to);
+  const htmlText = String(html ?? '');
+  const bodyHtml = htmlText.trim() ? htmlText : null;
+  const subjectText = String(subject ?? '');
+  const bodyText = String(text ?? '');
+  if (
+    recipients.length === 0 ||
+    !recipients.every(validOutboundAddress) ||
+    !subjectText.trim() ||
+    hasControlChars(subjectText) ||
+    !bodyText.trim()
+  ) {
+    return { error: 'to, subject and text are required and must be valid' };
+  }
+
+  const subjectBytes = byteLength(subjectText);
+  const textBytes = byteLength(bodyText);
+  const htmlBytes = bodyHtml ? byteLength(bodyHtml) : 0;
+  if (
+    subjectBytes > MAX_OUTBOUND_SUBJECT_BYTES ||
+    textBytes > MAX_OUTBOUND_TEXT_BYTES ||
+    htmlBytes > MAX_OUTBOUND_HTML_BYTES ||
+    subjectBytes + textBytes + htmlBytes > MAX_OUTBOUND_TOTAL_BYTES
+  ) {
+    return { error: 'The email exceeds the allowed content size' };
+  }
+  return { recipients, bodyHtml };
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ */
+export async function claimOutboundEmailQuota(sql, userId) {
+  const [result] = await sql`
+    WITH claimed AS (
+      INSERT INTO outbound_email_quotas (user_id, window_start, send_count)
+      VALUES (${userId}, date_trunc('minute', now()), 1)
+      ON CONFLICT (user_id) DO UPDATE SET
+        window_start = CASE
+          WHEN outbound_email_quotas.window_start < date_trunc('minute', now())
+            THEN EXCLUDED.window_start
+          ELSE outbound_email_quotas.window_start
+        END,
+        send_count = CASE
+          WHEN outbound_email_quotas.window_start < date_trunc('minute', now()) THEN 1
+          ELSE outbound_email_quotas.send_count + 1
+        END,
+        updated_at = now()
+      WHERE outbound_email_quotas.window_start < date_trunc('minute', now())
+         OR outbound_email_quotas.send_count < ${OUTBOUND_SENDS_PER_MINUTE}
+      RETURNING user_id
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM users WHERE id = ${userId}) AS authorized,
+      EXISTS (SELECT 1 FROM claimed) AS quota_claimed
+  `;
+  return result || { authorized: false, quota_claimed: false };
+}
+
+// Compensating decrement after a failed provider delivery so an outage does
+// not burn the user's per-minute allowance on mail that never went out. The
+// window_start guard keeps the refund from leaking into a newer minute's
+// counter after a rollover.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ */
+export async function refundOutboundEmailQuota(sql, userId) {
+  try {
+    await sql`
+      UPDATE outbound_email_quotas
+      SET send_count = GREATEST(send_count - 1, 0), updated_at = now()
+      WHERE user_id = ${userId}
+        AND window_start = date_trunc('minute', now())
+        AND send_count > 0
+    `;
+  } catch (err) {
+    console.error('failed to refund outbound email quota:', /** @type {Error} */ (err).message);
+  }
+}
+
+// The content hash alone would silently dedupe a deliberate re-send of the
+// identical message within the provider's idempotency window. Mixing in an
+// optional client-generated requestId keeps double-click/retry protection
+// (same requestId dedupes) while letting intentional duplicates through
+// (new requestId, new send). Async because Web Crypto's digest is.
+/**
+ * @param {string} userId
+ * @param {{recipients: string[], subject: unknown, text: unknown, html: unknown, replyToMessageId: string | null, requestId: string | null}} message
+ */
+export async function immediateSendIdempotencyKey(
+  userId,
+  { recipients, subject, text, html, replyToMessageId, requestId },
+) {
+  const bytes = new TextEncoder().encode(
+    JSON.stringify({
+      userId,
+      recipients,
+      subject,
+      text,
+      html: html ?? null,
+      replyToMessageId: replyToMessageId ?? null,
+      requestId: requestId ?? null,
+    }),
+  );
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  const hex = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `immediate-send/${hex}`;
+}
+
+/**
+ * The seams the delivery path depends on, built once per request in worker.js:
+ * createResend/embedText are injectable for tests, and queueEmbedding wraps
+ * ctx.waitUntil with a fresh short-lived sql connection (the request's own
+ * connection is closed by the time the background task runs).
+ *
+ * @typedef {{
+ *   env: import('./sentry.js').SendEnv,
+ *   createResend: (apiKey: string | undefined) => any,
+ *   embedText: (text: string, apiKey: string) => Promise<number[]>,
+ *   queueEmbedding: (messageUuid: string, content: string) => void,
+ * }} SendServices
+ */
+
+// Stores the sent copy in the existing tables (is_sent=true, excluded from
+// the inbox list, included in search). Threads with the replied-to message
+// when replyToMessageId is given; otherwise starts a fresh thread. Returns
+// the new message's id so callers (e.g. the scheduled-send flush job) can
+// link back to it.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null}} message
+ * @param {SendServices} services
+ */
+async function storeSentMessage(
+  sql,
+  userId,
+  { recipients, subject, text, html, replyToMessageId, resendId, readReceiptToken },
+  services,
+) {
+  const messageId = resendId ? `<${resendId}@resend.cookie-web>` : null;
+  const [lookup] = await sql`
+    SELECT CASE WHEN ${replyToMessageId ?? null}::uuid IS NOT NULL THEN
+             (SELECT m.thread_id FROM messages m
+              WHERE m.id = ${replyToMessageId ?? null}::uuid AND m.user_id = ${userId})
+           END AS thread_id,
+           (SELECT m.id FROM messages m
+            WHERE m.user_id = ${userId} AND m.message_id = ${messageId}
+            LIMIT 1) AS existing_message_id
+    FROM users u
+    WHERE u.id = ${userId}
+    LIMIT 1
+  `;
+  if (!lookup) {
+    throw new Error('no users row matches the authenticated user; sent copy not stored');
+  }
+
+  const { name: fromName, address: fromAddress } = parseFromEnv(configuredEmailFrom(services.env));
+  const messageUuid = lookup.existing_message_id ?? crypto.randomUUID();
+  const threadUuid = lookup.thread_id ?? crypto.randomUUID();
+  const sentAt = new Date().toISOString();
+  const recipientsJson = JSON.stringify({
+    to: recipients.map((address) => ({ name: null, address })),
+    cc: [],
+    bcc: [],
+  });
+  if (!lookup.existing_message_id) {
+    /** @type {Array<(sql: import('postgres').Sql | import('postgres').TransactionSql) => any>} */
+    const statements = [];
+    if (!lookup.thread_id) {
+      statements.push(
+        (sql) => sql`
+        INSERT INTO threads (id, user_id, subject, last_message_at)
+        VALUES (${threadUuid}, ${userId}, ${subject}, ${sentAt})
+      `,
+      );
+    }
+    statements.push(
+      (sql) => sql`
+      INSERT INTO messages (id, thread_id, user_id, from_name, from_address,
+                            recipients, subject, snippet, body_text, body_html, sent_at,
+                            message_id, is_unread, is_sent)
+      VALUES (${messageUuid}, ${threadUuid}, ${userId}, ${fromName},
+              ${fromAddress}, ${recipientsJson}::jsonb, ${subject}, ${makeSnippet(text)},
+              ${text}, ${html ?? null}, ${sentAt}, ${messageId}, false, true)
+      ON CONFLICT (user_id, message_id) WHERE message_id IS NOT NULL DO NOTHING
+    `,
+    );
+    if (lookup.thread_id) {
+      statements.push(
+        (sql) => sql`
+        UPDATE threads
+        SET message_count = message_count + 1,
+            last_message_at = GREATEST(last_message_at, ${sentAt}::timestamptz)
+        WHERE id = ${threadUuid}
+          AND EXISTS (SELECT 1 FROM messages WHERE id = ${messageUuid})
+      `,
+      );
+    }
+    await sql.begin(async (sql) => {
+      for (const statement of statements) {
+        await statement(sql);
+      }
+    });
+  }
+
+  // Best effort and outside the sent-copy transaction: during a rolling
+  // migration, a missing receipt table must not roll back the sent message.
+  if (readReceiptToken) {
+    try {
+      await sql`
+        INSERT INTO message_read_receipts (message_id, user_id, token)
+        SELECT m.id, m.user_id, ${readReceiptToken}::uuid
+        FROM messages m
+        WHERE m.id = ${messageUuid} AND m.user_id = ${userId}
+        ON CONFLICT (message_id) DO NOTHING
+      `;
+    } catch (err) {
+      console.error('failed to store read receipt:', /** @type {Error} */ (err).message);
+    }
+  }
+
+  // Best-effort embedding so sent mail is semantically searchable; NULL rows
+  // are healed by the Backfill Embeddings workflow. Not awaited: the send
+  // response shouldn't wait on an OpenAI round trip for a value that's
+  // already designed to be safely missing and healed later. queueEmbedding is
+  // ctx.waitUntil under the hood — a bare floating promise would be cancelled
+  // when the response returns.
+  if (services.env.OPENAI_API_KEY) {
+    services.queueEmbedding(messageUuid, `${subject}\n\n${text}`);
+  }
+
+  return { messageUuid };
+}
+
+/** Re-exported for the queueEmbedding implementation in worker.js. */
+export { EMBEDDING_MODEL };
+
+// Sends immediately through Resend, from the shared inbound handler (a
+// logged-in user's request) and the flush job (a claimed scheduled row)
+// alike. Throws on failure; callers decide how to react.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string}} message
+ * @param {SendServices} services
+ */
+export async function deliverMail(
+  sql,
+  userId,
+  { recipients, subject, text, html, replyToMessageId, idempotencyKey, readReceiptToken },
+  services,
+) {
+  const receiptToken = readReceiptToken ?? crypto.randomUUID();
+  const receiptUrl = buildReadReceiptUrl(receiptToken);
+  const trackedHtml = appendReadReceipt(html, text, receiptUrl);
+
+  const resend = services.createResend(services.env.RESEND_API_KEY);
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    from: configuredEmailFrom(services.env),
+    to: recipients,
+    subject,
+    text,
+  };
+  if (trackedHtml) payload.html = trackedHtml;
+  const { data, error } = idempotencyKey
+    ? await resend.emails.send(payload, { idempotencyKey })
+    : await resend.emails.send(payload);
+  if (error) throw new Error(error.message || 'Failed to send email');
+
+  let messageUuid = null;
+  try {
+    ({ messageUuid } = await storeSentMessage(
+      sql,
+      userId,
+      {
+        recipients,
+        subject,
+        text,
+        html,
+        replyToMessageId,
+        resendId: data.id,
+        readReceiptToken: receiptUrl ? receiptToken : null,
+      },
+      services,
+    ));
+  } catch (err) {
+    // Sending always wins: a storage failure is logged but the mail really
+    // did go out, so this must never be treated as a failed send.
+    console.error('failed to store sent copy:', /** @type {Error} */ (err).message);
+  }
+  return { resendId: data.id, messageUuid };
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string | null} replyToMessageId
+ */
+export async function ownedReplyToMessageId(sql, userId, replyToMessageId) {
+  if (!replyToMessageId) return { replyTo: null };
+  const [row] = await sql`
+    SELECT m.id
+    FROM messages m
+    WHERE m.id = ${replyToMessageId}::uuid AND m.user_id = ${userId} AND NOT m.is_deleted
+    LIMIT 1
+  `;
+  return row ? { replyTo: replyToMessageId } : { missing: true };
+}

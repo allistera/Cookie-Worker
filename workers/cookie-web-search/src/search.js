@@ -4,7 +4,7 @@
 // and configuration comes from the Worker env instead of process.env.
 
 import { allowRequest } from '../../../shared/rate-limit.js';
-import { embedTextCached } from './embeddings.js';
+import { embedTextCached } from '../../../shared/embeddings.js';
 import { fuseRankings } from './rankFusion.js';
 import { keywordLeg, recencyLeg, vectorLeg } from './retrieval.js';
 import { parseSearchQuery } from './queryParse.js';

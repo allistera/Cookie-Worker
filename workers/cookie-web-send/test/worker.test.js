@@ -1,0 +1,573 @@
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+// Ported from Cookie-Web's api/__tests__/send-handler.test.js and
+// send-scheduled.test.js — the same scripted query sequences and
+// expectations, driven through the Worker fetch handler. Each entry in
+// `responses` is the return value of the Nth sql`...` invocation, in call
+// order; sql.begin runs its callback against the same counter so statements
+// executed inside a transaction consume responses too.
+/** @type {any[]} */
+let responses = [];
+let call = 0;
+const mockQuery = vi.fn(async (/** @type {any[]} */ ..._args) => {
+  const response = responses[call++] ?? [];
+  if (response instanceof Error) throw response;
+  return response;
+});
+const sqlEnd = vi.fn(async () => undefined);
+vi.mock('postgres', () => ({
+  default: () => {
+    /** @type {any} */
+    const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
+    sql.begin = async (/** @type {(sql: any) => unknown} */ callback) => callback(sql);
+    sql.end = sqlEnd;
+    return sql;
+  },
+}));
+
+const resendSend = vi.fn();
+vi.mock('resend', () => ({
+  Resend: class {
+    emails = { send: (/** @type {any[]} */ ...args) => resendSend(...args) };
+  },
+}));
+
+const embedText = vi.fn();
+vi.mock('../../../shared/embeddings.js', () => ({
+  EMBEDDING_MODEL: 'text-embedding-3-small',
+  embedText: (...args) => embedText(...args),
+}));
+
+const verifyAccessToken = vi.fn();
+vi.mock('../../../shared/auth-jwt.js', () => ({
+  verifyAccessToken: (...args) => verifyAccessToken(...args),
+  authFailureResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }),
+}));
+
+const captureHandledException = vi.fn();
+vi.mock('../src/sentry.js', () => ({
+  createSentryOptions: () => ({ enabled: false }),
+  captureHandledException: (...args) => captureHandledException(...args),
+}));
+
+const worker = (await import('../src/worker.js')).default;
+
+const PRODUCTION = 'https://mail.infinitywave.online';
+const USER_ID = '11111111-1111-1111-1111-111111111111';
+const env = /** @type {any} */ ({
+  HYPERDRIVE: { connectionString: 'postgres://stub' },
+  AUTH0_DOMAIN: 'tenant.example.auth0.com',
+  AUTH0_AUDIENCE: 'https://cookie-web/api',
+  ALLOWED_ORIGIN: PRODUCTION,
+  RESEND_API_KEY: 'test-key',
+  EMAIL_FROM: 'Cookie <mail@example.com>',
+  SCHEDULED_SEND_FLUSH_TOKEN: 'flush-secret',
+});
+/** @type {Promise<unknown>[]} */
+let waited = [];
+const ctx = /** @type {any} */ ({
+  waitUntil: (/** @type {Promise<unknown>} */ promise) => waited.push(promise),
+});
+
+/** @param {string} path @param {RequestInit} [init] */
+function request(path, init = {}) {
+  return new Request(`https://cookie-web-send.example${path}`, {
+    method: 'POST',
+    ...init,
+    headers: { Origin: PRODUCTION, Authorization: 'Bearer token', ...init.headers },
+  });
+}
+
+/** @param {Record<string, unknown>} [overrides] */
+function sendBody(overrides = {}) {
+  return JSON.stringify({
+    to: 'recipient@example.com',
+    subject: 'Hello',
+    text: 'Plain text',
+    ...overrides,
+  });
+}
+
+const futureIso = (msFromNow = 10 * 60_000) => new Date(Date.now() + msFromNow).toISOString();
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  responses = [];
+  call = 0;
+  waited = [];
+  verifyAccessToken.mockResolvedValue({ userId: USER_ID });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('POST /send security boundaries', () => {
+  test('answers 503 when Resend or EMAIL_FROM is unconfigured', async () => {
+    const response = await worker.fetch(
+      request('/send', { body: sendBody() }),
+      { ...env, RESEND_API_KEY: undefined },
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Email sending is not configured' });
+  });
+
+  test('stops oversized content before touching the database or provider', async () => {
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ text: 'x'.repeat(100_001) }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('stops a quota-exhausted request before constructing a provider send', async () => {
+    responses = [[{ authorized: true, quota_claimed: false }]];
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+    expect(response.status).toBe(429);
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('403s an unprovisioned subject before constructing a provider send', async () => {
+    responses = [[{ authorized: false, quota_claimed: false }]];
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+    expect(response.status).toBe(403);
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('delivers a provisioned send, stores the copy, and returns the provider id', async () => {
+    responses = [
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ user_id: USER_ID, thread_id: null }], // storeSentMessage lookup
+      [], // insert threads (sql.begin)
+      [], // insert messages (sql.begin)
+      [], // read receipt insert
+    ];
+    resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: 'resend-1' });
+    const [payload, options] = resendSend.mock.calls[0];
+    expect(payload.to).toEqual(['recipient@example.com']);
+    expect(payload.from).toBe('Cookie <mail@example.com>');
+    // Every send carries the read-receipt pixel now — there is no
+    // undeployed-environment gate on a Worker.
+    expect(payload.html).toContain('receipts-api.infinitywave.online/read-receipts?token=');
+    expect(options.idempotencyKey).toMatch(/^immediate-send\/[0-9a-f]{64}$/);
+  });
+
+  test('refunds the quota and answers 502 when the provider fails', async () => {
+    responses = [
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      [], // refund update
+    ];
+    resendSend.mockResolvedValue({ data: null, error: { message: 'bounced' } });
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+
+    expect(response.status).toBe(502);
+    const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
+    expect(queries.some((query) => query.includes('GREATEST(send_count - 1, 0)'))).toBe(true);
+  });
+
+  test('queues the sent-mail embedding through waitUntil when OpenAI is configured', async () => {
+    responses = [
+      [{ authorized: true, quota_claimed: true }],
+      [{ user_id: USER_ID, thread_id: null }],
+      [],
+      [],
+      [],
+    ];
+    resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
+    embedText.mockResolvedValue([0.1]);
+    await worker.fetch(
+      request('/send', { body: sendBody() }),
+      { ...env, OPENAI_API_KEY: 'openai-key' },
+      ctx,
+    );
+    // withSentry adds its own waitUntil task; ours is among them.
+    expect(waited.length).toBeGreaterThanOrEqual(1);
+    await Promise.all(waited);
+    expect(embedText).toHaveBeenCalledWith('Hello\n\nPlain text', 'openai-key');
+  });
+});
+
+describe('POST /send with sendAt (schedule creation)', () => {
+  test('queues a scheduled_sends row instead of calling the provider', async () => {
+    responses = [
+      [], // advisory lock (sql.begin)
+      [
+        {
+          id: 'sched-1',
+          toAddresses: 'recipient@example.com',
+          subject: 'Hello',
+          scheduledFor: futureIso(),
+        },
+      ],
+    ];
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ sendAt: futureIso() }) }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).scheduledSend.id).toBe('sched-1');
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('rejects a sendAt less than a minute out without touching the database', async () => {
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ sendAt: futureIso(1000) }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('reports 429 when the per-user pending cap is hit', async () => {
+    responses = [
+      [], // advisory lock (sql.begin)
+      [], // insert suppressed by the cap
+    ];
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ sendAt: futureIso() }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(429);
+  });
+});
+
+describe('GET/DELETE /send/scheduled', () => {
+  test("lists the authenticated user's pending and failed scheduled sends", async () => {
+    const rows = [
+      {
+        id: 'sched-1',
+        toAddresses: 'a@b.com',
+        subject: 'Hi',
+        scheduledFor: futureIso(),
+        status: 'pending',
+        lastError: null,
+      },
+    ];
+    responses = [rows];
+    const response = await worker.fetch(request('/send/scheduled', { method: 'GET' }), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).scheduledSends).toEqual(rows);
+  });
+
+  test('cancels a pending scheduled send and returns its content for the composer', async () => {
+    const row = {
+      id: 'sched-1',
+      toAddresses: 'a@b.com',
+      subject: 'Hi',
+      text: 'Body',
+      html: null,
+      replyToMessageId: null,
+    };
+    responses = [[row]];
+    const response = await worker.fetch(
+      request('/send/scheduled', { method: 'DELETE', body: JSON.stringify({ id: USER_ID }) }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).scheduledSend).toEqual(row);
+  });
+
+  test('404s canceling an id that is no longer pending', async () => {
+    responses = [[]];
+    const response = await worker.fetch(
+      request('/send/scheduled', { method: 'DELETE', body: JSON.stringify({ id: USER_ID }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(404);
+  });
+});
+
+describe('POST /send/flush', () => {
+  /** @param {Record<string, string>} [headers] */
+  function flushRequest(headers = {}) {
+    return new Request('https://cookie-web-send.example/send/flush', {
+      method: 'POST',
+      headers,
+    });
+  }
+
+  test('rejects a missing or wrong bearer token without touching the database', async () => {
+    const first = await worker.fetch(flushRequest(), env, ctx);
+    expect(first.status).toBe(401);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(verifyAccessToken).not.toHaveBeenCalled();
+
+    const second = await worker.fetch(flushRequest({ Authorization: 'Bearer wrong' }), env, ctx);
+    expect(second.status).toBe(401);
+  });
+
+  test('delivers a claimed due row end to end and marks it sent', async () => {
+    const claimedRow = {
+      id: 'sched-1',
+      user_id: 'user-1',
+      toAddresses: 'recipient@example.com',
+      subject: 'Hello',
+      text: 'Plain text',
+      html: null,
+      replyToMessageId: null,
+      attempts: 0,
+    };
+    responses = [
+      [claimedRow], // claimDueScheduledSends
+      [{ email: 'owner@example.com' }], // owner lookup
+      [{ authorized: true, quota_claimed: true }], // claimOutboundEmailQuota
+      [{ user_id: 'user-1', thread_id: null }], // storeSentMessage lookup
+      [], // insert threads (sql.begin)
+      [], // insert messages (sql.begin)
+      // no receipt row: 'sched-1' is not a UUID, so no pixel token is stored
+      [], // mark 'sent'
+    ];
+    resendSend.mockResolvedValue({ data: { id: 'resend-9' }, error: null });
+    const response = await worker.fetch(
+      flushRequest({ Authorization: 'Bearer flush-secret' }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      claimed: 1,
+      sent: 1,
+      retried: 0,
+      failed: 0,
+      unconfirmed: 0,
+    });
+    expect(resendSend).toHaveBeenCalledTimes(1);
+    expect(resendSend).toHaveBeenCalledWith(
+      expect.objectContaining({ to: ['recipient@example.com'] }),
+      {
+        idempotencyKey: 'scheduled-send/sched-1',
+      },
+    );
+  });
+
+  test('retries a transient claim connection failure', async () => {
+    // Real timers: the retry delay is 500ms, and the flush token check
+    // awaits WebCrypto before the timer even exists, which makes faked
+    // timers race with advanceTimersByTimeAsync.
+    const error = Object.assign(new Error('write CONNECT_TIMEOUT'), { code: 'CONNECT_TIMEOUT' });
+    responses = [error, []];
+    const response = await worker.fetch(
+      flushRequest({ Authorization: 'Bearer flush-secret' }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      claimed: 0,
+      sent: 0,
+      retried: 0,
+      failed: 0,
+      unconfirmed: 0,
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(4); // failed claim, claim, sweep x2
+  });
+
+  test('returns 500 after persistent transient claim failures', async () => {
+    const error = Object.assign(new Error('Failed to connect to database'), { code: '08006' });
+    responses = [error, error, error];
+    const response = await worker.fetch(
+      flushRequest({ Authorization: 'Bearer flush-secret' }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'Flush failed' });
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+  });
+
+  test('leaves a rate-limited row pending for the next flush instead of spending a retry', async () => {
+    responses = [
+      [
+        {
+          id: 'sched-1',
+          user_id: 'user-1',
+          toAddresses: 'a@b.com',
+          subject: 'Hi',
+          text: 'Body',
+          html: null,
+          replyToMessageId: null,
+          attempts: 0,
+        },
+      ],
+      [{ email: 'owner@example.com' }],
+      [{ authorized: true, quota_claimed: false }],
+      [], // revert to 'pending'
+    ];
+    const response = await worker.fetch(
+      flushRequest({ Authorization: 'Bearer flush-secret' }),
+      env,
+      ctx,
+    );
+
+    expect(await response.json()).toEqual({
+      claimed: 1,
+      sent: 0,
+      retried: 1,
+      failed: 0,
+      unconfirmed: 0,
+    });
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('marks a row failed once it has exhausted its retry attempts', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    responses = [
+      [
+        {
+          id: 'sched-1',
+          user_id: 'user-1',
+          toAddresses: 'a@b.com',
+          subject: 'Hi',
+          text: 'Body',
+          html: null,
+          replyToMessageId: null,
+          attempts: 4,
+        },
+      ],
+      [{ email: 'owner@example.com' }],
+      [{ authorized: true, quota_claimed: true }],
+      [], // refund
+      [], // mark 'failed'
+    ];
+    resendSend.mockResolvedValue({ data: null, error: { message: 'bounced' } });
+    const response = await worker.fetch(
+      flushRequest({ Authorization: 'Bearer flush-secret' }),
+      env,
+      ctx,
+    );
+
+    expect(await response.json()).toEqual({
+      claimed: 1,
+      sent: 0,
+      retried: 0,
+      failed: 1,
+      unconfirmed: 0,
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      'scheduled send sched-1 delivery failed (attempt 5):',
+      'bounced',
+    );
+  });
+
+  test('keeps a delivered row leased when marking it sent fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    responses = [
+      [
+        {
+          id: 'sched-1',
+          user_id: 'user-1',
+          toAddresses: 'recipient@example.com',
+          subject: 'Hello',
+          text: 'Plain text',
+          html: null,
+          replyToMessageId: null,
+          attempts: 0,
+        },
+      ],
+      [{ email: 'owner@example.com' }],
+      [{ authorized: true, quota_claimed: true }],
+      [{ user_id: 'user-1', thread_id: null }],
+      [], // insert threads
+      [], // insert messages
+      new Error('database unavailable'), // mark 'sent' fails
+    ];
+    resendSend.mockResolvedValue({ data: { id: 'resend-9' }, error: null });
+    const response = await worker.fetch(
+      flushRequest({ Authorization: 'Bearer flush-secret' }),
+      env,
+      ctx,
+    );
+
+    expect(await response.json()).toEqual({
+      claimed: 1,
+      sent: 0,
+      retried: 0,
+      failed: 0,
+      unconfirmed: 1,
+    });
+    expect(resendSend).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith(
+      'scheduled send sched-1 delivered but could not be marked sent:',
+      'database unavailable',
+    );
+    const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
+    expect(queries.some((query) => query.includes("SET status = 'pending'"))).toBe(false);
+  });
+
+  test('claims expired sending leases as well as newly due rows', async () => {
+    responses = [[]];
+    const response = await worker.fetch(
+      flushRequest({ Authorization: 'Bearer flush-secret' }),
+      env,
+      ctx,
+    );
+
+    const claimQuery = mockQuery.mock.calls[0][0].join(' ');
+    expect(claimQuery).toContain("status = 'sending'");
+    expect(claimQuery).toContain('claimed_at < now()');
+    expect(await response.json()).toEqual({
+      claimed: 0,
+      sent: 0,
+      retried: 0,
+      failed: 0,
+      unconfirmed: 0,
+    });
+  });
+});
+
+describe('routing, auth, and cleanup', () => {
+  test('answers OPTIONS from an allowed origin without touching auth', async () => {
+    const response = await worker.fetch(
+      new Request('https://cookie-web-send.example/send', {
+        method: 'OPTIONS',
+        headers: { Origin: PRODUCTION },
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(204);
+    expect(verifyAccessToken).not.toHaveBeenCalled();
+  });
+
+  test('rejects a request that fails verification', async () => {
+    verifyAccessToken.mockRejectedValue(new Error('invalid token'));
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+    expect(response.status).toBe(401);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION);
+  });
+
+  test('an unknown path returns 404', async () => {
+    const response = await worker.fetch(request('/unknown'), env, ctx);
+    expect(response.status).toBe(404);
+  });
+
+  test('a GET to /send returns 405', async () => {
+    const response = await worker.fetch(request('/send', { method: 'GET' }), env, ctx);
+    expect(response.status).toBe(405);
+  });
+
+  test('closes the sql connection on a successful request', async () => {
+    responses = [[]];
+    await worker.fetch(request('/send/scheduled', { method: 'GET' }), env, ctx);
+    expect(sqlEnd).toHaveBeenCalledOnce();
+  });
+});

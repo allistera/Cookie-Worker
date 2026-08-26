@@ -1,6 +1,7 @@
-// Ported from Cookie-Web's api/_lib/embeddings.js (which Cookie-Web keeps —
-// api/send.js and the backfill scripts still embed there). The query cache
-// is per-isolate here, as it was per-instance on Vercel.
+// Ported from Cookie-Web's api/_lib/embeddings.js (which Cookie-Web keeps for
+// its backfill scripts). Shared by cookie-web-search (query vectors) and
+// cookie-web-send (sent-mail vectors). The query cache is per-isolate, as it
+// was per-instance on Vercel.
 // OpenAI embeddings client. Used by /api/search for query vectors and by
 // scripts/backfill-embeddings.js for message vectors.
 

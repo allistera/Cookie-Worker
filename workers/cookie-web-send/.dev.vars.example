@@ -1,0 +1,15 @@
+# The database connection comes from the Hyperdrive binding, not a secret.
+# For local dev, export this before `npm run dev` (dev Supabase project, session pooler):
+#   export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
+
+# Without both of these every send answers 503 "not configured".
+RESEND_API_KEY=""
+
+# The flush bearer secret shared with scheduled-send-flusher.
+SCHEDULED_SEND_FLUSH_TOKEN=""
+
+# Enables best-effort sent-mail embeddings.
+OPENAI_API_KEY=""
+
+# Optional locally; required in production to send sanitized errors to Sentry.
+SENTRY_DSN=""
