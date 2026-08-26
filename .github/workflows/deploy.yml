@@ -145,6 +145,21 @@ jobs:
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
+      - name: Deploy cookie-web-search and synchronize its secrets
+        if: inputs.worker == 'all' || inputs.worker == 'cookie-web-search'
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/cookie-web-search
+          command: deploy
+          secrets: |
+            OPENAI_API_KEY
+            SENTRY_DSN
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
       - name: Deploy cookie-web-tasks and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-tasks'
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
@@ -240,6 +255,7 @@ jobs:
           inputs.worker != 'cookie-web-messages' &&
           inputs.worker != 'cookie-web-notifications' &&
           inputs.worker != 'cookie-web-receipts' &&
+          inputs.worker != 'cookie-web-search' &&
           inputs.worker != 'cookie-web-tasks' &&
           inputs.worker != 'mail-app-ingest' &&
           inputs.worker != 'data-enricher' &&
