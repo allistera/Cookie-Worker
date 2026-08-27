@@ -1,5 +1,6 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { outputText } from '../../../shared/openai.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
 import { createEmbedding, EmbeddingApiError, EMBEDDING_MODEL } from './embed.js';
 
 export const AI_MODEL = 'gpt-5.6-luna';
@@ -8,6 +9,45 @@ export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const SPAM_THRESHOLD = 0.98;
 export const REVIEW_THRESHOLD = 0.8;
 export const CLASSIFICATION_INPUT_CAP = 12_000;
+export const AI_ATTEMPTS = 3;
+export const AI_RETRY_BASE_DELAY_MS = 500;
+
+export class ResponsesApiError extends Error {
+  /** @param {number} status */
+  constructor(status) {
+    super(`OpenAI Responses API responded ${status}`);
+    this.name = 'ResponsesApiError';
+    this.status = status;
+  }
+}
+
+/**
+ * Rate limits and upstream outages clear on their own, so they are worth a
+ * second and third attempt inside the same enrichment run; a rejected request
+ * (bad key, bad payload) would only fail again.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isTransientOpenAiError(error) {
+  const status =
+    error instanceof EmbeddingApiError || error instanceof ResponsesApiError ? error.status : null;
+  if (status !== null) return status === 408 || status === 429 || status >= 500;
+  return error instanceof TypeError || (error instanceof Error && error.name === 'AbortError');
+}
+
+/**
+ * @template T
+ * @param {() => Promise<T>} operation
+ * @returns {Promise<T>}
+ */
+function withAiRetry(operation) {
+  return retryWithBackoff(operation, {
+    attempts: AI_ATTEMPTS,
+    baseDelayMs: AI_RETRY_BASE_DELAY_MS,
+    isRetryable: isTransientOpenAiError,
+  });
+}
 
 const ENRICHMENT_SCHEMA = {
   type: 'object',
@@ -81,7 +121,7 @@ export async function classifyEmail(record, labels, apiKey, model = AI_MODEL) {
       }),
     },
     async (response) => {
-      if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
+      if (!response.ok) throw new ResponsesApiError(response.status);
       const result = JSON.parse(outputText(await response.json()));
       if (!Array.isArray(result.labels) || typeof result.spam_score !== 'number') {
         throw new Error('OpenAI Responses API returned invalid enrichment');
@@ -131,10 +171,10 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
     const [classificationSettled, embeddingSettled] = await Promise.allSettled([
       classificationCompleted
         ? Promise.resolve(null)
-        : classifyEmail(record, labels, apiKey, model),
+        : withAiRetry(() => classifyEmail(record, labels, apiKey, model)),
       embeddingCompleted || skipForbiddenEmbedding
         ? Promise.resolve(null)
-        : createEmbedding(record, apiKey),
+        : withAiRetry(() => createEmbedding(record, apiKey)),
     ]);
 
     if (embeddingSettled.status === 'fulfilled' && embeddingSettled.value) {

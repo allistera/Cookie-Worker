@@ -206,6 +206,68 @@ describe('AI enrichment', () => {
     );
   });
 
+  test('retries a rate-limited embedding and a 503 classification within the run', async () => {
+    const sql = createMockSql();
+    let responsesCalls = 0;
+    let embeddingCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url) => {
+        if (String(url).includes('/responses')) {
+          responsesCalls += 1;
+          if (responsesCalls === 1) return { ok: false, status: 503, text: async () => 'busy' };
+          return {
+            ok: true,
+            json: async () => ({ output_text: JSON.stringify(responseResult()) }),
+          };
+        }
+        embeddingCalls += 1;
+        if (embeddingCalls === 1) return { ok: false, status: 429, text: async () => 'slow down' };
+        return { ok: true, json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }) };
+      }),
+    );
+
+    const result = await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    expect(result).toMatchObject({ verdict: 'inbox' });
+    expect(responsesCalls).toBe(2);
+    expect(embeddingCalls).toBe(2);
+    expect(sql.queries.find((query) => query.text.includes('SET embedding'))).toBeTruthy();
+    expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(false);
+  });
+
+  test('does not retry a rejected classification request', async () => {
+    const sql = createMockSql();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url) => {
+        if (String(url).includes('/responses')) {
+          return { ok: false, status: 400, text: async () => 'bad request' };
+        }
+        return { ok: true, json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }) };
+      }),
+    );
+
+    await expect(
+      enrichMessage(
+        sql,
+        { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+        'message-1',
+        'key',
+      ),
+    ).rejects.toThrow('OpenAI Responses API responded 400');
+
+    const responsesCalls = mockedFetch().mock.calls.filter((call) =>
+      String(call[0]).includes('/responses'),
+    );
+    expect(responsesCalls).toHaveLength(1);
+  });
+
   test('skips an embedding already saved by an earlier attempt', async () => {
     const sql = createMockSql({
       enrichmentStateRows: [
