@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { AI_MODEL, classifyEmail, enrichMessage, SPAM_THRESHOLD } from '../src/enrich.js';
+import { AI_FETCH_TIMEOUT_MS } from '../src/embed.js';
 import { createMockSql } from './helpers.js';
 
 function responseResult(overrides = {}) {
@@ -24,6 +25,7 @@ describe('AI enrichment', () => {
   });
 
   test('uses Responses structured output and treats email text as data', async () => {
+    const timeout = vi.spyOn(globalThis, 'setTimeout');
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
@@ -44,6 +46,7 @@ describe('AI enrichment', () => {
     // must not ask the model for one.
     expect(request.text.format.schema.properties).not.toHaveProperty('summary');
     expect(request.text.format.schema.required).not.toContain('summary');
+    expect(timeout).toHaveBeenCalledWith(expect.any(Function), AI_FETCH_TIMEOUT_MS);
   });
 
   test('never writes message_ai.summary during enrichment', async () => {

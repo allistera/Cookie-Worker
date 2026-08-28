@@ -1,5 +1,6 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 
+export const AI_FETCH_TIMEOUT_MS = 60_000;
 export const EMBEDDING_MODEL = 'text-embedding-3-small';
 export const EMBEDDING_DIMENSIONS = 1536;
 // Character cap, not tokens. text-embedding-3-small allows ~8192 tokens; dense
@@ -49,6 +50,7 @@ export async function createEmbedding(record, apiKey) {
       }
       return vector;
     },
+    AI_FETCH_TIMEOUT_MS,
   );
 }
 
