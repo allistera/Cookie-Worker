@@ -1,7 +1,12 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { outputText } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
-import { createEmbedding, EmbeddingApiError, EMBEDDING_MODEL } from './embed.js';
+import {
+  AI_FETCH_TIMEOUT_MS,
+  createEmbedding,
+  EmbeddingApiError,
+  EMBEDDING_MODEL,
+} from './embed.js';
 
 export const AI_MODEL = 'gpt-5.6-luna';
 export const PROMPT_VERSION = 'email-enrichment-v2';
@@ -128,6 +133,7 @@ export async function classifyEmail(record, labels, apiKey, model = AI_MODEL) {
       }
       return result;
     },
+    AI_FETCH_TIMEOUT_MS,
   );
 }
 

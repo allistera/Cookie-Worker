@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  AI_FETCH_TIMEOUT_MS,
   buildEmbeddingInput,
   createEmbedding,
   EMBEDDING_DIMENSIONS,
@@ -30,6 +31,7 @@ describe('createEmbedding', () => {
   });
 
   test('posts subject and body to OpenAI with the shared model contract', async () => {
+    const timeout = vi.spyOn(globalThis, 'setTimeout');
     const vector = await createEmbedding({ subject: 'S', bodyText: 'B' }, 'key');
     const request = mockedFetch().mock.calls[0][1];
     const body = JSON.parse(request.body);
@@ -39,6 +41,7 @@ describe('createEmbedding', () => {
       input: 'S\n\nB',
     });
     expect(vector).toHaveLength(EMBEDDING_DIMENSIONS);
+    expect(timeout).toHaveBeenCalledWith(expect.any(Function), AI_FETCH_TIMEOUT_MS);
   });
 
   test('caps input and turns blank content into one space', () => {
