@@ -8,7 +8,7 @@ import { createDocument, deleteDocument, getDocuments, updateDocument } from './
 import { embedText, embedTextCached } from './embeddings.js';
 import { postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
-import { createProject, getProjects, updateProject } from './projects.js';
+import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
 import { allowRequest } from './rateLimit.js';
 import { postRefresh } from './refresh.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -77,7 +77,7 @@ async function route(url, request, sql, userId, env, email) {
     }
     if (request.method === 'POST') return createProject(sql, userId, body);
     if (request.method === 'PATCH') return updateProject(sql, userId, body);
-    return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    return deleteProject(sql, userId, body);
   }
 
   if (segments[0] === 'documents') {

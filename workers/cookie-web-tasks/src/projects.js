@@ -140,3 +140,22 @@ export async function updateProject(sql, userId, body) {
   `;
   return Response.json({ project });
 }
+
+/**
+ * DELETE /projects — { id }. Sub-projects go with it via the schema's
+ * ON DELETE CASCADE; nothing else references a project yet.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {any} body
+ */
+export async function deleteProject(sql, userId, body) {
+  const id = isUuid(body?.id) ? String(body.id) : null;
+  if (!id) return Response.json({ error: 'A valid project id is required' }, { status: 400 });
+
+  const deleted = await sql`
+    DELETE FROM task_projects WHERE id = ${id} AND user_id = ${userId} RETURNING id
+  `;
+  if (!deleted.length) return Response.json({ error: 'Project not found' }, { status: 404 });
+  return Response.json({ ok: true });
+}

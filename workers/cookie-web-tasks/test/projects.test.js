@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createProject, getProjects, updateProject } from '../src/projects.js';
+import { createProject, deleteProject, getProjects, updateProject } from '../src/projects.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '99999999-9999-9999-9999-999999999999';
@@ -96,5 +96,28 @@ describe('PATCH /projects', () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).project.parentId).toBeNull();
+  });
+});
+
+describe('DELETE /projects', () => {
+  it('deletes an owned project', async () => {
+    const sql = createMockSql([[{ id: PROJECT_ID }]]);
+    const response = await deleteProject(sql, USER_ID, { id: PROJECT_ID });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).ok).toBe(true);
+    expect(sql.calls[0].text).toContain('DELETE FROM task_projects');
+  });
+
+  it('404s an id the caller does not own', async () => {
+    const sql = createMockSql([[]]);
+    const response = await deleteProject(sql, USER_ID, { id: PROJECT_ID });
+    expect(response.status).toBe(404);
+  });
+
+  it('400s a malformed id', async () => {
+    const sql = createMockSql([]);
+    const response = await deleteProject(sql, USER_ID, { id: 'not-a-uuid' });
+    expect(response.status).toBe(400);
   });
 });
