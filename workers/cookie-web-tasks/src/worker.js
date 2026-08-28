@@ -8,6 +8,7 @@ import { createDocument, deleteDocument, getDocuments, updateDocument } from './
 import { embedText, embedTextCached } from './embeddings.js';
 import { postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
+import { createProject, getProjects } from './projects.js';
 import { allowRequest } from './rateLimit.js';
 import { postRefresh } from './refresh.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -61,6 +62,22 @@ async function readJsonBody(request) {
  */
 async function route(url, request, sql, userId, env, email) {
   const segments = url.pathname.split('/').filter(Boolean);
+
+  if (segments[0] === 'projects') {
+    if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
+    if (request.method === 'GET') return getProjects(sql, userId);
+    if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    }
+    let body;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    if (request.method === 'POST') return createProject(sql, userId, body);
+    return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  }
 
   if (segments[0] === 'documents') {
     if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
