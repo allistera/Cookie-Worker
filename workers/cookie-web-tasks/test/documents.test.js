@@ -458,6 +458,38 @@ describe('PATCH /documents', () => {
     expect(sql.calls[0].text).toBe('SET(starred)');
   });
 
+  it('compares the updatedAt guard at millisecond precision', async () => {
+    const sql = createMockSql([[{ id: DOC_ID, starred: true }]]);
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      { id: DOC_ID, starred: true, updatedAt: '2026-08-28T12:58:25.526Z' },
+      deps(),
+    );
+
+    expect(response.status).toBe(200);
+    // updated_at is a microsecond-precision timestamptz, but a client can only
+    // ever echo back the millisecond ISO string it was given. Raw equality
+    // therefore conflicted on every save of a row whose stored microseconds
+    // were not zero.
+    const update = sql.calls.find((call) => call.text.includes('UPDATE documents'));
+    expect(update.text).toContain("date_trunc('milliseconds', d.updated_at)");
+    expect(update.text).not.toMatch(/d\.updated_at\s*=\s*\?/);
+  });
+
+  it('409s a save whose updatedAt no longer matches the stored row', async () => {
+    const sql = createMockSql([[], [{ exists: 1 }]]);
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      { id: DOC_ID, starred: true, updatedAt: '2026-08-28T12:58:25.526Z' },
+      deps(),
+    );
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain('updated elsewhere');
+  });
+
   it('moves a document to the root with folderId null', async () => {
     const sql = createMockSql([[{ id: DOC_ID, folder_id: null }]]);
     const response = await updateDocument(sql, USER_ID, { id: DOC_ID, folderId: null }, deps());

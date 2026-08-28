@@ -586,6 +586,12 @@ export async function updateDocument(sql, userId, body, deps) {
       // ::extensions.vector cast that only applies when there is a new vector
       // to write — a rate-limited or skipped embed must leave the existing
       // column untouched, not null it out.
+      // Compared at millisecond precision on both sides: updated_at is a
+      // microsecond-precision timestamptz, but the only value a client can
+      // echo back is what it received — a JS Date serialized to ISO, which
+      // drops the microseconds. A raw `=` therefore rejected every save of a
+      // row whose stored microseconds were not exactly zero, which is almost
+      // all of them.
       const expectedUpdatedAt =
         typeof body.updatedAt === 'string' && body.updatedAt ? body.updatedAt : null;
       const rows = embeddingVector
@@ -593,14 +599,18 @@ export async function updateDocument(sql, userId, body, deps) {
           UPDATE documents d
           SET ${sql(updates)}, updated_at = now(), embedding = ${JSON.stringify(embeddingVector)}::extensions.vector
           WHERE d.id = ${body.id} AND d.user_id = ${userId}
-            AND (${expectedUpdatedAt}::timestamptz IS NULL OR d.updated_at = ${expectedUpdatedAt}::timestamptz)
+            AND (${expectedUpdatedAt}::timestamptz IS NULL
+              OR date_trunc('milliseconds', d.updated_at)
+                 = date_trunc('milliseconds', ${expectedUpdatedAt}::timestamptz))
           RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
         `
         : await sql`
           UPDATE documents d
           SET ${sql(updates)}, updated_at = now()
           WHERE d.id = ${body.id} AND d.user_id = ${userId}
-            AND (${expectedUpdatedAt}::timestamptz IS NULL OR d.updated_at = ${expectedUpdatedAt}::timestamptz)
+            AND (${expectedUpdatedAt}::timestamptz IS NULL
+              OR date_trunc('milliseconds', d.updated_at)
+                 = date_trunc('milliseconds', ${expectedUpdatedAt}::timestamptz))
           RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
         `;
       const updated = rows[0];
