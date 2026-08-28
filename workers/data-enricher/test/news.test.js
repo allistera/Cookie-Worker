@@ -7,7 +7,13 @@ vi.mock('../src/news-sources.js', async (importOriginal) => ({
   fetchUkHeadlines: vi.fn(),
 }));
 
-import { applyRanking, buildNews, rankForInterests, MAX_PICKS_PER_SOURCE } from '../src/news.js';
+import {
+  applyRanking,
+  buildNews,
+  rankForInterests,
+  GITHUB_PICKS,
+  MAX_PICKS_PER_SOURCE,
+} from '../src/news.js';
 import { fetchTopLaunches, fetchTopRepos, fetchUkHeadlines } from '../src/news-sources.js';
 
 afterEach(() => {
@@ -91,6 +97,46 @@ describe('applyRanking', () => {
   test('tolerates a malformed payload', () => {
     expect(applyRanking({}, CANDIDATES)).toEqual([]);
     expect(applyRanking({ picks: 'nope' }, CANDIDATES)).toEqual([]);
+  });
+});
+
+describe('per-source pick limits', () => {
+  const many = (count) =>
+    Array.from({ length: count }, (_, i) => ({
+      title: `acme/${i}`,
+      url: `https://github.com/acme/${i}`,
+      description: '',
+      meta: '',
+    }));
+
+  test('caps at the limit the source asks for', () => {
+    const candidates = many(GITHUB_PICKS + 4);
+    const picks = candidates.map((c) => ({ url: c.url, note: '' }));
+
+    expect(applyRanking({ picks }, candidates, GITHUB_PICKS)).toHaveLength(GITHUB_PICKS);
+    // A source that asks for nothing in particular keeps the shared default.
+    expect(applyRanking({ picks }, candidates)).toHaveLength(MAX_PICKS_PER_SOURCE);
+  });
+
+  test('asks the model for the requested limit and caps the unranked path too', async () => {
+    const candidates = many(GITHUB_PICKS + 4);
+    const mock = stubRanking(candidates.map((c) => ({ url: c.url, note: '' })));
+
+    const picked = await rankForInterests(
+      candidates,
+      ['Rust'],
+      'repos',
+      'key',
+      'gpt-5.6-luna',
+      GITHUB_PICKS,
+    );
+    expect(picked).toHaveLength(GITHUB_PICKS);
+    const [, init] = /** @type {[string, any]} */ (/** @type {unknown} */ (mock.mock.calls[0]));
+    expect(JSON.parse(init.body).input[0].content).toContain(`at most ${GITHUB_PICKS}`);
+
+    vi.stubGlobal('fetch', vi.fn());
+    const unranked = await rankForInterests(candidates, [], 'repos', 'key', 'm', GITHUB_PICKS);
+    expect(unranked).toHaveLength(GITHUB_PICKS);
   });
 });
 
