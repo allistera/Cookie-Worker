@@ -172,3 +172,69 @@ describe('DELETE /task-items', () => {
     expect(response.status).toBe(404);
   });
 });
+
+// A malformed date used to collapse to null and be written, wiping whatever
+// date the task already had. Phase 2 puts a date control on this field.
+describe('dueDate validation', () => {
+  it('rejects a malformed dueDate instead of clearing the date', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, dueDate: 'tomorrow' });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'dueDate must be a YYYY-MM-DD date',
+    });
+    // The refusal must come before the UPDATE, not after it.
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  // DATE_RE alone admits this; Postgres then throws at the ::date cast.
+  it('rejects a date that does not exist in the calendar', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, dueDate: '2026-02-31' });
+
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  it('accepts an explicit null dueDate as clearing the date', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, dueDate: null }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, dueDate: null });
+
+    expect(response.status).toBe(200);
+    expect(sql.calls[1].values).toContain(null);
+  });
+
+  it('accepts a well-formed dueDate', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, dueDate: '2026-09-01' }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, dueDate: '2026-09-01' });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ item: { dueDate: '2026-09-01' } });
+    expect(sql.calls[1].values).toContain('2026-09-01');
+  });
+
+  it('rejects a malformed dueDate on create', async () => {
+    const sql = createMockSql([]);
+
+    const response = await createTaskItem(sql, USER_ID, {
+      content: 'Ship it',
+      dueDate: '01/09/2026',
+    });
+
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
+  });
+
+  it('still creates a task with no dueDate at all', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, content: 'Ship it', dueDate: null }]]);
+
+    const response = await createTaskItem(sql, USER_ID, { content: 'Ship it' });
+
+    expect(response.status).toBe(201);
+  });
+});

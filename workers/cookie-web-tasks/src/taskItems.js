@@ -9,6 +9,19 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CONTENT_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 10000;
 
+/**
+ * A real calendar date in YYYY-MM-DD. DATE_RE alone admits 2026-02-31, which
+ * Postgres refuses at the ::date cast — a 500 where the caller deserves a 400.
+ *
+ * @param {any} value
+ */
+function isCalendarDate(value) {
+  const text = String(value ?? '');
+  if (!DATE_RE.test(text)) return false;
+  const date = new Date(`${text}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === text;
+}
+
 /** @param {any} value */
 function isUuid(value) {
   return value === String(value ?? '') && UUID_RE.test(value);
@@ -74,10 +87,7 @@ export async function getTaskItems(sql, userId, url) {
  */
 export async function createTaskItem(sql, userId, body) {
   if (Object.hasOwn(body ?? {}, 'parentId')) {
-    return Response.json(
-      { error: 'Sub-task creation is not supported yet' },
-      { status: 400 },
-    );
+    return Response.json({ error: 'Sub-task creation is not supported yet' }, { status: 400 });
   }
 
   const content = cleanText(body?.content, MAX_CONTENT_LENGTH);
@@ -94,7 +104,11 @@ export async function createTaskItem(sql, userId, body) {
     }
   }
 
-  const dueDate = DATE_RE.test(String(body?.dueDate ?? '')) ? String(body.dueDate) : null;
+  const hasDueDate = body?.dueDate !== undefined && body?.dueDate !== null && body?.dueDate !== '';
+  if (hasDueDate && !isCalendarDate(body.dueDate)) {
+    return Response.json({ error: 'dueDate must be a YYYY-MM-DD date' }, { status: 400 });
+  }
+  const dueDate = hasDueDate ? String(body.dueDate) : null;
 
   const [item] = await sql`
     INSERT INTO task_items (user_id, project_id, content, description, due_date)
@@ -162,8 +176,14 @@ export async function updateTaskItem(sql, userId, body) {
     }
   }
 
-  const dueDate =
-    hasDueDate && DATE_RE.test(String(body.dueDate ?? '')) ? String(body.dueDate) : null;
+  // A malformed date must be refused, not quietly turned into null: that wrote
+  // an empty due_date over whatever the task already had. An explicit null (or
+  // '') still means "clear the date", which is a real request.
+  const clearsDueDate = hasDueDate && (body.dueDate === null || body.dueDate === '');
+  if (hasDueDate && !clearsDueDate && !isCalendarDate(body.dueDate)) {
+    return Response.json({ error: 'dueDate must be a YYYY-MM-DD date' }, { status: 400 });
+  }
+  const dueDate = !hasDueDate || clearsDueDate ? null : String(body.dueDate);
 
   const [item] = await sql`
     UPDATE task_items t SET
