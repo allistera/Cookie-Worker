@@ -12,7 +12,7 @@ import { createProject, deleteProject, getProjects, updateProject } from './proj
 import { allowRequest } from './rateLimit.js';
 import { postRefresh } from './refresh.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
-import { createTaskItem, getTaskItems } from './taskItems.js';
+import { createTaskItem, getTaskItems, updateTaskItem } from './taskItems.js';
 import { getTasks, postTasks } from './tasks.js';
 
 // Matches Cookie-Web's own api/_lib/body.js limit (Vercel's ~4.5 MB request
@@ -77,6 +77,7 @@ async function route(url, request, sql, userId, env, email) {
       return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
     if (request.method === 'POST') return createTaskItem(sql, userId, body);
+    if (request.method === 'PATCH') return updateTaskItem(sql, userId, body);
     return Response.json({ error: 'Method not allowed' }, { status: 405 });
   }
 

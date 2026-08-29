@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTaskItem, getTaskItems } from '../src/taskItems.js';
+import { createTaskItem, getTaskItems, updateTaskItem } from '../src/taskItems.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '99999999-9999-9999-9999-999999999999';
@@ -82,5 +82,62 @@ describe('POST /task-items', () => {
       projectId: PROJECT_ID,
     });
     expect(response.status).toBe(404);
+  });
+});
+
+describe('PATCH /task-items', () => {
+  it('renames a task', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, content: 'Renamed' }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Renamed' });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).item.content).toBe('Renamed');
+  });
+
+  // Completion stamps a time rather than deleting, so history survives and
+  // un-completing is clearing the column.
+  it('stamps completed_at when completed is true and clears it when false', async () => {
+    const done = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, completedAt: 't1' }]]);
+    await updateTaskItem(done, USER_ID, { id: ITEM_ID, completed: true });
+    const doneUpdate = done.calls.find((call) => call.text.includes('UPDATE task_items'));
+    expect(doneUpdate.text).toContain('completed_at');
+    expect(doneUpdate.text).not.toContain('DELETE');
+
+    const undone = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, completedAt: null }]]);
+    const response = await updateTaskItem(undone, USER_ID, { id: ITEM_ID, completed: false });
+    expect((await response.json()).item.completedAt).toBeNull();
+  });
+
+  it('404s an id the caller does not own', async () => {
+    const sql = createMockSql([[]]);
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Stolen' });
+    expect(response.status).toBe(404);
+  });
+
+  it('rejects a move that would make a task its own descendant', async () => {
+    const sql = createMockSql([
+      [{ id: ITEM_ID }], // the task exists
+      [{ id: '33333333-3333-4333-8333-333333333333' }], // the proposed parent exists
+      [{ ok: 1 }], // ancestry walk finds the task above the parent
+    ]);
+
+    const response = await updateTaskItem(sql, USER_ID, {
+      id: ITEM_ID,
+      parentId: '33333333-3333-4333-8333-333333333333',
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('own descendant');
+    expect(sql.calls.some((call) => call.text.includes('UPDATE task_items'))).toBe(false);
+  });
+
+  it('moves a task to the Inbox with projectId null', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, projectId: null }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, projectId: null });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).item.projectId).toBeNull();
   });
 });
