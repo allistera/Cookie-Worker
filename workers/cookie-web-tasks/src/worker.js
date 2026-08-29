@@ -12,6 +12,7 @@ import { createProject, deleteProject, getProjects, updateProject } from './proj
 import { allowRequest } from './rateLimit.js';
 import { postRefresh } from './refresh.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
+import { createTaskItem, getTaskItems } from './taskItems.js';
 import { getTasks, postTasks } from './tasks.js';
 
 // Matches Cookie-Web's own api/_lib/body.js limit (Vercel's ~4.5 MB request
@@ -62,6 +63,22 @@ async function readJsonBody(request) {
  */
 async function route(url, request, sql, userId, env, email) {
   const segments = url.pathname.split('/').filter(Boolean);
+
+  if (segments[0] === 'task-items') {
+    if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
+    if (request.method === 'GET') return getTaskItems(sql, userId, url);
+    if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {
+      return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    }
+    let body;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    if (request.method === 'POST') return createTaskItem(sql, userId, body);
+    return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  }
 
   if (segments[0] === 'projects') {
     if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
