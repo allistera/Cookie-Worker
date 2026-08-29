@@ -64,13 +64,22 @@ export async function getTaskItems(sql, userId, url) {
 }
 
 /**
- * POST /task-items — { content, description?, projectId?, parentId?, dueDate? }
+ * POST /task-items — { content, description?, projectId?, dueDate? }. Sub-task
+ * creation is not supported yet: a request that supplies parentId is
+ * rejected rather than silently landing the task at the top level.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
  */
 export async function createTaskItem(sql, userId, body) {
+  if (Object.hasOwn(body ?? {}, 'parentId')) {
+    return Response.json(
+      { error: 'Sub-task creation is not supported yet' },
+      { status: 400 },
+    );
+  }
+
   const content = cleanText(body?.content, MAX_CONTENT_LENGTH);
   if (!content) return Response.json({ error: 'Task content is required' }, { status: 400 });
 

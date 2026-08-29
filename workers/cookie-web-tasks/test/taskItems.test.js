@@ -83,6 +83,20 @@ describe('POST /task-items', () => {
     });
     expect(response.status).toBe(404);
   });
+
+  // Sub-task creation isn't implemented: a request carrying parentId must be
+  // rejected loudly rather than silently dropping the field and creating a
+  // top-level Inbox task.
+  it('rejects a parentId, which the handler does not implement yet', async () => {
+    const sql = createMockSql([]);
+    const response = await createTaskItem(sql, USER_ID, {
+      content: 'Ship it',
+      parentId: ITEM_ID,
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/sub-task/i);
+    expect(sql.calls).toHaveLength(0);
+  });
 });
 
 describe('PATCH /task-items', () => {
