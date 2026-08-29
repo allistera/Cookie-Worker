@@ -64,7 +64,7 @@ export async function getTaskItems(sql, userId, url) {
 
   const items = await sql`
     SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
-           t.description, t.due_date AS "dueDate", t.completed_at AS "completedAt",
+           t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.completed_at AS "completedAt",
            t.created_at AS "createdAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
@@ -114,7 +114,7 @@ export async function createTaskItem(sql, userId, body) {
     INSERT INTO task_items (user_id, project_id, content, description, due_date)
     VALUES (${userId}, ${projectId}, ${content}, ${description}, ${dueDate})
     RETURNING id, project_id AS "projectId", parent_id AS "parentId", content, description,
-              due_date AS "dueDate", completed_at AS "completedAt", created_at AS "createdAt"
+              to_char(due_date, 'YYYY-MM-DD') AS "dueDate", completed_at AS "completedAt", created_at AS "createdAt"
   `;
   return Response.json({ item }, { status: 201 });
 }
@@ -199,7 +199,7 @@ export async function updateTaskItem(sql, userId, body) {
       updated_at   = now()
     WHERE t.id = ${id} AND t.user_id = ${userId}
     RETURNING t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
-              t.description, t.due_date AS "dueDate", t.completed_at AS "completedAt",
+              t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.completed_at AS "completedAt",
               t.created_at AS "createdAt"
   `;
   return Response.json({ item });

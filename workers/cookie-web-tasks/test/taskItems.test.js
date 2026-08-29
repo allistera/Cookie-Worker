@@ -238,3 +238,35 @@ describe('dueDate validation', () => {
     expect(response.status).toBe(201);
   });
 });
+
+// postgres.js parses OID 1082 (date) with `new Date(x)`, so an unqualified
+// due_date leaves the Worker as "2026-09-01T00:00:00.000Z" once JSON has had
+// it — which <input type="date"> refuses, showing an empty dd/mm/yyyy. The
+// mock sql cannot reproduce the driver's parsing, so the guard is on the
+// query text: the column has to be rendered to text in SQL.
+describe('dueDate is returned as a YYYY-MM-DD string, not a timestamp', () => {
+  it('renders due_date to text when listing', async () => {
+    const sql = createMockSql([[]]);
+
+    await getTaskItems(sql, USER_ID, url('?project=inbox'));
+
+    expect(sql.calls[0].text).toContain(`to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate"`);
+    expect(sql.calls[0].text).not.toContain('t.due_date AS "dueDate"');
+  });
+
+  it('renders due_date to text when creating', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }]]);
+
+    await createTaskItem(sql, USER_ID, { content: 'Ship it' });
+
+    expect(sql.calls[0].text).toContain(`to_char(due_date, 'YYYY-MM-DD') AS "dueDate"`);
+  });
+
+  it('renders due_date to text when updating', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID }]]);
+
+    await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Renamed' });
+
+    expect(sql.calls[1].text).toContain(`to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate"`);
+  });
+});
