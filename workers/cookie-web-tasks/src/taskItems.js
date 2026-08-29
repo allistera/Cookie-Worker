@@ -40,7 +40,12 @@ function fetchOwnedProject(sql, userId, id) {
 }
 
 /**
- * GET /task-items?project=<uuid|inbox>[&completed=1]
+ * GET /task-items?project=<uuid|inbox|today>[&date=YYYY-MM-DD][&completed=1]
+ *
+ * `today` spans every project, so it is a third branch of the same flat query
+ * rather than a project filter. Its date comes from the caller: the Worker
+ * cannot know what "today" is where the person is standing, and defaulting to
+ * UTC would show the wrong day for most of the world for part of every day.
  *
  * The WHERE clause is one flat parameterised query rather than composed from
  * nested sql`` fragments: fragment composition is valid postgres.js, but the
@@ -56,10 +61,20 @@ function fetchOwnedProject(sql, userId, id) {
 export async function getTaskItems(sql, userId, url) {
   const project = url.searchParams.get('project') ?? 'inbox';
   const inbox = project === 'inbox';
-  if (!inbox && !isUuid(project)) {
-    return Response.json({ error: 'project must be a project id or "inbox"' }, { status: 400 });
+  const today = project === 'today';
+  if (!inbox && !today && !isUuid(project)) {
+    return Response.json(
+      { error: 'project must be a project id, "inbox" or "today"' },
+      { status: 400 },
+    );
   }
-  const projectId = inbox ? null : project;
+
+  const date = url.searchParams.get('date');
+  if (today && !isCalendarDate(date)) {
+    return Response.json({ error: 'today requires a date=YYYY-MM-DD' }, { status: 400 });
+  }
+
+  const projectId = inbox || today ? null : project;
   const includeCompleted = url.searchParams.get('completed') === '1';
 
   const items = await sql`
@@ -68,7 +83,8 @@ export async function getTaskItems(sql, userId, url) {
            t.created_at AS "createdAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
-      AND CASE WHEN ${inbox}::boolean THEN t.project_id IS NULL
+      AND CASE WHEN ${today}::boolean THEN t.due_date = ${today ? date : null}::date
+               WHEN ${inbox}::boolean THEN t.project_id IS NULL
                ELSE t.project_id = ${projectId}::uuid END
       AND (${includeCompleted}::boolean OR t.completed_at IS NULL)
     ORDER BY t.created_at ASC

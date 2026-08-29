@@ -18,7 +18,7 @@ describe('GET /task-items', () => {
     expect((await response.json()).items).toHaveLength(1);
     expect(sql.calls[0].text).toContain('FROM task_items t');
     expect(sql.calls[0].text).toContain('ORDER BY t.created_at ASC');
-    expect(sql.calls[0].values).toEqual([USER_ID, false, PROJECT_ID, false]);
+    expect(sql.calls[0].values).toEqual([USER_ID, false, null, false, PROJECT_ID, false]);
   });
 
   // Inbox is a rule, not a row: it means "belongs to no project".
@@ -26,7 +26,7 @@ describe('GET /task-items', () => {
     const sql = createMockSql([[]]);
     await getTaskItems(sql, USER_ID, url('?project=inbox'));
 
-    expect(sql.calls[0].values).toEqual([USER_ID, true, null, false]);
+    expect(sql.calls[0].values).toEqual([USER_ID, false, null, true, null, false]);
     expect(sql.calls[0].values).not.toContain('inbox');
   });
 
@@ -34,7 +34,7 @@ describe('GET /task-items', () => {
     const sql = createMockSql([[]]);
     await getTaskItems(sql, USER_ID, url('?project=inbox&completed=1'));
 
-    expect(sql.calls[0].values).toEqual([USER_ID, true, null, true]);
+    expect(sql.calls[0].values).toEqual([USER_ID, false, null, true, null, true]);
   });
 
   it('400s a project that is neither a uuid nor inbox', async () => {
@@ -268,5 +268,66 @@ describe('dueDate is returned as a YYYY-MM-DD string, not a timestamp', () => {
     await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Renamed' });
 
     expect(sql.calls[1].text).toContain(`to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate"`);
+  });
+});
+
+// Today spans every project, so it is a third branch of the same flat query
+// rather than a project filter. The date is supplied by the caller: the
+// Worker has no idea what "today" is where the person is standing, and
+// guessing UTC would show the wrong day for most of the world.
+describe('GET /task-items?project=today', () => {
+  it('matches tasks due on the given date across every project', async () => {
+    const sql = createMockSql([[]]);
+
+    const response = await getTaskItems(sql, USER_ID, url('?project=today&date=2026-08-29'));
+
+    expect(response.status).toBe(200);
+    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-08-29', false, null, false]);
+    expect(sql.calls[0].text).toContain('t.due_date = ');
+  });
+
+  it('requires a date', async () => {
+    const sql = createMockSql([]);
+
+    const response = await getTaskItems(sql, USER_ID, url('?project=today'));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'today requires a date=YYYY-MM-DD',
+    });
+    expect(sql.calls).toHaveLength(0);
+  });
+
+  it('rejects a malformed date', async () => {
+    const sql = createMockSql([]);
+
+    const response = await getTaskItems(sql, USER_ID, url('?project=today&date=29-08-2026'));
+
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
+  });
+
+  it('rejects a date that does not exist in the calendar', async () => {
+    const sql = createMockSql([]);
+
+    const response = await getTaskItems(sql, USER_ID, url('?project=today&date=2026-02-31'));
+
+    expect(response.status).toBe(400);
+  });
+
+  it('still hides completed tasks unless asked for them', async () => {
+    const sql = createMockSql([[]]);
+
+    await getTaskItems(sql, USER_ID, url('?project=today&date=2026-08-29&completed=1'));
+
+    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-08-29', false, null, true]);
+  });
+
+  it('does not treat today as a project id', async () => {
+    const sql = createMockSql([[]]);
+
+    await getTaskItems(sql, USER_ID, url('?project=today&date=2026-08-29'));
+
+    expect(sql.calls[0].values).not.toContain('today');
   });
 });
