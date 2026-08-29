@@ -33,7 +33,7 @@ function fetchOwnedProject(sql, userId, id) {
  */
 export async function getProjects(sql, userId) {
   const projects = await sql`
-    SELECT p.id, p.parent_id AS "parentId", p.name, p.created_at AS "createdAt"
+    SELECT p.id, p.parent_id AS "parentId", p.name, p.description, p.created_at AS "createdAt"
     FROM task_projects p
     WHERE p.user_id = ${userId}
     ORDER BY p.name ASC
@@ -62,7 +62,7 @@ export async function createProject(sql, userId, body) {
   const [project] = await sql`
     INSERT INTO task_projects (user_id, parent_id, name)
     VALUES (${userId}, ${parentId}, ${name})
-    RETURNING id, parent_id AS "parentId", name, created_at AS "createdAt"
+    RETURNING id, parent_id AS "parentId", name, description, created_at AS "createdAt"
   `;
   return Response.json({ project }, { status: 201 });
 }
@@ -84,13 +84,20 @@ export async function updateProject(sql, userId, body) {
 
   const hasName = Object.hasOwn(body, 'name');
   const hasParent = Object.hasOwn(body, 'parentId');
+  const hasDescription = Object.hasOwn(body, 'description');
   const name = hasName ? cleanName(body.name) : null;
   if (hasName && !name) {
     return Response.json({ error: 'A project name is required' }, { status: 400 });
   }
-  if (!hasName && !hasParent) {
+  if (!hasName && !hasParent && !hasDescription) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
+
+  const description = hasDescription
+    ? String(body.description ?? '')
+        .trim()
+        .slice(0, 10000) || null
+    : null;
 
   const parentId = hasParent ? (body.parentId ?? null) : null;
   if (hasParent && parentId !== null) {
@@ -117,10 +124,11 @@ export async function updateProject(sql, userId, body) {
 
   const [project] = await sql`
     UPDATE task_projects p SET
-      name      = COALESCE(${hasName ? name : null}, p.name),
-      parent_id = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE p.parent_id END
+      name        = COALESCE(${hasName ? name : null}, p.name),
+      parent_id   = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE p.parent_id END,
+      description = CASE WHEN ${hasDescription}::boolean THEN ${description} ELSE p.description END
     WHERE p.id = ${id} AND p.user_id = ${userId}
-    RETURNING p.id, p.parent_id AS "parentId", p.name, p.created_at AS "createdAt"
+    RETURNING p.id, p.parent_id AS "parentId", p.name, p.description, p.created_at AS "createdAt"
   `;
   return Response.json({ project });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTaskItem, getTaskItems, updateTaskItem } from '../src/taskItems.js';
+import { createTaskItem, deleteTaskItem, getTaskItems, updateTaskItem } from '../src/taskItems.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '99999999-9999-9999-9999-999999999999';
@@ -139,5 +139,22 @@ describe('PATCH /task-items', () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).item.projectId).toBeNull();
+  });
+});
+
+describe('DELETE /task-items', () => {
+  it('deletes an owned task', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }]]);
+    const response = await deleteTaskItem(sql, USER_ID, { id: ITEM_ID });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).ok).toBe(true);
+    expect(sql.calls[0].text).toContain('DELETE FROM task_items');
+  });
+
+  it('404s an id the caller does not own', async () => {
+    const sql = createMockSql([[]]);
+    const response = await deleteTaskItem(sql, USER_ID, { id: ITEM_ID });
+    expect(response.status).toBe(404);
   });
 });

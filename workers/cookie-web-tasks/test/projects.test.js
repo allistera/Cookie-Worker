@@ -121,3 +121,33 @@ describe('DELETE /projects', () => {
     expect(response.status).toBe(400);
   });
 });
+
+describe('project descriptions', () => {
+  it('returns a description from GET', async () => {
+    const sql = createMockSql([[]]);
+    await getProjects(sql, USER_ID);
+    expect(sql.calls[0].text).toContain('p.description');
+  });
+
+  it('updates a description through PATCH', async () => {
+    const sql = createMockSql([
+      [{ id: PROJECT_ID }],
+      [{ id: PROJECT_ID, description: 'What this project is for' }],
+    ]);
+
+    const response = await updateProject(sql, USER_ID, {
+      id: PROJECT_ID,
+      description: 'What this project is for',
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).project.description).toBe('What this project is for');
+  });
+
+  // Clearing a description is a real edit, not "no change given".
+  it('accepts an empty description as a clear', async () => {
+    const sql = createMockSql([[{ id: PROJECT_ID }], [{ id: PROJECT_ID, description: null }]]);
+    const response = await updateProject(sql, USER_ID, { id: PROJECT_ID, description: '' });
+    expect(response.status).toBe(200);
+  });
+});

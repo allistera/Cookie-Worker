@@ -175,3 +175,21 @@ export async function updateTaskItem(sql, userId, body) {
   `;
   return Response.json({ item });
 }
+
+/**
+ * DELETE /task-items — { id }. Sub-tasks go with it via ON DELETE CASCADE.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {any} body
+ */
+export async function deleteTaskItem(sql, userId, body) {
+  const id = isUuid(body?.id) ? String(body.id) : null;
+  if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
+
+  const deleted = await sql`
+    DELETE FROM task_items WHERE id = ${id} AND user_id = ${userId} RETURNING id
+  `;
+  if (!deleted.length) return Response.json({ error: 'Task not found' }, { status: 404 });
+  return Response.json({ ok: true });
+}
