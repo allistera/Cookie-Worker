@@ -59,6 +59,15 @@ describe('fetchTasks', () => {
     fetchTasks(sql, USER_ID);
     expect(sql.calls[0].text).toContain('t.due_date IS NULL OR t.due_date <= CURRENT_DATE');
   });
+
+  // Marking the source email Done means the work is handled, so its extracted
+  // action item should not keep asking for attention. Tasks with no source
+  // email (every Todoist one) are unaffected by the join.
+  it('drops a task whose source email is done, and keeps sourceless tasks', () => {
+    const sql = createMockSql();
+    fetchTasks(sql, USER_ID);
+    expect(sql.calls[0].text).toContain('t.message_id IS NULL OR NOT m.is_archived');
+  });
 });
 
 describe('fetchLatestSummary', () => {
@@ -76,16 +85,19 @@ describe('fetchLatestSummary', () => {
 });
 
 describe('fetchMessageStates', () => {
-  it('reads live read-state, excluding deleted mail but keeping archived mail', () => {
+  // is_archived is read rather than filtered in SQL: buildDigest needs to see
+  // done messages to drop their items, and the same rows also carry the read
+  // state the surviving items render.
+  it('reads live read-state and done-state, excluding deleted mail', () => {
     const sql = createMockSql();
     fetchMessageStates(sql, USER_ID, [ID_A]);
 
     expect(sql.calls[0].text).toContain('m.is_unread');
+    expect(sql.calls[0].text).toContain('m.is_archived');
     expect(sql.calls[0].text).toContain('m.scheduled_for');
     expect(sql.calls[0].text).toContain('WHERE m.user_id =');
     expect(sql.calls[0].text).toContain('::uuid[]');
     expect(sql.calls[0].text).toContain('NOT m.is_deleted');
-    expect(sql.calls[0].text).not.toContain('is_archived');
     expect(sql.calls[0].values).toEqual([USER_ID, [ID_A]]);
   });
 });
@@ -168,6 +180,44 @@ describe('buildDigest', () => {
 
     expect(digest.topics).toHaveLength(1);
     expect(digest.topics[0].items.map((/** @type {any} */ i) => i.message_id)).toEqual([ID_B]);
+  });
+
+  // Done means handled, whether or not it was ever opened.
+  it('drops items whose message is done, read or not', () => {
+    const row = digestRow([
+      {
+        emoji: '↩️',
+        title: 'Reply Needed',
+        items: [{ message_id: ID_A }, { message_id: ID_B }, { message_id: ID_C }],
+      },
+    ]);
+    const digest = nonNull(
+      buildDigest(row, [
+        { id: ID_A, is_unread: false, is_archived: true },
+        { id: ID_B, is_unread: true, is_archived: true },
+        { id: ID_C, is_unread: false, is_archived: false },
+      ]),
+    );
+
+    // Only the read-but-not-done message survives: being read is not enough
+    // to hide an item, and being unread does not rescue a done one.
+    expect(digest.topics[0].items.map((/** @type {any} */ i) => i.message_id)).toEqual([ID_C]);
+  });
+
+  it('drops a topic left empty because every item was done', () => {
+    const row = digestRow([
+      { emoji: '↩️', title: 'All handled', items: [{ message_id: ID_A }] },
+      { emoji: '👀', title: 'Review', items: [{ message_id: ID_B }] },
+    ]);
+    const digest = nonNull(
+      buildDigest(row, [
+        { id: ID_A, is_unread: true, is_archived: true },
+        { id: ID_B, is_unread: true, is_archived: false },
+      ]),
+    );
+
+    expect(digest.topics).toHaveLength(1);
+    expect(digest.topics[0].title).toBe('Review');
   });
 
   it('keeps items whose message has no scheduled_for', () => {

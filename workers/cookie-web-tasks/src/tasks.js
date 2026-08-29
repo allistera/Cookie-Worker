@@ -24,6 +24,10 @@ export function fetchTasks(sql, userId) {
     LEFT JOIN messages m ON m.id = t.message_id AND m.user_id = t.user_id
     WHERE t.user_id = ${userId}
       AND (t.due_date IS NULL OR t.due_date <= CURRENT_DATE)
+      -- An action item extracted from mail retires with its source: once the
+      -- email is done, the work it described is handled. The null check keeps
+      -- every sourceless task (all the Todoist ones) untouched by the join.
+      AND (t.message_id IS NULL OR NOT m.is_archived)
     ORDER BY t.due_date ASC NULLS LAST, t.priority DESC NULLS LAST, t.created_at DESC
     LIMIT ${RESULTS}
   `;
@@ -94,7 +98,7 @@ export function buildNews(row) {
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string[]} ids */
 export function fetchMessageStates(sql, userId, ids) {
   return sql`
-    SELECT m.id, m.is_unread, m.scheduled_for
+    SELECT m.id, m.is_unread, m.is_archived, m.scheduled_for
     FROM messages m
     WHERE m.user_id = ${userId}
       AND m.id = ANY(${ids}::uuid[])
@@ -131,6 +135,9 @@ export function buildDigest(row, states) {
       .filter((/** @type {any} */ item) => {
         const state = stateById.get(item?.message_id);
         if (!state) return false;
+        // Done means handled, whether or not it was ever opened — a triage
+        // list that keeps asking about finished mail is just noise.
+        if (state.is_archived) return false;
         if (state.scheduled_for && new Date(state.scheduled_for) > new Date()) return false;
         return true;
       })
