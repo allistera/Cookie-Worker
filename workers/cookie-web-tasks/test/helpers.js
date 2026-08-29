@@ -9,7 +9,10 @@ import { vi } from 'vitest';
  * tag a value the way the driver would, and calling the mock with a plain
  * object (postgres.js's dynamic `SET ${sql(updates)}` helper, used by
  * documents.js's updateDocument) records the touched column names instead of
- * consuming the queue.
+ * consuming the queue. Calling it with a plain string (postgres.js's
+ * `${sql(name)}` dynamic identifier helper, used by ancestry.js) resolves to
+ * an escaped-identifier marker without touching the call log or queue,
+ * matching the real driver: resolving an identifier isn't a round trip.
  *
  * @param {unknown[][]} results
  * @returns {any} Shaped like postgres.js's Sql, loosely typed so tests can
@@ -22,6 +25,12 @@ export function createMockSql(results = []) {
 
   /** @type {any} */
   const sql = vi.fn((/** @type {any} */ strings, /** @type {any[]} */ ...values) => {
+    if (typeof strings === 'string') {
+      // postgres.js's `sql(name)` identifier helper: escapes a dynamic
+      // table/column name. Resolving it isn't itself a driver round trip,
+      // so — like the real client — it doesn't touch the call log or queue.
+      return { __identifier: strings };
+    }
     if (!Array.isArray(strings)) {
       calls.push({ text: `SET(${Object.keys(strings).join(',')})`, values: [] });
       return { __set: strings };

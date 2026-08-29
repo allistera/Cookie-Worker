@@ -2,6 +2,8 @@
 // same id/text validation, the same user-scoped statements, and a flat list
 // on GET that the client assembles into a tree.
 
+import { isAncestorOf } from './ancestry.js';
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_NAME_LENGTH = 120;
 
@@ -66,31 +68,6 @@ export async function createProject(sql, userId, body) {
 }
 
 /**
- * True when `projectId` sits on the ancestry chain above `candidateParentId`,
- * which is exactly the case where re-parenting would create a cycle. The walk
- * climbs from the proposed parent to the root, so it terminates on the tree's
- * depth rather than its size.
- *
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- * @param {string} projectId
- * @param {string} candidateParentId
- */
-export async function isAncestorOf(sql, userId, projectId, candidateParentId) {
-  const rows = await sql`
-    WITH RECURSIVE ancestry AS (
-      SELECT id, parent_id FROM task_projects
-      WHERE id = ${candidateParentId} AND user_id = ${userId}
-      UNION ALL
-      SELECT p.id, p.parent_id FROM task_projects p
-      JOIN ancestry a ON p.id = a.parent_id AND p.user_id = ${userId}
-    )
-    SELECT 1 FROM ancestry WHERE id = ${projectId} LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
-/**
  * PATCH /projects — { id, name?, parentId? }. parentId: null moves the
  * project to the root.
  *
@@ -123,7 +100,14 @@ export async function updateProject(sql, userId, body) {
     if (!isUuid(parentId) || !(await fetchOwnedProject(sql, userId, parentId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
-    if (await isAncestorOf(sql, userId, id, parentId)) {
+    if (
+      await isAncestorOf(sql, {
+        table: 'task_projects',
+        userId,
+        id,
+        candidateParentId: parentId,
+      })
+    ) {
       return Response.json(
         { error: 'A project cannot become its own descendant' },
         { status: 400 },
