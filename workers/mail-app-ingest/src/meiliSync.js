@@ -1,0 +1,67 @@
+import { addMeiliDocuments, buildMeiliDocument, meiliAvailable } from '../../../shared/meili.js';
+
+/**
+ * Best-effort sync of one message to Meilisearch. Reads the authoritative row
+ * from Postgres (including labels) and pushes a document. Failures are logged
+ * and ignored so that message delivery/forwarding is never blocked by search.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {any} env
+ * @param {string} messageUuid
+ */
+export async function syncMessageToMeili(sql, env, messageUuid) {
+  if (!meiliAvailable(env)) return;
+
+  try {
+    const [row] = await sql`
+    SELECT
+      m.id,
+      m.user_id,
+      m.from_name,
+      m.from_address,
+      m.recipients,
+      m.subject,
+      m.body_text,
+      m.sent_at,
+      m.is_unread,
+      m.is_starred,
+      m.is_archived,
+      m.is_sent,
+      m.is_deleted,
+      EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
+      COALESCE(
+        json_agg(json_build_object('name', l.name) ORDER BY l.name)
+          FILTER (WHERE l.id IS NOT NULL),
+        '[]'
+      ) AS labels
+    FROM messages m
+    LEFT JOIN message_labels ml ON ml.message_id = m.id
+    LEFT JOIN labels l ON l.id = ml.label_id
+    WHERE m.id = ${messageUuid}
+    GROUP BY m.id
+  `;
+
+  if (!row) {
+    console.log(JSON.stringify({ event: 'meili_sync_missing', message_id: messageUuid }));
+    return;
+  }
+
+  const document = buildMeiliDocument(row);
+    const result = await addMeiliDocuments(env, [document]);
+    console.log(
+      JSON.stringify({
+        event: 'meili_synced',
+        message_id: messageUuid,
+        task_uid: result.taskUid,
+      }),
+    );
+  } catch (err) {
+    console.log(
+      JSON.stringify({
+        event: 'meili_sync_failed',
+        message_id: messageUuid,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+}

@@ -7,6 +7,8 @@ interface __BaseEnv_Env {
 	OWNER_EMAIL: "allisteraall@gmail.com";
 	AI_MODEL: "gpt-5.6-luna";
 	SENTRY_ENVIRONMENT: "production";
+	MEILISEARCH_URL: string;
+	MEILISEARCH_INDEX: string;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
@@ -19,5 +21,5 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "FORWARD_TO" | "OWNER_EMAIL" | "AI_MODEL" | "SENTRY_ENVIRONMENT">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "FORWARD_TO" | "OWNER_EMAIL" | "AI_MODEL" | "SENTRY_ENVIRONMENT" | "MEILISEARCH_URL" | "MEILISEARCH_INDEX">> {}
 }

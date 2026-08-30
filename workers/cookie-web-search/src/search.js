@@ -8,6 +8,7 @@ import { embedTextCached } from '../../../shared/embeddings.js';
 import { fuseRankings } from './rankFusion.js';
 import { keywordLeg, recencyLeg, vectorLeg } from './retrieval.js';
 import { parseSearchQuery } from './queryParse.js';
+import { meiliAvailable, meiliCanHandle, meiliKeywordLeg } from '../../../shared/meili.js';
 
 const MAX_QUERY_CHARS = 500;
 const CANDIDATES = 40; // per leg, before fusion
@@ -115,7 +116,19 @@ export async function handleSearch(sql, userId, url, env) {
     // is only the keyword leg's tie-breaker, so results are not date-sorted. A
     // filters-only query has no relevance signal, so it falls back to the
     // recency leg ordered newest-first.
-    const keywordIds = spec.text ? keywordLeg(sql, userId, spec, CANDIDATES) : Promise.resolve([]);
+    //
+    // When Meilisearch Cloud is configured and the query only uses filters it
+    // can express (tag, date, attachment), use it for the keyword leg so
+    // subject/body/label matches are ranked by Meilisearch's relevance engine
+    // instead of Postgres ts_rank. from:/to:/in: keep the Postgres leg because
+    // they need substring or folder predicates Meilisearch cannot express yet.
+    const useMeili =
+      spec.text && meiliAvailable(env) && meiliCanHandle(spec.filters);
+    const keywordIds = spec.text
+      ? useMeili
+        ? meiliKeywordLeg(env, userId, spec, CANDIDATES)
+        : keywordLeg(sql, userId, spec, CANDIDATES)
+      : Promise.resolve([]);
     const recencyIds = spec.text ? Promise.resolve([]) : recencyLeg(sql, userId, spec, CANDIDATES);
 
     const [keywordRows, recencyRows, vectorRows] = await Promise.all([

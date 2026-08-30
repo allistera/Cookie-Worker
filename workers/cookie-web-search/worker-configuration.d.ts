@@ -6,6 +6,8 @@ interface __BaseEnv_Env {
 	AUTH0_AUDIENCE: "https://cookie-web/api";
 	ALLOWED_ORIGIN: "https://mail.infinitywave.online";
 	SENTRY_ENVIRONMENT: "production";
+	MEILISEARCH_URL: string;
+	MEILISEARCH_INDEX: string;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
@@ -18,5 +20,5 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "AUTH0_DOMAIN" | "AUTH0_AUDIENCE" | "ALLOWED_ORIGIN" | "SENTRY_ENVIRONMENT">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "AUTH0_DOMAIN" | "AUTH0_AUDIENCE" | "ALLOWED_ORIGIN" | "SENTRY_ENVIRONMENT" | "MEILISEARCH_URL" | "MEILISEARCH_INDEX">> {}
 }

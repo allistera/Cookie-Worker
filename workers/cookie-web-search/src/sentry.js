@@ -15,6 +15,9 @@ const SERVICE = 'cookie-web-search';
  *   AUTH0_AUDIENCE?: string,
  *   OPENAI_API_KEY?: string,
  *   OPENAI_ASK_MODEL?: string,
+ *   MEILISEARCH_URL?: string,
+ *   MEILISEARCH_INDEX?: string,
+ *   MEILISEARCH_API_KEY?: string,
  * }} SearchEnv
  */
 
@@ -27,7 +30,7 @@ const SERVICE = 'cookie-web-search';
  * @returns {(string | undefined)[]}
  */
 function secrets(env) {
-  return [env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY];
+  return [env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY, env.MEILISEARCH_API_KEY];
 }
 
 /**

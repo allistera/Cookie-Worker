@@ -20,6 +20,11 @@
     // Cookie-Web's production origin, for the CORS allowlist.
     "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
     "SENTRY_ENVIRONMENT": "production",
+    // Meilisearch Cloud endpoint and index name. The API key is a secret
+    // (MEILISEARCH_API_KEY) set via `wrangler secret put`. Leave the URL empty
+    // to keep the existing Postgres keyword search until the project is ready.
+    "MEILISEARCH_URL": "",
+    "MEILISEARCH_INDEX": "messages",
     // OPENAI_ASK_MODEL is an optional override for the default in src/ask.js.
   },
 }

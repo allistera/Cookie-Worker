@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
+import { syncMessageToMeili } from './meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import {
@@ -20,7 +21,7 @@ export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 const worker = {
   /**
    * @param {ForwardableEmailMessage} message
-   * @param {Env & {SENTRY_DSN?: string, OPENAI_API_KEY?: string, BLOB_READ_WRITE_TOKEN?: string, AI_MODEL?: string}} env
+   * @param {Env & {SENTRY_DSN?: string, OPENAI_API_KEY?: string, BLOB_READ_WRITE_TOKEN?: string, AI_MODEL?: string, MEILISEARCH_URL?: string, MEILISEARCH_INDEX?: string, MEILISEARCH_API_KEY?: string}} env
    * @param {ExecutionContext} ctx
    */
   async email(message, env, ctx) {
@@ -137,8 +138,11 @@ const worker = {
               if (lateResult.outcome === 'duplicate') {
                 await discardUploadedAttachments(lateAttachments, env, lateRecord.messageId);
               }
-              if (lateResult.outcome === 'inserted' && lateResult.messageUuid && apiKey) {
-                await runAiEnrichment(env, lateRecord, lateResult.messageUuid, true);
+              if (lateResult.outcome === 'inserted' && lateResult.messageUuid) {
+                await syncMessageToMeili(lateSql, env, lateResult.messageUuid);
+                if (apiKey) {
+                  await runAiEnrichment(env, lateRecord, lateResult.messageUuid, true);
+                }
               }
             })
             .catch(async (lateErr) => {
@@ -217,7 +221,9 @@ const worker = {
       const embedRecord = record;
       const messageUuid = storeResult.messageUuid;
       ctx.waitUntil(
-        endSql(ingestSql).then(() => runAiEnrichment(env, embedRecord, messageUuid, false)),
+        syncMessageToMeili(ingestSql, env, messageUuid)
+          .then(() => endSql(ingestSql))
+          .then(() => runAiEnrichment(env, embedRecord, messageUuid, false)),
       );
     } else if (sql && !sqlOwnedByWaitUntil) {
       ctx.waitUntil(endSql(sql));
@@ -238,7 +244,7 @@ const worker = {
 /**
  * AI is strictly best-effort and receives a fresh Hyperdrive client after the
  * ingest connection is closed. Failures never affect forwarding.
- * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env
+ * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string, MEILISEARCH_URL?: string, MEILISEARCH_INDEX?: string, MEILISEARCH_API_KEY?: string}} env
  * @param {any} record
  * @param {string} messageUuid
  * @param {boolean} late
@@ -248,6 +254,7 @@ async function runAiEnrichment(env, record, messageUuid, late) {
   const sql = createSql(env.HYPERDRIVE.connectionString);
   try {
     await enrichMessage(sql, record, messageUuid, env.OPENAI_API_KEY, env.AI_MODEL || AI_MODEL);
+    await syncMessageToMeili(sql, env, messageUuid);
   } catch (err) {
     console.log(
       JSON.stringify({
