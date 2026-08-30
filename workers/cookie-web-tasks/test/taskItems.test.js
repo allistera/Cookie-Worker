@@ -17,8 +17,8 @@ describe('GET /task-items', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).items).toHaveLength(1);
     expect(sql.calls[0].text).toContain('FROM task_items t');
-    expect(sql.calls[0].text).toContain('ORDER BY t.created_at ASC');
-    expect(sql.calls[0].values).toEqual([USER_ID, false, null, false, PROJECT_ID, false]);
+    expect(sql.calls[0].text).toContain('t.created_at ASC');
+    expect(sql.calls[0].values).toEqual([USER_ID, false, null, false, PROJECT_ID, false, false]);
   });
 
   // Inbox is a rule, not a row: it means "belongs to no project".
@@ -26,7 +26,7 @@ describe('GET /task-items', () => {
     const sql = createMockSql([[]]);
     await getTaskItems(sql, USER_ID, url('?project=inbox'));
 
-    expect(sql.calls[0].values).toEqual([USER_ID, false, null, true, null, false]);
+    expect(sql.calls[0].values).toEqual([USER_ID, false, null, true, null, false, false]);
     expect(sql.calls[0].values).not.toContain('inbox');
   });
 
@@ -34,7 +34,7 @@ describe('GET /task-items', () => {
     const sql = createMockSql([[]]);
     await getTaskItems(sql, USER_ID, url('?project=inbox&completed=1'));
 
-    expect(sql.calls[0].values).toEqual([USER_ID, false, null, true, null, true]);
+    expect(sql.calls[0].values).toEqual([USER_ID, false, null, true, null, true, false]);
   });
 
   it('400s a project that is neither a uuid nor inbox', async () => {
@@ -276,14 +276,29 @@ describe('dueDate is returned as a YYYY-MM-DD string, not a timestamp', () => {
 // Worker has no idea what "today" is where the person is standing, and
 // guessing UTC would show the wrong day for most of the world.
 describe('GET /task-items?project=today', () => {
-  it('matches tasks due on the given date across every project', async () => {
+  it('matches tasks due on or before the given date across every project', async () => {
     const sql = createMockSql([[]]);
 
     const response = await getTaskItems(sql, USER_ID, url('?project=today&date=2026-08-29'));
 
     expect(response.status).toBe(200);
-    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-08-29', false, null, false]);
-    expect(sql.calls[0].text).toContain('t.due_date = ');
+    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-08-29', false, null, false, true]);
+    // Overdue tasks belong in Today: a task due last week and still not done
+    // would otherwise be visible only inside its own project.
+    expect(sql.calls[0].text).toContain('t.due_date <= ');
+    expect(sql.calls[0].text).not.toMatch(/t\.due_date = /);
+  });
+
+  // With overdue tasks mixed in, created_at ordering would scatter them
+  // through the list; the oldest thing owed belongs at the top.
+  it('orders by due date first, then by age', async () => {
+    const sql = createMockSql([[]]);
+
+    await getTaskItems(sql, USER_ID, url('?project=today&date=2026-08-29'));
+
+    const orderBy = sql.calls[0].text.slice(sql.calls[0].text.indexOf('ORDER BY'));
+    expect(orderBy).toContain('t.due_date');
+    expect(orderBy.indexOf('t.due_date')).toBeLessThan(orderBy.indexOf('t.created_at'));
   });
 
   it('requires a date', async () => {
@@ -320,7 +335,7 @@ describe('GET /task-items?project=today', () => {
 
     await getTaskItems(sql, USER_ID, url('?project=today&date=2026-08-29&completed=1'));
 
-    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-08-29', false, null, true]);
+    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-08-29', false, null, true, true]);
   });
 
   it('does not treat today as a project id', async () => {

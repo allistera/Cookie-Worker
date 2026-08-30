@@ -47,6 +47,10 @@ function fetchOwnedProject(sql, userId, id) {
  * cannot know what "today" is where the person is standing, and defaulting to
  * UTC would show the wrong day for most of the world for part of every day.
  *
+ * It matches on or before that date, so anything overdue is carried forward
+ * rather than disappearing the moment its day passes — an unfinished task
+ * would otherwise be visible only inside its own project.
+ *
  * The WHERE clause is one flat parameterised query rather than composed from
  * nested sql`` fragments: fragment composition is valid postgres.js, but the
  * test mock (createMockSql) evaluates a nested fragment as a plain call
@@ -83,11 +87,14 @@ export async function getTaskItems(sql, userId, url) {
            t.created_at AS "createdAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
-      AND CASE WHEN ${today}::boolean THEN t.due_date = ${today ? date : null}::date
+      AND CASE WHEN ${today}::boolean THEN t.due_date <= ${today ? date : null}::date
                WHEN ${inbox}::boolean THEN t.project_id IS NULL
                ELSE t.project_id = ${projectId}::uuid END
       AND (${includeCompleted}::boolean OR t.completed_at IS NULL)
-    ORDER BY t.created_at ASC
+    -- Only Today sorts by date: it is the one list where the rows carry
+    -- different due dates, and the oldest thing owed belongs at the top.
+    -- Project and Inbox lists keep their created_at order.
+    ORDER BY CASE WHEN ${today}::boolean THEN t.due_date END ASC NULLS LAST, t.created_at ASC
   `;
   return Response.json({ items });
 }
