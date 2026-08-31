@@ -12,10 +12,7 @@
 
 import ical from 'node-ical';
 
-import {
-  hostMatchesSuffixes,
-  resolvePublicHttpsUrl,
-} from '../../../shared/safe-https.js';
+import { hostMatchesSuffixes, resolvePublicHttpsUrl } from '../../../shared/safe-https.js';
 
 const MAX_TITLE = 200;
 const MAX_LOCATION = 200;
@@ -134,7 +131,8 @@ export function validSubscriptionUrl(value, allowlist = DEFAULT_CALENDAR_ALLOWLI
 export function calendarSubscriptionAllowlist(env) {
   const raw = env?.CALENDAR_SUBSCRIPTION_ALLOWLIST;
   if (!raw) return DEFAULT_CALENDAR_ALLOWLIST;
-  return raw.split(',')
+  return raw
+    .split(',')
     .map((h) => h.trim().toLowerCase())
     .filter(Boolean);
 }

@@ -46,7 +46,9 @@ describe('validSubscriptionUrl', () => {
     expect(validSubscriptionUrl('file:///etc/passwd', TEST_ALLOWLIST)).toBeNull();
     expect(validSubscriptionUrl('gopher://example.com', TEST_ALLOWLIST)).toBeNull();
     // Only a leading scheme is rewritten — webcal elsewhere is not a scheme.
-    expect(validSubscriptionUrl('http://evil.example/webcal://example.com', TEST_ALLOWLIST)).toBeNull();
+    expect(
+      validSubscriptionUrl('http://evil.example/webcal://example.com', TEST_ALLOWLIST),
+    ).toBeNull();
   });
 
   it('rejects malformed input', () => {
@@ -54,16 +56,22 @@ describe('validSubscriptionUrl', () => {
     expect(validSubscriptionUrl('', TEST_ALLOWLIST)).toBeNull();
     expect(validSubscriptionUrl(null, TEST_ALLOWLIST)).toBeNull();
     expect(validSubscriptionUrl(123, TEST_ALLOWLIST)).toBeNull();
-    expect(validSubscriptionUrl('https://example.com/' + 'a'.repeat(2000), TEST_ALLOWLIST)).toBeNull();
+    expect(
+      validSubscriptionUrl('https://example.com/' + 'a'.repeat(2000), TEST_ALLOWLIST),
+    ).toBeNull();
   });
 
   // The egress boundary rejects these too, but only at sync time — validating
   // here keeps a credential-bearing URL from being stored as a calendar whose
   // every sync then fails.
   it('rejects URLs carrying embedded credentials', () => {
-    expect(validSubscriptionUrl('https://user:pass@example.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
+    expect(
+      validSubscriptionUrl('https://user:pass@example.com/feed.ics', TEST_ALLOWLIST),
+    ).toBeNull();
     expect(validSubscriptionUrl('https://user@example.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
-    expect(validSubscriptionUrl('webcal://user:pass@example.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
+    expect(
+      validSubscriptionUrl('webcal://user:pass@example.com/feed.ics', TEST_ALLOWLIST),
+    ).toBeNull();
   });
 
   it('rejects hosts outside the configured allowlist', () => {
@@ -75,7 +83,9 @@ describe('validSubscriptionUrl', () => {
       'https://calendar.google.com/calendar/ical/.../basic.ics',
     );
     expect(validSubscriptionUrl('https://outlook.office365.com/...')).not.toBeNull();
-    expect(validSubscriptionUrl('https://not-calendar.com/feed.ics', DEFAULT_CALENDAR_ALLOWLIST)).toBeNull();
+    expect(
+      validSubscriptionUrl('https://not-calendar.com/feed.ics', DEFAULT_CALENDAR_ALLOWLIST),
+    ).toBeNull();
   });
 });
 
