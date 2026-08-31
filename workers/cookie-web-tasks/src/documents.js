@@ -257,7 +257,7 @@ function meiliFilter(filters) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{text: string, prefixQuery: string | null, filters: {tag?: string, starred?: boolean}}} spec
+ * @param {{text: string, filters: {tag?: string, starred?: boolean}}} spec
  * @param {boolean} semantic false when mode=keyword — forces keyword-only
  *   (semanticRatio 0) so type-ahead never spends an embedding call.
  * @param {DocumentsDeps} deps

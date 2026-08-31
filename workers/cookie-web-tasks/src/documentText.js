@@ -2,7 +2,7 @@
 // Node APIs.
 //
 // Flattens a document's title + Editor.js blocks into plain text for
-// search: the generated tsvector column and the embedding input both read
+// search: the generated tsvector column and the Meilisearch document both read
 // from content_text, computed by flattenBlocksToText and written alongside
 // every title/blocks save.
 

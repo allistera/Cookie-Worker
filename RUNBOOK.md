@@ -42,11 +42,11 @@ Check Sentry for errors tagged with the Worker environment and processing stage.
 
 ## AI enrichment and recovery
 
-After forwarding succeeds, the Worker starts best-effort enrichment with a fresh database client. Classification and embedding generation run concurrently.
+After forwarding succeeds, the Worker starts best-effort enrichment with a fresh database client. Enrichment is AI classification only; search indexing is a separate best-effort write to Meilisearch.
 
 The scheduled handler runs every 15 minutes. It retries up to three `pending` or `failed` rows older than two minutes.
 
-Cookie Web also retains its weekly embedding backfill. That job handles older messages and records that predate immediate enrichment.
+Cookie-Worker's `search-drift-repair.yml` workflow reindexes rows whose `search_indexed_at` has fallen behind, and `search-reindex.yml` rebuilds an index from scratch.
 
 AI failures do not block forwarding or storage. Inspect the OpenAI response, rate limits, secret configuration, database connectivity, and migration state.
 

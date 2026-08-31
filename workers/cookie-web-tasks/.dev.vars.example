@@ -2,11 +2,6 @@
 # For local dev, export this before `npm run dev` (dev Supabase project, session pooler):
 #   export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
 
-# Powers document search embeddings and query-time semantic search. Without
-# it, document search still works (keyword + recency legs), just without the
-# semantic leg, and document saves store content_text with no embedding.
-OPENAI_API_KEY=""
-
 # Lets task complete/reschedule sync back to the real Todoist task. Without
 # it, complete/reschedule only update Cookie's own copy.
 TODOIST_API_TOKEN=""

@@ -87,7 +87,7 @@ async function respondWithEmails(sql, userId, ids) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{text: string, prefixQuery: string | null, filters: Record<string, any>}} spec
+ * @param {{text: string, filters: Record<string, any>}} spec
  * @param {any} env
  * @param {boolean} semantic false when mode=keyword — forces keyword-only
  *   (semanticRatio 0) so type-ahead never spends an embedding call.

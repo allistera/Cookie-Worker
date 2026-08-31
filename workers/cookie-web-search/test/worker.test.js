@@ -29,7 +29,7 @@ vi.mock('../../../shared/rate-limit.js', () => ({
   allowRequest: (...args) => allowRequest(...args),
 }));
 
-// GET /search and POST /ask default to the Meilisearch engine now; only
+// GET /search and POST /ask retrieve through Meilisearch; only
 // hybridSearch is faked here (MESSAGES_INDEX/meiliMessageFilter stay real —
 // they're pure and have their own unit tests), so routing/CORS/auth/quota
 // wiring can be tested without a real Meilisearch Cloud instance.
@@ -71,11 +71,14 @@ beforeEach(() => {
   allowRequest.mockResolvedValue(true);
   mockQuery.mockReset().mockResolvedValue([]);
   hybridSearch.mockReset().mockResolvedValue([]);
+  // /ask answers from OpenAI's chat completions API over the retrieved rows.
+  // Retrieval itself spends no OpenAI call — Meilisearch's own embedder
+  // handles the semantic leg.
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => ({
       ok: true,
-      json: async () => ({ data: [{ index: 0, embedding: [0.1] }] }),
+      json: async () => ({ choices: [{ message: { content: 'An answer.' } }] }),
     })),
   );
 });

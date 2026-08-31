@@ -8,8 +8,5 @@ RESEND_API_KEY=""
 # The flush bearer secret shared with scheduled-send-flusher.
 SCHEDULED_SEND_FLUSH_TOKEN=""
 
-# Enables best-effort sent-mail embeddings.
-OPENAI_API_KEY=""
-
 # Optional locally; required in production to send sanitized errors to Sentry.
 SENTRY_DSN=""

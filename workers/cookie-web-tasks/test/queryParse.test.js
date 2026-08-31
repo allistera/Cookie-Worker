@@ -1,20 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPrefixQuery, parseDocumentSearchQuery } from '../src/queryParse.js';
-
-describe('buildPrefixQuery', () => {
-  it('makes the last word a prefix and requires every word', () => {
-    expect(buildPrefixQuery('kitchen tile')).toBe('kitchen & tile:*');
-  });
-
-  it('makes a single word a prefix so an in-progress word still matches', () => {
-    expect(buildPrefixQuery('invoi')).toBe('invoi:*');
-  });
-
-  it('returns null when there is no alphanumeric word', () => {
-    expect(buildPrefixQuery('!!!')).toBeNull();
-    expect(buildPrefixQuery('')).toBeNull();
-  });
-});
+import { parseDocumentSearchQuery } from '../src/queryParse.js';
 
 describe('parseDocumentSearchQuery', () => {
   it('extracts tag: filters, including quoted tag names', () => {
@@ -49,9 +34,8 @@ describe('parseDocumentSearchQuery', () => {
   });
 
   it('yields empty free text and a null prefix query for a filters-only query', () => {
-    const { text, prefixQuery, filters } = parseDocumentSearchQuery('tag:Work is:starred');
+    const { text, filters } = parseDocumentSearchQuery('tag:Work is:starred');
     expect(text).toBe('');
-    expect(prefixQuery).toBeNull();
     expect(filters).toEqual({ tag: 'Work', starred: true });
   });
 });

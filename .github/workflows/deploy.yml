@@ -193,11 +193,9 @@ jobs:
           # ends of the flush handshake stay on one value.
           secrets: |
             SCHEDULED_SEND_FLUSH_TOKEN
-            OPENAI_API_KEY
             SENTRY_DSN
         env:
           SCHEDULED_SEND_FLUSH_TOKEN: ${{ secrets.COOKIE_WEB_FLUSH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
       - name: Deploy cookie-web-tasks and synchronize its secrets
@@ -214,13 +212,11 @@ jobs:
           # answers on data-enricher's public workers.dev URL, so the token
           # stays required end to end.
           secrets: |
-            OPENAI_API_KEY
             TODOIST_API_TOKEN
             ENRICHER_TRIGGER_TOKEN
             BLOB_READ_WRITE_TOKEN
             SENTRY_DSN
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
           ENRICHER_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}

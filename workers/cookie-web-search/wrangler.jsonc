@@ -24,7 +24,6 @@
     // (MEILISEARCH_API_KEY) set via `wrangler secret put`. Leave the URL empty
     // to keep the existing Postgres keyword search until the project is ready.
     "MEILISEARCH_URL": "https://ms-52028f71df74-53700.lon.meilisearch.io",
-    "MEILISEARCH_INDEX": "messages",
     // OPENAI_ASK_MODEL is an optional override for the default in src/ask.js.
   },
 }

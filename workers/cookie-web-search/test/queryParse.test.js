@@ -5,19 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { parseSearchQuery } from '../src/queryParse.js';
 
 describe('parseSearchQuery', () => {
-  it('leaves a plain query as free text with a prefix on the last word', () => {
-    const { text, prefixQuery, filters } = parseSearchQuery('kitchen tile');
+  it('leaves a plain query as free text', () => {
+    const { text, filters } = parseSearchQuery('kitchen tile');
     expect(text).toBe('kitchen tile');
-    expect(prefixQuery).toBe('kitchen & tile:*');
     expect(filters).toEqual({});
-  });
-
-  it('makes a single word a prefix so an in-progress word still matches', () => {
-    expect(parseSearchQuery('invoi').prefixQuery).toBe('invoi:*');
-  });
-
-  it('has no prefix query when there is no alphanumeric word', () => {
-    expect(parseSearchQuery('!!!').prefixQuery).toBeNull();
   });
 
   it('extracts from: and to: operators and removes them from the text', () => {
@@ -64,9 +55,8 @@ describe('parseSearchQuery', () => {
   });
 
   it('yields empty free text for a filters-only query', () => {
-    const { text, prefixQuery, filters } = parseSearchQuery('from:alice has:attachment');
+    const { text, filters } = parseSearchQuery('from:alice has:attachment');
     expect(text).toBe('');
-    expect(prefixQuery).toBeNull();
     expect(filters).toEqual({ from: 'alice', hasAttachment: true });
   });
 

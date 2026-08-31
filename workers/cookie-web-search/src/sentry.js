@@ -16,7 +16,6 @@ const SERVICE = 'cookie-web-search';
  *   OPENAI_API_KEY?: string,
  *   OPENAI_ASK_MODEL?: string,
  *   MEILISEARCH_URL?: string,
- *   MEILISEARCH_INDEX?: string,
  *   MEILISEARCH_API_KEY?: string,
  * }} SearchEnv
  */

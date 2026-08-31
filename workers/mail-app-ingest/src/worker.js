@@ -21,7 +21,7 @@ export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 const worker = {
   /**
    * @param {ForwardableEmailMessage} message
-   * @param {Env & {SENTRY_DSN?: string, OPENAI_API_KEY?: string, BLOB_READ_WRITE_TOKEN?: string, AI_MODEL?: string, MEILISEARCH_URL?: string, MEILISEARCH_INDEX?: string, MEILISEARCH_API_KEY?: string}} env
+   * @param {Env & {SENTRY_DSN?: string, OPENAI_API_KEY?: string, BLOB_READ_WRITE_TOKEN?: string, AI_MODEL?: string, MEILISEARCH_URL?: string, MEILISEARCH_API_KEY?: string}} env
    * @param {ExecutionContext} ctx
    */
   async email(message, env, ctx) {
@@ -244,7 +244,7 @@ const worker = {
 /**
  * AI is strictly best-effort and receives a fresh Hyperdrive client after the
  * ingest connection is closed. Failures never affect forwarding.
- * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string, MEILISEARCH_URL?: string, MEILISEARCH_INDEX?: string, MEILISEARCH_API_KEY?: string}} env
+ * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string, MEILISEARCH_URL?: string, MEILISEARCH_API_KEY?: string}} env
  * @param {any} record
  * @param {string} messageUuid
  * @param {boolean} late

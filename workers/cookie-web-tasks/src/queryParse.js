@@ -1,10 +1,10 @@
 // Ported from Cookie-Web's api/_lib/query-parse.js — pure JS, no Node APIs.
-// Only buildPrefixQuery and parseDocumentSearchQuery are ported: the
+// Only parseDocumentSearchQuery is ported: the
 // original file's parseSearchQuery (from:/sender:/to:/has:/before:/after:/
 // in: operators) is email-search-specific and unused by this Worker.
 //
-// Parses a raw search string into the free-text portion, a prefix tsquery
-// for search-as-you-type, and structured operators (tag:/is:starred). Kept
+// Parses a raw search string into the free-text portion and structured
+// operators (tag:/is:starred). Kept
 // separate from the SQL legs so the parsing rules can be unit-tested without
 // a database.
 
@@ -27,11 +27,6 @@ const DOCUMENT_OPERATOR_RE = /(tag|is):("[^"]*"|\S+)/gi;
  *
  * @param {string} text
  */
-export function buildPrefixQuery(text) {
-  const words = text.match(/[\p{L}\p{N}]+/gu);
-  if (!words || words.length === 0) return null;
-  return words.map((w, i) => (i === words.length - 1 ? `${w}:*` : w)).join(' & ');
-}
 
 /** @param {string} raw */
 export function parseDocumentSearchQuery(raw) {
@@ -54,5 +49,5 @@ export function parseDocumentSearchQuery(raw) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  return { text, prefixQuery: buildPrefixQuery(text), filters };
+  return { text, filters };
 }

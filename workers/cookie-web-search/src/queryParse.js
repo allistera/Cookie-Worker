@@ -18,18 +18,6 @@ const FOLDERS = new Set(['inbox', 'sent', 'spam', 'snoozed', 'done', 'all']);
 // The value is either a "quoted phrase" or an unbroken run of non-space chars.
 const OPERATOR_RE = /(from|sender|to|tag|has|before|after|in):("[^"]*"|\S+)/gi;
 
-// Builds a prefix tsquery like `kitchen & tile:*` from free text: every word is
-// required (AND) and the final word is a prefix match, so an in-progress last
-// word ("invoi") still matches completed terms ("invoice"). Returns null when
-// there is no alphanumeric word to match. Words are reduced to letters/digits,
-// so the `:*` we append is the only tsquery operator — the value is safe to
-// hand to to_tsquery without injection risk.
-export function buildPrefixQuery(text) {
-  const words = text.match(/[\p{L}\p{N}]+/gu);
-  if (!words || words.length === 0) return null;
-  return words.map((w, i) => (i === words.length - 1 ? `${w}:*` : w)).join(' & ');
-}
-
 export function parseSearchQuery(raw) {
   const filters = {};
   const text = raw
@@ -68,5 +56,5 @@ export function parseSearchQuery(raw) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  return { text, prefixQuery: buildPrefixQuery(text), filters };
+  return { text, filters };
 }
