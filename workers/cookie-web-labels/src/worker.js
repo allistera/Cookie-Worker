@@ -1,15 +1,11 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
-import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { preflightResponse, withCors } from '../../../shared/cors.js';
+import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { createLabel, deleteLabel, listLabels, updateLabel } from './labels.js';
 import { createRule, deleteRule, listRules, updateRule } from './labelRules.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
-
-// Matches Cookie-Web's own api/_lib/body.js limit (Vercel's ~4.5 MB request
-// body cap), so a request that would be rejected there behaves the same way
-// here.
-const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
@@ -21,18 +17,6 @@ export function createSql(databaseUrl) {
     idle_timeout: 20,
     connect_timeout: 10,
   });
-}
-
-/** @param {Request} request */
-async function readJsonBody(request) {
-  const contentLength = Number(request.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-    throw new Error('Request body too large');
-  }
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > MAX_BODY_BYTES) throw new Error('Request body too large');
-  const raw = new TextDecoder().decode(bytes);
-  return raw ? JSON.parse(raw) : {};
 }
 
 const LABEL_HANDLERS = { POST: createLabel, PATCH: updateLabel, DELETE: deleteLabel };
@@ -65,14 +49,19 @@ async function route(url, request, sql, userId) {
   const handlers = isRules ? RULE_HANDLERS : LABEL_HANDLERS;
   const handler = handlers[/** @type {keyof typeof handlers} */ (request.method)];
   if (!handler) {
-    return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    return Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET, POST, PATCH, DELETE' } },
+    );
   }
 
   let body;
   try {
     body = await readJsonBody(request);
-  } catch {
-    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  } catch (error) {
+    const errorResponse = bodyErrorResponse(error);
+    if (errorResponse) return errorResponse;
+    throw error;
   }
   return handler(sql, userId, body);
 }
@@ -81,9 +70,9 @@ const worker = {
   /**
    * @param {Request} request
    * @param {import('./sentry.js').LabelsEnv} env
-   * @param {ExecutionContext} _ctx
+   * @param {ExecutionContext} ctx
    */
-  async fetch(request, env, _ctx) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {
@@ -119,7 +108,7 @@ const worker = {
         env.SENTRY_ENVIRONMENT,
       );
     } finally {
-      await sql.end({ timeout: 2 }).catch(() => undefined);
+      ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
     }
   },
 };

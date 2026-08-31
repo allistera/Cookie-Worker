@@ -1,8 +1,9 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { Resend } from 'resend';
-import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { preflightResponse, withCors } from '../../../shared/cors.js';
+import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { embedText } from '../../../shared/embeddings.js';
 import {
@@ -24,9 +25,8 @@ import {
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Matches Cookie-Web's own api/_lib/body.js limit (Vercel's ~4.5 MB request
-// body cap), so a request that would be rejected there behaves the same way
-// here.
+// Outbound messages can include HTML bodies; keep Vercel's 4.5 MB cap for
+// send, but use the shared helper for consistent JSON error handling.
 const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
 
 /** @param {string} databaseUrl */
@@ -39,18 +39,6 @@ export function createSql(databaseUrl) {
     idle_timeout: 20,
     connect_timeout: 10,
   });
-}
-
-/** @param {Request} request */
-async function readJsonBody(request) {
-  const contentLength = Number(request.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-    throw new Error('Request body too large');
-  }
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > MAX_BODY_BYTES) throw new Error('Request body too large');
-  const raw = new TextDecoder().decode(bytes);
-  return raw ? JSON.parse(raw) : {};
 }
 
 /**
@@ -113,9 +101,11 @@ async function handleSend(sql, userId, request, services) {
 
   let body;
   try {
-    body = await readJsonBody(request);
-  } catch {
-    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    body = await readJsonBody(request, { maxBytes: MAX_BODY_BYTES });
+  } catch (error) {
+    const errorResponse = bodyErrorResponse(error);
+    if (errorResponse) return errorResponse;
+    throw error;
   }
 
   const { to, subject, text, html, replyToMessageId, sendAt, requestId } = body;
@@ -231,8 +221,10 @@ async function handleScheduled(sql, userId, request) {
     let body;
     try {
       body = await readJsonBody(request);
-    } catch {
-      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) return errorResponse;
+      throw error;
     }
     const id = UUID_RE.test(body.id) ? String(body.id) : null;
     if (!id) {
@@ -244,7 +236,10 @@ async function handleScheduled(sql, userId, request) {
     }
     return Response.json({ scheduledSend });
   }
-  return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  return Response.json(
+    { error: 'Method not allowed' },
+    { status: 405, headers: { Allow: 'GET, DELETE' } },
+  );
 }
 
 const worker = {
@@ -278,7 +273,10 @@ const worker = {
 
       if (resource === 'flush') {
         if (request.method !== 'POST') {
-          return Response.json({ error: 'Method not allowed' }, { status: 405 });
+          return Response.json(
+            { error: 'Method not allowed' },
+            { status: 405, headers: { Allow: 'POST' } },
+          );
         }
         const token = env.SCHEDULED_SEND_FLUSH_TOKEN;
         const authorized =
@@ -311,7 +309,10 @@ const worker = {
           response = await handleScheduled(sql, userId, request);
         } else {
           if (request.method !== 'POST') {
-            response = Response.json({ error: 'Method not allowed' }, { status: 405 });
+            response = Response.json(
+              { error: 'Method not allowed' },
+              { status: 405, headers: { Allow: 'POST' } },
+            );
           } else {
             response = await handleSend(sql, userId, request, services);
           }
@@ -337,7 +338,7 @@ const worker = {
         env.SENTRY_ENVIRONMENT,
       );
     } finally {
-      await sql.end({ timeout: 2 }).catch(() => undefined);
+      ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
     }
   },
 };

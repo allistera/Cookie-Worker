@@ -2,7 +2,11 @@
 // the injected request seam makes the suite runtime-agnostic.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { syncCalendarSubscription, validSubscriptionUrl } from '../src/calendarSync.js';
+import {
+  DEFAULT_CALENDAR_ALLOWLIST,
+  syncCalendarSubscription,
+  validSubscriptionUrl,
+} from '../src/calendarSync.js';
 
 // Injected into syncCalendarSubscription in place of the real safe-https
 // boundary, so each test scripts the feed response directly.
@@ -14,48 +18,64 @@ const httpsResponse = (body = '', status = 200, headers = {}) => ({
   status,
 });
 
+// Allow test fixtures to use arbitrary hosts without coupling tests to the
+// production default allowlist.
+const TEST_ALLOWLIST = ['example.com'];
+
 describe('validSubscriptionUrl', () => {
   it('accepts a well-formed https URL', () => {
-    expect(validSubscriptionUrl('https://example.com/feed.ics')).toBe(
+    expect(validSubscriptionUrl('https://example.com/feed.ics', TEST_ALLOWLIST)).toBe(
       'https://example.com/feed.ics',
     );
   });
 
   it('accepts webcal URLs, normalized to their https equivalent', () => {
-    expect(validSubscriptionUrl('webcal://example.com/feed.ics')).toBe(
+    expect(validSubscriptionUrl('webcal://example.com/feed.ics', TEST_ALLOWLIST)).toBe(
       'https://example.com/feed.ics',
     );
-    expect(validSubscriptionUrl('WEBCAL://example.com/feed.ics')).toBe(
+    expect(validSubscriptionUrl('WEBCAL://example.com/feed.ics', TEST_ALLOWLIST)).toBe(
       'https://example.com/feed.ics',
     );
-    expect(validSubscriptionUrl('webcal://example.com:8443/a/feed.ics?token=x')).toBe(
-      'https://example.com:8443/a/feed.ics?token=x',
-    );
+    expect(
+      validSubscriptionUrl('webcal://example.com:8443/a/feed.ics?token=x', TEST_ALLOWLIST),
+    ).toBe('https://example.com:8443/a/feed.ics?token=x');
   });
 
   it('rejects non-https URLs', () => {
-    expect(validSubscriptionUrl('http://example.com/feed.ics')).toBeNull();
-    expect(validSubscriptionUrl('file:///etc/passwd')).toBeNull();
-    expect(validSubscriptionUrl('gopher://example.com')).toBeNull();
+    expect(validSubscriptionUrl('http://example.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
+    expect(validSubscriptionUrl('file:///etc/passwd', TEST_ALLOWLIST)).toBeNull();
+    expect(validSubscriptionUrl('gopher://example.com', TEST_ALLOWLIST)).toBeNull();
     // Only a leading scheme is rewritten — webcal elsewhere is not a scheme.
-    expect(validSubscriptionUrl('http://evil.example/webcal://example.com')).toBeNull();
+    expect(validSubscriptionUrl('http://evil.example/webcal://example.com', TEST_ALLOWLIST)).toBeNull();
   });
 
   it('rejects malformed input', () => {
-    expect(validSubscriptionUrl('not a url')).toBeNull();
-    expect(validSubscriptionUrl('')).toBeNull();
-    expect(validSubscriptionUrl(null)).toBeNull();
-    expect(validSubscriptionUrl(123)).toBeNull();
-    expect(validSubscriptionUrl('https://example.com/' + 'a'.repeat(2000))).toBeNull();
+    expect(validSubscriptionUrl('not a url', TEST_ALLOWLIST)).toBeNull();
+    expect(validSubscriptionUrl('', TEST_ALLOWLIST)).toBeNull();
+    expect(validSubscriptionUrl(null, TEST_ALLOWLIST)).toBeNull();
+    expect(validSubscriptionUrl(123, TEST_ALLOWLIST)).toBeNull();
+    expect(validSubscriptionUrl('https://example.com/' + 'a'.repeat(2000), TEST_ALLOWLIST)).toBeNull();
   });
 
   // The egress boundary rejects these too, but only at sync time — validating
   // here keeps a credential-bearing URL from being stored as a calendar whose
   // every sync then fails.
   it('rejects URLs carrying embedded credentials', () => {
-    expect(validSubscriptionUrl('https://user:pass@example.com/feed.ics')).toBeNull();
-    expect(validSubscriptionUrl('https://user@example.com/feed.ics')).toBeNull();
-    expect(validSubscriptionUrl('webcal://user:pass@example.com/feed.ics')).toBeNull();
+    expect(validSubscriptionUrl('https://user:pass@example.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
+    expect(validSubscriptionUrl('https://user@example.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
+    expect(validSubscriptionUrl('webcal://user:pass@example.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
+  });
+
+  it('rejects hosts outside the configured allowlist', () => {
+    expect(validSubscriptionUrl('https://evil.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
+  });
+
+  it('matches host suffixes in the default production allowlist', () => {
+    expect(validSubscriptionUrl('https://calendar.google.com/calendar/ical/.../basic.ics')).toBe(
+      'https://calendar.google.com/calendar/ical/.../basic.ics',
+    );
+    expect(validSubscriptionUrl('https://outlook.office365.com/...')).not.toBeNull();
+    expect(validSubscriptionUrl('https://not-calendar.com/feed.ics', DEFAULT_CALENDAR_ALLOWLIST)).toBeNull();
   });
 });
 
@@ -93,7 +113,7 @@ describe('syncCalendarSubscription', () => {
     );
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('disallowed address');
+    expect(result.error).toBe('Could not sync the calendar subscription');
   });
 
   it('refuses link-local and cloud-metadata-range addresses', async () => {
@@ -144,7 +164,7 @@ describe('syncCalendarSubscription', () => {
     );
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('redirect');
+    expect(result.error).toBe('Could not sync the calendar subscription');
   });
 
   it('records the error on the calendar row without touching events when fetch fails', async () => {
@@ -161,13 +181,13 @@ describe('syncCalendarSubscription', () => {
     );
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('500');
+    expect(result.error).toBe('Could not sync the calendar subscription');
   });
 
-  // subscription_error is unbounded text that the sidebar renders, and the
-  // message can quote remote-controlled feed content, so it is capped before
-  // it reaches the calendar row.
-  it('caps an oversized sync failure message before storing it', async () => {
+  // subscription_error is rendered by the sidebar, so it must not echo raw,
+  // remote-controlled feed content back to the client. The detail is logged
+  // internally and capped, while the stored/client-facing message is generic.
+  it('stores a generic sync failure message without echoing remote content', async () => {
     vi.mocked(requestPublicHttps).mockRejectedValue(new Error('x'.repeat(5000)));
     const stored = [];
     /** @type {any} */ const sql = (_strings, ...values) => {
@@ -185,8 +205,8 @@ describe('syncCalendarSubscription', () => {
     );
 
     expect(result.ok).toBe(false);
-    expect(result.error).toHaveLength(500);
-    expect(stored[0][0]).toHaveLength(500);
+    expect(result.error).toBe('Could not sync the calendar subscription');
+    expect(stored[0][0]).toBe('Could not sync the calendar subscription');
   });
 
   it('parses events (including an expanded RRULE series) and replaces the calendar contents', async () => {
@@ -470,7 +490,7 @@ describe('syncCalendarSubscription', () => {
     );
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('json_to_recordset');
+    expect(result.error).toBe('Could not sync the calendar subscription');
     expect(updates.some((update) => update.text.includes('subscription_error'))).toBe(true);
   });
 });

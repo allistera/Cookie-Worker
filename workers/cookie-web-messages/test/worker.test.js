@@ -35,6 +35,10 @@ vi.mock('../src/sentry.js', () => ({
   captureHandledException: (/** @type {any[]} */ ...args) => captureHandledException(...args),
 }));
 
+vi.mock('../../../shared/rate-limit.js', () => ({
+  allowRequest: vi.fn().mockResolvedValue(true),
+}));
+
 const worker = (await import('../src/worker.js')).default;
 
 const PRODUCTION = 'https://mail.infinitywave.online';

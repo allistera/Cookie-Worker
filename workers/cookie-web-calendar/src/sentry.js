@@ -15,6 +15,7 @@ const SERVICE = 'cookie-web-calendar';
  *   AUTH0_AUDIENCE?: string,
  *   OPENAI_API_KEY?: string,
  *   OPENAI_CALENDAR_MODEL?: string,
+ *   CALENDAR_SUBSCRIPTION_ALLOWLIST?: string,
  * }} CalendarEnv
  */
 

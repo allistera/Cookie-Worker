@@ -33,6 +33,7 @@ const USER_ID = '99999999-9999-9999-9999-999999999999';
 const CALENDAR_ID = '11111111-1111-1111-1111-111111111111';
 // createCalendar's sync seam is irrelevant to these cases; it must never run.
 const neverSync = vi.fn(async () => ({ ok: true, count: 0 }));
+const env = /** @type {import('../src/sentry.js').CalendarEnv} */ ({});
 
 beforeEach(() => {
   sqlQueue = [];
@@ -122,6 +123,7 @@ describe('POST calendar management', () => {
       makeSql(),
       USER_ID,
       { name: 'Trips', color: '#3b82f6' },
+      env,
       neverSync,
     );
 
@@ -138,6 +140,7 @@ describe('POST calendar management', () => {
       makeSql(),
       USER_ID,
       { name: 'Work', color: '#3b82f6' },
+      env,
       neverSync,
     );
 
@@ -149,6 +152,7 @@ describe('POST calendar management', () => {
       makeSql(),
       USER_ID,
       { name: '', color: '#3b82f6' },
+      env,
       neverSync,
     );
     expect(first.status).toBe(400);
@@ -157,6 +161,7 @@ describe('POST calendar management', () => {
       makeSql(),
       USER_ID,
       { name: 'Trips', color: 'not-a-color' },
+      env,
       neverSync,
     );
     expect(second.status).toBe(400);

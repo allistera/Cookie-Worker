@@ -5,7 +5,11 @@
 // route.
 
 import { allowRequest } from '../../../shared/rate-limit.js';
-import { syncCalendarSubscription, validSubscriptionUrl } from './calendarSync.js';
+import {
+  calendarSubscriptionAllowlist,
+  syncCalendarSubscription,
+  validSubscriptionUrl,
+} from './calendarSync.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
@@ -133,16 +137,17 @@ export async function claimSyncQuota(sql, userId) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {import('./sentry.js').CalendarEnv} env
  * @param {typeof syncCalendarSubscription} [sync]
  */
-export async function createCalendar(sql, userId, body, sync = syncCalendarSubscription) {
+export async function createCalendar(sql, userId, body, env, sync = syncCalendarSubscription) {
   const name = validName(body.name);
   const color = String(body.color ?? '');
   const subscriptionUrl =
     body.subscriptionUrl !== undefined &&
     body.subscriptionUrl !== null &&
     body.subscriptionUrl !== ''
-      ? validSubscriptionUrl(body.subscriptionUrl)
+      ? validSubscriptionUrl(body.subscriptionUrl, calendarSubscriptionAllowlist(env))
       : null;
   if (!name || !COLOR_RE.test(color) || (body.subscriptionUrl && !subscriptionUrl)) {
     return Response.json(
@@ -184,9 +189,10 @@ export async function createCalendar(sql, userId, body, sync = syncCalendarSubsc
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {import('./sentry.js').CalendarEnv} env
  * @param {typeof syncCalendarSubscription} [sync]
  */
-export async function syncCalendar(sql, userId, body, sync = syncCalendarSubscription) {
+export async function syncCalendar(sql, userId, body, env, sync = syncCalendarSubscription) {
   const id = UUID_RE.test(body.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
@@ -199,6 +205,15 @@ export async function syncCalendar(sql, userId, body, sync = syncCalendarSubscri
   `;
   if (!row?.subscriptionUrl) {
     return Response.json({ error: 'Subscribed calendar not found' }, { status: 404 });
+  }
+
+  // Re-validate stored URLs against the current allowlist so a policy change
+  // or newly-disallowed host cannot be used via an old subscription.
+  if (!validSubscriptionUrl(row.subscriptionUrl, calendarSubscriptionAllowlist(env))) {
+    return Response.json(
+      { error: 'Calendar subscription URL is no longer allowed' },
+      { status: 400 },
+    );
   }
 
   const result = await sync(sql, row.id, row.userId, row.subscriptionUrl);

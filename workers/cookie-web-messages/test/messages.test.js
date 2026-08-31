@@ -10,6 +10,10 @@ import {
 } from '../src/messages.js';
 import { createMockSql } from './helpers.js';
 
+vi.mock('../../../shared/rate-limit.js', () => ({
+  allowRequest: vi.fn().mockResolvedValue(true),
+}));
+
 const USER_ID = '99999999-9999-4999-8999-999999999999';
 const MESSAGE_ID = '11111111-1111-1111-1111-111111111111';
 const LABEL_ID = '22222222-2222-2222-2222-222222222222';
@@ -29,8 +33,7 @@ function unsubscribeDeps(overrides = {}) {
 describe('postMessage — label actions', () => {
   test('applies a label and returns the message label set', async () => {
     const sql = createMockSql([
-      [{ message: true, label: true }], // ownership check
-      [], // INSERT ... ON CONFLICT DO NOTHING
+      [{ label_id: LABEL_ID }], // INSERT ... RETURNING
       [{ name: 'Work', color: '#3b82f6', kind: 'user' }], // labels read-back
     ]);
     const response = await postMessage(
@@ -46,7 +49,10 @@ describe('postMessage — label actions', () => {
   });
 
   test('removes a label and returns the remaining set', async () => {
-    const sql = createMockSql([[{ message: true, label: true }], [], []]);
+    const sql = createMockSql([
+      [{ label_id: LABEL_ID }], // DELETE ... RETURNING
+      [], // labels read-back
+    ]);
     const response = await postMessage(
       sql,
       USER_ID,
@@ -70,7 +76,10 @@ describe('postMessage — label actions', () => {
   });
 
   test('404s when the message is not the caller’s', async () => {
-    const sql = createMockSql([[{ message: false, label: true }]]);
+    const sql = createMockSql([
+      [], // INSERT returned nothing
+      [{ message: false, label: true }], // ownership check
+    ]);
     const response = await postMessage(
       sql,
       USER_ID,
@@ -82,7 +91,10 @@ describe('postMessage — label actions', () => {
   });
 
   test('404s when the label is not the caller’s', async () => {
-    const sql = createMockSql([[{ message: true, label: false }]]);
+    const sql = createMockSql([
+      [], // INSERT returned nothing
+      [{ message: true, label: false }], // ownership check
+    ]);
     const response = await postMessage(
       sql,
       USER_ID,

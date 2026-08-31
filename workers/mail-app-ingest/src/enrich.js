@@ -213,10 +213,16 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
 
       await sql.begin(async (tx) => {
         await tx`DELETE FROM message_labels WHERE message_id = ${messageUuid} AND source = 'ai'`;
-        for (const label of selected) {
+        if (selected.length > 0) {
+          const labelRows = selected.map((label) => ({
+            label_id: label.id,
+            confidence: label.confidence,
+          }));
           await tx`
             INSERT INTO message_labels (message_id, label_id, source, confidence, model, prompt_version)
-            VALUES (${messageUuid}, ${label.id}, 'ai', ${label.confidence}, ${model}, ${PROMPT_VERSION})
+            SELECT ${messageUuid}, row.label_id, 'ai', row.confidence, ${model}, ${PROMPT_VERSION}
+            FROM json_to_recordset(${JSON.stringify(labelRows)}::json)
+              AS row(label_id uuid, confidence numeric)
             ON CONFLICT (message_id, label_id) DO NOTHING
           `;
         }

@@ -28,9 +28,9 @@ const worker = {
    *
    * @param {Request} request
    * @param {import('./sentry.js').ReceiptsEnv} env
-   * @param {ExecutionContext} _ctx
+   * @param {ExecutionContext} ctx
    */
-  async fetch(request, env, _ctx) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {
@@ -93,7 +93,7 @@ const worker = {
         env.SENTRY_ENVIRONMENT,
       );
     } finally {
-      await sql.end({ timeout: 2 }).catch(() => undefined);
+      ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
     }
   },
 };

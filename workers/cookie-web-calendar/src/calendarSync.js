@@ -12,7 +12,10 @@
 
 import ical from 'node-ical';
 
-import { resolvePublicHttpsUrl } from '../../../shared/safe-https.js';
+import {
+  hostMatchesSuffixes,
+  resolvePublicHttpsUrl,
+} from '../../../shared/safe-https.js';
 
 const MAX_TITLE = 200;
 const MAX_LOCATION = 200;
@@ -29,6 +32,33 @@ const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 // echoes the offending line back), and the column is unbounded text that the
 // sidebar renders. Bound it before it is stored.
 const MAX_SYNC_ERROR_CHARS = 500;
+
+// Calendar subscriptions are supplied by an authenticated owner, but a
+// compromised or malicious account can still use DNS rebinding to make the
+// Worker request an unintended address. The DoH check in resolvePublicHttpsUrl
+// rejects obviously private/internal targets, but fetch() re-resolves
+// independently, so we also constrain hosts to known public calendar providers.
+// Operators can extend or replace this list with CALENDAR_SUBSCRIPTION_ALLOWLIST.
+export const DEFAULT_CALENDAR_ALLOWLIST = [
+  'calendar.google.com',
+  'www.google.com',
+  'outlook.office365.com',
+  'outlook.live.com',
+  'calendar.yahoo.com',
+  'caldav.fastmail.com',
+  'calendar.fastmail.com',
+  'calendar.zoho.com',
+  'p01-caldav.icloud.com',
+  'p02-caldav.icloud.com',
+  'p03-caldav.icloud.com',
+  'p04-caldav.icloud.com',
+  'p05-caldav.icloud.com',
+  'p06-caldav.icloud.com',
+  'p07-caldav.icloud.com',
+  'p08-caldav.icloud.com',
+  'p09-caldav.icloud.com',
+  'p10-caldav.icloud.com',
+];
 
 // The pinned public-HTTPS boundary, Workers edition: DoH-validate the target,
 // fetch without following redirects (the caller reports 3xx explicitly), and
@@ -75,8 +105,12 @@ export async function requestPublicHttps(url, { timeoutMs, maxResponseBytes, hea
 // webcal:// (the scheme calendar apps hand out for ICS feeds) is accepted and
 // stored as its https:// equivalent, so every later sync goes through the
 // same public-HTTPS egress path as a plain https subscription.
-/** @param {unknown} value */
-export function validSubscriptionUrl(value) {
+/**
+ * @param {unknown} value
+ * @param {string[]} [allowlist] Hostname suffixes allowed for subscriptions.
+ *        Defaults to DEFAULT_CALENDAR_ALLOWLIST.
+ */
+export function validSubscriptionUrl(value, allowlist = DEFAULT_CALENDAR_ALLOWLIST) {
   const url = String(value ?? '');
   if (!url || url.length > 2000) return null;
   const normalized = url.replace(/^webcal:\/\//i, 'https://');
@@ -87,7 +121,22 @@ export function validSubscriptionUrl(value) {
     return null;
   }
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
+  if (allowlist.length > 0 && !hostMatchesSuffixes(parsed.hostname, allowlist)) return null;
   return parsed.toString();
+}
+
+/**
+ * Reads an operator-provided comma-separated hostname allowlist. An empty or
+ * missing value falls back to the built-in default list.
+ * @param {{ CALENDAR_SUBSCRIPTION_ALLOWLIST?: string }} env
+ * @returns {string[]}
+ */
+export function calendarSubscriptionAllowlist(env) {
+  const raw = env?.CALENDAR_SUBSCRIPTION_ALLOWLIST;
+  if (!raw) return DEFAULT_CALENDAR_ALLOWLIST;
+  return raw.split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 /**
@@ -318,12 +367,17 @@ function parseEvents(icsText, windowStart, windowEnd) {
  * @param {unknown} error
  */
 async function recordSyncError(sql, calendarId, error) {
-  const message = (error instanceof Error ? error.message : 'Sync failed').slice(
+  const detail = (error instanceof Error ? error.message : 'Sync failed').slice(
     0,
     MAX_SYNC_ERROR_CHARS,
   );
-  await sql`UPDATE calendars SET subscription_error = ${message} WHERE id = ${calendarId}`;
-  return { ok: false, error: message };
+  // Log the (capped) remote-controlled detail internally, but never echo it
+  // back to the client — feed parser errors can contain attacker-controlled
+  // calendar content.
+  console.log(JSON.stringify({ event: 'calendar_sync_error', calendarId, detail }));
+  const clientMessage = 'Could not sync the calendar subscription';
+  await sql`UPDATE calendars SET subscription_error = ${clientMessage} WHERE id = ${calendarId}`;
+  return { ok: false, error: clientMessage };
 }
 
 // Re-syncing replaces every event in the calendar wholesale rather than

@@ -5,11 +5,15 @@
 // are passed in rather than pulled from a services object, so each handler
 // stays a plain, testable function.
 
+import { allowRequest } from '../../../shared/rate-limit.js';
 import { DEFAULT_ONE_CLICK_ALLOWLIST, hostMatchesSuffixes } from '../../../shared/safe-https.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SIGNED_URL_TTL_MS = 5 * 60 * 1000;
+// Unsubscribe actions can perform outbound POSTs or send email, so cap the
+// rate per user to prevent abuse of provider quotas.
+const UNSUBSCRIBE_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
 /**
  * GET /messages?id=<uuid> — the full body of a single message owned by the
@@ -244,19 +248,11 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId) {
     return Response.json({ error: 'A valid label_id is required' }, { status: 400 });
   }
 
-  // The ownership check exists to report which of message/label is missing
-  // (or absent) as a clean 404; the mutation re-scopes the same ownership
-  // predicates in its own WHERE so it's a safe no-op regardless of that
-  // check's outcome, letting the two run concurrently instead of sequentially.
-  const ownershipCheck = sql`
-    SELECT
-      EXISTS (
-        SELECT 1 FROM messages m WHERE m.id = ${messageId} AND m.user_id = ${userId}
-      ) AS message,
-      EXISTS (
-        SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
-      ) AS label
-  `;
+  // Run the ownership-scoped mutation first; use RETURNING so we know whether
+  // it actually changed a row. If it didn't, we fall back to an explicit
+  // ownership check to return the right 404. This closes the race where an
+  // ownership change between a parallel check and the mutation could make the
+  // response claim success when nothing happened.
   const mutation =
     action === 'add_label'
       ? sql`
@@ -268,6 +264,7 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId) {
             SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
           )
           ON CONFLICT DO NOTHING
+          RETURNING label_id
         `
       : sql`
           DELETE FROM message_labels
@@ -275,13 +272,27 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId) {
             AND EXISTS (
               SELECT 1 FROM messages m WHERE m.id = ${messageId} AND m.user_id = ${userId}
             )
+          RETURNING label_id
         `;
-  const [[owns]] = await Promise.all([ownershipCheck, mutation]);
-  if (!owns?.message) {
-    return Response.json({ error: 'Message not found' }, { status: 404 });
-  }
-  if (!owns?.label) {
-    return Response.json({ error: 'Label not found' }, { status: 404 });
+  const mutationResult = await mutation;
+  if (mutationResult.length === 0) {
+    const [owns] = await sql`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM messages m WHERE m.id = ${messageId} AND m.user_id = ${userId}
+        ) AS message,
+        EXISTS (
+          SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
+        ) AS label
+    `;
+    if (!owns?.message) {
+      return Response.json({ error: 'Message not found' }, { status: 404 });
+    }
+    if (!owns?.label) {
+      return Response.json({ error: 'Label not found' }, { status: 404 });
+    }
+    // Both exist but the mutation was a no-op (duplicate add or removing a
+    // non-existent join) — return the current label set, which is idempotent.
   }
 
   // Return the same {name, color, kind} shape the labels list endpoint uses.
@@ -432,6 +443,17 @@ export async function postMessage(sql, userId, body, deps) {
 
   if (action !== 'unsubscribe') {
     return Response.json({ error: 'A valid id and action are required' }, { status: 400 });
+  }
+
+  let allowed;
+  try {
+    allowed = await allowRequest(sql, userId, 'unsubscribe', UNSUBSCRIBE_RATE_LIMIT);
+  } catch (error) {
+    console.error('unsubscribe quota enforcement failed:', /** @type {Error} */ (error).message);
+    return Response.json({ error: 'Unsubscribe is temporarily unavailable' }, { status: 503 });
+  }
+  if (!allowed) {
+    return Response.json({ error: 'Too many unsubscribe actions, slow down' }, { status: 429 });
   }
 
   return unsubscribe(sql, userId, id, deps);

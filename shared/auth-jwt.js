@@ -11,6 +11,10 @@
 
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 
+// Bounded in-memory cache for issuer JWKS endpoints. Auth0 is the only
+// supported issuer in practice; the cap protects against a misconfiguration or
+// test harness that might otherwise grow this unboundedly.
+const MAX_CACHED_JWKS = 4;
 const jwksByIssuer = new Map();
 
 export class AuthFailure extends Error {
@@ -62,6 +66,10 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
     keySet = jwksByIssuer.get(issuer);
     if (!keySet) {
       keySet = createRemoteJWKSet(new URL(`${issuer}.well-known/jwks.json`));
+      if (jwksByIssuer.size >= MAX_CACHED_JWKS) {
+        const oldest = jwksByIssuer.keys().next().value;
+        jwksByIssuer.delete(oldest);
+      }
       jwksByIssuer.set(issuer, keySet);
     }
   }

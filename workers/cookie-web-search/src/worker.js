@@ -1,15 +1,11 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
-import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { preflightResponse, withCors } from '../../../shared/cors.js';
+import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { handleSearch } from './search.js';
 import { handleAsk } from './ask.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
-
-// Matches Cookie-Web's own api/_lib/body.js limit (Vercel's ~4.5 MB request
-// body cap), so a request that would be rejected there behaves the same way
-// here.
-const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
@@ -21,18 +17,6 @@ export function createSql(databaseUrl) {
     idle_timeout: 20,
     connect_timeout: 10,
   });
-}
-
-/** @param {Request} request */
-async function readJsonBody(request) {
-  const contentLength = Number(request.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-    throw new Error('Request body too large');
-  }
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > MAX_BODY_BYTES) throw new Error('Request body too large');
-  const raw = new TextDecoder().decode(bytes);
-  return raw ? JSON.parse(raw) : {};
 }
 
 /**
@@ -73,8 +57,10 @@ async function route(url, request, sql, userId, env) {
     let body;
     try {
       body = await readJsonBody(request);
-    } catch {
-      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) return errorResponse;
+      throw error;
     }
     return handleAsk(sql, userId, body, env);
   }
@@ -86,9 +72,9 @@ const worker = {
   /**
    * @param {Request} request
    * @param {import('./sentry.js').SearchEnv} env
-   * @param {ExecutionContext} _ctx
+   * @param {ExecutionContext} ctx
    */
-  async fetch(request, env, _ctx) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {
@@ -124,7 +110,7 @@ const worker = {
         env.SENTRY_ENVIRONMENT,
       );
     } finally {
-      await sql.end({ timeout: 2 }).catch(() => undefined);
+      ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
     }
   },
 };
