@@ -21,5 +21,11 @@
     // this Worker moves off the shared allow-any-*.vercel.app fallback.
     "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
     "SENTRY_ENVIRONMENT": "production",
+    // Meilisearch Cloud endpoint, so a write here can push the message's
+    // updated document straight away instead of leaving search stale until
+    // the drift sweep runs. The API key is a secret (MEILISEARCH_API_KEY) set
+    // via `wrangler secret put`; without both, the sync is a no-op and the
+    // search_indexed_at = NULL mark each write leaves is what repairs the row.
+    "MEILISEARCH_URL": "https://ms-52028f71df74-53700.lon.meilisearch.io",
   },
 }

@@ -19,7 +19,10 @@ const MESSAGE_ID = '11111111-1111-1111-1111-111111111111';
 const LABEL_ID = '22222222-2222-2222-2222-222222222222';
 const ATTACHMENT_ID = '33333333-3333-3333-3333-333333333333';
 
-/** @param {Partial<import('../src/messages.js').UnsubscribeDeps>} [overrides] */
+/**
+ * @param {Partial<import('../src/messages.js').UnsubscribeDeps &
+ *   import('../src/messages.js').ReindexDeps>} [overrides]
+ */
 function unsubscribeDeps(overrides = {}) {
   return {
     requestPublicHttps: vi.fn(),
@@ -34,6 +37,7 @@ describe('postMessage — label actions', () => {
   test('applies a label and returns the message label set', async () => {
     const sql = createMockSql([
       [{ label_id: LABEL_ID }], // INSERT ... RETURNING
+      [], // search_indexed_at drift mark
       [{ name: 'Work', color: '#3b82f6', kind: 'user' }], // labels read-back
     ]);
     const response = await postMessage(
@@ -51,6 +55,7 @@ describe('postMessage — label actions', () => {
   test('removes a label and returns the remaining set', async () => {
     const sql = createMockSql([
       [{ label_id: LABEL_ID }], // DELETE ... RETURNING
+      [], // search_indexed_at drift mark
       [], // labels read-back
     ]);
     const response = await postMessage(
@@ -506,6 +511,101 @@ describe('patchMessage', () => {
     const sql = createMockSql([[]]);
     const response = await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_starred: true });
     expect(response.status).toBe(404);
+  });
+});
+
+// is_unread/is_starred/is_archived/is_deleted/scheduled_for and the label set
+// are all part of a message's Meilisearch document, so every write that
+// changes one has to invalidate the index two ways: search_indexed_at = NULL
+// for the background drift sweep, and onMessageChanged for the immediate
+// best-effort sync. A write that changed nothing must do neither.
+describe('search index invalidation', () => {
+  /** @param {any} sql */
+  const queries = (sql) => sql.calls.map((/** @type {{text: string}} */ c) => c.text);
+
+  test('patchMessage clears search_indexed_at in the same UPDATE', async () => {
+    const sql = createMockSql([[{ id: MESSAGE_ID }]]);
+    await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_archived: true });
+    expect(sql.calls[0].text).toMatch(/UPDATE messages m SET/);
+    expect(sql.calls[0].text).toMatch(/search_indexed_at = NULL/);
+  });
+
+  test('patchMessage reindexes the message it updated', async () => {
+    const onMessageChanged = vi.fn();
+    const sql = createMockSql([[{ id: MESSAGE_ID }]]);
+    await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_archived: true }, { onMessageChanged });
+    expect(onMessageChanged).toHaveBeenCalledWith(MESSAGE_ID);
+  });
+
+  test('patchMessage does not reindex when no row matched', async () => {
+    const onMessageChanged = vi.fn();
+    const sql = createMockSql([[]]); // someone else's id, or one that no longer exists
+    const response = await patchMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, is_archived: true },
+      { onMessageChanged },
+    );
+    expect(response.status).toBe(404);
+    expect(onMessageChanged).not.toHaveBeenCalled();
+  });
+
+  test('adding a label marks the message drifted and reindexes it', async () => {
+    const onMessageChanged = vi.fn();
+    const sql = createMockSql([
+      [{ label_id: LABEL_ID }], // INSERT ... RETURNING
+      [], // drift mark
+      [{ name: 'Work', color: '#3b82f6', kind: 'user' }], // labels read-back
+    ]);
+    await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID },
+      unsubscribeDeps({ onMessageChanged }),
+    );
+    expect(queries(sql)).toContainEqual(
+      expect.stringMatching(/UPDATE messages SET search_indexed_at = NULL WHERE id = /),
+    );
+    expect(sql.calls[1].values).toEqual([MESSAGE_ID]);
+    expect(onMessageChanged).toHaveBeenCalledWith(MESSAGE_ID);
+  });
+
+  test('removing a label marks the message drifted and reindexes it', async () => {
+    const onMessageChanged = vi.fn();
+    const sql = createMockSql([
+      [{ label_id: LABEL_ID }], // DELETE ... RETURNING
+      [], // drift mark
+      [], // labels read-back
+    ]);
+    await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'remove_label', label_id: LABEL_ID },
+      unsubscribeDeps({ onMessageChanged }),
+    );
+    expect(queries(sql)).toContainEqual(
+      expect.stringMatching(/UPDATE messages SET search_indexed_at = NULL WHERE id = /),
+    );
+    expect(sql.calls[1].values).toEqual([MESSAGE_ID]);
+    expect(onMessageChanged).toHaveBeenCalledWith(MESSAGE_ID);
+  });
+
+  test('a no-op label mutation neither marks nor reindexes', async () => {
+    const onMessageChanged = vi.fn();
+    const sql = createMockSql([
+      [], // duplicate add: ON CONFLICT DO NOTHING returned no row
+      [{ message: true, label: true }], // both are the caller's, so this is a 200 no-op
+      [{ name: 'Work', color: '#3b82f6', kind: 'user' }], // labels read-back
+    ]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID },
+      unsubscribeDeps({ onMessageChanged }),
+    );
+    expect(response.status).toBe(200);
+    expect(queries(sql).join('\n')).not.toMatch(/search_indexed_at/);
+    expect(onMessageChanged).not.toHaveBeenCalled();
   });
 });
 

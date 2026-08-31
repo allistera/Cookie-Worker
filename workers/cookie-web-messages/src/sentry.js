@@ -17,6 +17,7 @@ const SERVICE = 'cookie-web-messages';
  *   RESEND_API_KEY?: string,
  *   EMAIL_FROM?: string,
  *   UNSUBSCRIBE_ONE_CLICK_ALLOWLIST?: string,
+ *   MEILISEARCH_API_KEY?: string,
  * }} MessagesEnv
  */
 
@@ -25,7 +26,12 @@ const SERVICE = 'cookie-web-messages';
  * @returns {(string | undefined)[]}
  */
 function secrets(env) {
-  return [env.HYPERDRIVE.connectionString, env.BLOB_READ_WRITE_TOKEN, env.RESEND_API_KEY];
+  return [
+    env.HYPERDRIVE.connectionString,
+    env.BLOB_READ_WRITE_TOKEN,
+    env.RESEND_API_KEY,
+    env.MEILISEARCH_API_KEY,
+  ];
 }
 
 /**

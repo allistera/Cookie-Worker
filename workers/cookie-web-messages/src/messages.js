@@ -231,6 +231,19 @@ export async function getThreadBody(sql, userId, id) {
 }
 
 /**
+ * Every column a message's Meilisearch document is built from lives on
+ * `messages` or in its label set, so both handlers below that change one have
+ * to invalidate the index. They do it two ways: `search_indexed_at = NULL`
+ * marks the row as drifted for the background sweep (the safety net that
+ * repairs the row even if nothing else runs), and `onMessageChanged` lets the
+ * Worker fire a best-effort sync straight away. The callback is injected
+ * rather than called directly so the handlers stay pure — the ExecutionContext
+ * and the sync's own database client belong to worker.js.
+ *
+ * @typedef {{ onMessageChanged?: (messageId: string) => void }} ReindexDeps
+ */
+
+/**
  * Apply or remove one of the caller's user labels on a message they own.
  * Both the message and the label are ownership-checked before the join row
  * changes, and the message's full label set is returned so the reader can
@@ -241,8 +254,9 @@ export async function getThreadBody(sql, userId, id) {
  * @param {string} messageId
  * @param {'add_label' | 'remove_label'} action
  * @param {any} rawLabelId
+ * @param {ReindexDeps} deps
  */
-async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId) {
+async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, deps) {
   const labelId = UUID_RE.test(rawLabelId) ? String(rawLabelId) : null;
   if (!labelId) {
     return Response.json({ error: 'A valid label_id is required' }, { status: 400 });
@@ -275,7 +289,8 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId) {
           RETURNING label_id
         `;
   const mutationResult = await mutation;
-  if (mutationResult.length === 0) {
+  const changed = mutationResult.length > 0;
+  if (!changed) {
     const [owns] = await sql`
       SELECT
         EXISTS (
@@ -293,6 +308,11 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId) {
     }
     // Both exist but the mutation was a no-op (duplicate add or removing a
     // non-existent join) — return the current label set, which is idempotent.
+    // The document is unchanged, so there is nothing to reindex.
+  } else {
+    // The write above touched the join table, not `messages`, so the drift
+    // mark cannot ride along on it and needs its own statement.
+    await sql`UPDATE messages SET search_indexed_at = NULL WHERE id = ${messageId}`;
   }
 
   // Return the same {name, color, kind} shape the labels list endpoint uses.
@@ -303,6 +323,7 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId) {
     WHERE ml.message_id = ${messageId}
     ORDER BY l.name
   `;
+  if (changed) deps.onMessageChanged?.(messageId);
   return Response.json({ labels });
 }
 
@@ -428,7 +449,7 @@ async function unsubscribe(sql, userId, id, deps) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
- * @param {UnsubscribeDeps} deps
+ * @param {UnsubscribeDeps & ReindexDeps} deps
  */
 export async function postMessage(sql, userId, body, deps) {
   const { action } = body ?? {};
@@ -438,7 +459,7 @@ export async function postMessage(sql, userId, body, deps) {
   }
 
   if (action === 'add_label' || action === 'remove_label') {
-    return mutateMessageLabel(sql, userId, id, action, body.label_id);
+    return mutateMessageLabel(sql, userId, id, action, body.label_id, deps);
   }
 
   if (action !== 'unsubscribe') {
@@ -466,8 +487,9 @@ export async function postMessage(sql, userId, body, deps) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {ReindexDeps} [deps]
  */
-export async function patchMessage(sql, userId, body) {
+export async function patchMessage(sql, userId, body, deps = {}) {
   const { is_unread, is_starred, is_archived, is_deleted } = body ?? {};
   const flags = [is_unread, is_starred, is_archived, is_deleted];
   const id = UUID_RE.test(body?.id) ? String(body.id) : null;
@@ -491,6 +513,10 @@ export async function patchMessage(sql, userId, body) {
       is_starred  = COALESCE(${is_starred ?? null}::boolean, m.is_starred),
       is_archived = COALESCE(${is_archived ?? null}::boolean, m.is_archived),
       is_deleted  = COALESCE(${is_deleted ?? null}::boolean, m.is_deleted),
+      -- Every column this statement writes is part of the message's search
+      -- document, so clear the stamp in the same statement: the row is marked
+      -- as drifted the instant it changes, whatever happens to the sync below.
+      search_indexed_at = NULL,
       scheduled_for = CASE
         WHEN ${hasScheduledChange}::boolean THEN ${scheduledFor}::timestamptz
         ELSE m.scheduled_for
@@ -501,5 +527,6 @@ export async function patchMessage(sql, userId, body) {
   if (rows.length === 0) {
     return Response.json({ error: 'Message not found' }, { status: 404 });
   }
+  deps.onMessageChanged?.(id);
   return Response.json({ message: rows[0] });
 }

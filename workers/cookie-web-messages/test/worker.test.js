@@ -8,13 +8,14 @@ const mockQuery = vi.fn(
   /** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])),
 );
 const sqlEnd = vi.fn(async () => undefined);
+const createClient = vi.fn(() => {
+  /** @type {any} */
+  const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
+  sql.end = sqlEnd;
+  return sql;
+});
 vi.mock('postgres', () => ({
-  default: () => {
-    /** @type {any} */
-    const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
-    sql.end = sqlEnd;
-    return sql;
-  },
+  default: (/** @type {string} */ _databaseUrl) => createClient(),
 }));
 
 vi.mock('@vercel/blob', () => ({
@@ -206,5 +207,53 @@ describe('cleanup and error reporting', () => {
     expect(response.status).toBe(500);
     expect(captureHandledException).toHaveBeenCalledOnce();
     expect(sqlEnd).toHaveBeenCalledOnce();
+  });
+});
+
+describe('search reindex after a write', () => {
+  /** Collects the waitUntil work so a test can await it. @returns {any} */
+  function collectingCtx() {
+    /** @type {Promise<unknown>[]} */
+    const pending = [];
+    return {
+      pending,
+      waitUntil: (/** @type {Promise<unknown>} */ promise) => pending.push(promise),
+    };
+  }
+
+  test('a successful PATCH reindexes on a client of its own', async () => {
+    mockQuery.mockResolvedValueOnce([{ id: MESSAGE_ID, is_archived: true }]);
+    const patchCtx = collectingCtx();
+    const response = await worker.fetch(
+      request('/messages', {
+        method: 'PATCH',
+        body: JSON.stringify({ id: MESSAGE_ID, is_archived: true }),
+      }),
+      env,
+      patchCtx,
+    );
+    expect(response.status).toBe(200);
+    await Promise.all(patchCtx.pending);
+    // Two clients: the request-scoped one, which fetch's `finally` closes the
+    // moment the route returns, and a second one owned by the reindex. The
+    // sync must never borrow the first — it would be querying a closing
+    // connection. Both are closed.
+    expect(createClient).toHaveBeenCalledTimes(2);
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test('a PATCH that matched no row opens no second client', async () => {
+    const patchCtx = collectingCtx();
+    const response = await worker.fetch(
+      request('/messages', {
+        method: 'PATCH',
+        body: JSON.stringify({ id: MESSAGE_ID, is_archived: true }),
+      }),
+      env,
+      patchCtx,
+    );
+    expect(response.status).toBe(404);
+    await Promise.all(patchCtx.pending);
+    expect(createClient).toHaveBeenCalledOnce();
   });
 });

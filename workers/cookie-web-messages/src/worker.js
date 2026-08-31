@@ -6,6 +6,7 @@ import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { getContacts } from './contacts.js';
 import { getAttachment, getMessage, getThreadBody, patchMessage, postMessage } from './messages.js';
+import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { sendEmail } from './resend.js';
 import { requestPublicHttps, parseAllowlistOverride } from '../../../shared/safe-https.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -23,6 +24,34 @@ export function createSql(databaseUrl) {
 }
 
 /**
+ * Best-effort push of one just-changed message to Meilisearch, so an archive,
+ * star, read, trash, snooze or label edit is reflected in search immediately
+ * rather than waiting for the drift sweep to notice search_indexed_at is NULL.
+ *
+ * This runs on its OWN client, deliberately: `fetch` below closes the
+ * request-scoped `sql` in its `finally` as soon as the route returns, so a
+ * waitUntil still holding that connection would race the teardown and query a
+ * closing client. syncMessageToMeili never throws, but the client is still
+ * closed in a `finally` so a failure can't leak the connection either.
+ *
+ * @param {import('./sentry.js').MessagesEnv} env
+ * @param {ExecutionContext} ctx
+ * @param {string} messageId
+ */
+function reindexMessage(env, ctx, messageId) {
+  ctx.waitUntil(
+    (async () => {
+      const syncSql = createSql(env.HYPERDRIVE.connectionString);
+      try {
+        await syncMessageToMeili(syncSql, env, messageId);
+      } finally {
+        await syncSql.end({ timeout: 2 }).catch(() => undefined);
+      }
+    })(),
+  );
+}
+
+/**
  * Routes GET/POST/PATCH /messages, /messages/attachment, /messages/thread-body,
  * and /messages/contacts — the same resources Cookie-Web's api/messages.js
  * and api/_lib/contacts.js served, previously reached only via
@@ -35,8 +64,9 @@ export function createSql(databaseUrl) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {import('./sentry.js').MessagesEnv} env
+ * @param {ExecutionContext} ctx
  */
-async function route(url, request, sql, userId, env) {
+async function route(url, request, sql, userId, env, ctx) {
   const segments = url.pathname.split('/').filter(Boolean);
   if (segments[0] !== 'messages' || segments.length > 2) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
@@ -99,6 +129,8 @@ async function route(url, request, sql, userId, env) {
     throw error;
   }
 
+  const onMessageChanged = (/** @type {string} */ messageId) => reindexMessage(env, ctx, messageId);
+
   if (request.method === 'POST') {
     const allowlistOverride = parseAllowlistOverride(env.UNSUBSCRIBE_ONE_CLICK_ALLOWLIST);
     return postMessage(sql, userId, body, {
@@ -108,10 +140,11 @@ async function route(url, request, sql, userId, env) {
       sendEmail,
       // Empty override falls back to the built-in ESP suffix list.
       oneClickAllowlist: allowlistOverride.length ? allowlistOverride : undefined,
+      onMessageChanged,
     });
   }
 
-  return patchMessage(sql, userId, body);
+  return patchMessage(sql, userId, body, { onMessageChanged });
 }
 
 const worker = {
@@ -142,7 +175,7 @@ const worker = {
         );
       }
 
-      const response = await route(url, request, sql, userId, env);
+      const response = await route(url, request, sql, userId, env, ctx);
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(
