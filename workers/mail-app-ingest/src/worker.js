@@ -2,7 +2,7 @@ import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
-import { syncMessageToMeili } from './meiliSync.js';
+import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import {

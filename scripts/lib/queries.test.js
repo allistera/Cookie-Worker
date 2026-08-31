@@ -68,7 +68,7 @@ describe('messagesPage', () => {
     expect(q).toContain('AND m.id > $');
   });
 
-  it('joins message_ai and aggregates labels, like meiliSync.js', () => {
+  it('joins message_ai and aggregates labels, like shared/meiliSync.js', () => {
     const { sql, render } = makeSql();
     const q = render(messagesPage(sql, { afterId: null, limit: 100 }));
     expect(q).toContain('LEFT JOIN message_labels ml ON ml.message_id = m.id');
@@ -104,7 +104,7 @@ describe('messagesDriftPage', () => {
     expect(q).toContain('ORDER BY m.created_at');
   });
 
-  it('joins message_ai and aggregates labels, like meiliSync.js', () => {
+  it('joins message_ai and aggregates labels, like shared/meiliSync.js', () => {
     const { sql, render } = makeSql();
     const q = render(messagesDriftPage(sql, { limit: 500 }));
     expect(q).toContain('LEFT JOIN message_ai ai ON ai.message_id = m.id');

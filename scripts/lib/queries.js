@@ -3,8 +3,8 @@
 // Each *Page function selects exactly the columns its target's descriptor
 // (shared/meili/documents.js or shared/meili/messages.js) reads in
 // toDocument. The messages queries carry the same LEFT JOIN on message_ai
-// and label aggregation as workers/mail-app-ingest/src/meiliSync.js, so
-// is_spam and labels come out right.
+// and label aggregation as shared/meiliSync.js, so is_spam and labels come
+// out right.
 
 /**
  * One keyset-paginated page of documents rows, ordered by id so the last
