@@ -8,12 +8,13 @@ const mockQuery = vi.fn(
   /** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])),
 );
 const sqlEnd = vi.fn(async () => undefined);
-const createClient = vi.fn(() => {
+const makeClient = () => {
   /** @type {any} */
   const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
   sql.end = sqlEnd;
   return sql;
-});
+};
+const createClient = vi.fn(makeClient);
 vi.mock('postgres', () => ({
   default: (/** @type {string} */ _databaseUrl) => createClient(),
 }));
@@ -68,6 +69,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   verifyAccessToken.mockResolvedValue({ userId: 'user-1' });
   mockQuery.mockReset().mockResolvedValue([]);
+  createClient.mockImplementation(makeClient);
 });
 
 describe('CORS preflight', () => {
@@ -255,5 +257,36 @@ describe('search reindex after a write', () => {
     expect(response.status).toBe(404);
     await Promise.all(patchCtx.pending);
     expect(createClient).toHaveBeenCalledOnce();
+  });
+
+  // Indexing must never fail, delay or change a user-visible response. createSql
+  // throws synchronously on an invalid connection string, so without a catch the
+  // waitUntil work would reject unhandled on every PATCH.
+  test('a reindex that cannot open a client settles instead of rejecting', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockQuery.mockResolvedValueOnce([{ id: MESSAGE_ID, is_archived: true }]);
+    // The request-scoped client opens normally; the reindex's own client is the
+    // second, and it cannot be created.
+    createClient.mockImplementationOnce(makeClient).mockImplementationOnce(() => {
+      throw new Error('invalid connection string');
+    });
+
+    const patchCtx = collectingCtx();
+    const response = await worker.fetch(
+      request('/messages', {
+        method: 'PATCH',
+        body: JSON.stringify({ id: MESSAGE_ID, is_archived: true }),
+      }),
+      env,
+      patchCtx,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(Promise.all(patchCtx.pending)).resolves.toBeDefined();
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('failed to index message for search'),
+      'invalid connection string',
+    );
+    consoleError.mockRestore();
   });
 });

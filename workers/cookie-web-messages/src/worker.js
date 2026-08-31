@@ -34,6 +34,11 @@ export function createSql(databaseUrl) {
  * closing client. syncMessageToMeili never throws, but the client is still
  * closed in a `finally` so a failure can't leak the connection either.
  *
+ * syncMessageToMeili swallows its own failures; the outer catch only covers a
+ * connection that could not be opened at all (createSql throws synchronously on
+ * an invalid connection string), which must stay silent as far as the mail
+ * mutation is concerned rather than surfacing as an unhandled rejection.
+ *
  * @param {import('./sentry.js').MessagesEnv} env
  * @param {ExecutionContext} ctx
  * @param {string} messageId
@@ -47,7 +52,9 @@ function reindexMessage(env, ctx, messageId) {
       } finally {
         await syncSql.end({ timeout: 2 }).catch(() => undefined);
       }
-    })(),
+    })().catch((err) => {
+      console.error('failed to index message for search:', /** @type {Error} */ (err).message);
+    }),
   );
 }
 

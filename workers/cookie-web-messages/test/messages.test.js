@@ -590,6 +590,79 @@ describe('search index invalidation', () => {
     expect(onMessageChanged).toHaveBeenCalledWith(MESSAGE_ID);
   });
 
+  test('the join-table write and the drift mark share one transaction', async () => {
+    const sql = createMockSql([
+      [{ label_id: LABEL_ID }], // INSERT ... RETURNING
+      [], // drift mark
+      [{ name: 'Work', color: '#3b82f6', kind: 'user' }], // labels read-back
+    ]);
+    /** @type {string[]} */
+    const inTransaction = [];
+    sql.begin = vi.fn(async (/** @type {(tx: any) => unknown} */ callback) => {
+      const before = sql.calls.length;
+      const result = await callback(sql);
+      inTransaction.push(...sql.calls.slice(before).map((/** @type {any} */ c) => c.text));
+      return result;
+    });
+    await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID },
+      unsubscribeDeps(),
+    );
+    expect(sql.begin).toHaveBeenCalledOnce();
+    expect(inTransaction.join('\n')).toMatch(/INSERT INTO message_labels/);
+    expect(inTransaction.join('\n')).toMatch(/UPDATE messages SET search_indexed_at = NULL/);
+    // The labels read-back is not part of the write, so it stays outside.
+    expect(inTransaction.join('\n')).not.toMatch(/JOIN labels l/);
+  });
+
+  // Search bookkeeping must never break a mail mutation. Because the mark is
+  // inside the transaction, a mark that fails rolls the label write back with
+  // it: the caller's 500 then describes a change that genuinely did not happen,
+  // instead of a committed one they will see on their next refresh.
+  test('a failing drift mark rolls the label write back rather than half-applying', async () => {
+    const onMessageChanged = vi.fn();
+    /** Writes that survived. @type {string[]} */
+    const durable = [];
+    /** @param {string[]} sink */
+    const handle = (sink) =>
+      vi.fn((/** @type {TemplateStringsArray} */ strings) => {
+        const text = strings.join('?');
+        if (/search_indexed_at/.test(text)) return Promise.reject(new Error('connection reset'));
+        sink.push(text);
+        if (/INSERT INTO message_labels/.test(text)) {
+          return Promise.resolve([{ label_id: LABEL_ID }]);
+        }
+        return Promise.resolve([]);
+      });
+    /** Anything run off `sql` itself is autocommitted. @type {any} */
+    const sql = handle(durable);
+    // postgres.js rolls back and rethrows when the callback rejects, so writes
+    // staged inside it never become durable.
+    sql.begin = vi.fn(async (/** @type {(tx: any) => unknown} */ callback) => {
+      /** @type {string[]} */
+      const staged = [];
+      const result = await callback(handle(staged));
+      durable.push(...staged);
+      return result;
+    });
+
+    await expect(
+      postMessage(
+        sql,
+        USER_ID,
+        { id: MESSAGE_ID, action: 'add_label', label_id: LABEL_ID },
+        unsubscribeDeps({ onMessageChanged }),
+      ),
+    ).rejects.toThrow('connection reset');
+    // The label change went down with the mark: the 500 the caller gets is
+    // honest, not a report on a change that had already committed.
+    expect(durable.join('\n')).not.toMatch(/message_labels/);
+    // And nothing was queued for sync on a write that never landed.
+    expect(onMessageChanged).not.toHaveBeenCalled();
+  });
+
   test('a no-op label mutation neither marks nor reindexes', async () => {
     const onMessageChanged = vi.fn();
     const sql = createMockSql([

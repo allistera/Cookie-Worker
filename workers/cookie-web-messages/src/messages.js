@@ -267,29 +267,40 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
   // ownership check to return the right 404. This closes the race where an
   // ownership change between a parallel check and the mutation could make the
   // response claim success when nothing happened.
-  const mutation =
-    action === 'add_label'
-      ? sql`
-          INSERT INTO message_labels (message_id, label_id)
-          SELECT ${messageId}, ${labelId}
-          WHERE EXISTS (
-            SELECT 1 FROM messages m WHERE m.id = ${messageId} AND m.user_id = ${userId}
-          ) AND EXISTS (
-            SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
-          )
-          ON CONFLICT DO NOTHING
-          RETURNING label_id
-        `
-      : sql`
-          DELETE FROM message_labels
-          WHERE message_id = ${messageId} AND label_id = ${labelId}
-            AND EXISTS (
+  //
+  // The drift mark shares the mutation's transaction (the same idiom labels.js
+  // uses for renames/deletes). The mark touches `messages`, not
+  // `message_labels`, so it cannot ride along on the mutation the way
+  // patchMessage's does — and running it afterwards on its own would let a
+  // failed mark turn an already-committed label change into a 500, or leave the
+  // row drifted with neither a mark nor a sync if the isolate went away between
+  // the two. In one transaction they both land or neither does.
+  const changed = await sql.begin(async (tx) => {
+    const mutationResult =
+      action === 'add_label'
+        ? await tx`
+            INSERT INTO message_labels (message_id, label_id)
+            SELECT ${messageId}, ${labelId}
+            WHERE EXISTS (
               SELECT 1 FROM messages m WHERE m.id = ${messageId} AND m.user_id = ${userId}
+            ) AND EXISTS (
+              SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
             )
-          RETURNING label_id
-        `;
-  const mutationResult = await mutation;
-  const changed = mutationResult.length > 0;
+            ON CONFLICT DO NOTHING
+            RETURNING label_id
+          `
+        : await tx`
+            DELETE FROM message_labels
+            WHERE message_id = ${messageId} AND label_id = ${labelId}
+              AND EXISTS (
+                SELECT 1 FROM messages m WHERE m.id = ${messageId} AND m.user_id = ${userId}
+              )
+            RETURNING label_id
+          `;
+    if (mutationResult.length === 0) return false;
+    await tx`UPDATE messages SET search_indexed_at = NULL WHERE id = ${messageId}`;
+    return true;
+  });
   if (!changed) {
     const [owns] = await sql`
       SELECT
@@ -309,10 +320,6 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
     // Both exist but the mutation was a no-op (duplicate add or removing a
     // non-existent join) — return the current label set, which is idempotent.
     // The document is unchanged, so there is nothing to reindex.
-  } else {
-    // The write above touched the join table, not `messages`, so the drift
-    // mark cannot ride along on it and needs its own statement.
-    await sql`UPDATE messages SET search_indexed_at = NULL WHERE id = ${messageId}`;
   }
 
   // Return the same {name, color, kind} shape the labels list endpoint uses.
