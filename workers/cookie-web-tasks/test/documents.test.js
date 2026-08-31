@@ -210,6 +210,42 @@ describe('document search engine', () => {
     expect(query.filter).toContain('starred = true');
   });
 
+  // A bare quote in a tag would terminate the Meilisearch filter string
+  // early and let the rest of the tag value run as filter syntax. Assert
+  // the escaped output directly (not by reusing meiliFilter's own regex)
+  // so a broken escape actually fails this test.
+  it('escapes a single quote in a tag filter', async () => {
+    const search = vi.fn(async () => []);
+    const sql = createMockSql([[]]);
+
+    await getDocuments(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent("tag:o'brien roof")}`),
+      deps({ hybridSearch: search }),
+    );
+
+    const query = /** @type {any} */ (search).mock.calls[0][2];
+    expect(query.filter).toContain("tags = 'o\\'brien'");
+  });
+
+  // Same for a bare backslash: unescaped, it would change how the following
+  // character (including a following quote) is interpreted.
+  it('escapes a backslash in a tag filter', async () => {
+    const search = vi.fn(async () => []);
+    const sql = createMockSql([[]]);
+
+    await getDocuments(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:back\\slash roof')}`),
+      deps({ hybridSearch: search }),
+    );
+
+    const query = /** @type {any} */ (search).mock.calls[0][2];
+    expect(query.filter).toContain("tags = 'back\\\\slash'");
+  });
+
   // A filters-only query has no relevance signal, so it sorts newest-first —
   // what the recency leg did.
   it('sorts by updated_at when there is no free text', async () => {
