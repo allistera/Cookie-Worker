@@ -84,13 +84,12 @@ export function documentsDriftPage(sql, { limit }) {
  * messages_search_drift_idx, the partial index this predicate must match
  * exactly to be used). Ordered by created_at, matching that index.
  *
- * KNOWN GAP for phase 2: because there's no updated_at to compare against,
- * an edit to an already-indexed message (e.g. an is_archived/is_starred flag
- * flip) is invisible to this query and never gets re-pushed. This matches
- * today's save-time behaviour — syncMessageToMeili only fires on
- * create/send, not on every flag change — so it's not a regression, but it
- * is a real staleness source phase 2 should close (either by adding
- * messages.updated_at, or by syncing flag changes at write time).
+ * The absence of updated_at is no longer a staleness source. Every handler
+ * that changes an indexed field now sets search_indexed_at back to NULL in
+ * the same statement (or transaction) as the change itself, so an edited
+ * row re-enters this predicate without needing a modification timestamp to
+ * compare against. The writer then syncs immediately and stamps it again;
+ * this query is what catches the ones whose sync never landed.
  *
  * @param {import('postgres').Sql} sql
  * @param {{limit: number}} page

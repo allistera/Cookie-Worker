@@ -46,7 +46,15 @@ After forwarding succeeds, the Worker starts best-effort enrichment with a fresh
 
 The scheduled handler runs every 15 minutes. It retries up to three `pending` or `failed` rows older than two minutes.
 
-Cookie-Worker's `search-drift-repair.yml` workflow reindexes rows whose `search_indexed_at` has fallen behind, and `search-reindex.yml` rebuilds an index from scratch.
+## Search indexing
+
+A message's search document is kept current by marking and sweeping. Any handler that changes an indexed field — flags, labels, the spam verdict — sets `messages.search_indexed_at` back to NULL in the same statement or transaction, then fires a best-effort sync that stamps it with the current time. A row whose sync never landed keeps its NULL and is repaired later.
+
+The same 15-minute cron that recovers enrichment also sweeps up to 200 such rows. Its log events are `search_drift_swept` (with `selected`, `indexed` and `failed` counts — check `failed`, not just the presence of the line), `search_drift_sweep_failed`, and `search_drift_sweep_misconfigured`. A non-zero `failed` also raises a handled exception in Sentry under the `search_drift_sweep` operation.
+
+Two workflows back this up: `search-drift-repair.yml` reindexes drifted rows from CI, and `search-reindex.yml` rebuilds an index from scratch. The workflow drains oldest-first while the in-Worker sweep takes newest-first, so recent mail becomes searchable quickly and a large backlog still drains from the tail.
+
+Mail sent through Cookie-Web's `api/send.js` is indexed only by the sweep: that function runs on Vercel and has no Meilisearch client, so its rows are born NULL and wait for the next tick.
 
 AI failures do not block forwarding or storage. Inspect the OpenAI response, rate limits, secret configuration, database connectivity, and migration state.
 
