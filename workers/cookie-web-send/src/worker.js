@@ -52,7 +52,7 @@ export function createSql(databaseUrl) {
  *
  * @param {import('./sentry.js').SendEnv} env
  * @param {ExecutionContext} ctx
- * @param {(sql: import('postgres').Sql) => Promise<void>} sync
+ * @param {(sql: import('postgres').Sql) => Promise<unknown>} sync
  */
 function indexAfterResponse(env, ctx, sync) {
   ctx.waitUntil(
