@@ -4,6 +4,7 @@ import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
+import { sweepSearchDrift } from './searchDriftSweep.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import {
   captureHandledException,
@@ -210,9 +211,14 @@ const worker = {
       !sqlOwnedByWaitUntil &&
       record &&
       storeResult?.outcome === 'inserted' &&
-      storeResult.messageUuid &&
-      env.OPENAI_API_KEY
+      storeResult.messageUuid
     ) {
+      // No OPENAI_API_KEY condition here: search indexing is not AI work, and
+      // gating it on the classification credential meant a rotated or missing
+      // key silently stopped all new mail from being searchable. That was
+      // survivable when Meilisearch was one leg of a three-leg search; it is
+      // the whole product now. runAiEnrichment guards the key itself.
+      //
       // Keep the ownership invariant symmetric with the store-timeout path above:
       // any waitUntil that takes sql sets this flag, even where nothing reads it back.
       // eslint-disable-next-line no-useless-assignment
@@ -238,6 +244,7 @@ const worker = {
    */
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil(recoverPendingEnrichment(env));
+    ctx.waitUntil(sweepSearchDrift(env, { createSql }));
   },
 };
 

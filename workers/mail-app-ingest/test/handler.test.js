@@ -13,6 +13,16 @@ vi.mock('postgres', () => ({
   default: vi.fn(),
 }));
 
+// Search indexing is stubbed so its call can be asserted directly: the point
+// of these tests is which paths reach it, not what it sends to Meilisearch
+// (shared/meiliSync.test.js covers that).
+const { syncMessageToMeili, syncMessagesToMeili } = vi.hoisted(() => ({
+  syncMessageToMeili: vi.fn().mockResolvedValue(undefined),
+  syncMessagesToMeili: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../../shared/meiliSync.js', () => ({ syncMessageToMeili, syncMessagesToMeili }));
+
 vi.mock('@sentry/cloudflare', () => ({
   captureException: vi.fn(),
   withSentry: vi.fn((_options, handler) => handler),
@@ -446,6 +456,21 @@ describe('email handler', () => {
     await vi.waitFor(() => expect(mockedFetch()).toHaveBeenCalledTimes(1));
   });
 
+  // Indexing used to sit behind `env.OPENAI_API_KEY` alongside classification.
+  // A rotated or missing key then stopped new mail being searchable at all,
+  // which was survivable when Meilisearch was one leg of three and is not now.
+  test('indexes an inserted message even without OPENAI_API_KEY', async () => {
+    syncMessageToMeili.mockClear();
+    postgres.mockReturnValue(sqlReturning());
+
+    await worker.email(fakeMessage(simpleFixture), env(), ctx());
+
+    await vi.waitFor(() => expect(syncMessageToMeili).toHaveBeenCalledOnce());
+    expect(typeof syncMessageToMeili.mock.calls[0][2]).toBe('string');
+    // ...and still runs no classification, which genuinely does need the key.
+    expect(mockedFetch()).not.toHaveBeenCalled();
+  });
+
   test('skips AI enrichment for duplicates and missing API keys', async () => {
     postgres.mockReturnValue(sqlReturning({ outcome: 'duplicate', messageUuid: null }));
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), ctx());
@@ -483,7 +508,9 @@ describe('scheduled recovery', () => {
     postgres.mockReturnValue(sql);
     const context = ctx();
     await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
-    expect(context.waitUntil).toHaveBeenCalledOnce();
+    // Two independent jobs share this cron: enrichment recovery and the
+    // search-drift sweep. Neither may be able to fail the other.
+    expect(context.waitUntil).toHaveBeenCalledTimes(2);
     await vi.waitFor(() => expect(sql.end).toHaveBeenCalled());
     const recoveryQuery = sql.mock.calls
       .map((call) => call[0].join('?'))
