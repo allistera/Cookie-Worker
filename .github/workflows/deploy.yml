@@ -130,9 +130,11 @@ jobs:
           secrets: |
             SENTRY_DSN
             BLOB_READ_WRITE_TOKEN
+            MEILISEARCH_API_KEY
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
 
       - name: Deploy cookie-web-notifications and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-notifications'
@@ -171,9 +173,11 @@ jobs:
           secrets: |
             OPENAI_API_KEY
             SENTRY_DSN
+            MEILISEARCH_API_KEY
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
 
       - name: Deploy cookie-web-send and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-send'
@@ -194,9 +198,11 @@ jobs:
           secrets: |
             SCHEDULED_SEND_FLUSH_TOKEN
             SENTRY_DSN
+            MEILISEARCH_API_KEY
         env:
           SCHEDULED_SEND_FLUSH_TOKEN: ${{ secrets.COOKIE_WEB_FLUSH_TOKEN }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
 
       - name: Deploy cookie-web-tasks and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-tasks'
@@ -216,11 +222,13 @@ jobs:
             ENRICHER_TRIGGER_TOKEN
             BLOB_READ_WRITE_TOKEN
             SENTRY_DSN
+            MEILISEARCH_API_KEY
         env:
           TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
           ENRICHER_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
 
       - name: Deploy mail-app-ingest and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'mail-app-ingest'
@@ -234,10 +242,12 @@ jobs:
             OPENAI_API_KEY
             SENTRY_DSN
             BLOB_READ_WRITE_TOKEN
+            MEILISEARCH_API_KEY
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
 
       - name: Deploy data-enricher and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'data-enricher'
