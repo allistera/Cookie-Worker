@@ -24,9 +24,6 @@ function deps(overrides = {}) {
     embedText: vi.fn(async () => {
       throw new Error('embedText should not be called when allowRequest denies');
     }),
-    embedTextCached: vi.fn(async () => {
-      throw new Error('embedTextCached should not be called in these tests');
-    }),
     env: {},
     hybridSearch: vi.fn(async () => {
       throw new Error('hybridSearch should not be called in these tests');
@@ -99,28 +96,7 @@ describe('GET /documents', () => {
   });
 });
 
-// keywordLeg/recencyLeg/vectorLeg (documentRetrieval.js) compose nested sql
-// fragments; this file's createMockSql executes every array-tagged call as a
-// real, queue-consuming query and has no concept of a fragment nested inside
-// another template, so it can't fake those legs' output. Covered instead at
-// the SQL-building level in documentRetrieval.test.js. Only the guard
-// clauses that return before any leg runs are covered here.
 describe('GET /documents?q=… (search)', () => {
-  it('429s when the shared ai quota is exhausted', async () => {
-    // engine=postgres: the AI quota check only guards the Postgres legs'
-    // embedTextCached call — Meilisearch (the default engine) does its own
-    // embedding server-side and never touches this worker's quota.
-    const sql = createMockSql();
-    const response = await getDocuments(
-      sql,
-      USER_ID,
-      url('?q=roadmap&engine=postgres'),
-      deps({ openaiApiKey: 'sk-test' }),
-    );
-    expect(response.status).toBe(429);
-    expect(sql).not.toHaveBeenCalled();
-  });
-
   it('rejects an oversized query', async () => {
     const sql = createMockSql();
     const response = await getDocuments(sql, USER_ID, url(`?q=${'x'.repeat(501)}`), deps());
@@ -143,30 +119,10 @@ describe('GET /documents?q=… (search)', () => {
     expect(await response.json()).toEqual({ documents: [] });
     expect(sql).not.toHaveBeenCalled();
   });
-
-  it('treats an unrecognized operator value as free text rather than a filter', async () => {
-    // engine=postgres: exercises the keyword leg directly, which the
-    // Meilisearch default engine does not touch.
-    const sql = createMockSql();
-    const response = await getDocuments(
-      sql,
-      USER_ID,
-      url('?q=is:archived&mode=keyword&engine=postgres'),
-      deps(),
-    );
-    // 'is:archived' isn't a recognized is: value, so it stays in spec.text
-    // and the keyword leg actually runs, rather than short-circuiting to an
-    // empty result set the way an empty query does.
-    expect(response.status).toBe(200);
-    expect(sql).toHaveBeenCalled();
-  });
 });
 
-// The Meilisearch path is the default engine; engine=postgres (covered
-// above) is the soak-period comparison handle onto the unchanged three-leg
-// path, never a fallback.
 describe('document search engine', () => {
-  it('searches Meilisearch by default', async () => {
+  it('searches Meilisearch', async () => {
     const search = vi.fn(async () => [{ id: DOC_ID }]);
     const sql = createMockSql([[{ id: DOC_ID, title: 'Roof' }]]);
 
@@ -179,20 +135,6 @@ describe('document search engine', () => {
 
     expect(response.status).toBe(200);
     expect(search).toHaveBeenCalledTimes(1);
-  });
-
-  it('uses the Postgres legs when engine=postgres is asked for', async () => {
-    const search = vi.fn(async () => []);
-    const sql = createMockSql([[], [], [], []]);
-
-    await getDocuments(
-      sql,
-      USER_ID,
-      url('?q=roof&engine=postgres'),
-      deps({ hybridSearch: search }),
-    );
-
-    expect(search).not.toHaveBeenCalled();
   });
 
   it('passes tag and starred filters to Meilisearch', async () => {

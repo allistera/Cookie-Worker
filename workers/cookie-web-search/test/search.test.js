@@ -1,8 +1,4 @@
-// Unit tests for handleSearch's engine switch: Meilisearch by default,
-// &engine=postgres selecting the old three-leg path unchanged (the
-// soak-period comparison handle, never a fallback). Mirrors
-// cookie-web-tasks/test/documents.test.js's "document search engine" block,
-// the established pattern for this exact switch.
+// Unit tests for handleSearch, served by Meilisearch.
 import { describe, expect, it, vi } from 'vitest';
 
 import { handleSearch } from '../src/search.js';
@@ -10,10 +6,7 @@ import { MESSAGES_INDEX } from '../../../shared/meili.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
-// No OPENAI_API_KEY: keeps the engine=postgres assertions focused on the
-// engine switch itself, not the semantic-leg/AI-quota branch (already
-// covered by worker.test.js), and Meilisearch embeds server-side so the
-// default engine never needs it either.
+// No OPENAI_API_KEY needed: Meilisearch embeds server-side.
 const ENV = /** @type {any} */ ({});
 
 /** @param {string} [query] */
@@ -38,7 +31,7 @@ function mockSearch(impl) {
 }
 
 describe('message search engine', () => {
-  it('searches Meilisearch by default', async () => {
+  it('searches Meilisearch', async () => {
     const search = mockSearch(async () => [{ id: 'm1' }]);
     const sql = createMockSql([[{ id: 'm1' }]]);
 
@@ -52,25 +45,6 @@ describe('message search engine', () => {
 
     expect(response.status).toBe(200);
     expect(search).toHaveBeenCalledTimes(1);
-  });
-
-  // The comparison handle for the soak. Not a fallback: only an explicit
-  // engine=postgres reaches the old legs.
-  it('uses the Postgres legs when engine=postgres is asked for', async () => {
-    const search = mockSearch(async () => []);
-    const sql = createMockSql([[]]);
-
-    const response = await handleSearch(
-      sql,
-      USER_ID,
-      url('?q=roof&engine=postgres'),
-      ENV,
-      deps({ hybridSearch: search }),
-    );
-
-    expect(response.status).toBe(200);
-    expect(search).not.toHaveBeenCalled();
-    expect(sql).toHaveBeenCalled();
   });
 
   // Was substring in Postgres; exact in Meilisearch, per the spec —
@@ -117,8 +91,8 @@ describe('message search engine', () => {
   // Every in: value queryParse.js's FOLDERS recognizes {inbox, sent, spam,
   // snoozed, done, all}, end to end through parseSearchQuery ->
   // meiliMessageFilter — the unit-level mapping is asserted exhaustively in
-  // shared/test/meili.test.js against retrieval.js's folderClause; these
-  // confirm handleSearch actually wires the parsed `in:` value through.
+  // shared/test/meili.test.js; these confirm handleSearch actually wires the
+  // parsed `in:` value through.
   it.each([
     ['in:done', 'is_archived = true'],
     ['in:sent', 'is_sent = true'],
@@ -160,8 +134,7 @@ describe('message search engine', () => {
     expect(query.filter).toContain('is_archived = false');
   });
 
-  // No in: filter at all excludes Done mail too — not just trashed mail —
-  // matching retrieval.js's folderClause default.
+  // No in: filter at all excludes Done mail too — not just trashed mail.
   it('excludes archived (Done) mail when there is no in: filter', async () => {
     const search = mockSearch(async () => []);
     const sql = createMockSql([[]]);
@@ -293,8 +266,7 @@ describe('message search engine', () => {
     expect(MESSAGES_INDEX.semanticRatio).toBe(0.5);
   });
 
-  // Meilisearch is required: a failure is an error, not a silent fallback to
-  // Postgres.
+  // Meilisearch is required: a failure is an error, not a silent fallback.
   it('returns 503 when Meilisearch fails', async () => {
     const search = mockSearch(async () => {
       throw new Error('meili down');
@@ -313,8 +285,7 @@ describe('message search engine', () => {
     expect(sql).not.toHaveBeenCalled();
   });
 
-  // Both engines hydrate through the same fetchSearchEmails query, so the
-  // response shape never depends on which engine produced the ids.
+  // Meilisearch hits carry only ids; the response is hydrated from Postgres.
   it('hydrates Meilisearch hits from Postgres by id', async () => {
     const search = mockSearch(async () => [{ id: 'm1' }, { id: 'm2' }]);
     const sql = createMockSql([[{ id: 'm1' }, { id: 'm2' }]]);

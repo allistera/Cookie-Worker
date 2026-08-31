@@ -17,9 +17,7 @@ import { normalizeDocumentTags } from './documentTags.js';
 import { resolveDailyNoteEventDate, syncDailyNoteEvents } from './dailyEventSync.js';
 import { removeDocumentFromMeili, syncDocumentToMeili } from './documentMeiliSync.js';
 import { flattenBlocksToText } from './documentText.js';
-import { keywordLeg, recencyLeg, vectorLeg } from './documentRetrieval.js';
 import { parseDocumentSearchQuery } from './queryParse.js';
-import { fuseRankings } from './rankFusion.js';
 import { EMBEDDING_MODEL } from './embeddings.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,10 +28,7 @@ export const MAX_EMOJI_LENGTH = 16;
 export const MAX_BLOCKS_BYTES = 4 * 1024 * 1024;
 
 const MAX_SEARCH_QUERY_CHARS = 500;
-const SEARCH_CANDIDATES = 40; // per leg, before fusion
 const SEARCH_RESULTS = 20;
-// Shared with every other user-triggered AI route.
-const SEARCH_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 // A dedicated, more generous bucket for the save-time embedding call: it's an
 // autosave side effect, not a user-initiated AI action, so a heavy editing
 // session must not starve concurrent search/ask/compose requests from the
@@ -49,7 +44,6 @@ const EMBED_TIMEOUT_MS = 5000;
  *   openaiApiKey: string | undefined,
  *   allowRequest: (sql: import('postgres').Sql, userId: string, scope: string, policy: {limit: number, windowMs: number}) => Promise<boolean>,
  *   embedText: (text: string, apiKey: string, options?: {signal?: AbortSignal}) => Promise<number[]>,
- *   embedTextCached: (text: string, apiKey: string) => Promise<number[]>,
  *   env: any,
  *   hybridSearch: (env: any, descriptor: any, query: {userId: string, text?: string, filter?: string, limit: number, semanticRatio?: number, sort?: string[]}, client?: any) => Promise<{id: string}[]>,
  * }} DocumentsDeps
@@ -127,7 +121,7 @@ export function fetchTemplate(sql, userId, id) {
   `;
 }
 
-// Fetches the fused search result ids in one list-shaped query, matching
+// Fetches the Meilisearch result ids in one list-shaped query, matching
 // fetchWorkspace's row shape — blocks are never loaded for a result list, the
 // same rule every other document list endpoint follows.
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string[]} ids */
@@ -239,10 +233,10 @@ export async function getDocuments(sql, userId, url, deps) {
   return Response.json({ folders, documents });
 }
 
-// GET /documents?q=…[&mode=keyword] — hybrid (keyword + semantic) search
-// over the caller's documents, fused with reciprocal rank fusion.
-// mode=keyword is the lower-latency type-ahead path and skips embeddings.
-// Response shape matches the workspace list (no blocks).
+// GET /documents?q=…[&mode=keyword] — hybrid (keyword + semantic) search over
+// the caller's documents, served by Meilisearch. mode=keyword is the
+// lower-latency type-ahead path and skips embeddings. Response shape matches
+// the workspace list (no blocks).
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -266,82 +260,11 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
 
   const semantic = url.searchParams.get('mode') !== 'keyword';
 
-  // engine=postgres is the soak-period comparison handle, not a fallback: it
-  // is never selected automatically, and phase 2 deletes it along with the
-  // legs it reaches.
-  const engine = url.searchParams.get('engine') === 'postgres' ? 'postgres' : 'meili';
-  if (engine === 'meili') {
-    return await searchViaMeili(sql, userId, spec, semantic, deps);
-  }
-
-  // Only hybrid search spends AI quota. Keyword-only type-ahead remains a
-  // normal authenticated database query and cannot exhaust the shared AI
-  // allowance merely because a user paused while typing.
-  if (semantic && spec.text && deps.openaiApiKey) {
-    let allowed;
-    try {
-      allowed = await deps.allowRequest(sql, userId, 'ai', SEARCH_RATE_LIMIT);
-    } catch (err) {
-      console.log(
-        JSON.stringify({
-          event: 'document_search_quota_failed',
-          message: /** @type {Error} */ (err).message,
-        }),
-      );
-      return Response.json({ error: 'Search is temporarily unavailable' }, { status: 503 });
-    }
-    if (!allowed) {
-      return Response.json({ error: 'Too many searches, slow down' }, { status: 429 });
-    }
-  }
-
-  // Semantic leg is best-effort: no key, no free text, or an OpenAI failure
-  // degrades to keyword/recency search rather than failing the request.
-  const semanticIds = async () => {
-    if (!semantic || !spec.text || !deps.openaiApiKey) return [];
-    try {
-      const vector = JSON.stringify(await deps.embedTextCached(spec.text, deps.openaiApiKey));
-      return await vectorLeg(sql, userId, vector, spec.filters, SEARCH_CANDIDATES);
-    } catch (err) {
-      console.log(
-        JSON.stringify({
-          event: 'document_search_vector_leg_failed',
-          message: /** @type {Error} */ (err).message,
-        }),
-      );
-      return [];
-    }
-  };
-
-  // Free-text queries rank purely by relevance (keyword + semantic);
-  // recency is only the keyword leg's tie-breaker. A filters-only query has
-  // no relevance signal, so it falls back to the recency leg newest-first.
-  const keywordIds = spec.text
-    ? keywordLeg(sql, userId, spec, SEARCH_CANDIDATES)
-    : Promise.resolve([]);
-  const recencyIds = spec.text
-    ? Promise.resolve([])
-    : recencyLeg(sql, userId, spec, SEARCH_CANDIDATES);
-
-  const [keywordRows, recencyRows, vectorRows] = await Promise.all([
-    keywordIds,
-    recencyIds,
-    semanticIds(),
-  ]);
-
-  const ids = fuseRankings([
-    keywordRows.map((/** @type {any} */ r) => r.id),
-    recencyRows.map((/** @type {any} */ r) => r.id),
-    vectorRows.map((/** @type {any} */ r) => r.id),
-  ]).slice(0, SEARCH_RESULTS);
-
-  return await respondWithDocuments(sql, userId, ids);
+  return await searchViaMeili(sql, userId, spec, semantic, deps);
 }
 
-// Hydrates a fused/Meilisearch id list into full document rows (in id order)
-// and wraps them in the search response shape. Shared by both engines so a
-// Postgres-vs-Meilisearch comparison is only ever a difference in which ids
-// come back, never in the response shape.
+// Hydrates a Meilisearch id list into full document rows (in id order) and
+// wraps them in the search response shape.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -370,10 +293,9 @@ function meiliFilter(filters) {
   return parts.join(' AND ') || undefined;
 }
 
-// The Meilisearch leg of document search. hits carry only ids
-// (attributesToRetrieve inside hybridSearch), so the rows still come from
-// Postgres via respondWithDocuments — the same hydration the Postgres legs
-// use, so both engines return byte-identical response shapes.
+// Document search. hits carry only ids (attributesToRetrieve inside
+// hybridSearch), so the rows still come from Postgres via
+// respondWithDocuments.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId

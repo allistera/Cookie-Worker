@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 // Routing/CORS/auth/quota wiring is what this file tests — including the
-// quota-ordering guarantees Cookie-Web pinned in ai-quota-validation.test.js:
-// invalid input must never spend AI quota, and keyword-only search must not
-// either.
+// quota-ordering guarantee Cookie-Web pinned in ai-quota-validation.test.js:
+// invalid /ask input must never spend AI quota. GET /search never claims AI
+// quota at all: Meilisearch embeds/ranks server-side.
 const mockQuery = vi.fn(
   /** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])),
 );
@@ -123,52 +123,11 @@ describe('GET /search', () => {
     expect(mockQuery).toHaveBeenCalled(); // hydration by id
   });
 
-  test('answers 503 when Meilisearch fails, rather than falling back to Postgres', async () => {
+  test('answers 503 when Meilisearch fails', async () => {
     hybridSearch.mockRejectedValue(new Error('meili down'));
     const response = await worker.fetch(request('/search?q=invoice'), env, ctx);
     expect(response.status).toBe(503);
     expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  // engine=postgres is the soak-period comparison handle onto the old
-  // three-leg path — never automatic, and the only way these Postgres-only
-  // behaviours (AI quota, keyword/recency legs) are still reachable.
-  test('keyword mode searches without claiming AI quota', async () => {
-    const response = await worker.fetch(
-      request('/search?q=invoice&mode=keyword&engine=postgres'),
-      env,
-      ctx,
-    );
-    expect(response.status).toBe(200);
-    expect(allowRequest).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalled();
-    expect(hybridSearch).not.toHaveBeenCalled();
-  });
-
-  test('a filters-only query uses the recency leg without claiming quota', async () => {
-    const response = await worker.fetch(
-      request('/search?q=tag:Personal&engine=postgres'),
-      env,
-      ctx,
-    );
-    expect(response.status).toBe(200);
-    expect(allowRequest).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalled();
-  });
-
-  test('hybrid free-text search claims the shared ai scope', async () => {
-    await worker.fetch(request('/search?q=invoice&engine=postgres'), env, ctx);
-    expect(allowRequest).toHaveBeenCalledWith(expect.anything(), 'user-1', 'ai', {
-      limit: 10,
-      windowMs: 60_000,
-    });
-  });
-
-  test('answers 429 when the quota is exhausted', async () => {
-    allowRequest.mockResolvedValue(false);
-    const response = await worker.fetch(request('/search?q=invoice&engine=postgres'), env, ctx);
-    expect(response.status).toBe(429);
-    expect(await response.json()).toEqual({ error: 'Too many searches, slow down' });
   });
 
   test('a POST to /search returns 405', async () => {
@@ -260,23 +219,6 @@ describe('POST /ask', () => {
     );
     expect(response.status).toBe(503);
     expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  // engine=postgres is Ask's comparison handle onto the old keyword+vector
-  // retrieval, mirroring handleSearch's &engine=postgres — read from the
-  // body since Ask has no query string.
-  test('uses the Postgres legs when {"engine": "postgres"} is asked for', async () => {
-    const response = await worker.fetch(
-      request('/ask', {
-        method: 'POST',
-        body: JSON.stringify({ question: 'anything new?', engine: 'postgres' }),
-      }),
-      env,
-      ctx,
-    );
-    expect(response.status).toBe(200);
-    expect(hybridSearch).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalled();
   });
 
   test('a GET to /ask returns 405', async () => {

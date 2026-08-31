@@ -21,11 +21,11 @@ export function createSql(databaseUrl) {
 
 /**
  * Routes GET /search and POST /ask — Cookie-Web's api/search.js and
- * api/ask.js, sharing this Worker because they share the hybrid-retrieval
- * stack (queryParse/retrieval/rankFusion/embeddings) and the 'ai' quota.
- * Quota is claimed inside each handler, not here: search only spends quota
- * on the semantic path, and ask validates its body first — both orderings
- * are load-bearing and match the originals.
+ * api/ask.js, sharing this Worker because they share Meilisearch retrieval
+ * (queryParse/meili) and, for ask, the 'ai' quota. Quota is claimed inside
+ * handleAsk, not here: search never spends AI quota (Meilisearch embeds
+ * server-side), and ask validates its body first — both orderings are
+ * load-bearing and match the originals.
  *
  * @param {URL} url
  * @param {Request} request

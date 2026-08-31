@@ -2,11 +2,9 @@
 // queries, same validation and quota order, same response shapes/status
 // codes) — only the (req, res) mutation style becomes returning a Response,
 // and configuration comes from the Worker env instead of process.env.
+// Retrieval is served by Meilisearch unconditionally: the old three-leg
+// Postgres path and its engine=postgres comparison handle are gone.
 
-import { allowRequest } from '../../../shared/rate-limit.js';
-import { embedTextCached } from '../../../shared/embeddings.js';
-import { fuseRankings } from './rankFusion.js';
-import { keywordLeg, recencyLeg, vectorLeg } from './retrieval.js';
 import { parseSearchQuery } from './queryParse.js';
 import {
   MESSAGES_INDEX,
@@ -15,9 +13,7 @@ import {
 } from '../../../shared/meili.js';
 
 const MAX_QUERY_CHARS = 500;
-const CANDIDATES = 40; // per leg, before fusion
 const RESULTS = 20;
-const RATE_LIMIT = { limit: 10, windowMs: 60_000 }; // shared with all user-triggered AI routes
 
 /**
  * @typedef {{
@@ -67,10 +63,8 @@ export function fetchSearchEmails(sql, userId, ids) {
   `;
 }
 
-// Hydrates a fused/Meilisearch id list into full email rows (in id order) and
-// wraps them in the search response shape. Shared by both engines so a
-// Postgres-vs-Meilisearch comparison is only ever a difference in which ids
-// come back, never in the response shape.
+// Hydrates a Meilisearch id list into full email rows (in id order) and
+// wraps them in the search response shape.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -86,12 +80,10 @@ async function respondWithEmails(sql, userId, ids) {
   return Response.json({ emails });
 }
 
-// The Meilisearch leg of message search. hits carry only ids
-// (attributesToRetrieve inside hybridSearch), so the rows still come from
-// Postgres via respondWithEmails — the same hydration the Postgres legs use,
-// so both engines return byte-identical response shapes. Meilisearch is
-// required: a failure here is an error (503), never a silent fallback to the
-// Postgres legs below.
+// Message search. hits carry only ids (attributesToRetrieve inside
+// hybridSearch), so the rows still come from Postgres via respondWithEmails.
+// Meilisearch is required: a failure here is an error (503), never a silent
+// fallback.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -134,11 +126,9 @@ async function searchViaMeili(sql, userId, spec, env, semantic, deps) {
 
 /**
  * GET /search?q=… — hybrid (keyword + semantic) search over the authenticated
- * user's messages, served by Meilisearch by default; &engine=postgres selects
- * the old three-leg Postgres path unchanged, as a soak-period comparison
- * handle — never selected automatically, and never a fallback: a Meilisearch
- * failure returns 503 rather than degrading to Postgres. Response shape
- * matches the emails Worker's GET /emails on both engines.
+ * user's messages, served by Meilisearch. A Meilisearch failure returns 503
+ * rather than degrading to anything else. Response shape matches the emails
+ * Worker's GET /emails.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -163,66 +153,5 @@ export async function handleSearch(sql, userId, url, env, deps = DEFAULT_DEPS) {
     return Response.json({ emails: [] });
   }
 
-  // engine=postgres is the soak-period comparison handle, not a fallback: it
-  // is never selected automatically, and phase 2 deletes it along with the
-  // legs it reaches.
-  const engine = url.searchParams.get('engine') === 'postgres' ? 'postgres' : 'meili';
-  if (engine === 'meili') {
-    return await searchViaMeili(sql, userId, spec, env, semantic, deps);
-  }
-
-  // Only hybrid search spends AI quota. Keyword-only type-ahead remains a
-  // normal authenticated database query and cannot exhaust the shared AI
-  // allowance merely because a user paused while typing.
-  if (semantic && spec.text && env.OPENAI_API_KEY) {
-    let allowed;
-    try {
-      allowed = await allowRequest(sql, userId, 'ai', RATE_LIMIT);
-    } catch (err) {
-      console.error('GET /search quota enforcement failed:', /** @type {Error} */ (err).message);
-      return Response.json({ error: 'Search is temporarily unavailable' }, { status: 503 });
-    }
-    if (!allowed) {
-      return Response.json({ error: 'Too many searches, slow down' }, { status: 429 });
-    }
-  }
-
-  try {
-    // Semantic leg is best-effort: no key, no free text, or an OpenAI failure
-    // degrades to keyword/recency search rather than failing the request.
-    const semanticIds = async () => {
-      if (!semantic || !spec.text || !env.OPENAI_API_KEY) return [];
-      try {
-        const vector = JSON.stringify(await embedTextCached(spec.text, env.OPENAI_API_KEY));
-        return await vectorLeg(sql, userId, vector, spec.filters, CANDIDATES);
-      } catch (err) {
-        console.error('GET /search vector leg failed:', /** @type {Error} */ (err).message);
-        return [];
-      }
-    };
-
-    // Free-text queries rank purely by relevance (keyword + semantic); recency
-    // is only the keyword leg's tie-breaker, so results are not date-sorted. A
-    // filters-only query has no relevance signal, so it falls back to the
-    // recency leg ordered newest-first.
-    const keywordIds = spec.text ? keywordLeg(sql, userId, spec, CANDIDATES) : Promise.resolve([]);
-    const recencyIds = spec.text ? Promise.resolve([]) : recencyLeg(sql, userId, spec, CANDIDATES);
-
-    const [keywordRows, recencyRows, vectorRows] = await Promise.all([
-      keywordIds,
-      recencyIds,
-      semanticIds(),
-    ]);
-
-    const ids = fuseRankings([
-      keywordRows.map((/** @type {{id: string}} */ r) => r.id),
-      recencyRows.map((/** @type {{id: string}} */ r) => r.id),
-      vectorRows.map((/** @type {{id: string}} */ r) => r.id),
-    ]).slice(0, RESULTS);
-
-    return await respondWithEmails(sql, userId, ids);
-  } catch (err) {
-    console.error('GET /search failed:', err);
-    return Response.json({ error: 'Search failed' }, { status: 500 });
-  }
+  return await searchViaMeili(sql, userId, spec, env, semantic, deps);
 }
