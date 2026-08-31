@@ -77,7 +77,20 @@ export function documentsDriftPage(sql, { limit }) {
 }
 
 /**
- * Drift page for messages, same shape as documentsDriftPage.
+ * Drift page for messages. Unlike documentsDriftPage, this can only ask for
+ * "never indexed" — messages has no updated_at column (Cookie-Web migration
+ * 0001 gives messages only created_at; see Cookie-Web migration
+ * 0055_search_indexed_at.sql for the full explanation and
+ * messages_search_drift_idx, the partial index this predicate must match
+ * exactly to be used). Ordered by created_at, matching that index.
+ *
+ * KNOWN GAP for phase 2: because there's no updated_at to compare against,
+ * an edit to an already-indexed message (e.g. an is_archived/is_starred flag
+ * flip) is invisible to this query and never gets re-pushed. This matches
+ * today's save-time behaviour — syncMessageToMeili only fires on
+ * create/send, not on every flag change — so it's not a regression, but it
+ * is a real staleness source phase 2 should close (either by adding
+ * messages.updated_at, or by syncing flag changes at write time).
  *
  * @param {import('postgres').Sql} sql
  * @param {{limit: number}} page
@@ -98,9 +111,9 @@ export function messagesDriftPage(sql, { limit }) {
     LEFT JOIN message_labels ml ON ml.message_id = m.id
     LEFT JOIN labels l ON l.id = ml.label_id
     LEFT JOIN message_ai ai ON ai.message_id = m.id
-    WHERE m.search_indexed_at IS NULL OR m.search_indexed_at < m.updated_at
+    WHERE m.search_indexed_at IS NULL
     GROUP BY m.id, ai.spam_verdict
-    ORDER BY m.updated_at
+    ORDER BY m.created_at
     LIMIT ${limit}
   `;
 }

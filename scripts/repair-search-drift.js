@@ -1,8 +1,15 @@
 // Re-pushes rows Meilisearch never received. A save-time sync failure
 // (syncMessageToMeili/syncDocumentToMeili swallow their own errors so a
 // document/message save is never blocked by search indexing) leaves
-// search_indexed_at behind updated_at; this is the only thing that repairs
-// it. Run weekly by .github/workflows/search-drift-repair.yml.
+// search_indexed_at NULL, or — for documents only, which has updated_at —
+// behind the row's last edit; this is the only thing that repairs it. Run
+// weekly by .github/workflows/search-drift-repair.yml.
+//
+// messages has no updated_at column, so scripts/lib/queries.js's
+// messagesDriftPage can only detect "never indexed", not "indexed but since
+// edited" — see that function's own comment for the resulting gap (a flag
+// change like is_archived won't be re-pushed) and Cookie-Web migration
+// 0055_search_indexed_at.sql for why the two tables' partial indexes differ.
 //
 // Each Meilisearch push gets three attempts with exponential backoff,
 // retrying only on 5xx and network errors — a 4xx means we sent something

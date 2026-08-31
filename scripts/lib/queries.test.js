@@ -90,11 +90,18 @@ describe('documentsDriftPage', () => {
 });
 
 describe('messagesDriftPage', () => {
-  it('selects rows never indexed or indexed before their last update', () => {
+  // messages has no updated_at column (see Cookie-Web migration
+  // 0055_search_indexed_at.sql), so unlike documents this can only ask for
+  // never-indexed rows — and must match messages_search_drift_idx's
+  // predicate/ordering exactly (search_indexed_at IS NULL, keyed on
+  // created_at) or that partial index won't be used.
+  it('selects only never-indexed rows, ordered by created_at', () => {
     const { sql, render } = makeSql();
     const q = render(messagesDriftPage(sql, { limit: 500 }));
-    expect(q).toContain('m.search_indexed_at IS NULL OR m.search_indexed_at < m.updated_at');
-    expect(q).toContain('ORDER BY m.updated_at');
+    expect(q).toContain('m.search_indexed_at IS NULL');
+    expect(q).not.toContain('search_indexed_at <');
+    expect(q).not.toContain('m.updated_at');
+    expect(q).toContain('ORDER BY m.created_at');
   });
 
   it('joins message_ai and aggregates labels, like meiliSync.js', () => {
