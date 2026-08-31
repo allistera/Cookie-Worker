@@ -31,7 +31,10 @@ jobs:
       - name: Repair search index drift
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          MEILISEARCH_URL: ${{ secrets.MEILISEARCH_URL }}
+          # Not a secret: the same endpoint is committed in three wrangler.jsonc
+          # files. Keeping it inline means one less secret to provision, and one
+          # less way for this job to fail silently on a missing value.
+          MEILISEARCH_URL: https://ms-52028f71df74-53700.lon.meilisearch.io
           MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node scripts/repair-search-drift.js

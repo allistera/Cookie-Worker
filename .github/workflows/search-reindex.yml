@@ -1,0 +1,67 @@
+name: Search Reindex
+
+# Manual only, and deliberately so. This configures each index's embedder and
+# pushes every row through it, which means Meilisearch calls OpenAI to embed the
+# entire corpus — slow, and it costs real money. It is needed once at cutover,
+# and again after any change to a descriptor's settings or documentTemplate,
+# because nothing else in the system calls configureIndex.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which index to reindex
+        required: true
+        default: documents
+        type: choice
+        options:
+          - documents
+          - messages
+          - both
+      confirm:
+        description: Type "reindex" to confirm — this re-embeds the whole corpus at cost
+        required: true
+        type: string
+
+concurrency:
+  group: search-reindex
+  cancel-in-progress: false
+
+jobs:
+  reindex:
+    name: Reindex ${{ inputs.target }}
+    runs-on: ubuntu-latest
+
+    steps:
+      # Guard first, before checkout: a mistyped confirmation should cost
+      # nothing and take no runner time.
+      - name: Check confirmation
+        if: inputs.confirm != 'reindex'
+        run: |
+          echo "::error::Confirmation not given. Re-run and type 'reindex' in the confirm field."
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Reindex
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MEILISEARCH_URL: https://ms-52028f71df74-53700.lon.meilisearch.io
+          MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ "${{ inputs.target }}" = "both" ]; then
+            node scripts/reindex-meili.js documents
+            node scripts/reindex-meili.js messages
+          else
+            node scripts/reindex-meili.js "${{ inputs.target }}"
+          fi
