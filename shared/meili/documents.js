@@ -1,9 +1,9 @@
 import { EMBEDDER } from './embedder.js';
 
 /**
- * The documents index. Attributes come from what documentRetrieval.js reads
- * today — id, user_id, title, tags, starred, updated_at — plus content_text,
- * the flattened body flattenBlocksToText already produces.
+ * The documents index — id, user_id, title, tags, starred, updated_at, plus
+ * content_text, the flattened body flattenBlocksToText already produces
+ * (see toDocument below for the exact shape each attribute maps to).
  */
 export const DOCUMENTS_INDEX = {
   name: 'documents',

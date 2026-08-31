@@ -2,10 +2,11 @@ import { EMBEDDER } from './embedder.js';
 
 /**
  * The messages index. Attributes, ranking rules, and the document mapping
- * are lifted verbatim from the previous configureMeiliIndex/buildMeiliDocument
- * in shared/meili.js so this refactor changes nothing about how messages are
- * indexed or ranked. The embedder is new: hybrid search did not exist before
- * this migration, so there is no prior behaviour to preserve there.
+ * were originally lifted verbatim from a pre-descriptor configure/build path
+ * in shared/meili.js (since removed) so that migration changed nothing about
+ * how messages are indexed or ranked. The embedder is new: hybrid search did
+ * not exist before that migration, so there was no prior behaviour to
+ * preserve there.
  *
  * @param {Record<string, unknown>} message row from Postgres, including
  *   `body_text`, `recipients` as jsonb ({to, cc, bcc} arrays), and an
@@ -43,14 +44,12 @@ export const MESSAGES_INDEX = {
     ...EMBEDDER,
     documentTemplate: '{{doc.subject}}\n\n{{doc.body}}',
   },
-  // Lifted unchanged from buildMeiliDocument (kept in sync with it — see
-  // that function's own comment): recipients is a jsonb object shaped
-  // {to, cc, bcc}, each an array of strings or {name, address} objects, and
-  // to_name/to_address are filterable/searchable arrays (not joined
-  // strings). is_spam/scheduled_for were added to let meiliMessageFilter
-  // reproduce retrieval.js's folderClause exactly for in:spam/snoozed/inbox
-  // — is_spam comes from message_ai.spam_verdict (absent/non-'spam' means
-  // false, matching folderClause's COALESCE(ai.spam_verdict, 'inbox')), and
+  // recipients is a jsonb object shaped {to, cc, bcc}, each an array of
+  // strings or {name, address} objects, and to_name/to_address are
+  // filterable/searchable arrays (not joined strings). is_spam/scheduled_for
+  // exist to let meiliMessageFilter reproduce the folder-filter table in
+  // meili.js exactly for in:spam/snoozed/inbox — is_spam comes from
+  // message_ai.spam_verdict (absent/non-'spam' means false), and
   // scheduled_for is epoch seconds like sent_at, with 0 standing in for
   // NULL so `scheduled_for <= now` alone covers Postgres's
   // "IS NULL OR <= now()".

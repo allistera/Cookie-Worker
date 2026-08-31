@@ -26,25 +26,6 @@ export function createMockMeili(responses = {}) {
       calls.push({ index: name, method: 'search', args: { text, params } });
       return responses.search ?? { hits: [] };
     }),
-    // The legacy per-attribute update* calls configureMeiliIndex makes
-    // (superseded by updateSettings/configureIndex, but kept — and still
-    // tested — per the plan's "delete nothing" rule).
-    updateSearchableAttributes: vi.fn(async (args) => {
-      calls.push({ index: name, method: 'updateSearchableAttributes', args });
-      return { taskUid: 4 };
-    }),
-    updateFilterableAttributes: vi.fn(async (args) => {
-      calls.push({ index: name, method: 'updateFilterableAttributes', args });
-      return { taskUid: 5 };
-    }),
-    updateSortableAttributes: vi.fn(async (args) => {
-      calls.push({ index: name, method: 'updateSortableAttributes', args });
-      return { taskUid: 6 };
-    }),
-    updateRankingRules: vi.fn(async (args) => {
-      calls.push({ index: name, method: 'updateRankingRules', args });
-      return { taskUid: 7 };
-    }),
   });
   return { client: { index }, calls };
 }

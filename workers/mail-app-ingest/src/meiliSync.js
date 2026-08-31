@@ -1,11 +1,12 @@
-import { addMeiliDocuments, buildMeiliDocument, meiliAvailable } from '../../../shared/meili.js';
+import { addDocuments, meiliAvailable } from '../../../shared/meili.js';
+import { MESSAGES_INDEX } from '../../../shared/meili/messages.js';
 
 /**
  * Best-effort sync of one message to Meilisearch. Reads the authoritative row
  * from Postgres (including labels and, via a LEFT JOIN message_ai, the spam
- * verdict buildMeiliDocument needs for is_spam) and pushes a document.
- * Failures are logged and ignored so that message delivery/forwarding is
- * never blocked by search.
+ * verdict MESSAGES_INDEX.toDocument needs for is_spam) and pushes a
+ * document. Failures are logged and ignored so that message
+ * delivery/forwarding is never blocked by search.
  *
  * @param {import('postgres').Sql} sql
  * @param {any} env
@@ -51,8 +52,7 @@ export async function syncMessageToMeili(sql, env, messageUuid) {
       return;
     }
 
-    const document = buildMeiliDocument(row);
-    const result = await addMeiliDocuments(env, [document]);
+    const result = await addDocuments(env, MESSAGES_INDEX, [row]);
     await sql`UPDATE messages SET search_indexed_at = now() WHERE id = ${messageUuid}`;
     console.log(
       JSON.stringify({

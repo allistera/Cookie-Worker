@@ -4,9 +4,7 @@ import { createMockMeili } from './meiliClient.js';
 import {
   MESSAGES_INDEX,
   addDocuments,
-  buildMeiliDocument,
   configureIndex,
-  configureMeiliIndex,
   deleteDocuments,
   hybridSearch,
   meiliMessageFilter,
@@ -15,11 +13,11 @@ import {
 const ENV = { MEILISEARCH_URL: 'https://meili.test', MEILISEARCH_API_KEY: 'key' };
 const USER_ID = '99999999-9999-9999-9999-999999999999';
 
-// Every attribute meiliMessageFilter/buildMeiliDocument/MESSAGES_INDEX's
-// toDocument can put into a filter expression. Both configure paths
-// (MESSAGES_INDEX.filterable and configureMeiliIndex's own list) must list
-// all of these or a filter Meilisearch rejects looks fine in code review and
-// 503s in production — see "both configure paths agree" below.
+// Every attribute meiliMessageFilter/MESSAGES_INDEX's toDocument can put
+// into a filter expression. MESSAGES_INDEX.filterable must list all of
+// these or a filter Meilisearch rejects looks fine in code review and 503s
+// in production — see "lists every attribute meiliMessageFilter can filter
+// on" below.
 const MESSAGE_FILTER_ATTRIBUTES = [
   'from_address',
   'to_address',
@@ -80,33 +78,6 @@ describe('configureIndex', () => {
     await configureIndex({ ...ENV, OPENAI_API_KEY: 'sk-test' }, MESSAGES_INDEX, client);
 
     expect(calls[0].args.embedders.default.apiKey).toBe('sk-test');
-  });
-});
-
-// configureMeiliIndex is the legacy, pre-descriptor configure path (kept per
-// "delete nothing" — mail-app-ingest's write side still calls
-// buildMeiliDocument/addMeiliDocuments, not the descriptor-based ones). Its
-// filterable list is a second copy of MESSAGES_INDEX.filterable that can
-// drift silently, since nothing re-derives one from the other.
-describe('configureMeiliIndex', () => {
-  it('configures the same filterable attributes as MESSAGES_INDEX — the two configure paths must agree', async () => {
-    const { client, calls } = createMockMeili();
-
-    await configureMeiliIndex(ENV, client);
-
-    const filterableCall = calls.find((c) => c.method === 'updateFilterableAttributes');
-    expect(new Set(filterableCall.args)).toEqual(new Set(MESSAGES_INDEX.filterable));
-  });
-
-  it('lists every attribute meiliMessageFilter can filter on', async () => {
-    const { client, calls } = createMockMeili();
-
-    await configureMeiliIndex(ENV, client);
-
-    const filterableCall = calls.find((c) => c.method === 'updateFilterableAttributes');
-    for (const attr of MESSAGE_FILTER_ATTRIBUTES) {
-      expect(filterableCall.args).toContain(attr);
-    }
   });
 });
 
@@ -193,11 +164,10 @@ describe('deleteDocuments', () => {
   });
 });
 
-// MESSAGES_INDEX.toDocument and buildMeiliDocument (used by mail-app-ingest's
-// meiliSync.js, the actual write path in production today) are deliberately
-// kept as duplicates — see either function's own comment — so both are
-// covered here for is_spam/scheduled_for, the fields this review added.
-describe('MESSAGES_INDEX.toDocument / buildMeiliDocument — is_spam and scheduled_for', () => {
+// MESSAGES_INDEX.toDocument is the only document mapping now — meiliSync.js
+// (mail-app-ingest's write path) calls addDocuments with MESSAGES_INDEX
+// directly, so there is no longer a second builder to keep in sync.
+describe('MESSAGES_INDEX.toDocument — is_spam and scheduled_for', () => {
   const ROW = {
     id: 'm1',
     user_id: USER_ID,
@@ -208,7 +178,6 @@ describe('MESSAGES_INDEX.toDocument / buildMeiliDocument — is_spam and schedul
 
   it('is_spam is true only when spam_verdict is exactly "spam"', () => {
     expect(MESSAGES_INDEX.toDocument(ROW).is_spam).toBe(true);
-    expect(buildMeiliDocument(ROW).is_spam).toBe(true);
 
     expect(MESSAGES_INDEX.toDocument({ ...ROW, spam_verdict: 'inbox' }).is_spam).toBe(false);
     // No message_ai row at all (LEFT JOIN yields undefined/null) must not
@@ -219,81 +188,14 @@ describe('MESSAGES_INDEX.toDocument / buildMeiliDocument — is_spam and schedul
   it('scheduled_for is epoch seconds, and 0 (not null) when unset', () => {
     const expected = Math.floor(Date.parse(ROW.scheduled_for) / 1000);
     expect(MESSAGES_INDEX.toDocument(ROW).scheduled_for).toBe(expected);
-    expect(buildMeiliDocument(ROW).scheduled_for).toBe(expected);
 
     expect(MESSAGES_INDEX.toDocument({ ...ROW, scheduled_for: null }).scheduled_for).toBe(0);
-    expect(buildMeiliDocument({ ...ROW, scheduled_for: null }).scheduled_for).toBe(0);
-  });
-
-  // MESSAGES_INDEX.toDocument (the reindex/drift-script path) and
-  // buildMeiliDocument (the live ingest sync path, called from
-  // mail-app-ingest's meiliSync.js) are two writers of ONE index. If a
-  // reindex ever produced a different document than live sync did for the
-  // same row, every reindexed message would silently drift from what
-  // sync wrote — this pins full-row output equality, not just the two
-  // fields above, so any future field added to one and not the other fails
-  // here immediately.
-  it('produce byte-identical documents for a fully populated row', () => {
-    const fullRow = {
-      id: 'm1',
-      user_id: USER_ID,
-      subject: 'Roof quote',
-      body_text: 'Here is the quote for the new roof tiles.',
-      from_name: 'Bob Builder',
-      from_address: 'bob@example.com',
-      recipients: {
-        to: [{ name: 'Jane Doe', address: 'jane@example.com' }],
-        cc: ['cc@example.com'],
-        bcc: [{ name: null, address: 'bcc@example.com' }],
-      },
-      labels: [{ name: 'Personal' }, { name: 'Home' }],
-      sent_at: '2026-01-15T00:00:00Z',
-      scheduled_for: '2026-01-16T00:00:00Z',
-      is_unread: true,
-      is_starred: true,
-      is_archived: false,
-      is_sent: false,
-      is_deleted: false,
-      has_attachments: true,
-      spam_verdict: 'spam',
-    };
-
-    expect(MESSAGES_INDEX.toDocument(fullRow)).toEqual(buildMeiliDocument(fullRow));
-  });
-
-  // A sparse row (nulls/absent fields, as a bare LEFT JOIN with no
-  // message_ai row and no recipients/labels aggregated might produce)
-  // exercises the null-handling branches in both functions identically.
-  it('produce byte-identical documents for a sparse row', () => {
-    const sparseRow = {
-      id: 'm2',
-      user_id: USER_ID,
-      subject: null,
-      body_text: null,
-      from_name: null,
-      from_address: null,
-      recipients: null,
-      labels: null,
-      sent_at: null,
-      scheduled_for: null,
-      is_unread: false,
-      is_starred: false,
-      is_archived: false,
-      is_sent: false,
-      is_deleted: false,
-      has_attachments: false,
-      spam_verdict: undefined,
-    };
-
-    expect(MESSAGES_INDEX.toDocument(sparseRow)).toEqual(buildMeiliDocument(sparseRow));
   });
 });
 
-// The single filter builder shared by hybridSearch (via search.js/ask.js)
-// and meiliKeywordLeg below — see meiliKeywordLeg's own tests for the
-// no-drift guarantee that both use this, not two hand-rolled copies.
+// The filter builder used by hybridSearch (via search.js/ask.js).
 //
-// Ground truth is retrieval.js's folderClause:
+// Ground truth is the folder-filter table in meili.js (folderFilterParts):
 //   all      NOT deleted
 //   done     NOT deleted AND archived
 //   sent     NOT deleted AND NOT archived AND is_sent
@@ -392,10 +294,3 @@ describe('meiliMessageFilter', () => {
     expect(meiliMessageFilter({ from: 'back\\slash' })).toContain("from_address = 'back\\\\slash'");
   });
 });
-
-// meiliKeywordLeg builds its own Meilisearch client from env (it predates
-// the descriptor-based hybridSearch and takes no injectable client), so it
-// isn't unit-tested at the network boundary here — same as before this
-// change. What matters is covered above: meiliMessageFilter is the one
-// filter builder, and this leg is asserted (by reading the source) to call
-// it instead of the inline block it used to hand-roll.

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const addMeiliDocuments = vi.fn();
-addMeiliDocuments.mockResolvedValue({ taskUid: 1 });
+const addDocuments = vi.fn();
+addDocuments.mockResolvedValue({ taskUid: 1 });
 vi.mock('../../../shared/meili.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
-  return { ...actual, addMeiliDocuments: (...args) => addMeiliDocuments(...args) };
+  return { ...actual, addDocuments: (...args) => addDocuments(...args) };
 });
 
 const { syncMessageToMeili } = await import('../src/meiliSync.js');
@@ -37,13 +37,14 @@ describe('syncMessageToMeili', () => {
     await syncMessageToMeili(sql, {}, MESSAGE_ID);
 
     expect(sql).not.toHaveBeenCalled();
-    expect(addMeiliDocuments).not.toHaveBeenCalled();
+    expect(addDocuments).not.toHaveBeenCalled();
   });
 
-  // is_spam (buildMeiliDocument) and the spam/snoozed/inbox folder filters
-  // (meiliMessageFilter) both need message_ai.spam_verdict on the row this
-  // pushes to Meilisearch — without the join it would always compute false.
-  it('joins message_ai and selects spam_verdict/scheduled_for, and passes spam_verdict through to is_spam', async () => {
+  // spam_verdict (mapped to is_spam by MESSAGES_INDEX.toDocument) and the
+  // spam/snoozed/inbox folder filters (meiliMessageFilter) both need
+  // message_ai.spam_verdict on the row this pushes to Meilisearch — without
+  // the join it would always compute false.
+  it('joins message_ai and selects spam_verdict/scheduled_for, and passes the raw row through to addDocuments', async () => {
     const sql = createMockSql([
       [{ id: MESSAGE_ID, user_id: 'u1', labels: [], spam_verdict: 'spam' }],
       [],
@@ -56,15 +57,17 @@ describe('syncMessageToMeili', () => {
     expect(selectText).toContain('ai.spam_verdict');
     expect(selectText).toContain('m.scheduled_for');
 
-    expect(addMeiliDocuments).toHaveBeenCalledTimes(1);
-    const documents = addMeiliDocuments.mock.calls[0][1];
-    expect(documents[0]).toMatchObject({ id: MESSAGE_ID, is_spam: true });
+    expect(addDocuments).toHaveBeenCalledTimes(1);
+    // addDocuments applies descriptor.toDocument internally, so the row
+    // passed through here is the raw Postgres row, not a built document.
+    const rows = addDocuments.mock.calls[0][2];
+    expect(rows[0]).toMatchObject({ id: MESSAGE_ID, spam_verdict: 'spam' });
   });
 
   it('does nothing when the message has gone', async () => {
     const sql = createMockSql([[]]);
 
     await expect(syncMessageToMeili(sql, ENV, MESSAGE_ID)).resolves.toBeUndefined();
-    expect(addMeiliDocuments).not.toHaveBeenCalled();
+    expect(addDocuments).not.toHaveBeenCalled();
   });
 });

@@ -9,7 +9,8 @@
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Mirrors the folder values api/emails.js accepts, plus "all" for every
-// folder at once (still excluding trashed mail — see retrieval.js).
+// folder at once (deleted/trashed mail is excluded even by "all" — there is
+// no "trash" value in this set).
 const FOLDERS = new Set(['inbox', 'sent', 'spam', 'snoozed', 'done', 'all']);
 
 // sender:alice  to:"Jane Doe"  tag:Personal  has:attachment

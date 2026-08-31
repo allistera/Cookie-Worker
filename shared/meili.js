@@ -3,14 +3,10 @@ import { Meilisearch } from 'meilisearch';
 export { MESSAGES_INDEX } from './meili/messages.js';
 export { EMBEDDER } from './meili/embedder.js';
 
-const DEFAULT_INDEX = 'messages';
-
 /**
- * Checks whether Meilisearch Cloud is configured for this environment.
- * Historically also gated whether search.js routed to Meilisearch at all;
- * its engine switch (Meilisearch by default, &engine=postgres for the old
- * path) no longer consults this for that decision. Kept exported and
- * unused per the plan's "delete nothing" rule — phase 2 owns removal.
+ * Checks whether Meilisearch Cloud is configured for this environment. Used
+ * by the sync paths (mail-app-ingest, cookie-web-tasks) to no-op when
+ * Meilisearch isn't configured.
  *
  * @param {any} env
  * @returns {boolean}
@@ -19,25 +15,9 @@ export function meiliAvailable(env) {
   return Boolean(env.MEILISEARCH_URL && env.MEILISEARCH_API_KEY);
 }
 
-/**
- * Historically decided whether a parsed query could route to Meilisearch's
- * keyword leg at all, back when Meilisearch could not express from:/to:
- * (needed Postgres's substring match) or in: (needed Postgres's folder
- * predicates). meiliMessageFilter below now expresses all three, and
- * search.js's engine switch (Meilisearch by default, &engine=postgres for
- * the old three-leg path) doesn't call this any more. Kept exported and
- * unused per the plan's "delete nothing" rule — phase 2 owns removal.
- *
- * @param {Record<string, unknown>} filters
- * @returns {boolean}
- */
-export function meiliCanHandle(filters) {
-  const unsupported = ['from', 'to', 'in'];
-  return !unsupported.some((key) => filters[key] !== undefined);
-}
-
-// Folder predicates, mirroring retrieval.js's folderClause (the ground
-// truth) exactly:
+// Folder predicates. This is the ground truth for folder-filter semantics —
+// see meiliMessageFilter below, which builds a Meilisearch filter expression
+// from these:
 //
 //   all      NOT deleted
 //   done     NOT deleted AND archived
@@ -90,8 +70,8 @@ function folderFilterParts(folder) {
 
 /**
  * Structured message filters (see queryParse.js) as a Meilisearch filter
- * expression. user_id is added separately by hybridSearch/meiliKeywordLeg —
- * deliberately absent here so it is never duplicated.
+ * expression. user_id is added separately by hybridSearch — deliberately
+ * absent here so it is never duplicated.
  *
  * from:/to: are exact matches: Postgres did substring, but Meilisearch
  * filters can't express that without the experimental containsFilter, and
@@ -134,139 +114,6 @@ export function meiliMessageFilter(filters = {}) {
  */
 function getClient(env) {
   return new Meilisearch({ host: env.MEILISEARCH_URL, apiKey: env.MEILISEARCH_API_KEY });
-}
-
-/**
- * Meilisearch keyword leg. Returns ids ordered by Meilisearch relevance.
- *
- * @param {any} env
- * @param {string} userId
- * @param {{text: string, filters: Record<string, unknown>}} spec
- * @param {number} limit
- * @returns {Promise<{id: string}[]>}
- */
-export async function meiliKeywordLeg(env, userId, spec, limit) {
-  const client = getClient(env);
-  const index = client.index(env.MEILISEARCH_INDEX || DEFAULT_INDEX);
-
-  const filterParts = [`user_id = '${userId}'`];
-  const messageFilter = meiliMessageFilter(spec.filters);
-  if (messageFilter) filterParts.push(messageFilter);
-
-  const result = await index.search(spec.text, {
-    filter: filterParts.join(' AND '),
-    attributesToSearchOn: ['subject', 'body', 'from_name', 'from_address', 'labels'],
-    attributesToRetrieve: ['id'],
-    limit,
-  });
-
-  return result.hits.map((hit) => ({ id: hit.id }));
-}
-
-/**
- * Builds a Meilisearch document from a Postgres messages row. The row should
- * include `body_text`, `recipients` as jsonb, `spam_verdict` (from a
- * LEFT JOIN message_ai), `scheduled_for`, and an aggregated `labels` array
- * of {name} objects when available. Kept in sync with MESSAGES_INDEX's own
- * toDocument in meili/messages.js — see that function's comment for why
- * is_spam/scheduled_for exist.
- *
- * @param {Record<string, unknown>} message
- * @returns {Record<string, unknown>}
- */
-export function buildMeiliDocument(message) {
-  const msg = /** @type {any} */ (message);
-  const recipients = msg.recipients || {};
-  const to = [...(recipients.to || []), ...(recipients.cc || []), ...(recipients.bcc || [])];
-  const addresses = to.map((r) => (typeof r === 'string' ? r : r?.address)).filter(Boolean);
-  const names = to.map((r) => (typeof r === 'string' ? null : r?.name)).filter(Boolean);
-
-  return {
-    id: String(msg.id),
-    user_id: String(msg.user_id),
-    subject: String(msg.subject || ''),
-    body: String(msg.body_text || ''),
-    from_name: String(msg.from_name || ''),
-    from_address: String(msg.from_address || ''),
-    to_address: addresses,
-    to_name: names,
-    labels: (msg.labels || []).map((l) => String(l.name)),
-    sent_at: msg.sent_at ? Math.floor(new Date(msg.sent_at).getTime() / 1000) : 0,
-    scheduled_for: msg.scheduled_for ? Math.floor(new Date(msg.scheduled_for).getTime() / 1000) : 0,
-    is_unread: Boolean(msg.is_unread),
-    is_starred: Boolean(msg.is_starred),
-    is_archived: Boolean(msg.is_archived),
-    is_sent: Boolean(msg.is_sent),
-    is_deleted: Boolean(msg.is_deleted),
-    has_attachments: Boolean(msg.has_attachments),
-    is_spam: msg.spam_verdict === 'spam',
-  };
-}
-
-// The messages index's filterable attributes, shared by configureMeiliIndex
-// below and MESSAGES_INDEX.filterable in meili/messages.js. Both configure
-// paths must list the same attributes or they drift — see
-// shared/test/meili.test.js's "both configure paths agree" test.
-const LEGACY_MESSAGE_FILTERABLE = [
-  'user_id',
-  'labels',
-  'is_unread',
-  'is_starred',
-  'is_archived',
-  'is_sent',
-  'is_deleted',
-  'has_attachments',
-  'sent_at',
-  'from_address',
-  'to_address',
-  'is_spam',
-  'scheduled_for',
-];
-
-/**
- * Ensures the messages index is configured for email search.
- *
- * @param {any} env
- * @param {any} [client] injected by tests
- */
-export async function configureMeiliIndex(env, client) {
-  const index = clientFor(env, client).index(env.MEILISEARCH_INDEX || DEFAULT_INDEX);
-
-  await index.updateSearchableAttributes([
-    'subject',
-    'body',
-    'from_name',
-    'from_address',
-    'labels',
-    'to_name',
-    'to_address',
-  ]);
-
-  await index.updateFilterableAttributes(LEGACY_MESSAGE_FILTERABLE);
-
-  await index.updateSortableAttributes(['sent_at']);
-
-  await index.updateRankingRules(['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']);
-}
-
-/**
- * @param {any} env
- * @param {Record<string, unknown>[]} documents
- */
-export async function addMeiliDocuments(env, documents) {
-  const client = getClient(env);
-  const index = client.index(env.MEILISEARCH_INDEX || DEFAULT_INDEX);
-  return index.addDocuments(documents, { primaryKey: 'id' });
-}
-
-/**
- * @param {any} env
- * @param {string[]} ids
- */
-export async function deleteMeiliDocuments(env, ids) {
-  const client = getClient(env);
-  const index = client.index(env.MEILISEARCH_INDEX || DEFAULT_INDEX);
-  return index.deleteDocuments(ids);
 }
 
 /**
