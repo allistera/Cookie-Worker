@@ -30,6 +30,51 @@ export function meiliCanHandle(filters) {
 }
 
 /**
+ * Structured message filters (see queryParse.js) as a Meilisearch filter
+ * expression. user_id is added separately by hybridSearch/meiliKeywordLeg —
+ * deliberately absent here so it is never duplicated.
+ *
+ * from:/to: are exact matches: Postgres did substring, but Meilisearch
+ * filters can't express that without the experimental containsFilter, and
+ * exact match is the accepted behaviour change for phase 1. to_address is a
+ * filterable array on the index, so `=` matches any element, same as labels.
+ *
+ * in:done/sent replace the SQL folder predicates — queryParse.js's FOLDERS
+ * set is {inbox, sent, spam, snoozed, done, all}; "done" is the archived
+ * folder ("archived" itself is not a recognized value), and is_archived is
+ * what it maps onto. in:trash is not currently a value the parser produces
+ * (there is no trash folder in FOLDERS today), but the filter it would need
+ * — is_deleted = true instead of the default exclusion below — is included
+ * here anyway so this stays correct if that ever changes, matching the one
+ * case where is_deleted must be `true` rather than the default `false`.
+ *
+ * @param {Record<string, any>} [filters]
+ * @returns {string | undefined}
+ */
+export function meiliMessageFilter(filters = {}) {
+  const parts = [];
+
+  if (filters.from) parts.push(`from_address = '${escapeFilter(String(filters.from))}'`);
+  if (filters.to) parts.push(`to_address = '${escapeFilter(String(filters.to))}'`);
+  if (filters.tag) parts.push(`labels = '${escapeFilter(String(filters.tag))}'`);
+  if (filters.hasAttachment) parts.push('has_attachments = true');
+  if (filters.before) {
+    parts.push(`sent_at < ${Math.floor(Date.parse(String(filters.before)) / 1000)}`);
+  }
+  if (filters.after) {
+    parts.push(`sent_at >= ${Math.floor(Date.parse(String(filters.after)) / 1000)}`);
+  }
+
+  if (filters.in === 'done') parts.push('is_archived = true');
+  if (filters.in === 'sent') parts.push('is_sent = true');
+  if (filters.in === 'trash') parts.push('is_deleted = true');
+
+  if (filters.in !== 'trash') parts.push('is_deleted = false');
+
+  return parts.join(' AND ') || undefined;
+}
+
+/**
  * @param {any} env
  * @returns {Meilisearch}
  */
@@ -50,19 +95,9 @@ export async function meiliKeywordLeg(env, userId, spec, limit) {
   const client = getClient(env);
   const index = client.index(env.MEILISEARCH_INDEX || DEFAULT_INDEX);
 
-  const filterParts = [`user_id = '${userId}'`, 'is_deleted = false'];
-  if (spec.filters.tag) {
-    filterParts.push(`labels = '${escapeFilter(String(spec.filters.tag))}'`);
-  }
-  if (spec.filters.hasAttachment) {
-    filterParts.push('has_attachments = true');
-  }
-  if (spec.filters.before) {
-    filterParts.push(`sent_at < ${Math.floor(Date.parse(String(spec.filters.before)) / 1000)}`);
-  }
-  if (spec.filters.after) {
-    filterParts.push(`sent_at >= ${Math.floor(Date.parse(String(spec.filters.after)) / 1000)}`);
-  }
+  const filterParts = [`user_id = '${userId}'`];
+  const messageFilter = meiliMessageFilter(spec.filters);
+  if (messageFilter) filterParts.push(messageFilter);
 
   const result = await index.search(spec.text, {
     filter: filterParts.join(' AND '),
@@ -85,17 +120,9 @@ export async function meiliKeywordLeg(env, userId, spec, limit) {
 export function buildMeiliDocument(message) {
   const msg = /** @type {any} */ (message);
   const recipients = msg.recipients || {};
-  const to = [
-    ...(recipients.to || []),
-    ...(recipients.cc || []),
-    ...(recipients.bcc || []),
-  ];
-  const addresses = to
-    .map((r) => (typeof r === 'string' ? r : r?.address))
-    .filter(Boolean);
-  const names = to
-    .map((r) => (typeof r === 'string' ? null : r?.name))
-    .filter(Boolean);
+  const to = [...(recipients.to || []), ...(recipients.cc || []), ...(recipients.bcc || [])];
+  const addresses = to.map((r) => (typeof r === 'string' ? r : r?.address)).filter(Boolean);
+  const names = to.map((r) => (typeof r === 'string' ? null : r?.name)).filter(Boolean);
 
   return {
     id: String(msg.id),
@@ -150,14 +177,7 @@ export async function configureMeiliIndex(env) {
 
   await index.updateSortableAttributes(['sent_at']);
 
-  await index.updateRankingRules([
-    'words',
-    'typo',
-    'proximity',
-    'attribute',
-    'sort',
-    'exactness',
-  ]);
+  await index.updateRankingRules(['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']);
 }
 
 /**
@@ -185,7 +205,7 @@ export async function deleteMeiliDocuments(env, ids) {
  * @returns {string}
  */
 function escapeFilter(value) {
-  return value.replace(/[\\']/g, "\\$&");
+  return value.replace(/[\\']/g, '\\$&');
 }
 
 /**

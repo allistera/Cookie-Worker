@@ -7,6 +7,7 @@ import {
   configureIndex,
   deleteDocuments,
   hybridSearch,
+  meiliMessageFilter,
 } from '../meili.js';
 
 const ENV = { MEILISEARCH_URL: 'https://meili.test', MEILISEARCH_API_KEY: 'key' };
@@ -134,3 +135,58 @@ describe('deleteDocuments', () => {
     expect(calls[0]).toMatchObject({ index: 'messages', method: 'deleteDocuments', args: ['m1'] });
   });
 });
+
+// The single filter builder shared by hybridSearch (via search.js/ask.js)
+// and meiliKeywordLeg below — see meiliKeywordLeg's own tests for the
+// no-drift guarantee that both use this, not two hand-rolled copies.
+describe('meiliMessageFilter', () => {
+  it('excludes deleted messages by default', () => {
+    expect(meiliMessageFilter({})).toBe('is_deleted = false');
+  });
+
+  it('matches from: and to: exactly', () => {
+    const filter = meiliMessageFilter({ from: 'bob@example.com', to: 'jane@example.com' });
+    expect(filter).toContain("from_address = 'bob@example.com'");
+    expect(filter).toContain("to_address = 'jane@example.com'");
+  });
+
+  it('maps tag to labels and has:attachment to has_attachments', () => {
+    const filter = meiliMessageFilter({ tag: 'Personal', hasAttachment: true });
+    expect(filter).toContain("labels = 'Personal'");
+    expect(filter).toContain('has_attachments = true');
+  });
+
+  // sent_at is stored in the index as epoch SECONDS, not milliseconds.
+  it('filters before:/after: on sent_at in epoch seconds', () => {
+    const filter = meiliMessageFilter({ before: '2026-01-31', after: '2026-01-01' });
+    expect(filter).toContain(`sent_at < ${Math.floor(Date.parse('2026-01-31') / 1000)}`);
+    expect(filter).toContain(`sent_at >= ${Math.floor(Date.parse('2026-01-01') / 1000)}`);
+  });
+
+  // queryParse.js's FOLDERS are {inbox, sent, spam, snoozed, done, all} —
+  // "done" is the archived folder, not "archived".
+  it('maps in:done to is_archived and in:sent to is_sent', () => {
+    expect(meiliMessageFilter({ in: 'done' })).toContain('is_archived = true');
+    expect(meiliMessageFilter({ in: 'sent' })).toContain('is_sent = true');
+  });
+
+  // The one case where deleted mail is wanted: is_deleted flips to true
+  // instead of the default exclusion.
+  it('flips is_deleted to true for in:trash instead of excluding it', () => {
+    const filter = meiliMessageFilter({ in: 'trash' });
+    expect(filter).toContain('is_deleted = true');
+    expect(filter).not.toContain('is_deleted = false');
+  });
+
+  it('escapes a single quote and a backslash in from/to/tag values', () => {
+    expect(meiliMessageFilter({ tag: "o'brien" })).toContain("labels = 'o\\'brien'");
+    expect(meiliMessageFilter({ from: 'back\\slash' })).toContain("from_address = 'back\\\\slash'");
+  });
+});
+
+// meiliKeywordLeg builds its own Meilisearch client from env (it predates
+// the descriptor-based hybridSearch and takes no injectable client), so it
+// isn't unit-tested at the network boundary here — same as before this
+// change. What matters is covered above: meiliMessageFilter is the one
+// filter builder, and this leg is asserted (by reading the source) to call
+// it instead of the inline block it used to hand-roll.

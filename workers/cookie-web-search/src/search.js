@@ -8,12 +8,25 @@ import { embedTextCached } from '../../../shared/embeddings.js';
 import { fuseRankings } from './rankFusion.js';
 import { keywordLeg, recencyLeg, vectorLeg } from './retrieval.js';
 import { parseSearchQuery } from './queryParse.js';
-import { meiliAvailable, meiliCanHandle, meiliKeywordLeg } from '../../../shared/meili.js';
+import {
+  MESSAGES_INDEX,
+  hybridSearch as realHybridSearch,
+  meiliMessageFilter,
+} from '../../../shared/meili.js';
 
 const MAX_QUERY_CHARS = 500;
 const CANDIDATES = 40; // per leg, before fusion
 const RESULTS = 20;
 const RATE_LIMIT = { limit: 10, windowMs: 60_000 }; // shared with all user-triggered AI routes
+
+/**
+ * @typedef {{
+ *   hybridSearch: (env: any, descriptor: any, query: {userId: string, text?: string, filter?: string, limit: number, semanticRatio?: number, sort?: string[]}, client?: any) => Promise<{id: string}[]>,
+ * }} SearchDeps
+ */
+
+/** @type {SearchDeps} */
+const DEFAULT_DEPS = { hybridSearch: realHybridSearch };
 
 // Fetches the fused result ids in one list-shaped query. Only summary presence
 // is exposed here; the generated text remains on the owned-message endpoint.
@@ -54,18 +67,79 @@ export function fetchSearchEmails(sql, userId, ids) {
   `;
 }
 
+// Hydrates a fused/Meilisearch id list into full email rows (in id order) and
+// wraps them in the search response shape. Shared by both engines so a
+// Postgres-vs-Meilisearch comparison is only ever a difference in which ids
+// come back, never in the response shape.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string[]} ids
+ */
+async function respondWithEmails(sql, userId, ids) {
+  if (ids.length === 0) return Response.json({ emails: [] });
+
+  const rows = await fetchSearchEmails(sql, userId, ids);
+  const byId = new Map(rows.map((/** @type {any} */ row) => [row.id, row]));
+  const emails = ids.map((id) => byId.get(id)).filter(Boolean);
+
+  return Response.json({ emails });
+}
+
+// The Meilisearch leg of message search. hits carry only ids
+// (attributesToRetrieve inside hybridSearch), so the rows still come from
+// Postgres via respondWithEmails — the same hydration the Postgres legs use,
+// so both engines return byte-identical response shapes. Meilisearch is
+// required: a failure here is an error (503), never a silent fallback to the
+// Postgres legs below.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{text: string, prefixQuery: string | null, filters: Record<string, any>}} spec
+ * @param {any} env
+ * @param {SearchDeps} deps
+ */
+async function searchViaMeili(sql, userId, spec, env, deps) {
+  let hits;
+  try {
+    hits = await deps.hybridSearch(env, MESSAGES_INDEX, {
+      userId,
+      text: spec.text ?? '',
+      filter: meiliMessageFilter(spec.filters),
+      limit: RESULTS,
+      // No free text means no relevance signal, so fall back to newest-first
+      // — what the recency leg did.
+      ...(spec.text ? {} : { sort: ['sent_at:desc'] }),
+    });
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        event: 'message_search_meili_failed',
+        message: /** @type {Error} */ (error).message,
+      }),
+    );
+    return Response.json({ error: 'Search is unavailable' }, { status: 503 });
+  }
+
+  const ids = hits.map((hit) => hit.id);
+  return await respondWithEmails(sql, userId, ids);
+}
+
 /**
  * GET /search?q=… — hybrid (keyword + semantic) search over the authenticated
- * user's messages, fused with reciprocal rank fusion. mode=keyword is the
- * lower-latency type-ahead path and skips embeddings. Response shape matches
- * the emails Worker's GET /emails.
+ * user's messages, served by Meilisearch by default; &engine=postgres selects
+ * the old three-leg Postgres path unchanged, as a soak-period comparison
+ * handle — never selected automatically, and never a fallback: a Meilisearch
+ * failure returns 503 rather than degrading to Postgres. Response shape
+ * matches the emails Worker's GET /emails on both engines.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {URL} url
  * @param {{OPENAI_API_KEY?: string}} env
+ * @param {SearchDeps} [deps]
  */
-export async function handleSearch(sql, userId, url, env) {
+export async function handleSearch(sql, userId, url, env, deps = DEFAULT_DEPS) {
   const q = (url.searchParams.get('q') || '').trim();
   const semantic = url.searchParams.get('mode') !== 'keyword';
   if (!q || q.length > MAX_QUERY_CHARS) {
@@ -73,13 +147,21 @@ export async function handleSearch(sql, userId, url, env) {
   }
 
   // Split the raw query into free text, a prefix tsquery, and structured
-  // operators (sender:/tag:/from:/to:/has:/before:/after:). A query containing
-  // only empty recognized operators has no work to do and must not spend AI
-  // quota.
+  // operators (sender:/tag:/from:/to:/has:/before:/after:/in:). A query
+  // containing only empty recognized operators has no work to do and must
+  // not spend AI quota.
   const spec = parseSearchQuery(q);
   const hasFilters = Object.keys(spec.filters).length > 0;
   if (!spec.text && !hasFilters) {
     return Response.json({ emails: [] });
+  }
+
+  // engine=postgres is the soak-period comparison handle, not a fallback: it
+  // is never selected automatically, and phase 2 deletes it along with the
+  // legs it reaches.
+  const engine = url.searchParams.get('engine') === 'postgres' ? 'postgres' : 'meili';
+  if (engine === 'meili') {
+    return await searchViaMeili(sql, userId, spec, env, deps);
   }
 
   // Only hybrid search spends AI quota. Keyword-only type-ahead remains a
@@ -116,19 +198,7 @@ export async function handleSearch(sql, userId, url, env) {
     // is only the keyword leg's tie-breaker, so results are not date-sorted. A
     // filters-only query has no relevance signal, so it falls back to the
     // recency leg ordered newest-first.
-    //
-    // When Meilisearch Cloud is configured and the query only uses filters it
-    // can express (tag, date, attachment), use it for the keyword leg so
-    // subject/body/label matches are ranked by Meilisearch's relevance engine
-    // instead of Postgres ts_rank. from:/to:/in: keep the Postgres leg because
-    // they need substring or folder predicates Meilisearch cannot express yet.
-    const useMeili =
-      spec.text && meiliAvailable(env) && meiliCanHandle(spec.filters);
-    const keywordIds = spec.text
-      ? useMeili
-        ? meiliKeywordLeg(env, userId, spec, CANDIDATES)
-        : keywordLeg(sql, userId, spec, CANDIDATES)
-      : Promise.resolve([]);
+    const keywordIds = spec.text ? keywordLeg(sql, userId, spec, CANDIDATES) : Promise.resolve([]);
     const recencyIds = spec.text ? Promise.resolve([]) : recencyLeg(sql, userId, spec, CANDIDATES);
 
     const [keywordRows, recencyRows, vectorRows] = await Promise.all([
@@ -143,15 +213,7 @@ export async function handleSearch(sql, userId, url, env) {
       vectorRows.map((/** @type {{id: string}} */ r) => r.id),
     ]).slice(0, RESULTS);
 
-    if (ids.length === 0) {
-      return Response.json({ emails: [] });
-    }
-
-    const rows = await fetchSearchEmails(sql, userId, ids);
-    const byId = new Map(rows.map((/** @type {any} */ row) => [row.id, row]));
-    const emails = ids.map((id) => byId.get(id)).filter(Boolean);
-
-    return Response.json({ emails });
+    return await respondWithEmails(sql, userId, ids);
   } catch (err) {
     console.error('GET /search failed:', err);
     return Response.json({ error: 'Search failed' }, { status: 500 });
