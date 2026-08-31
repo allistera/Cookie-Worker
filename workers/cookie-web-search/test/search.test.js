@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { handleSearch } from '../src/search.js';
+import { MESSAGES_INDEX } from '../../../shared/meili.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -88,6 +89,11 @@ describe('message search engine', () => {
 
     const query = search.mock.calls[0][2];
     expect(query.filter).toContain("from_address = 'bob@example.com'");
+    // A filter Meilisearch can't actually serve (the attribute isn't
+    // filterable) 503s in production but passes any test that only checks
+    // the filter string — this is the mismatch that shipped from_address =
+    // as a filter with from_address missing from MESSAGES_INDEX.filterable.
+    expect(MESSAGES_INDEX.filterable).toContain('from_address');
   });
 
   // Was substring in Postgres; exact in Meilisearch, per the spec.
@@ -105,27 +111,40 @@ describe('message search engine', () => {
 
     const query = search.mock.calls[0][2];
     expect(query.filter).toContain("to_address = 'jane@example.com'");
+    expect(MESSAGES_INDEX.filterable).toContain('to_address');
   });
 
-  // queryParse.js's FOLDERS are {inbox, sent, spam, snoozed, done, all} —
-  // "done" is the archived folder ("archived" is not a recognized value).
-  it('turns in:done into an is_archived filter', async () => {
+  // Every in: value queryParse.js's FOLDERS recognizes {inbox, sent, spam,
+  // snoozed, done, all}, end to end through parseSearchQuery ->
+  // meiliMessageFilter — the unit-level mapping is asserted exhaustively in
+  // shared/test/meili.test.js against retrieval.js's folderClause; these
+  // confirm handleSearch actually wires the parsed `in:` value through.
+  it.each([
+    ['in:done', 'is_archived = true'],
+    ['in:sent', 'is_sent = true'],
+    ['in:spam', 'is_spam = true'],
+    ['in:snoozed', 'scheduled_for >'],
+    ['in:inbox', 'scheduled_for <='],
+    ['in:all', 'is_deleted = false'],
+  ])('turns %s into a filter containing "%s"', async (operator, expected) => {
     const search = mockSearch(async () => []);
     const sql = createMockSql([[]]);
 
     await handleSearch(
       sql,
       USER_ID,
-      url(`?q=${encodeURIComponent('in:done roof')}`),
+      url(`?q=${encodeURIComponent(`${operator} roof`)}`),
       ENV,
       deps({ hybridSearch: search }),
     );
 
     const query = search.mock.calls[0][2];
-    expect(query.filter).toContain('is_archived = true');
+    expect(query.filter).toContain(expected);
   });
 
-  it('turns in:sent into a filter', async () => {
+  // Regression: an earlier version of meiliMessageFilter omitted "AND NOT
+  // is_archived" for in:sent, so an archived sent copy would have matched.
+  it('in:sent also excludes archived mail', async () => {
     const search = mockSearch(async () => []);
     const sql = createMockSql([[]]);
 
@@ -138,10 +157,22 @@ describe('message search engine', () => {
     );
 
     const query = search.mock.calls[0][2];
-    expect(query.filter).toContain('is_sent = true');
+    expect(query.filter).toContain('is_archived = false');
   });
 
-  it('leaves the default is_deleted exclusion for a non-trash folder', async () => {
+  // No in: filter at all excludes Done mail too — not just trashed mail —
+  // matching retrieval.js's folderClause default.
+  it('excludes archived (Done) mail when there is no in: filter', async () => {
+    const search = mockSearch(async () => []);
+    const sql = createMockSql([[]]);
+
+    await handleSearch(sql, USER_ID, url('?q=roof'), ENV, deps({ hybridSearch: search }));
+
+    const query = search.mock.calls[0][2];
+    expect(query.filter).toContain('is_archived = false');
+  });
+
+  it('in:all does not exclude archived mail (only trashed mail)', async () => {
     const search = mockSearch(async () => []);
     const sql = createMockSql([[]]);
 
@@ -154,7 +185,7 @@ describe('message search engine', () => {
     );
 
     const query = search.mock.calls[0][2];
-    expect(query.filter).toContain('is_deleted = false');
+    expect(query.filter).not.toContain('is_archived');
   });
 
   it('turns has:attachment into hasAttachment, not "attachment"', async () => {

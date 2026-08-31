@@ -7,6 +7,10 @@ const DEFAULT_INDEX = 'messages';
 
 /**
  * Checks whether Meilisearch Cloud is configured for this environment.
+ * Historically also gated whether search.js routed to Meilisearch at all;
+ * its engine switch (Meilisearch by default, &engine=postgres for the old
+ * path) no longer consults this for that decision. Kept exported and
+ * unused per the plan's "delete nothing" rule — phase 2 owns removal.
  *
  * @param {any} env
  * @returns {boolean}
@@ -16,10 +20,13 @@ export function meiliAvailable(env) {
 }
 
 /**
- * Decides whether the current parsed query can be handled by Meilisearch. We
- * keep Postgres for from:/to:/in: because Meilisearch filters do not support
- * substring matching on addresses/names without an experimental feature, and
- * folder predicates are easier to express in SQL for now.
+ * Historically decided whether a parsed query could route to Meilisearch's
+ * keyword leg at all, back when Meilisearch could not express from:/to:
+ * (needed Postgres's substring match) or in: (needed Postgres's folder
+ * predicates). meiliMessageFilter below now expresses all three, and
+ * search.js's engine switch (Meilisearch by default, &engine=postgres for
+ * the old three-leg path) doesn't call this any more. Kept exported and
+ * unused per the plan's "delete nothing" rule — phase 2 owns removal.
  *
  * @param {Record<string, unknown>} filters
  * @returns {boolean}
@@ -27,6 +34,58 @@ export function meiliAvailable(env) {
 export function meiliCanHandle(filters) {
   const unsupported = ['from', 'to', 'in'];
   return !unsupported.some((key) => filters[key] !== undefined);
+}
+
+// Folder predicates, mirroring retrieval.js's folderClause (the ground
+// truth) exactly:
+//
+//   all      NOT deleted
+//   done     NOT deleted AND archived
+//   sent     NOT deleted AND NOT archived AND is_sent
+//   spam     NOT deleted AND NOT archived AND NOT sent AND spam_verdict = 'spam'
+//   snoozed  NOT deleted AND NOT archived AND NOT sent AND spam_verdict <> 'spam' AND scheduled_for > now()
+//   inbox    NOT deleted AND NOT archived AND NOT sent AND spam_verdict <> 'spam' AND (scheduled_for IS NULL OR scheduled_for <= now())
+//   trash    is_deleted = true (not a value queryParse.js's FOLDERS produces
+//            today, but included so this stays correct if that changes —
+//            see meiliMessageFilter's own comment)
+//   (none)   NOT deleted AND NOT archived
+//
+// is_spam stands in for spam_verdict = 'spam' (computed at index time from
+// message_ai, false when there is no ai row — same as folderClause's
+// COALESCE(ai.spam_verdict, 'inbox') <> 'spam'). scheduled_for is epoch
+// seconds with 0 for NULL, so `scheduled_for <= now` alone covers Postgres's
+// "IS NULL OR <= now()", and `scheduled_for > now` correctly excludes 0.
+//
+// @param {string | undefined} folder
+// @returns {string[]}
+function folderFilterParts(folder) {
+  const now = Math.floor(Date.now() / 1000);
+  if (folder === 'all') return ['is_deleted = false'];
+  if (folder === 'done') return ['is_deleted = false', 'is_archived = true'];
+  if (folder === 'sent') return ['is_deleted = false', 'is_archived = false', 'is_sent = true'];
+  if (folder === 'spam') {
+    return ['is_deleted = false', 'is_archived = false', 'is_sent = false', 'is_spam = true'];
+  }
+  if (folder === 'snoozed') {
+    return [
+      'is_deleted = false',
+      'is_archived = false',
+      'is_sent = false',
+      'is_spam = false',
+      `scheduled_for > ${now}`,
+    ];
+  }
+  if (folder === 'inbox') {
+    return [
+      'is_deleted = false',
+      'is_archived = false',
+      'is_sent = false',
+      'is_spam = false',
+      `scheduled_for <= ${now}`,
+    ];
+  }
+  if (folder === 'trash') return ['is_deleted = true'];
+  return ['is_deleted = false', 'is_archived = false'];
 }
 
 /**
@@ -39,14 +98,13 @@ export function meiliCanHandle(filters) {
  * exact match is the accepted behaviour change for phase 1. to_address is a
  * filterable array on the index, so `=` matches any element, same as labels.
  *
- * in:done/sent replace the SQL folder predicates — queryParse.js's FOLDERS
- * set is {inbox, sent, spam, snoozed, done, all}; "done" is the archived
- * folder ("archived" itself is not a recognized value), and is_archived is
- * what it maps onto. in:trash is not currently a value the parser produces
- * (there is no trash folder in FOLDERS today), but the filter it would need
- * — is_deleted = true instead of the default exclusion below — is included
- * here anyway so this stays correct if that ever changes, matching the one
- * case where is_deleted must be `true` rather than the default `false`.
+ * in: replaces the SQL folder predicates via folderFilterParts above —
+ * queryParse.js's FOLDERS set is {inbox, sent, spam, snoozed, done, all};
+ * "done" is the archived folder ("archived" itself is not a recognized
+ * value). in:trash is not currently a value the parser produces (there is
+ * no trash folder in FOLDERS today), but the filter it would need —
+ * is_deleted = true instead of the default exclusion — is included anyway
+ * so this stays correct if that ever changes.
  *
  * @param {Record<string, any>} [filters]
  * @returns {string | undefined}
@@ -65,11 +123,7 @@ export function meiliMessageFilter(filters = {}) {
     parts.push(`sent_at >= ${Math.floor(Date.parse(String(filters.after)) / 1000)}`);
   }
 
-  if (filters.in === 'done') parts.push('is_archived = true');
-  if (filters.in === 'sent') parts.push('is_sent = true');
-  if (filters.in === 'trash') parts.push('is_deleted = true');
-
-  if (filters.in !== 'trash') parts.push('is_deleted = false');
+  parts.push(...folderFilterParts(filters.in));
 
   return parts.join(' AND ') || undefined;
 }
@@ -111,8 +165,11 @@ export async function meiliKeywordLeg(env, userId, spec, limit) {
 
 /**
  * Builds a Meilisearch document from a Postgres messages row. The row should
- * include `body_text`, `recipients` as jsonb, and an aggregated `labels` array
- * of {name} objects when available.
+ * include `body_text`, `recipients` as jsonb, `spam_verdict` (from a
+ * LEFT JOIN message_ai), `scheduled_for`, and an aggregated `labels` array
+ * of {name} objects when available. Kept in sync with MESSAGES_INDEX's own
+ * toDocument in meili/messages.js — see that function's comment for why
+ * is_spam/scheduled_for exist.
  *
  * @param {Record<string, unknown>} message
  * @returns {Record<string, unknown>}
@@ -135,23 +192,45 @@ export function buildMeiliDocument(message) {
     to_name: names,
     labels: (msg.labels || []).map((l) => String(l.name)),
     sent_at: msg.sent_at ? Math.floor(new Date(msg.sent_at).getTime() / 1000) : 0,
+    scheduled_for: msg.scheduled_for ? Math.floor(new Date(msg.scheduled_for).getTime() / 1000) : 0,
     is_unread: Boolean(msg.is_unread),
     is_starred: Boolean(msg.is_starred),
     is_archived: Boolean(msg.is_archived),
     is_sent: Boolean(msg.is_sent),
     is_deleted: Boolean(msg.is_deleted),
     has_attachments: Boolean(msg.has_attachments),
+    is_spam: msg.spam_verdict === 'spam',
   };
 }
+
+// The messages index's filterable attributes, shared by configureMeiliIndex
+// below and MESSAGES_INDEX.filterable in meili/messages.js. Both configure
+// paths must list the same attributes or they drift — see
+// shared/test/meili.test.js's "both configure paths agree" test.
+const LEGACY_MESSAGE_FILTERABLE = [
+  'user_id',
+  'labels',
+  'is_unread',
+  'is_starred',
+  'is_archived',
+  'is_sent',
+  'is_deleted',
+  'has_attachments',
+  'sent_at',
+  'from_address',
+  'to_address',
+  'is_spam',
+  'scheduled_for',
+];
 
 /**
  * Ensures the messages index is configured for email search.
  *
  * @param {any} env
+ * @param {any} [client] injected by tests
  */
-export async function configureMeiliIndex(env) {
-  const client = getClient(env);
-  const index = client.index(env.MEILISEARCH_INDEX || DEFAULT_INDEX);
+export async function configureMeiliIndex(env, client) {
+  const index = clientFor(env, client).index(env.MEILISEARCH_INDEX || DEFAULT_INDEX);
 
   await index.updateSearchableAttributes([
     'subject',
@@ -163,17 +242,7 @@ export async function configureMeiliIndex(env) {
     'to_address',
   ]);
 
-  await index.updateFilterableAttributes([
-    'user_id',
-    'labels',
-    'is_unread',
-    'is_starred',
-    'is_archived',
-    'is_sent',
-    'is_deleted',
-    'has_attachments',
-    'sent_at',
-  ]);
+  await index.updateFilterableAttributes(LEGACY_MESSAGE_FILTERABLE);
 
   await index.updateSortableAttributes(['sent_at']);
 

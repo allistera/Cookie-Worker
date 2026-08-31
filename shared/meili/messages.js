@@ -25,6 +25,10 @@ export const MESSAGES_INDEX = {
     'is_deleted',
     'has_attachments',
     'sent_at',
+    'from_address',
+    'to_address',
+    'is_spam',
+    'scheduled_for',
   ],
   sortable: ['sent_at'],
   // Carried over from configureMeiliIndex's updateRankingRules call. These
@@ -39,10 +43,17 @@ export const MESSAGES_INDEX = {
     ...EMBEDDER,
     documentTemplate: '{{doc.subject}}\n\n{{doc.body}}',
   },
-  // Lifted unchanged from buildMeiliDocument: recipients is a jsonb object
-  // shaped {to, cc, bcc}, each an array of strings or {name, address}
-  // objects, and to_name/to_address are filterable/searchable arrays (not
-  // joined strings).
+  // Lifted unchanged from buildMeiliDocument (kept in sync with it — see
+  // that function's own comment): recipients is a jsonb object shaped
+  // {to, cc, bcc}, each an array of strings or {name, address} objects, and
+  // to_name/to_address are filterable/searchable arrays (not joined
+  // strings). is_spam/scheduled_for were added to let meiliMessageFilter
+  // reproduce retrieval.js's folderClause exactly for in:spam/snoozed/inbox
+  // — is_spam comes from message_ai.spam_verdict (absent/non-'spam' means
+  // false, matching folderClause's COALESCE(ai.spam_verdict, 'inbox')), and
+  // scheduled_for is epoch seconds like sent_at, with 0 standing in for
+  // NULL so `scheduled_for <= now` alone covers Postgres's
+  // "IS NULL OR <= now()".
   toDocument: (message) => {
     const msg = /** @type {any} */ (message);
     const recipients = msg.recipients || {};
@@ -61,12 +72,16 @@ export const MESSAGES_INDEX = {
       to_name: names,
       labels: (msg.labels || []).map((l) => String(l.name)),
       sent_at: msg.sent_at ? Math.floor(new Date(msg.sent_at).getTime() / 1000) : 0,
+      scheduled_for: msg.scheduled_for
+        ? Math.floor(new Date(msg.scheduled_for).getTime() / 1000)
+        : 0,
       is_unread: Boolean(msg.is_unread),
       is_starred: Boolean(msg.is_starred),
       is_archived: Boolean(msg.is_archived),
       is_sent: Boolean(msg.is_sent),
       is_deleted: Boolean(msg.is_deleted),
       has_attachments: Boolean(msg.has_attachments),
+      is_spam: msg.spam_verdict === 'spam',
     };
   },
 };

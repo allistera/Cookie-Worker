@@ -1,14 +1,17 @@
 // Ported from Cookie-Web's api/ask.js. Behaviorally identical (same
 // validation and quota order, same response shapes/status codes) — only the
 // (req, res) mutation style becomes returning a Response, configuration
-// comes from the Worker env instead of process.env, and retrieval is now
-// served by Meilisearch instead of the keyword/vector Postgres legs (see
-// search.js's handleSearch for the equivalent &engine=postgres comparison
-// handle — ask has no query string to carry one, so this retrieval step is
-// unconditionally Meilisearch; a failure is a 503, never a silent
-// degradation to fewer/no sources).
+// comes from the Worker env instead of process.env, and retrieval is served
+// by Meilisearch by default. Ask has no query string, so its
+// &engine=postgres comparison handle — mirroring handleSearch's — reads
+// from the JSON body instead: {"question": "...", "engine": "postgres"}.
+// Never automatic, and a Meilisearch failure on the default engine is a
+// 503, never a silent degradation to fewer/no sources.
 
 import { allowRequest } from '../../../shared/rate-limit.js';
+import { embedTextCached } from '../../../shared/embeddings.js';
+import { fuseRankings } from './rankFusion.js';
+import { keywordLeg, vectorLeg } from './retrieval.js';
 import {
   MESSAGES_INDEX,
   hybridSearch as realHybridSearch,
@@ -17,6 +20,7 @@ import {
 
 const DEFAULT_CHAT_MODEL = 'gpt-4o-mini';
 const MAX_QUESTION_CHARS = 500;
+const CANDIDATES = 20; // per Postgres retrieval leg (engine=postgres only)
 const CONTEXT_MESSAGES = 6;
 const CONTEXT_BODY_CHARS = 1500;
 const MAX_ANSWER_TOKENS = 400;
@@ -87,11 +91,68 @@ async function chatCompletion(question, rows, apiKey, model) {
   return choices?.[0]?.message?.content?.trim() || "I couldn't produce an answer.";
 }
 
+// Meilisearch retrieval leg: its own hybrid keyword+semantic ranking, no
+// separate embedding call to make here. A failure is thrown so the caller
+// can turn it into a 503, not a silently smaller/empty source list.
+/**
+ * @param {string} userId
+ * @param {string} question
+ * @param {any} env
+ * @param {AskDeps} deps
+ * @returns {Promise<string[]>}
+ */
+async function retrieveViaMeili(userId, question, env, deps) {
+  const hits = await deps.hybridSearch(env, MESSAGES_INDEX, {
+    userId,
+    text: question,
+    filter: meiliMessageFilter({}),
+    limit: CONTEXT_MESSAGES,
+  });
+  return hits.map((hit) => hit.id);
+}
+
+// The old keyword+vector Postgres retrieval, unchanged — reachable only via
+// engine=postgres, the soak-period comparison handle. Semantic leg is
+// best-effort: an embedding failure degrades to keyword-only rather than
+// failing the request.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} question
+ * @param {string} apiKey
+ * @returns {Promise<string[]>}
+ */
+async function retrieveViaPostgres(sql, userId, question, apiKey) {
+  // A natural-language question is matched as plain free text: no prefix
+  // (the last word is complete) and no structured operators.
+  const spec = { text: question, prefixQuery: null, filters: {} };
+
+  const semanticIds = async () => {
+    try {
+      const vector = JSON.stringify(await embedTextCached(question, apiKey));
+      return await vectorLeg(sql, userId, vector, spec.filters, CANDIDATES);
+    } catch (err) {
+      console.error('POST /ask vector leg failed:', /** @type {Error} */ (err).message);
+      return [];
+    }
+  };
+
+  const [keywordRows, vectorRows] = await Promise.all([
+    keywordLeg(sql, userId, spec, CANDIDATES),
+    semanticIds(),
+  ]);
+  return fuseRankings([
+    keywordRows.map((/** @type {{id: string}} */ r) => r.id),
+    vectorRows.map((/** @type {{id: string}} */ r) => r.id),
+  ]).slice(0, CONTEXT_MESSAGES);
+}
+
 /**
  * POST /ask {question} — RAG over the user's mail: retrieve the most
- * relevant messages from Meilisearch (its own hybrid keyword+semantic
- * ranking — there is no separate embedding call to make here any more),
- * answer from them, and return the sources used.
+ * relevant messages, answer from them, and return the sources used.
+ * Retrieval is served by Meilisearch by default; {"engine": "postgres"} in
+ * the body selects the old keyword+vector Postgres legs unchanged, as a
+ * soak-period comparison handle — never selected automatically.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -122,21 +183,30 @@ export async function handleAsk(sql, userId, body, env, deps = DEFAULT_DEPS) {
     return Response.json({ error: 'Too many questions, slow down' }, { status: 429 });
   }
 
-  // Meilisearch is required for retrieval: a failure here is an error, not a
-  // silent degradation to fewer or no sources.
-  let hits;
-  try {
-    hits = await deps.hybridSearch(env, MESSAGES_INDEX, {
-      userId,
-      text: question,
-      filter: meiliMessageFilter({}),
-      limit: CONTEXT_MESSAGES,
-    });
-  } catch (err) {
-    console.error('POST /ask retrieval failed:', /** @type {Error} */ (err).message);
-    return Response.json({ error: 'Assistant is temporarily unavailable' }, { status: 503 });
+  // engine=postgres is the soak-period comparison handle onto the old
+  // keyword+vector retrieval, mirroring handleSearch's &engine=postgres —
+  // never selected automatically. Ask has no query string to carry a query
+  // parameter, so this reads from the JSON body instead.
+  const engine = body.engine === 'postgres' ? 'postgres' : 'meili';
+
+  let ids;
+  if (engine === 'meili') {
+    // Meilisearch is required for retrieval on this engine: a failure here
+    // is an error, not a silent degradation to fewer or no sources.
+    try {
+      ids = await retrieveViaMeili(userId, question, env, deps);
+    } catch (err) {
+      console.error('POST /ask retrieval failed:', /** @type {Error} */ (err).message);
+      return Response.json({ error: 'Assistant is temporarily unavailable' }, { status: 503 });
+    }
+  } else {
+    try {
+      ids = await retrieveViaPostgres(sql, userId, question, apiKey);
+    } catch (err) {
+      console.error('POST /ask failed:', err);
+      return Response.json({ error: 'Ask failed' }, { status: 500 });
+    }
   }
-  const ids = hits.map((hit) => hit.id);
 
   if (ids.length === 0) {
     return Response.json({

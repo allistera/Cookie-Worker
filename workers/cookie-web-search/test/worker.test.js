@@ -262,6 +262,23 @@ describe('POST /ask', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
+  // engine=postgres is Ask's comparison handle onto the old keyword+vector
+  // retrieval, mirroring handleSearch's &engine=postgres — read from the
+  // body since Ask has no query string.
+  test('uses the Postgres legs when {"engine": "postgres"} is asked for', async () => {
+    const response = await worker.fetch(
+      request('/ask', {
+        method: 'POST',
+        body: JSON.stringify({ question: 'anything new?', engine: 'postgres' }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(hybridSearch).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalled();
+  });
+
   test('a GET to /ask returns 405', async () => {
     const response = await worker.fetch(request('/ask'), env, ctx);
     expect(response.status).toBe(405);

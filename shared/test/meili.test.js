@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockMeili } from './meiliClient.js';
 import {
   MESSAGES_INDEX,
   addDocuments,
+  buildMeiliDocument,
   configureIndex,
+  configureMeiliIndex,
   deleteDocuments,
   hybridSearch,
   meiliMessageFilter,
@@ -12,6 +14,24 @@ import {
 
 const ENV = { MEILISEARCH_URL: 'https://meili.test', MEILISEARCH_API_KEY: 'key' };
 const USER_ID = '99999999-9999-9999-9999-999999999999';
+
+// Every attribute meiliMessageFilter/buildMeiliDocument/MESSAGES_INDEX's
+// toDocument can put into a filter expression. Both configure paths
+// (MESSAGES_INDEX.filterable and configureMeiliIndex's own list) must list
+// all of these or a filter Meilisearch rejects looks fine in code review and
+// 503s in production — see "both configure paths agree" below.
+const MESSAGE_FILTER_ATTRIBUTES = [
+  'from_address',
+  'to_address',
+  'labels',
+  'has_attachments',
+  'sent_at',
+  'is_archived',
+  'is_sent',
+  'is_deleted',
+  'is_spam',
+  'scheduled_for',
+];
 
 describe('index descriptors', () => {
   it('describes the messages index', () => {
@@ -26,6 +46,16 @@ describe('index descriptors', () => {
     expect(MESSAGES_INDEX.embedder.source).toBe('openAi');
     expect(MESSAGES_INDEX.embedder.model).toBe('text-embedding-3-small');
     expect(MESSAGES_INDEX.embedder.dimensions).toBe(1536);
+  });
+
+  // meiliMessageFilter builds expressions against from_address/to_address/
+  // is_spam/scheduled_for (folder filters) alongside the older attributes —
+  // Meilisearch rejects a filter on a non-filterable attribute outright, so
+  // this list drifting from the filter builder is a 503, not a wrong answer.
+  it('lists every attribute meiliMessageFilter can filter on', () => {
+    for (const attr of MESSAGE_FILTER_ATTRIBUTES) {
+      expect(MESSAGES_INDEX.filterable).toContain(attr);
+    }
   });
 });
 
@@ -50,6 +80,33 @@ describe('configureIndex', () => {
     await configureIndex({ ...ENV, OPENAI_API_KEY: 'sk-test' }, MESSAGES_INDEX, client);
 
     expect(calls[0].args.embedders.default.apiKey).toBe('sk-test');
+  });
+});
+
+// configureMeiliIndex is the legacy, pre-descriptor configure path (kept per
+// "delete nothing" — mail-app-ingest's write side still calls
+// buildMeiliDocument/addMeiliDocuments, not the descriptor-based ones). Its
+// filterable list is a second copy of MESSAGES_INDEX.filterable that can
+// drift silently, since nothing re-derives one from the other.
+describe('configureMeiliIndex', () => {
+  it('configures the same filterable attributes as MESSAGES_INDEX — the two configure paths must agree', async () => {
+    const { client, calls } = createMockMeili();
+
+    await configureMeiliIndex(ENV, client);
+
+    const filterableCall = calls.find((c) => c.method === 'updateFilterableAttributes');
+    expect(new Set(filterableCall.args)).toEqual(new Set(MESSAGES_INDEX.filterable));
+  });
+
+  it('lists every attribute meiliMessageFilter can filter on', async () => {
+    const { client, calls } = createMockMeili();
+
+    await configureMeiliIndex(ENV, client);
+
+    const filterableCall = calls.find((c) => c.method === 'updateFilterableAttributes');
+    for (const attr of MESSAGE_FILTER_ATTRIBUTES) {
+      expect(filterableCall.args).toContain(attr);
+    }
   });
 });
 
@@ -136,12 +193,62 @@ describe('deleteDocuments', () => {
   });
 });
 
+// MESSAGES_INDEX.toDocument and buildMeiliDocument (used by mail-app-ingest's
+// meiliSync.js, the actual write path in production today) are deliberately
+// kept as duplicates — see either function's own comment — so both are
+// covered here for is_spam/scheduled_for, the fields this review added.
+describe('MESSAGES_INDEX.toDocument / buildMeiliDocument — is_spam and scheduled_for', () => {
+  const ROW = {
+    id: 'm1',
+    user_id: USER_ID,
+    sent_at: '2026-01-15T00:00:00Z',
+    scheduled_for: '2026-01-16T00:00:00Z',
+    spam_verdict: 'spam',
+  };
+
+  it('is_spam is true only when spam_verdict is exactly "spam"', () => {
+    expect(MESSAGES_INDEX.toDocument(ROW).is_spam).toBe(true);
+    expect(buildMeiliDocument(ROW).is_spam).toBe(true);
+
+    expect(MESSAGES_INDEX.toDocument({ ...ROW, spam_verdict: 'inbox' }).is_spam).toBe(false);
+    // No message_ai row at all (LEFT JOIN yields undefined/null) must not
+    // read as spam.
+    expect(MESSAGES_INDEX.toDocument({ ...ROW, spam_verdict: undefined }).is_spam).toBe(false);
+  });
+
+  it('scheduled_for is epoch seconds, and 0 (not null) when unset', () => {
+    const expected = Math.floor(Date.parse(ROW.scheduled_for) / 1000);
+    expect(MESSAGES_INDEX.toDocument(ROW).scheduled_for).toBe(expected);
+    expect(buildMeiliDocument(ROW).scheduled_for).toBe(expected);
+
+    expect(MESSAGES_INDEX.toDocument({ ...ROW, scheduled_for: null }).scheduled_for).toBe(0);
+    expect(buildMeiliDocument({ ...ROW, scheduled_for: null }).scheduled_for).toBe(0);
+  });
+});
+
 // The single filter builder shared by hybridSearch (via search.js/ask.js)
 // and meiliKeywordLeg below — see meiliKeywordLeg's own tests for the
 // no-drift guarantee that both use this, not two hand-rolled copies.
+//
+// Ground truth is retrieval.js's folderClause:
+//   all      NOT deleted
+//   done     NOT deleted AND archived
+//   sent     NOT deleted AND NOT archived AND is_sent
+//   spam     NOT deleted AND NOT archived AND NOT sent AND spam_verdict = 'spam'
+//   snoozed  NOT deleted AND NOT archived AND NOT sent AND spam_verdict <> 'spam' AND scheduled_for > now()
+//   inbox    NOT deleted AND NOT archived AND NOT sent AND spam_verdict <> 'spam' AND (scheduled_for IS NULL OR scheduled_for <= now())
+//   (none)   NOT deleted AND NOT archived
 describe('meiliMessageFilter', () => {
-  it('excludes deleted messages by default', () => {
-    expect(meiliMessageFilter({})).toBe('is_deleted = false');
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-15T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('excludes deleted and archived messages by default (no in: filter)', () => {
+    expect(meiliMessageFilter({})).toBe('is_deleted = false AND is_archived = false');
   });
 
   it('matches from: and to: exactly', () => {
@@ -163,19 +270,58 @@ describe('meiliMessageFilter', () => {
     expect(filter).toContain(`sent_at >= ${Math.floor(Date.parse('2026-01-01') / 1000)}`);
   });
 
+  it('in:all excludes only deleted mail (archived mail is included)', () => {
+    expect(meiliMessageFilter({ in: 'all' })).toBe('is_deleted = false');
+  });
+
   // queryParse.js's FOLDERS are {inbox, sent, spam, snoozed, done, all} —
   // "done" is the archived folder, not "archived".
-  it('maps in:done to is_archived and in:sent to is_sent', () => {
-    expect(meiliMessageFilter({ in: 'done' })).toContain('is_archived = true');
-    expect(meiliMessageFilter({ in: 'sent' })).toContain('is_sent = true');
+  it('in:done maps to is_archived = true', () => {
+    expect(meiliMessageFilter({ in: 'done' })).toBe('is_deleted = false AND is_archived = true');
+  });
+
+  // Regression: the original implementation omitted "AND NOT is_archived",
+  // so archived sent copies would have shown up under in:sent too.
+  it('in:sent excludes deleted AND archived mail', () => {
+    expect(meiliMessageFilter({ in: 'sent' })).toBe(
+      'is_deleted = false AND is_archived = false AND is_sent = true',
+    );
+  });
+
+  it('in:spam requires is_spam = true and excludes archived/sent mail', () => {
+    expect(meiliMessageFilter({ in: 'spam' })).toBe(
+      'is_deleted = false AND is_archived = false AND is_sent = false AND is_spam = true',
+    );
+  });
+
+  it('in:snoozed requires scheduled_for in the future, and excludes spam', () => {
+    const now = Math.floor(Date.now() / 1000);
+    expect(meiliMessageFilter({ in: 'snoozed' })).toBe(
+      `is_deleted = false AND is_archived = false AND is_sent = false AND is_spam = false AND scheduled_for > ${now}`,
+    );
+  });
+
+  // scheduled_for is stored as 0 (not null) when unset, so a single
+  // `<= now` comparison covers Postgres's "IS NULL OR <= now()".
+  it('in:inbox requires scheduled_for now-or-past, and excludes spam', () => {
+    const now = Math.floor(Date.now() / 1000);
+    expect(meiliMessageFilter({ in: 'inbox' })).toBe(
+      `is_deleted = false AND is_archived = false AND is_sent = false AND is_spam = false AND scheduled_for <= ${now}`,
+    );
   });
 
   // The one case where deleted mail is wanted: is_deleted flips to true
-  // instead of the default exclusion.
-  it('flips is_deleted to true for in:trash instead of excluding it', () => {
-    const filter = meiliMessageFilter({ in: 'trash' });
-    expect(filter).toContain('is_deleted = true');
-    expect(filter).not.toContain('is_deleted = false');
+  // instead of the default exclusion. Not a value queryParse.js's FOLDERS
+  // produces today (see the file's own comment), but must stay correct.
+  it('in:trash flips is_deleted to true instead of excluding it', () => {
+    expect(meiliMessageFilter({ in: 'trash' })).toBe('is_deleted = true');
+  });
+
+  // An unrecognized in: value (should never reach here — queryParse.js
+  // rejects it — but defensively) falls back to the same default as no
+  // filter at all, never to something more permissive.
+  it('falls back to the default exclusion for an unrecognized folder', () => {
+    expect(meiliMessageFilter({ in: 'bogus' })).toBe('is_deleted = false AND is_archived = false');
   });
 
   it('escapes a single quote and a backslash in from/to/tag values', () => {
