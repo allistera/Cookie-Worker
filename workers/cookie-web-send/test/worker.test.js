@@ -32,12 +32,6 @@ vi.mock('resend', () => ({
   },
 }));
 
-const embedText = vi.fn();
-vi.mock('../../../shared/embeddings.js', () => ({
-  EMBEDDING_MODEL: 'text-embedding-3-small',
-  embedText: (...args) => embedText(...args),
-}));
-
 const verifyAccessToken = vi.fn();
 vi.mock('../../../shared/auth-jwt.js', () => ({
   verifyAccessToken: (...args) => verifyAccessToken(...args),
@@ -171,27 +165,6 @@ describe('POST /send security boundaries', () => {
     expect(response.status).toBe(502);
     const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
     expect(queries.some((query) => query.includes('GREATEST(send_count - 1, 0)'))).toBe(true);
-  });
-
-  test('queues the sent-mail embedding through waitUntil when OpenAI is configured', async () => {
-    responses = [
-      [{ authorized: true, quota_claimed: true }],
-      [{ user_id: USER_ID, thread_id: null }],
-      [],
-      [],
-      [],
-    ];
-    resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
-    embedText.mockResolvedValue([0.1]);
-    await worker.fetch(
-      request('/send', { body: sendBody() }),
-      { ...env, OPENAI_API_KEY: 'openai-key' },
-      ctx,
-    );
-    // withSentry adds its own waitUntil task; ours is among them.
-    expect(waited.length).toBeGreaterThanOrEqual(1);
-    await Promise.all(waited);
-    expect(embedText).toHaveBeenCalledWith('Hello\n\nPlain text', 'openai-key');
   });
 });
 

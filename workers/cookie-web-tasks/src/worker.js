@@ -7,7 +7,6 @@ import { hybridSearch } from '../../../shared/meili.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { getDailyNoteSeed, putDailyNoteSeed } from './dailyNoteSeed.js';
 import { createDocument, deleteDocument, getDocuments, updateDocument } from './documents.js';
-import { embedText, embedTextCached } from './embeddings.js';
 import { postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
@@ -98,14 +97,7 @@ async function route(url, request, sql, userId, env, email) {
 
   if (segments[0] === 'documents') {
     if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
-    const deps = {
-      openaiApiKey: env.OPENAI_API_KEY,
-      allowRequest,
-      embedText,
-      embedTextCached,
-      env,
-      hybridSearch,
-    };
+    const deps = { env, hybridSearch };
     if (request.method === 'GET') return getDocuments(sql, userId, url, deps);
     if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {
       return Response.json(

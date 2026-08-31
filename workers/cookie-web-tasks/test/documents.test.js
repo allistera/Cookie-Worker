@@ -19,11 +19,6 @@ const TEMPLATE_ID = '66666666-6666-4666-8666-666666666666';
 /** @param {Partial<import('../src/documents.js').DocumentsDeps>} [overrides] */
 function deps(overrides = {}) {
   return {
-    openaiApiKey: undefined,
-    allowRequest: vi.fn(async () => false),
-    embedText: vi.fn(async () => {
-      throw new Error('embedText should not be called when allowRequest denies');
-    }),
     env: {},
     hybridSearch: vi.fn(async () => {
       throw new Error('hybridSearch should not be called in these tests');
@@ -263,7 +258,7 @@ describe('POST /documents', () => {
     expect(sql.calls[2].text).toContain('INSERT INTO documents');
   });
 
-  it('embeds a non-blank new document and writes content_text + embedding', async () => {
+  it('writes content_text for a new document', async () => {
     const sql = createMockSql([
       [{ id: USER_ID }],
       [{ id: DOC_ID, folder_id: null, title: 'Roadmap', blocks: [] }],
@@ -272,36 +267,11 @@ describe('POST /documents', () => {
       sql,
       USER_ID,
       { kind: 'document', title: 'Roadmap' },
-      deps({
-        openaiApiKey: 'sk-test',
-        allowRequest: vi.fn(async () => true),
-        embedText: vi.fn(async () => [0.1, 0.2]),
-      }),
+      deps(),
     );
 
     expect(response.status).toBe(201);
-    expect(sql.calls[1].text).toContain('embedding');
-    expect(sql.calls[1].text).toContain('::extensions.vector');
     expect(sql.calls[1].text).toContain('content_text');
-  });
-
-  it('skips embedding for a blank new document without calling allowRequest', async () => {
-    const sql = createMockSql([
-      [{ id: USER_ID }],
-      [{ id: DOC_ID, folder_id: null, title: '', blocks: [] }],
-    ]);
-    const denyIfCalled = vi.fn(async () => {
-      throw new Error('allowRequest should not be called for a blank document');
-    });
-    const response = await createDocument(
-      sql,
-      USER_ID,
-      { kind: 'document', folderId: null },
-      deps({ openaiApiKey: 'sk-test', allowRequest: denyIfCalled }),
-    );
-
-    expect(response.status).toBe(201);
-    expect(denyIfCalled).not.toHaveBeenCalled();
     expect(sql.calls[1].text).not.toContain('embedding');
   });
 
@@ -505,29 +475,7 @@ describe('PATCH /documents', () => {
     expect(sql.calls).toHaveLength(4);
   });
 
-  it('re-embeds and writes the new vector when the save is allowed', async () => {
-    const sql = createMockSql([
-      [{ title: 'Notes', blocks: [] }],
-      [{ folder_id: null, title: 'Notes', blocks: [] }],
-      [{ id: DOC_ID, title: 'Notes', folder_id: null }],
-    ]);
-    const response = await updateDocument(
-      sql,
-      USER_ID,
-      { id: DOC_ID, blocks: [{ type: 'paragraph', data: { text: 'Ship it' } }] },
-      deps({
-        openaiApiKey: 'sk-test',
-        allowRequest: vi.fn(async () => true),
-        embedText: vi.fn(async () => [0.1, 0.2]),
-      }),
-    );
-
-    expect(response.status).toBe(200);
-    expect(sql.calls[3].text).toContain('embedding');
-    expect(sql.calls[3].text).toContain('::extensions.vector');
-  });
-
-  it('fetches the current blocks to embed a title-only rename', async () => {
+  it('fetches the current blocks to compute content_text for a title-only rename', async () => {
     const sql = createMockSql([
       [{ title: 'Old title', blocks: [{ type: 'paragraph', data: { text: 'Body text' } }] }],
       [{ id: DOC_ID, title: 'New title' }],

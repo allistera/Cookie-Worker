@@ -5,9 +5,7 @@ import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
-import { embedText } from '../../../shared/embeddings.js';
 import {
-  EMBEDDING_MODEL,
   deliverMail,
   immediateSendIdempotencyKey,
   claimOutboundEmailQuota,
@@ -42,38 +40,15 @@ export function createSql(databaseUrl) {
 }
 
 /**
- * Builds the per-request delivery seams. queueEmbedding runs the sent-mail
- * embedding after the response via ctx.waitUntil, on its own short-lived
- * database connection — the request's connection is closed by then.
+ * Builds the per-request delivery seams.
  *
  * @param {import('./sentry.js').SendEnv} env
- * @param {ExecutionContext} ctx
  * @returns {import('./outbound.js').SendServices}
  */
-export function createSendServices(env, ctx) {
+export function createSendServices(env) {
   return {
     env,
     createResend: (apiKey) => new Resend(apiKey),
-    embedText,
-    queueEmbedding(messageUuid, content) {
-      ctx.waitUntil(
-        (async () => {
-          const sql = createSql(env.HYPERDRIVE.connectionString);
-          try {
-            const vector = await embedText(content, /** @type {string} */ (env.OPENAI_API_KEY));
-            await sql`
-              UPDATE messages
-              SET embedding = ${JSON.stringify(vector)}::extensions.vector, embedding_model = ${EMBEDDING_MODEL}
-              WHERE id = ${messageUuid} AND embedding IS NULL
-            `;
-          } catch (err) {
-            console.error('sent-message embedding failed:', /** @type {Error} */ (err).message);
-          } finally {
-            await sql.end({ timeout: 2 }).catch(() => undefined);
-          }
-        })(),
-      );
-    },
   };
 }
 
@@ -264,7 +239,7 @@ const worker = {
     const segments = url.pathname.split('/').filter(Boolean);
     const resource =
       segments[0] === 'send' && segments.length <= 2 ? (segments[1] ?? 'send') : null;
-    const services = createSendServices(env, ctx);
+    const services = createSendServices(env);
     const sql = createSql(env.HYPERDRIVE.connectionString);
     try {
       if (!resource || !['send', 'scheduled', 'flush'].includes(resource)) {

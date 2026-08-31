@@ -218,12 +218,12 @@ const worker = {
       // eslint-disable-next-line no-useless-assignment
       sqlOwnedByWaitUntil = true;
       const ingestSql = sql;
-      const embedRecord = record;
+      const enrichRecord = record;
       const messageUuid = storeResult.messageUuid;
       ctx.waitUntil(
         syncMessageToMeili(ingestSql, env, messageUuid)
           .then(() => endSql(ingestSql))
-          .then(() => runAiEnrichment(env, embedRecord, messageUuid, false)),
+          .then(() => runAiEnrichment(env, enrichRecord, messageUuid, false)),
       );
     } else if (sql && !sqlOwnedByWaitUntil) {
       ctx.waitUntil(endSql(sql));
@@ -317,20 +317,20 @@ export async function recoverPendingEnrichment(env) {
         const sql = createSql(env.HYPERDRIVE.connectionString);
         try {
           return await sql.begin(async (tx) => {
+            // 'completed' rows are never candidates: enrichMessage no-ops the
+            // moment classification has completed (Meilisearch generates a
+            // message's embedding itself once the message is indexed, so
+            // there is no longer a post-classification step this sweep needs
+            // to recover). A 'completed' branch here without real pending
+            // work would just re-select and re-stamp the same rows forever
+            // on this 15-minute cron.
             const candidates = await tx`
               SELECT m.id, m.message_id, m.from_address, m.subject, m.body_text
               FROM message_ai ai
               JOIN messages m ON m.id = ai.message_id
               JOIN users u ON u.id = m.user_id
               WHERE u.email = ${env.OWNER_EMAIL}
-                AND (
-                  ai.status IN ('pending', 'failed')
-                  OR (
-                    ai.status = 'completed'
-                    AND m.embedding IS NULL
-                    AND coalesce(ai.error_code, '') <> 'embedding_forbidden'
-                  )
-                )
+                AND ai.status IN ('pending', 'failed')
                 AND ai.updated_at < now() - interval '2 minutes'
               ORDER BY ai.updated_at
               LIMIT 3

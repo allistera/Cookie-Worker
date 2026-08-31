@@ -1,7 +1,7 @@
 // Ported from Cookie-Web's api/_lib/documents.js. Behaviorally identical
 // (same queries, same validation, same response shapes/status codes) —
 // only the (req, res) mutation style becomes returning a Response, and
-// OpenAI/rate-limit dependencies are passed in explicitly (`deps`) rather
+// the Meilisearch search dependency is passed in explicitly (`deps`) rather
 // than pulled from a services object or process.env.
 //
 // Was reached via GET/POST/PATCH/DELETE /api/tasks?resource=documents in
@@ -18,7 +18,6 @@ import { resolveDailyNoteEventDate, syncDailyNoteEvents } from './dailyEventSync
 import { removeDocumentFromMeili, syncDocumentToMeili } from './documentMeiliSync.js';
 import { flattenBlocksToText } from './documentText.js';
 import { parseDocumentSearchQuery } from './queryParse.js';
-import { EMBEDDING_MODEL } from './embeddings.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const MAX_TITLE_LENGTH = 300;
@@ -29,21 +28,9 @@ export const MAX_BLOCKS_BYTES = 4 * 1024 * 1024;
 
 const MAX_SEARCH_QUERY_CHARS = 500;
 const SEARCH_RESULTS = 20;
-// A dedicated, more generous bucket for the save-time embedding call: it's an
-// autosave side effect, not a user-initiated AI action, so a heavy editing
-// session must not starve concurrent search/ask/compose requests from the
-// same user by draining their shared 'ai' quota.
-const EMBED_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
-// flushPendingSave() serializes autosave PATCHes, so a hung OpenAI call would
-// stall every edit queued behind it — bound how long a save-time embed call
-// can take before giving up and saving without one.
-const EMBED_TIMEOUT_MS = 5000;
 
 /**
  * @typedef {{
- *   openaiApiKey: string | undefined,
- *   allowRequest: (sql: import('postgres').Sql, userId: string, scope: string, policy: {limit: number, windowMs: number}) => Promise<boolean>,
- *   embedText: (text: string, apiKey: string, options?: {signal?: AbortSignal}) => Promise<number[]>,
  *   env: any,
  *   hybridSearch: (env: any, descriptor: any, query: {userId: string, text?: string, filter?: string, limit: number, semanticRatio?: number, sort?: string[]}, client?: any) => Promise<{id: string}[]>,
  * }} DocumentsDeps
@@ -133,45 +120,16 @@ function fetchSearchDocuments(sql, userId, ids) {
   `;
 }
 
-// Best-effort content_text + embedding for a document's current title/blocks,
-// computed from the same flattened text so the tsvector (content_text) and
-// the semantic vector never disagree about what a document "says". Never
-// throws: a missing API key, exhausted quota, a timeout, or an OpenAI failure
-// just means embedding/embedding_model are omitted from this save — content
-// search still works off content_text, and the weekly backfill catches any
-// stragglers. Must never delay or fail the caller's PATCH/POST over an
-// embedding problem.
+// content_text for a document's current title/blocks. Meilisearch indexes
+// this field directly for keyword matching and generates the semantic vector
+// itself (via its own openAI embedder, see shared/meili/embedder.js) once the
+// document is synced — this Worker no longer computes or stores an embedding.
 /**
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- * @param {{title: string, blocks: any[]}} doc
- * @param {DocumentsDeps} deps
+ * @param {string} title
+ * @param {any[]} blocks
  */
-async function computeSearchFields(sql, userId, { title, blocks }, deps) {
-  const contentText = flattenBlocksToText(title, blocks);
-  const fields =
-    /** @type {{content_text: string, embedding: number[] | null, embedding_model: string | null}} */ ({
-      content_text: contentText,
-      embedding: null,
-      embedding_model: null,
-    });
-  if (!contentText.trim() || !deps.openaiApiKey) return fields;
-  try {
-    const allowed = await deps.allowRequest(sql, userId, 'doc-embed', EMBED_RATE_LIMIT);
-    if (!allowed) return fields;
-    fields.embedding = await deps.embedText(contentText, deps.openaiApiKey, {
-      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-    });
-    fields.embedding_model = EMBEDDING_MODEL;
-  } catch (err) {
-    console.log(
-      JSON.stringify({
-        event: 'document_embedding_failed',
-        message: /** @type {Error} */ (err).message,
-      }),
-    );
-  }
-  return fields;
+function computeSearchFields(title, blocks) {
+  return { content_text: flattenBlocksToText(title, blocks) };
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId */
@@ -413,26 +371,12 @@ export async function createDocument(sql, userId, body, deps, env = {}) {
     const title = cleanText(body.title, MAX_TITLE_LENGTH) ?? template?.title ?? '';
     const emoji = template?.emoji ?? '🔹';
     const blocks = template?.blocks ?? [];
-    // Awaited before the INSERT so a slow/failed OpenAI call never holds a DB
-    // round trip open — see computeSearchFields. Branches into two full
-    // statements (rather than a conditionally-nested embedding fragment)
-    // since the vector column needs an explicit ::extensions.vector cast
-    // that only applies when there is a vector to write.
-    const searchFields = await computeSearchFields(sql, userId, { title, blocks }, deps);
-    const [document] = searchFields.embedding
-      ? await sql`
-          INSERT INTO documents (user_id, folder_id, title, emoji, blocks, content_text, embedding, embedding_model)
-          VALUES (
-            ${userId}, ${folderId}, ${title}, ${emoji}, ${sql.json(blocks)}, ${searchFields.content_text},
-            ${JSON.stringify(searchFields.embedding)}::extensions.vector, ${searchFields.embedding_model}
-          )
-          RETURNING id, folder_id, title, emoji, starred, tags, blocks, created_at, updated_at
-        `
-      : await sql`
-          INSERT INTO documents (user_id, folder_id, title, emoji, blocks, content_text)
-          VALUES (${userId}, ${folderId}, ${title}, ${emoji}, ${sql.json(blocks)}, ${searchFields.content_text})
-          RETURNING id, folder_id, title, emoji, starred, tags, blocks, created_at, updated_at
-        `;
+    const searchFields = computeSearchFields(title, blocks);
+    const [document] = await sql`
+      INSERT INTO documents (user_id, folder_id, title, emoji, blocks, content_text)
+      VALUES (${userId}, ${folderId}, ${title}, ${emoji}, ${sql.json(blocks)}, ${searchFields.content_text})
+      RETURNING id, folder_id, title, emoji, starred, tags, blocks, created_at, updated_at
+    `;
     // Best-effort; already swallows its own errors, so this never risks the
     // response over a search-indexing problem. A miss is caught by the
     // drift-repair sweep (search_indexed_at, added in a later task).
@@ -544,14 +488,9 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
     return Response.json({ error: 'Nothing to update' }, { status: 400 });
   }
 
-  // content_text/embedding are derived from the document's *effective*
-  // post-save title+blocks, so a save that only touches one of them still
-  // needs the other's current value — fetched here (outside the transaction
-  // below, which exists only for the unrelated daily-note-event diff) so a
-  // slow/failed OpenAI call in computeSearchFields never holds a DB
-  // transaction open.
-  /** @type {number[] | null} */
-  let embeddingVector = null;
+  // content_text is derived from the document's *effective* post-save
+  // title+blocks, so a save that only touches one of them still needs the
+  // other's current value.
   const touchesTitle = Object.hasOwn(body, 'title');
   const touchesBlocks = Object.hasOwn(body, 'blocks');
   if (touchesTitle || touchesBlocks) {
@@ -569,17 +508,7 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
       if (!touchesTitle) effectiveTitle = current.title;
       if (!touchesBlocks) effectiveBlocks = current.blocks;
     }
-    const searchFields = await computeSearchFields(
-      sql,
-      userId,
-      { title: effectiveTitle, blocks: effectiveBlocks },
-      deps,
-    );
-    updates.content_text = searchFields.content_text;
-    if (searchFields.embedding) {
-      updates.embedding_model = searchFields.embedding_model;
-      embeddingVector = searchFields.embedding;
-    }
+    updates.content_text = computeSearchFields(effectiveTitle, effectiveBlocks).content_text;
   }
 
   const [document] = await sql.begin(
@@ -592,11 +521,6 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
           )[0]
         : null;
 
-      // Branches into two full statements (rather than a conditionally-nested
-      // embedding fragment) since the vector column needs an explicit
-      // ::extensions.vector cast that only applies when there is a new vector
-      // to write — a rate-limited or skipped embed must leave the existing
-      // column untouched, not null it out.
       // Compared at millisecond precision on both sides: updated_at is a
       // microsecond-precision timestamptz, but the only value a client can
       // echo back is what it received — a JS Date serialized to ISO, which
@@ -605,25 +529,15 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
       // all of them.
       const expectedUpdatedAt =
         typeof body.updatedAt === 'string' && body.updatedAt ? body.updatedAt : null;
-      const rows = embeddingVector
-        ? await sql`
-          UPDATE documents d
-          SET ${sql(updates)}, updated_at = now(), embedding = ${JSON.stringify(embeddingVector)}::extensions.vector
-          WHERE d.id = ${body.id} AND d.user_id = ${userId}
-            AND (${expectedUpdatedAt}::timestamptz IS NULL
-              OR date_trunc('milliseconds', d.updated_at)
-                 = date_trunc('milliseconds', ${expectedUpdatedAt}::timestamptz))
-          RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
-        `
-        : await sql`
-          UPDATE documents d
-          SET ${sql(updates)}, updated_at = now()
-          WHERE d.id = ${body.id} AND d.user_id = ${userId}
-            AND (${expectedUpdatedAt}::timestamptz IS NULL
-              OR date_trunc('milliseconds', d.updated_at)
-                 = date_trunc('milliseconds', ${expectedUpdatedAt}::timestamptz))
-          RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
-        `;
+      const rows = await sql`
+        UPDATE documents d
+        SET ${sql(updates)}, updated_at = now()
+        WHERE d.id = ${body.id} AND d.user_id = ${userId}
+          AND (${expectedUpdatedAt}::timestamptz IS NULL
+            OR date_trunc('milliseconds', d.updated_at)
+               = date_trunc('milliseconds', ${expectedUpdatedAt}::timestamptz))
+        RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
+      `;
       const updated = rows[0];
       if (updated && previous) {
         const eventDate = await resolveDailyNoteEventDate(

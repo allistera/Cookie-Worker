@@ -1,13 +1,8 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { outputText } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
-import {
-  AI_FETCH_TIMEOUT_MS,
-  createEmbedding,
-  EmbeddingApiError,
-  EMBEDDING_MODEL,
-} from './embed.js';
 
+export const AI_FETCH_TIMEOUT_MS = 60_000;
 export const AI_MODEL = 'gpt-5.6-luna';
 export const PROMPT_VERSION = 'email-enrichment-v2';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -35,8 +30,7 @@ export class ResponsesApiError extends Error {
  * @returns {boolean}
  */
 export function isTransientOpenAiError(error) {
-  const status =
-    error instanceof EmbeddingApiError || error instanceof ResponsesApiError ? error.status : null;
+  const status = error instanceof ResponsesApiError ? error.status : null;
   if (status !== null) return status === 408 || status === 429 || status >= 500;
   return error instanceof TypeError || (error instanceof Error && error.name === 'AbortError');
 }
@@ -154,8 +148,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       ORDER BY l.name
     `,
     sql`
-      SELECT ai.status, ai.spam_verdict, ai.error_code,
-             (m.embedding IS NOT NULL) AS has_embedding
+      SELECT ai.status, ai.spam_verdict
       FROM messages m
       LEFT JOIN message_ai ai ON ai.message_id = m.id
       WHERE m.id = ${messageUuid}
@@ -167,142 +160,94 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
     description: typeof label.description === 'string' ? label.description : null,
   }));
   const state = stateRows[0] ?? {};
-  let classificationCompleted = state.status === 'completed';
-  const embeddingCompleted = Boolean(state.has_embedding);
   let verdict = state.spam_verdict || 'inbox';
   let selectedLabels = 0;
 
+  // Classification already ran for this message; there is nothing left for
+  // this Worker to enrich (Meilisearch generates the message's embedding
+  // itself once the message is indexed, so this function never re-runs for
+  // that reason).
+  if (state.status === 'completed') {
+    return { verdict, selectedLabels };
+  }
+
   try {
-    const skipForbiddenEmbedding = state.error_code === 'embedding_forbidden';
-    const [classificationSettled, embeddingSettled] = await Promise.allSettled([
-      classificationCompleted
-        ? Promise.resolve(null)
-        : withAiRetry(() => classifyEmail(record, labels, apiKey, model)),
-      embeddingCompleted || skipForbiddenEmbedding
-        ? Promise.resolve(null)
-        : withAiRetry(() => createEmbedding(record, apiKey)),
-    ]);
+    const classification = await withAiRetry(() => classifyEmail(record, labels, apiKey, model));
+    const allowed = new Map(labels.map((label) => [label.id, label]));
+    const selected = classification.labels.filter(
+      (label) => allowed.has(label.id) && label.confidence >= 0.7,
+    );
+    const score = Math.max(0, Math.min(1, classification.spam_score));
+    verdict =
+      classification.spam_verdict === 'spam'
+        ? score >= SPAM_THRESHOLD
+          ? 'spam'
+          : score >= REVIEW_THRESHOLD
+            ? 'review'
+            : 'inbox'
+        : 'inbox';
+    selectedLabels = selected.length;
 
-    if (embeddingSettled.status === 'fulfilled' && embeddingSettled.value) {
-      await sql`
-        UPDATE messages
-        SET embedding = ${JSON.stringify(embeddingSettled.value)}::vector,
-            embedding_model = ${EMBEDDING_MODEL}
-        WHERE id = ${messageUuid} AND embedding IS NULL
-      `;
-      console.log(JSON.stringify({ event: 'embedded', message_id: record.messageId }));
-    }
-
-    if (classificationSettled.status === 'rejected') throw classificationSettled.reason;
-    if (classificationSettled.value) {
-      const classification = classificationSettled.value;
-      const allowed = new Map(labels.map((label) => [label.id, label]));
-      const selected = classification.labels.filter(
-        (label) => allowed.has(label.id) && label.confidence >= 0.7,
-      );
-      const score = Math.max(0, Math.min(1, classification.spam_score));
-      verdict =
-        classification.spam_verdict === 'spam'
-          ? score >= SPAM_THRESHOLD
-            ? 'spam'
-            : score >= REVIEW_THRESHOLD
-              ? 'review'
-              : 'inbox'
-          : 'inbox';
-      selectedLabels = selected.length;
-
-      await sql.begin(async (tx) => {
-        await tx`DELETE FROM message_labels WHERE message_id = ${messageUuid} AND source = 'ai'`;
-        if (selected.length > 0) {
-          const labelRows = selected.map((label) => ({
-            label_id: label.id,
-            confidence: label.confidence,
-          }));
+    await sql.begin(async (tx) => {
+      await tx`DELETE FROM message_labels WHERE message_id = ${messageUuid} AND source = 'ai'`;
+      if (selected.length > 0) {
+        const labelRows = selected.map((label) => ({
+          label_id: label.id,
+          confidence: label.confidence,
+        }));
+        await tx`
+          INSERT INTO message_labels (message_id, label_id, source, confidence, model, prompt_version)
+          SELECT ${messageUuid}, row.label_id, 'ai', row.confidence, ${model}, ${PROMPT_VERSION}
+          FROM json_to_recordset(${JSON.stringify(labelRows)}::json)
+            AS row(label_id uuid, confidence numeric)
+          ON CONFLICT (message_id, label_id) DO NOTHING
+        `;
+      }
+      if (verdict === 'spam') {
+        const [spamLabel] = await tx`
+          INSERT INTO labels (user_id, name, color, kind, description, auto_apply)
+          SELECT m.user_id, 'Spam', '#64748b', 'system', 'High-confidence spam detected by Cookie AI', false
+          FROM messages m WHERE m.id = ${messageUuid}
+          ON CONFLICT (user_id, name) DO UPDATE
+          SET kind = 'system', auto_apply = false
+          RETURNING id
+        `;
+        if (spamLabel) {
           await tx`
             INSERT INTO message_labels (message_id, label_id, source, confidence, model, prompt_version)
-            SELECT ${messageUuid}, row.label_id, 'ai', row.confidence, ${model}, ${PROMPT_VERSION}
-            FROM json_to_recordset(${JSON.stringify(labelRows)}::json)
-              AS row(label_id uuid, confidence numeric)
+            VALUES (${messageUuid}, ${spamLabel.id}, 'ai', ${score}, ${model}, ${PROMPT_VERSION})
             ON CONFLICT (message_id, label_id) DO NOTHING
           `;
         }
-        if (verdict === 'spam') {
-          const [spamLabel] = await tx`
-            INSERT INTO labels (user_id, name, color, kind, description, auto_apply)
-            SELECT m.user_id, 'Spam', '#64748b', 'system', 'High-confidence spam detected by Cookie AI', false
-            FROM messages m WHERE m.id = ${messageUuid}
-            ON CONFLICT (user_id, name) DO UPDATE
-            SET kind = 'system', auto_apply = false
-            RETURNING id
-          `;
-          if (spamLabel) {
-            await tx`
-              INSERT INTO message_labels (message_id, label_id, source, confidence, model, prompt_version)
-              VALUES (${messageUuid}, ${spamLabel.id}, 'ai', ${score}, ${model}, ${PROMPT_VERSION})
-              ON CONFLICT (message_id, label_id) DO NOTHING
-            `;
-          }
-        }
-        await tx`
-          INSERT INTO message_ai (
-            message_id, status, spam_verdict, spam_score, spam_reason,
-            priority, provider, model, prompt_version, processed_at, updated_at
-          ) VALUES (
-            ${messageUuid}, 'completed', ${verdict}, ${score}, ${classification.spam_reason},
-            ${classification.priority}, 'openai', ${model},
-            ${PROMPT_VERSION}, now(), now()
-          )
-          ON CONFLICT (message_id) DO UPDATE SET
-            status = 'completed', spam_verdict = EXCLUDED.spam_verdict,
-            spam_score = EXCLUDED.spam_score, spam_reason = EXCLUDED.spam_reason,
-            priority = EXCLUDED.priority,
-            provider = EXCLUDED.provider, model = EXCLUDED.model,
-            prompt_version = EXCLUDED.prompt_version, error_code = NULL,
-            processed_at = now(), updated_at = now()
-        `;
-      });
-      classificationCompleted = true;
-      console.log(JSON.stringify({ event: 'ai_enriched', message_id: record.messageId, verdict }));
-    }
-
-    if (embeddingSettled.status === 'rejected') {
-      const forbidden =
-        embeddingSettled.reason instanceof EmbeddingApiError &&
-        embeddingSettled.reason.status === 403;
-      if (classificationCompleted) {
-        await sql`
-          UPDATE message_ai
-          SET error_code = ${forbidden ? 'embedding_forbidden' : 'embedding_failed'}, updated_at = now()
-          WHERE message_id = ${messageUuid} AND status = 'completed'
-        `;
       }
-      if (forbidden) {
-        console.log(
-          JSON.stringify({
-            event: 'embedding_skipped_forbidden',
-            message_id: record.messageId,
-          }),
-        );
-      } else {
-        throw embeddingSettled.reason;
-      }
-    } else if (embeddingSettled.value && state.error_code === 'embedding_failed') {
-      await sql`
-        UPDATE message_ai SET error_code = NULL, updated_at = now()
-        WHERE message_id = ${messageUuid} AND error_code = 'embedding_failed'
+      await tx`
+        INSERT INTO message_ai (
+          message_id, status, spam_verdict, spam_score, spam_reason,
+          priority, provider, model, prompt_version, processed_at, updated_at
+        ) VALUES (
+          ${messageUuid}, 'completed', ${verdict}, ${score}, ${classification.spam_reason},
+          ${classification.priority}, 'openai', ${model},
+          ${PROMPT_VERSION}, now(), now()
+        )
+        ON CONFLICT (message_id) DO UPDATE SET
+          status = 'completed', spam_verdict = EXCLUDED.spam_verdict,
+          spam_score = EXCLUDED.spam_score, spam_reason = EXCLUDED.spam_reason,
+          priority = EXCLUDED.priority,
+          provider = EXCLUDED.provider, model = EXCLUDED.model,
+          prompt_version = EXCLUDED.prompt_version, error_code = NULL,
+          processed_at = now(), updated_at = now()
       `;
-    }
+    });
+    console.log(JSON.stringify({ event: 'ai_enriched', message_id: record.messageId, verdict }));
 
     return { verdict, selectedLabels };
   } catch (error) {
-    if (!classificationCompleted) {
-      await sql`
-        INSERT INTO message_ai (message_id, status, provider, model, prompt_version, error_code, updated_at)
-        VALUES (${messageUuid}, 'failed', 'openai', ${model}, ${PROMPT_VERSION}, 'enrichment_failed', now())
-        ON CONFLICT (message_id) DO UPDATE SET
-          status = 'failed', error_code = 'enrichment_failed', updated_at = now()
-      `.catch(() => undefined);
-    }
+    await sql`
+      INSERT INTO message_ai (message_id, status, provider, model, prompt_version, error_code, updated_at)
+      VALUES (${messageUuid}, 'failed', 'openai', ${model}, ${PROMPT_VERSION}, 'enrichment_failed', now())
+      ON CONFLICT (message_id) DO UPDATE SET
+        status = 'failed', error_code = 'enrichment_failed', updated_at = now()
+    `.catch(() => undefined);
     throw error;
   }
 }

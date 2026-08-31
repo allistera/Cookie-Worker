@@ -1,12 +1,10 @@
 // Ported from Cookie-Web's api/send.js — the immediate-send half. Behaviorally
 // identical (same queries, validation, quota semantics, idempotency keys, and
-// status codes), with three runtime translations: node:crypto's createHash
-// becomes Web Crypto (so the idempotency key is now computed asynchronously),
-// Buffer.byteLength becomes TextEncoder, and the fire-and-forget sent-mail
-// embedding becomes a ctx.waitUntil task with its own short-lived database
-// connection (the request's connection closes when the response returns).
-
-import { EMBEDDING_MODEL } from '../../../shared/embeddings.js';
+// status codes), with two runtime translations: node:crypto's createHash
+// becomes Web Crypto (so the idempotency key is now computed asynchronously)
+// and Buffer.byteLength becomes TextEncoder. Meilisearch generates the
+// semantic vector for sent mail itself once the message is indexed, so this
+// no longer computes or stores an embedding at all.
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SNIPPET_LENGTH = 100;
@@ -234,16 +232,12 @@ export async function immediateSendIdempotencyKey(
 }
 
 /**
- * The seams the delivery path depends on, built once per request in worker.js:
- * createResend/embedText are injectable for tests, and queueEmbedding wraps
- * ctx.waitUntil with a fresh short-lived sql connection (the request's own
- * connection is closed by the time the background task runs).
+ * The seams the delivery path depends on, built once per request in
+ * worker.js: createResend is injectable for tests.
  *
  * @typedef {{
  *   env: import('./sentry.js').SendEnv,
  *   createResend: (apiKey: string | undefined) => any,
- *   embedText: (text: string, apiKey: string) => Promise<number[]>,
- *   queueEmbedding: (messageUuid: string, content: string) => void,
  * }} SendServices
  */
 
@@ -346,21 +340,8 @@ async function storeSentMessage(
     }
   }
 
-  // Best-effort embedding so sent mail is semantically searchable; NULL rows
-  // are healed by the Backfill Embeddings workflow. Not awaited: the send
-  // response shouldn't wait on an OpenAI round trip for a value that's
-  // already designed to be safely missing and healed later. queueEmbedding is
-  // ctx.waitUntil under the hood — a bare floating promise would be cancelled
-  // when the response returns.
-  if (services.env.OPENAI_API_KEY) {
-    services.queueEmbedding(messageUuid, `${subject}\n\n${text}`);
-  }
-
   return { messageUuid };
 }
-
-/** Re-exported for the queueEmbedding implementation in worker.js. */
-export { EMBEDDING_MODEL };
 
 // Sends immediately through Resend, from the shared inbound handler (a
 // logged-in user's request) and the flush job (a claimed scheduled row)

@@ -100,26 +100,18 @@ describe('email handler', () => {
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url) => {
-        if (String(url).includes('/responses')) {
-          return {
-            ok: true,
-            json: async () => ({
-              output_text: JSON.stringify({
-                labels: [],
-                spam_verdict: 'inbox',
-                spam_score: 0.01,
-                spam_reason: 'legitimate',
-                priority: 'normal',
-              }),
-            }),
-          };
-        }
-        return {
-          ok: true,
-          json: async () => ({ data: [{ embedding: Array(1536).fill(0.1) }] }),
-        };
-      }),
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify({
+            labels: [],
+            spam_verdict: 'inbox',
+            spam_score: 0.01,
+            spam_reason: 'legitimate',
+            priority: 'normal',
+          }),
+        }),
+      })),
     );
   });
 
@@ -334,7 +326,7 @@ describe('email handler', () => {
     vi.useRealTimers();
   });
 
-  test('embeds after a late store insert when OPENAI_API_KEY is set', async () => {
+  test('runs AI enrichment after a late store insert when OPENAI_API_KEY is set', async () => {
     vi.useFakeTimers();
     /** @type {(value?: unknown) => void} */
     let releaseBegin = () => undefined;
@@ -380,7 +372,7 @@ describe('email handler', () => {
       event: 'stored_late',
       outcome: 'inserted',
     });
-    expect(mockedFetch()).toHaveBeenCalledTimes(2);
+    expect(mockedFetch()).toHaveBeenCalledTimes(1);
     expect(sql.end).toHaveBeenCalled();
     vi.useRealTimers();
   });
@@ -451,7 +443,7 @@ describe('email handler', () => {
     const context = ctx();
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), context);
     expect(context.waitUntil).toHaveBeenCalledOnce();
-    await vi.waitFor(() => expect(mockedFetch()).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(mockedFetch()).toHaveBeenCalledTimes(1));
   });
 
   test('skips AI enrichment for duplicates and missing API keys', async () => {
@@ -465,7 +457,7 @@ describe('email handler', () => {
   });
 
   test('AI enrichment failures are swallowed inside waitUntil', async () => {
-    mockedFetch().mockRejectedValueOnce(new Error('embed broke'));
+    mockedFetch().mockRejectedValueOnce(new Error('classification broke'));
     postgres.mockReturnValue(sqlReturning());
     await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), ctx());
     await vi.waitFor(() =>
@@ -496,8 +488,8 @@ describe('scheduled recovery', () => {
     const recoveryQuery = sql.mock.calls
       .map((call) => call[0].join('?'))
       .find((query) => query.includes('FROM message_ai'));
-    expect(recoveryQuery).toContain("ai.status = 'completed'");
-    expect(recoveryQuery).toContain('m.embedding IS NULL');
+    expect(recoveryQuery).toContain("ai.status IN ('pending', 'failed')");
+    expect(recoveryQuery).not.toContain('embedding');
   });
 
   test('retries a transient connection failure with a fresh client', async () => {

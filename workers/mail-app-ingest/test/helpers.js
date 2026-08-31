@@ -64,7 +64,7 @@ export function createMockSql(options = {}) {
       if (query.text.includes('FROM label_rules')) {
         return Promise.resolve(options.ruleRows ?? []);
       }
-      if (query.text.includes('m.embedding IS NOT NULL')) {
+      if (query.text.includes('LEFT JOIN message_ai')) {
         return Promise.resolve(options.enrichmentStateRows ?? []);
       }
       return Promise.resolve([]);
