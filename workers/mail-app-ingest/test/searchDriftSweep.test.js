@@ -1,4 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+
+const { captureHandledException } = vi.hoisted(() => ({ captureHandledException: vi.fn() }));
+vi.mock('../src/sentry.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return { ...actual, captureHandledException };
+});
+
 import { SWEEP_LIMIT, sweepSearchDrift } from '../src/searchDriftSweep.js';
 
 const ENV = {
@@ -42,7 +49,7 @@ describe('sweepSearchDrift', () => {
 
   it('reindexes the drifted rows it finds and closes its own client', async () => {
     const sql = createMockSql([[{ id: ID_1 }, { id: ID_2 }]]);
-    const sync = vi.fn().mockResolvedValue(undefined);
+    const sync = vi.fn().mockResolvedValue({ indexed: 2, failed: 0 });
 
     await sweepSearchDrift(ENV, { createSql: () => sql, sync });
 
@@ -57,7 +64,10 @@ describe('sweepSearchDrift', () => {
   it('orders by created_at so the drift index is usable, and bounds the batch', async () => {
     const sql = createMockSql([[{ id: ID_1 }]]);
 
-    await sweepSearchDrift(ENV, { createSql: () => sql, sync: vi.fn() });
+    await sweepSearchDrift(ENV, {
+      createSql: () => sql,
+      sync: vi.fn().mockResolvedValue({ indexed: 1, failed: 0 }),
+    });
 
     expect(sql.calls[0].text).toContain('ORDER BY created_at DESC');
     expect(sql.calls[0].text).toContain('LIMIT');
@@ -72,6 +82,41 @@ describe('sweepSearchDrift', () => {
 
     expect(sync).not.toHaveBeenCalled();
     expect(sql.end).toHaveBeenCalled();
+  });
+
+  // The sync swallows its own errors and resolves, so the counts it returns —
+  // not the absence of a throw — are the only signal that a tick did nothing.
+  it('reports and alerts when rows could not be reindexed', async () => {
+    captureHandledException.mockClear();
+    const sql = createMockSql([[{ id: ID_1 }, { id: ID_2 }]]);
+    const sync = vi.fn().mockResolvedValue({ indexed: 1, failed: 1 });
+
+    await sweepSearchDrift(ENV, { createSql: () => sql, sync });
+
+    expect(captureHandledException).toHaveBeenCalledOnce();
+    expect(captureHandledException.mock.calls[0][3]).toMatchObject({ indexed: 1, failed: 1 });
+  });
+
+  it('does not alert when every drifted row was reindexed', async () => {
+    captureHandledException.mockClear();
+    const sql = createMockSql([[{ id: ID_1 }]]);
+
+    await sweepSearchDrift(ENV, {
+      createSql: () => sql,
+      sync: vi.fn().mockResolvedValue({ indexed: 1, failed: 0 }),
+    });
+
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
+  // createSql throws on a bad connection string; this runs under waitUntil
+  // next to enrichment recovery, so a rejection would be unhandled.
+  it('does not reject when the database client cannot be created', async () => {
+    const createSql = () => {
+      throw new Error('database connection string is not valid');
+    };
+
+    await expect(sweepSearchDrift(ENV, { createSql, sync: vi.fn() })).resolves.toBeUndefined();
   });
 
   // A failed sweep must never surface as a failed cron invocation.

@@ -106,6 +106,26 @@ describe('AI enrichment', () => {
     expect(statements).toContain('INSERT INTO message_ai');
   });
 
+  // Classification changes labels and, via spam_verdict, is_spam — both
+  // indexed. The mark must be inside the same transaction, or a failed
+  // post-classification sync would leave the message indexed as unlabelled
+  // and not-spam with nothing to repair it.
+  test('marks the row for reindexing in the classification transaction', async () => {
+    const sql = createMockSql();
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    const statements = sql.transactions[0].map((query) => query.text).join('\n');
+    expect(statements).toContain('SET search_indexed_at = NULL');
+    // Not a separate statement outside the transaction.
+    expect(sql.queries.some((query) => query.text.includes('search_indexed_at'))).toBe(false);
+  });
+
   test('marks the row failed so the recovery cron retries a classification failure', async () => {
     const sql = createMockSql();
     vi.stubGlobal(

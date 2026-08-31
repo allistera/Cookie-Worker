@@ -1,5 +1,6 @@
 import { meiliAvailable } from '../../../shared/meili.js';
 import { syncMessagesToMeili } from '../../../shared/meiliSync.js';
+import { captureHandledException } from './sentry.js';
 
 // One tick's worth of repair. The corpus is small (~1.6k messages), so this
 // is headroom rather than a throttle: it exists so a pathological backlog —
@@ -31,10 +32,19 @@ export async function sweepSearchDrift(env, deps = {}) {
 
   const makeSql = deps.createSql;
   const sync = deps.sync ?? syncMessagesToMeili;
-  if (!makeSql) return;
+  if (!makeSql) {
+    // A missing injection disables the only repair path for writers that
+    // cannot reach Meilisearch themselves, so it must not be silent.
+    console.log(JSON.stringify({ event: 'search_drift_sweep_misconfigured' }));
+    return;
+  }
 
-  const sql = makeSql(env.HYPERDRIVE.connectionString);
+  // createSql throws on a malformed connection string, so it belongs inside
+  // the try: this runs under ctx.waitUntil alongside enrichment recovery, and
+  // a rejection here would surface as an unhandled rejection on the cron.
+  let sql;
   try {
+    sql = makeSql(env.HYPERDRIVE.connectionString);
     const rows = await sql`
       SELECT id
       FROM messages
@@ -44,12 +54,27 @@ export async function sweepSearchDrift(env, deps = {}) {
     `;
     if (!rows.length) return;
 
-    await sync(
+    // syncMessagesToMeili swallows its own errors and resolves either way, so
+    // the returned counts — not the absence of a throw — are what say whether
+    // this tick actually repaired anything.
+    const { indexed, failed } = await sync(
       sql,
       env,
       rows.map((row) => String(row.id)),
     );
-    console.log(JSON.stringify({ event: 'search_drift_swept', count: rows.length }));
+    console.log(
+      JSON.stringify({ event: 'search_drift_swept', selected: rows.length, indexed, failed }),
+    );
+    if (failed > 0) {
+      // The sweep is the last line of defence for rows nothing else can
+      // repair. A silent partial failure here is how an index rots unnoticed.
+      captureHandledException(
+        'search_drift_sweep',
+        new Error(`${failed} of ${rows.length} drifted messages failed to reindex`),
+        [env.HYPERDRIVE.connectionString, env.MEILISEARCH_API_KEY],
+        { selected: rows.length, indexed, failed },
+      );
+    }
   } catch (err) {
     console.log(
       JSON.stringify({
@@ -57,7 +82,11 @@ export async function sweepSearchDrift(env, deps = {}) {
         error: err instanceof Error ? err.message : String(err),
       }),
     );
+    captureHandledException('search_drift_sweep', err, [
+      env.HYPERDRIVE.connectionString,
+      env.MEILISEARCH_API_KEY,
+    ]);
   } finally {
-    await sql.end({ timeout: 2 }).catch(() => undefined);
+    await sql?.end({ timeout: 2 }).catch(() => undefined);
   }
 }

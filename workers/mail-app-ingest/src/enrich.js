@@ -237,6 +237,14 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
           prompt_version = EXCLUDED.prompt_version, error_code = NULL,
           processed_at = now(), updated_at = now()
       `;
+      // Classification changes two indexed fields — the message's labels and,
+      // through spam_verdict, is_spam. Mark the row drifted inside the same
+      // transaction so the state and the "needs reindexing" flag can never
+      // disagree. The caller syncs immediately afterwards and clears this;
+      // if that sync fails, the row stays NULL and the cron sweep repairs it.
+      // Without the mark a failed post-classification sync would strand the
+      // message in the index as unlabelled and not-spam, permanently.
+      await tx`UPDATE messages SET search_indexed_at = NULL WHERE id = ${messageUuid}`;
     });
     console.log(JSON.stringify({ event: 'ai_enriched', message_id: record.messageId, verdict }));
 
