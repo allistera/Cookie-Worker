@@ -1,0 +1,124 @@
+// SQL query builders for reindex-meili.js and repair-search-drift.js.
+//
+// Each *Page function selects exactly the columns its target's descriptor
+// (shared/meili/documents.js or shared/meili/messages.js) reads in
+// toDocument. The messages queries carry the same LEFT JOIN on message_ai
+// and label aggregation as workers/mail-app-ingest/src/meiliSync.js, so
+// is_spam and labels come out right.
+
+/**
+ * One keyset-paginated page of documents rows, ordered by id so the last
+ * row's id becomes the next page's cursor. Pass afterId: null for the first
+ * page.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {{afterId: string | null, limit: number}} page
+ */
+export function documentsPage(sql, { afterId, limit }) {
+  const cursor = afterId ? sql`AND id > ${afterId}` : sql``;
+  return sql`
+    SELECT id, user_id, title, content_text, tags, starred, updated_at
+    FROM documents
+    WHERE true
+      ${cursor}
+    ORDER BY id
+    LIMIT ${limit}
+  `;
+}
+
+/**
+ * One keyset-paginated page of messages rows, ordered by id.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {{afterId: string | null, limit: number}} page
+ */
+export function messagesPage(sql, { afterId, limit }) {
+  const cursor = afterId ? sql`AND m.id > ${afterId}` : sql``;
+  return sql`
+    SELECT
+      m.id, m.user_id, m.from_name, m.from_address, m.recipients, m.subject, m.body_text,
+      m.sent_at, m.scheduled_for, m.is_unread, m.is_starred, m.is_archived, m.is_sent, m.is_deleted,
+      ai.spam_verdict,
+      EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
+      COALESCE(
+        json_agg(json_build_object('name', l.name) ORDER BY l.name)
+          FILTER (WHERE l.id IS NOT NULL),
+        '[]'
+      ) AS labels
+    FROM messages m
+    LEFT JOIN message_labels ml ON ml.message_id = m.id
+    LEFT JOIN labels l ON l.id = ml.label_id
+    LEFT JOIN message_ai ai ON ai.message_id = m.id
+    WHERE true
+      ${cursor}
+    GROUP BY m.id, ai.spam_verdict
+    ORDER BY m.id
+    LIMIT ${limit}
+  `;
+}
+
+/**
+ * One page of documents rows Meilisearch never received or that have since
+ * changed — search_indexed_at is NULL or behind updated_at. Ordered by
+ * updated_at (oldest drift first); the caller loops until this comes back
+ * empty, which it does naturally as stamping shrinks the WHERE clause.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {{limit: number}} page
+ */
+export function documentsDriftPage(sql, { limit }) {
+  return sql`
+    SELECT id, user_id, title, content_text, tags, starred, updated_at
+    FROM documents
+    WHERE search_indexed_at IS NULL OR search_indexed_at < updated_at
+    ORDER BY updated_at
+    LIMIT ${limit}
+  `;
+}
+
+/**
+ * Drift page for messages, same shape as documentsDriftPage.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {{limit: number}} page
+ */
+export function messagesDriftPage(sql, { limit }) {
+  return sql`
+    SELECT
+      m.id, m.user_id, m.from_name, m.from_address, m.recipients, m.subject, m.body_text,
+      m.sent_at, m.scheduled_for, m.is_unread, m.is_starred, m.is_archived, m.is_sent, m.is_deleted,
+      ai.spam_verdict,
+      EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
+      COALESCE(
+        json_agg(json_build_object('name', l.name) ORDER BY l.name)
+          FILTER (WHERE l.id IS NOT NULL),
+        '[]'
+      ) AS labels
+    FROM messages m
+    LEFT JOIN message_labels ml ON ml.message_id = m.id
+    LEFT JOIN labels l ON l.id = ml.label_id
+    LEFT JOIN message_ai ai ON ai.message_id = m.id
+    WHERE m.search_indexed_at IS NULL OR m.search_indexed_at < m.updated_at
+    GROUP BY m.id, ai.spam_verdict
+    ORDER BY m.updated_at
+    LIMIT ${limit}
+  `;
+}
+
+export const PAGE_QUERIES = { documents: documentsPage, messages: messagesPage };
+export const DRIFT_QUERIES = { documents: documentsDriftPage, messages: messagesDriftPage };
+
+/**
+ * Stamps search_indexed_at = now() on every pushed id, so the drift sweep
+ * (and a re-run of reindex-meili.js) sees these rows as already indexed.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {'documents' | 'messages'} target
+ * @param {string[]} ids
+ */
+export function stampIndexed(sql, target, ids) {
+  if (target === 'documents') {
+    return sql`UPDATE documents SET search_indexed_at = now() WHERE id = ANY(${ids}::uuid[])`;
+  }
+  return sql`UPDATE messages SET search_indexed_at = now() WHERE id = ANY(${ids}::uuid[])`;
+}

@@ -16,6 +16,7 @@
     "shared/**/*.js",
     "test/repository/**/*.js",
     "scripts/**/*.mjs",
+    "scripts/**/*.js",
     "eslint.config.js",
     "vitest.config.js"
   ]
