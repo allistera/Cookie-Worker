@@ -118,9 +118,9 @@ async function route(url, request, sql, userId, env, email) {
       if (errorResponse) return errorResponse;
       throw error;
     }
-    if (request.method === 'POST') return createDocument(sql, userId, body, deps);
-    if (request.method === 'PATCH') return updateDocument(sql, userId, body, deps);
-    return deleteDocument(sql, userId, body);
+    if (request.method === 'POST') return createDocument(sql, userId, body, deps, env);
+    if (request.method === 'PATCH') return updateDocument(sql, userId, body, deps, env);
+    return deleteDocument(sql, userId, body, env);
   }
 
   if (segments[0] !== 'tasks' || segments.length > 2) {

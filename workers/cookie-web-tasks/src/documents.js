@@ -14,6 +14,7 @@
 
 import { normalizeDocumentTags } from './documentTags.js';
 import { resolveDailyNoteEventDate, syncDailyNoteEvents } from './dailyEventSync.js';
+import { removeDocumentFromMeili, syncDocumentToMeili } from './documentMeiliSync.js';
 import { flattenBlocksToText } from './documentText.js';
 import { keywordLeg, recencyLeg, vectorLeg } from './documentRetrieval.js';
 import { parseDocumentSearchQuery } from './queryParse.js';
@@ -339,8 +340,9 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
  * @param {string} userId
  * @param {any} body
  * @param {DocumentsDeps} deps
+ * @param {any} env
  */
-export async function createDocument(sql, userId, body, deps) {
+export async function createDocument(sql, userId, body, deps, env = {}) {
   const [user] = await userExists(sql, userId);
   if (!user) return Response.json({ error: 'User not found' }, { status: 404 });
 
@@ -427,6 +429,10 @@ export async function createDocument(sql, userId, body, deps) {
           VALUES (${userId}, ${folderId}, ${title}, ${emoji}, ${sql.json(blocks)}, ${searchFields.content_text})
           RETURNING id, folder_id, title, emoji, starred, tags, blocks, created_at, updated_at
         `;
+    // Best-effort; already swallows its own errors, so this never risks the
+    // response over a search-indexing problem. A miss is caught by the
+    // drift-repair sweep (search_indexed_at, added in a later task).
+    await syncDocumentToMeili(sql, env, document.id);
     return Response.json({ document }, { status: 201 });
   }
 
@@ -444,8 +450,9 @@ export async function createDocument(sql, userId, body, deps) {
  * @param {string} userId
  * @param {any} body
  * @param {DocumentsDeps} deps
+ * @param {any} env
  */
-export async function updateDocument(sql, userId, body, deps) {
+export async function updateDocument(sql, userId, body, deps, env = {}) {
   if (!isUuid(body.id)) return Response.json({ error: 'A valid id is required' }, { status: 400 });
 
   if (body.kind === 'folder') {
@@ -648,6 +655,10 @@ export async function updateDocument(sql, userId, body, deps) {
     }
     return Response.json({ error: 'Document not found' }, { status: 404 });
   }
+  // Best-effort; already swallows its own errors, so this never risks the
+  // response over a search-indexing problem. Called after the transaction
+  // above has committed, never from inside it.
+  await syncDocumentToMeili(sql, env, document.id);
   return Response.json({ document });
 }
 
@@ -660,8 +671,9 @@ export async function updateDocument(sql, userId, body, deps) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {any} env
  */
-export async function deleteDocument(sql, userId, body) {
+export async function deleteDocument(sql, userId, body, env = {}) {
   if (!isUuid(body.id)) return Response.json({ error: 'A valid id is required' }, { status: 400 });
 
   const result =
@@ -686,6 +698,11 @@ export async function deleteDocument(sql, userId, body) {
     const subject =
       body.kind === 'folder' ? 'Folder' : body.kind === 'template' ? 'Template' : 'Document';
     return Response.json({ error: `${subject} not found` }, { status: 404 });
+  }
+  // Only a document row (not a folder or template) lives in the Meilisearch
+  // index. Best-effort; already swallows its own errors.
+  if (body.kind !== 'folder' && body.kind !== 'template') {
+    await removeDocumentFromMeili(env, body.id);
   }
   return Response.json({ ok: true });
 }
