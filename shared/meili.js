@@ -1,5 +1,8 @@
 import { Meilisearch } from 'meilisearch';
 
+export { MESSAGES_INDEX } from './meili/messages.js';
+export { EMBEDDER } from './meili/embedder.js';
+
 const DEFAULT_INDEX = 'messages';
 
 /**
@@ -183,4 +186,91 @@ export async function deleteMeiliDocuments(env, ids) {
  */
 function escapeFilter(value) {
   return value.replace(/[\\']/g, "\\$&");
+}
+
+/**
+ * Resolves the client to use: the one injected by tests, or a real one built
+ * from env.
+ *
+ * @param {any} env
+ * @param {any} [client]
+ */
+function clientFor(env, client) {
+  return client ?? getClient(env);
+}
+
+/**
+ * Applies an index descriptor's settings — searchable/filterable/sortable
+ * attributes, ranking rules, and the embedder — in one updateSettings call.
+ *
+ * @param {any} env
+ * @param {any} descriptor an index descriptor, e.g. MESSAGES_INDEX
+ * @param {any} [client] injected by tests
+ */
+export async function configureIndex(env, descriptor, client) {
+  const index = clientFor(env, client).index(descriptor.name);
+  await index.updateSettings({
+    searchableAttributes: descriptor.searchable,
+    filterableAttributes: descriptor.filterable,
+    sortableAttributes: descriptor.sortable,
+    ...(descriptor.rankingRules ? { rankingRules: descriptor.rankingRules } : {}),
+    embedders: {
+      default: { ...descriptor.embedder, apiKey: env.OPENAI_API_KEY },
+    },
+  });
+}
+
+/**
+ * Maps rows through the descriptor's toDocument and pushes them to its index.
+ *
+ * @param {any} env
+ * @param {any} descriptor
+ * @param {Record<string, unknown>[]} rows
+ * @param {any} [client]
+ */
+export function addDocuments(env, descriptor, rows, client) {
+  const index = clientFor(env, client).index(descriptor.name);
+  return index.addDocuments(rows.map(descriptor.toDocument), {
+    primaryKey: descriptor.primaryKey,
+  });
+}
+
+/**
+ * @param {any} env
+ * @param {any} descriptor
+ * @param {string[]} ids
+ * @param {any} [client]
+ */
+export function deleteDocuments(env, descriptor, ids, client) {
+  return clientFor(env, client).index(descriptor.name).deleteDocuments(ids);
+}
+
+/**
+ * One hybrid query against an index descriptor. user_id is always filtered:
+ * Postgres did that with a WHERE clause, and leaving it off here would
+ * return another user's rows — it is the only thing separating users once
+ * retrieval leaves Postgres.
+ *
+ * @param {any} env
+ * @param {any} descriptor
+ * @param {{userId: string, text?: string, filter?: string, limit: number, semanticRatio?: number, sort?: string[]}} query
+ * @param {any} [client]
+ * @returns {Promise<{id: string}[]>}
+ */
+export async function hybridSearch(env, descriptor, query, client) {
+  const index = clientFor(env, client).index(descriptor.name);
+  const filters = [`user_id = '${escapeFilter(query.userId)}'`];
+  if (query.filter) filters.push(query.filter);
+
+  const result = await index.search(query.text ?? '', {
+    limit: query.limit,
+    filter: filters.join(' AND '),
+    attributesToRetrieve: ['id'],
+    ...(query.sort ? { sort: query.sort } : {}),
+    hybrid: {
+      embedder: 'default',
+      semanticRatio: query.semanticRatio ?? descriptor.semanticRatio,
+    },
+  });
+  return result.hits.map((hit) => ({ id: hit.id }));
 }
