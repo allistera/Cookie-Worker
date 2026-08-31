@@ -235,6 +235,21 @@ describe('meiliMessageFilter', () => {
     expect(filter).toContain(`sent_at >= ${Math.floor(Date.parse('2026-01-01') / 1000)}`);
   });
 
+  // A date operator that parses to NaN used to emit `sent_at < NaN`, which
+  // Meilisearch rejects — so a typo took search down with a 503 instead of
+  // simply not constraining the range.
+  it('drops an unparseable before:/after: instead of emitting NaN', () => {
+    const filter = meiliMessageFilter({ before: '2026-13-45', after: 'yesterday' });
+    expect(filter ?? '').not.toContain('NaN');
+    expect(filter ?? '').not.toContain('sent_at');
+  });
+
+  it('keeps a valid bound when the other one is unparseable', () => {
+    const filter = meiliMessageFilter({ before: '2026-13-45', after: '2026-01-01' });
+    expect(filter).toContain(`sent_at >= ${Math.floor(Date.parse('2026-01-01') / 1000)}`);
+    expect(filter).not.toContain('NaN');
+  });
+
   it('in:all excludes only deleted mail (archived mail is included)', () => {
     expect(meiliMessageFilter({ in: 'all' })).toBe('is_deleted = false');
   });

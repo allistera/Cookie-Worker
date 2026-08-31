@@ -96,11 +96,17 @@ export function meiliMessageFilter(filters = {}) {
   if (filters.to) parts.push(`to_address = '${escapeFilter(String(filters.to))}'`);
   if (filters.tag) parts.push(`labels = '${escapeFilter(String(filters.tag))}'`);
   if (filters.hasAttachment) parts.push('has_attachments = true');
-  if (filters.before) {
-    parts.push(`sent_at < ${Math.floor(Date.parse(String(filters.before)) / 1000)}`);
+  // queryParse admits any YYYY-MM-DD shape, so `before:2026-13-45` reaches
+  // here and parses to NaN. Emitting `sent_at < NaN` makes Meilisearch reject
+  // the whole request, which surfaces as a 503 — a typo in a date operator
+  // would take search down rather than simply not matching. Skip the clause.
+  const before = Date.parse(String(filters.before));
+  if (filters.before && Number.isFinite(before)) {
+    parts.push(`sent_at < ${Math.floor(before / 1000)}`);
   }
-  if (filters.after) {
-    parts.push(`sent_at >= ${Math.floor(Date.parse(String(filters.after)) / 1000)}`);
+  const after = Date.parse(String(filters.after));
+  if (filters.after && Number.isFinite(after)) {
+    parts.push(`sent_at >= ${Math.floor(after / 1000)}`);
   }
 
   parts.push(...folderFilterParts(filters.in));
