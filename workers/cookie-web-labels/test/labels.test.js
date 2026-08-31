@@ -48,16 +48,21 @@ describe('createLabel', () => {
 });
 
 describe('updateLabel', () => {
-  test('renames a label', async () => {
+  test('renames a label and marks its messages for reindexing', async () => {
     const sql = createMockSql([
       [{ id: LABEL_ID, name: 'Money', color: '#2f9e44', kind: 'user', auto_apply: true }],
+      [],
     ]);
     const response = await updateLabel(sql, USER_ID, { id: LABEL_ID, name: '  Money  ' });
     expect(response.status).toBe(200);
     expect((await response.json()).label.name).toBe('Money');
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[0].text).toMatch(/UPDATE labels/);
+    expect(sql.calls[1].text).toMatch(/UPDATE messages SET search_indexed_at = NULL/);
+    expect(sql.calls[1].text).toMatch(/message_labels/);
   });
 
-  test('updates color and description, including clearing the description', async () => {
+  test('updates color and description, including clearing the description, without marking messages', async () => {
     const sql = createMockSql([
       [
         {
@@ -78,6 +83,8 @@ describe('updateLabel', () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ label: { color: '#2F6BE0', description: null } });
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).not.toMatch(/search_indexed_at/);
   });
 
   test.each([
@@ -111,15 +118,19 @@ describe('updateLabel', () => {
 });
 
 describe('deleteLabel', () => {
-  test('deletes a user-owned label', async () => {
-    const sql = createMockSql([[{ id: LABEL_ID }]]);
+  test("marks the label's messages for reindexing before deleting it", async () => {
+    const sql = createMockSql([[], [{ id: LABEL_ID }]]);
     const response = await deleteLabel(sql, USER_ID, { id: LABEL_ID });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[0].text).toMatch(/UPDATE messages SET search_indexed_at = NULL/);
+    expect(sql.calls[0].text).toMatch(/message_labels/);
+    expect(sql.calls[1].text).toMatch(/DELETE FROM labels/);
   });
 
   test('returns 404 when nothing was deleted', async () => {
-    const sql = createMockSql([[]]);
+    const sql = createMockSql([[], []]);
     const response = await deleteLabel(sql, USER_ID, { id: LABEL_ID });
     expect(response.status).toBe(404);
   });

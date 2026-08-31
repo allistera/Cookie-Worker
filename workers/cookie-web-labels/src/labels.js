@@ -84,16 +84,30 @@ export async function updateLabel(sql, userId, body) {
 
   let label;
   try {
-    [label] = await sql`
-      UPDATE labels l
-      SET name = COALESCE(${hasName ? name : null}, l.name),
-          color = CASE WHEN ${hasColor} THEN ${color} ELSE l.color END,
-          description = CASE WHEN ${hasDescription} THEN ${description} ELSE l.description END,
-          auto_apply = COALESCE(${hasAutoApply ? body.auto_apply : null}::boolean, l.auto_apply)
-      WHERE l.id = ${id} AND l.user_id = ${userId}
-        AND l.kind = 'user'
-      RETURNING l.id, l.name, l.color, l.kind, l.description, l.auto_apply
-    `;
+    label = await sql.begin(async (tx) => {
+      const [updated] = await tx`
+        UPDATE labels l
+        SET name = COALESCE(${hasName ? name : null}, l.name),
+            color = CASE WHEN ${hasColor} THEN ${color} ELSE l.color END,
+            description = CASE WHEN ${hasDescription} THEN ${description} ELSE l.description END,
+            auto_apply = COALESCE(${hasAutoApply ? body.auto_apply : null}::boolean, l.auto_apply)
+        WHERE l.id = ${id} AND l.user_id = ${userId}
+          AND l.kind = 'user'
+        RETURNING l.id, l.name, l.color, l.kind, l.description, l.auto_apply
+      `;
+
+      // The label's name is the only field carried into a message's search
+      // document (the `labels` array). Only a rename invalidates it — a
+      // colour/description/auto_apply-only edit does not.
+      if (updated && hasName) {
+        await tx`
+          UPDATE messages SET search_indexed_at = NULL
+          WHERE id IN (SELECT message_id FROM message_labels WHERE label_id = ${id})
+        `;
+      }
+
+      return updated;
+    });
   } catch (error) {
     if (hasName && /** @type {{code?: string}} */ (error)?.code === '23505') {
       return Response.json({ error: 'A label with that name already exists' }, { status: 409 });
@@ -117,12 +131,26 @@ export async function deleteLabel(sql, userId, body) {
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
   }
-  const rows = await sql`
-    DELETE FROM labels l
-    WHERE l.id = ${id} AND l.user_id = ${userId}
-      AND l.kind = 'user'
-    RETURNING l.id
-  `;
+  const rows = await sql.begin(async (tx) => {
+    // message_labels rows are FK-cascade-deleted with the label below, so the
+    // affected messages must be marked for reindexing first — afterwards
+    // there's no way to find them. Scoped to this user's label the same way
+    // the delete below is, so a bogus/foreign id marks nothing.
+    await tx`
+      UPDATE messages SET search_indexed_at = NULL
+      WHERE id IN (
+        SELECT ml.message_id FROM message_labels ml
+        JOIN labels l ON l.id = ml.label_id
+        WHERE l.id = ${id} AND l.user_id = ${userId} AND l.kind = 'user'
+      )
+    `;
+    return tx`
+      DELETE FROM labels l
+      WHERE l.id = ${id} AND l.user_id = ${userId}
+        AND l.kind = 'user'
+      RETURNING l.id
+    `;
+  });
   if (rows.length === 0) {
     return Response.json({ error: 'User label not found' }, { status: 404 });
   }
