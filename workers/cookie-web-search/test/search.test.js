@@ -259,6 +259,40 @@ describe('message search engine', () => {
     expect(query.sort).toBeUndefined();
   });
 
+  // mode=keyword is Cookie-Web's per-keystroke type-ahead path. It must not
+  // spend an embedding call on every keystroke, so it forces Meilisearch's
+  // keyword-only setting (semanticRatio 0) rather than falling through to
+  // the descriptor's default hybrid ratio.
+  it('mode=keyword sends semanticRatio: 0', async () => {
+    const search = mockSearch(async () => []);
+    const sql = createMockSql([[]]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=roof&mode=keyword'),
+      ENV,
+      deps({ hybridSearch: search }),
+    );
+
+    const query = search.mock.calls[0][2];
+    expect(query.semanticRatio).toBe(0);
+  });
+
+  // No mode param (or any value other than "keyword") is the default hybrid
+  // path — semanticRatio is left unset here so hybridSearch falls back to
+  // MESSAGES_INDEX's own default (0.5).
+  it('defaults to the descriptor semanticRatio when mode is not keyword', async () => {
+    const search = mockSearch(async () => []);
+    const sql = createMockSql([[]]);
+
+    await handleSearch(sql, USER_ID, url('?q=roof'), ENV, deps({ hybridSearch: search }));
+
+    const query = search.mock.calls[0][2];
+    expect(query.semanticRatio).toBeUndefined();
+    expect(MESSAGES_INDEX.semanticRatio).toBe(0.5);
+  });
+
   // Meilisearch is required: a failure is an error, not a silent fallback to
   // Postgres.
   it('returns 503 when Meilisearch fails', async () => {

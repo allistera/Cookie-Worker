@@ -224,6 +224,69 @@ describe('MESSAGES_INDEX.toDocument / buildMeiliDocument — is_spam and schedul
     expect(MESSAGES_INDEX.toDocument({ ...ROW, scheduled_for: null }).scheduled_for).toBe(0);
     expect(buildMeiliDocument({ ...ROW, scheduled_for: null }).scheduled_for).toBe(0);
   });
+
+  // MESSAGES_INDEX.toDocument (the reindex/drift-script path) and
+  // buildMeiliDocument (the live ingest sync path, called from
+  // mail-app-ingest's meiliSync.js) are two writers of ONE index. If a
+  // reindex ever produced a different document than live sync did for the
+  // same row, every reindexed message would silently drift from what
+  // sync wrote — this pins full-row output equality, not just the two
+  // fields above, so any future field added to one and not the other fails
+  // here immediately.
+  it('produce byte-identical documents for a fully populated row', () => {
+    const fullRow = {
+      id: 'm1',
+      user_id: USER_ID,
+      subject: 'Roof quote',
+      body_text: 'Here is the quote for the new roof tiles.',
+      from_name: 'Bob Builder',
+      from_address: 'bob@example.com',
+      recipients: {
+        to: [{ name: 'Jane Doe', address: 'jane@example.com' }],
+        cc: ['cc@example.com'],
+        bcc: [{ name: null, address: 'bcc@example.com' }],
+      },
+      labels: [{ name: 'Personal' }, { name: 'Home' }],
+      sent_at: '2026-01-15T00:00:00Z',
+      scheduled_for: '2026-01-16T00:00:00Z',
+      is_unread: true,
+      is_starred: true,
+      is_archived: false,
+      is_sent: false,
+      is_deleted: false,
+      has_attachments: true,
+      spam_verdict: 'spam',
+    };
+
+    expect(MESSAGES_INDEX.toDocument(fullRow)).toEqual(buildMeiliDocument(fullRow));
+  });
+
+  // A sparse row (nulls/absent fields, as a bare LEFT JOIN with no
+  // message_ai row and no recipients/labels aggregated might produce)
+  // exercises the null-handling branches in both functions identically.
+  it('produce byte-identical documents for a sparse row', () => {
+    const sparseRow = {
+      id: 'm2',
+      user_id: USER_ID,
+      subject: null,
+      body_text: null,
+      from_name: null,
+      from_address: null,
+      recipients: null,
+      labels: null,
+      sent_at: null,
+      scheduled_for: null,
+      is_unread: false,
+      is_starred: false,
+      is_archived: false,
+      is_sent: false,
+      is_deleted: false,
+      has_attachments: false,
+      spam_verdict: undefined,
+    };
+
+    expect(MESSAGES_INDEX.toDocument(sparseRow)).toEqual(buildMeiliDocument(sparseRow));
+  });
 });
 
 // The single filter builder shared by hybridSearch (via search.js/ask.js)

@@ -8,6 +8,7 @@ import {
   normalizeBlocks,
   updateDocument,
 } from '../src/documents.js';
+import { DOCUMENTS_INDEX } from '../../../shared/meili/documents.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '55555555-5555-4555-8555-555555555555';
@@ -255,6 +256,32 @@ describe('document search engine', () => {
     await getDocuments(sql, USER_ID, url('?q=tag%3Ahome'), deps({ hybridSearch: search }));
 
     expect(/** @type {any} */ (search).mock.calls[0][2].sort).toEqual(['updated_at:desc']);
+  });
+
+  // mode=keyword is the lower-latency type-ahead path (see searchDocuments'
+  // own comment) and must not spend an embedding call on every keystroke,
+  // so it forces Meilisearch's keyword-only setting (semanticRatio 0)
+  // rather than falling through to the descriptor's default hybrid ratio.
+  it('mode=keyword sends semanticRatio: 0', async () => {
+    const search = vi.fn(async () => []);
+    const sql = createMockSql([[]]);
+
+    await getDocuments(sql, USER_ID, url('?q=roof&mode=keyword'), deps({ hybridSearch: search }));
+
+    expect(/** @type {any} */ (search).mock.calls[0][2].semanticRatio).toBe(0);
+  });
+
+  // No mode param (or any value other than "keyword") is the default hybrid
+  // path — semanticRatio is left unset here so hybridSearch falls back to
+  // DOCUMENTS_INDEX's own default (0.5).
+  it('defaults to the descriptor semanticRatio when mode is not keyword', async () => {
+    const search = vi.fn(async () => []);
+    const sql = createMockSql([[]]);
+
+    await getDocuments(sql, USER_ID, url('?q=roof'), deps({ hybridSearch: search }));
+
+    expect(/** @type {any} */ (search).mock.calls[0][2].semanticRatio).toBeUndefined();
+    expect(DOCUMENTS_INDEX.semanticRatio).toBe(0.5);
   });
 
   // Meilisearch is required: a failure is an error, not a silent empty list.

@@ -97,9 +97,11 @@ async function respondWithEmails(sql, userId, ids) {
  * @param {string} userId
  * @param {{text: string, prefixQuery: string | null, filters: Record<string, any>}} spec
  * @param {any} env
+ * @param {boolean} semantic false when mode=keyword — forces keyword-only
+ *   (semanticRatio 0) so type-ahead never spends an embedding call.
  * @param {SearchDeps} deps
  */
-async function searchViaMeili(sql, userId, spec, env, deps) {
+async function searchViaMeili(sql, userId, spec, env, semantic, deps) {
   let hits;
   try {
     hits = await deps.hybridSearch(env, MESSAGES_INDEX, {
@@ -107,6 +109,11 @@ async function searchViaMeili(sql, userId, spec, env, deps) {
       text: spec.text ?? '',
       filter: meiliMessageFilter(spec.filters),
       limit: RESULTS,
+      // mode=keyword maps to semanticRatio 0 — Meilisearch's keyword-only
+      // setting, matching the old Postgres keyword leg. Omitting the key
+      // entirely (rather than sending semanticRatio: undefined) lets
+      // hybridSearch fall back to the index descriptor's default ratio.
+      ...(semantic ? {} : { semanticRatio: 0 }),
       // No free text means no relevance signal, so fall back to newest-first
       // — what the recency leg did.
       ...(spec.text ? {} : { sort: ['sent_at:desc'] }),
@@ -161,7 +168,7 @@ export async function handleSearch(sql, userId, url, env, deps = DEFAULT_DEPS) {
   // legs it reaches.
   const engine = url.searchParams.get('engine') === 'postgres' ? 'postgres' : 'meili';
   if (engine === 'meili') {
-    return await searchViaMeili(sql, userId, spec, env, deps);
+    return await searchViaMeili(sql, userId, spec, env, semantic, deps);
   }
 
   // Only hybrid search spends AI quota. Keyword-only type-ahead remains a

@@ -264,15 +264,15 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
     return Response.json({ documents: [] });
   }
 
+  const semantic = url.searchParams.get('mode') !== 'keyword';
+
   // engine=postgres is the soak-period comparison handle, not a fallback: it
   // is never selected automatically, and phase 2 deletes it along with the
   // legs it reaches.
   const engine = url.searchParams.get('engine') === 'postgres' ? 'postgres' : 'meili';
   if (engine === 'meili') {
-    return await searchViaMeili(sql, userId, spec, deps);
+    return await searchViaMeili(sql, userId, spec, semantic, deps);
   }
-
-  const semantic = url.searchParams.get('mode') !== 'keyword';
 
   // Only hybrid search spends AI quota. Keyword-only type-ahead remains a
   // normal authenticated database query and cannot exhaust the shared AI
@@ -378,9 +378,11 @@ function meiliFilter(filters) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {{text: string, prefixQuery: string | null, filters: {tag?: string, starred?: boolean}}} spec
+ * @param {boolean} semantic false when mode=keyword — forces keyword-only
+ *   (semanticRatio 0) so type-ahead never spends an embedding call.
  * @param {DocumentsDeps} deps
  */
-async function searchViaMeili(sql, userId, spec, deps) {
+async function searchViaMeili(sql, userId, spec, semantic, deps) {
   let hits;
   try {
     hits = await deps.hybridSearch(deps.env, DOCUMENTS_INDEX, {
@@ -388,6 +390,11 @@ async function searchViaMeili(sql, userId, spec, deps) {
       text: spec.text ?? '',
       filter: meiliFilter(spec.filters),
       limit: SEARCH_RESULTS,
+      // mode=keyword maps to semanticRatio 0 — Meilisearch's keyword-only
+      // setting, matching the old Postgres keyword leg. Omitting the key
+      // entirely (rather than sending semanticRatio: undefined) lets
+      // hybridSearch fall back to the index descriptor's default ratio.
+      ...(semantic ? {} : { semanticRatio: 0 }),
       // No free text means no relevance signal, so fall back to newest-first
       // — what the recency leg did. DOCUMENTS_INDEX stores updated_at in
       // milliseconds, unlike the messages index (seconds).

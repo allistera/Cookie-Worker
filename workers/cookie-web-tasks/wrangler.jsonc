@@ -29,12 +29,13 @@
     // Must match data-enricher's OWNER_EMAIL: /tasks/refresh rebuilds that
     // fixed mailbox's AI state, so only this account may trigger it.
     "OWNER_EMAIL": "allisteraall@gmail.com",
-    // Meilisearch Cloud endpoint for document search and sync.
-    // MEILISEARCH_API_KEY is a wrangler secret and must be set before
-    // deploy. If Meilisearch is unreachable or misconfigured, document
-    // search returns 503 rather than silently falling back to Postgres
-    // (?engine=postgres in documents.js is the only way to reach Postgres).
+    // Meilisearch Cloud endpoint for document search and sync. The index
+    // name itself is not configured here — DOCUMENTS_INDEX.name in
+    // shared/meili/documents.js hardcodes 'documents'. MEILISEARCH_API_KEY
+    // is a wrangler secret and must be set before deploy. If Meilisearch is
+    // unreachable or misconfigured, document search returns 503 rather than
+    // silently falling back to Postgres (?engine=postgres in documents.js
+    // is the only way to reach Postgres).
     "MEILISEARCH_URL": "https://ms-52028f71df74-53700.lon.meilisearch.io",
-    "MEILISEARCH_INDEX": "documents",
   },
 }
