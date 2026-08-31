@@ -28,6 +28,7 @@ export async function syncDocumentToMeili(sql, env, documentId, deps = {}) {
     `;
     if (!row) return;
     await addDocs(env, DOCUMENTS_INDEX, [row]);
+    await sql`UPDATE documents SET search_indexed_at = now() WHERE id = ${documentId}`;
   } catch (error) {
     console.log(
       JSON.stringify({

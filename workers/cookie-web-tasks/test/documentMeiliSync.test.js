@@ -47,6 +47,29 @@ describe('syncDocumentToMeili', () => {
       syncDocumentToMeili(sql, ENV, DOC_ID, { addDocuments: push }),
     ).resolves.toBeUndefined()
   })
+
+  it('stamps search_indexed_at after a successful push', async () => {
+    const sql = createMockSql([[{ id: DOC_ID, user_id: 'u1' }], []])
+    const push = vi.fn(async () => ({ taskUid: 1 }))
+
+    await syncDocumentToMeili(sql, ENV, DOC_ID, { addDocuments: push })
+
+    expect(sql.calls[1].text).toContain('search_indexed_at = now()')
+    expect(sql.calls[1].values).toContain(DOC_ID)
+  })
+
+  // Stamping a row Meilisearch rejected would hide it from the sweep forever.
+  it('does not stamp when the push fails', async () => {
+    const sql = createMockSql([[{ id: DOC_ID, user_id: 'u1' }]])
+    const push = vi.fn(async () => {
+      throw new Error('meili down')
+    })
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await syncDocumentToMeili(sql, ENV, DOC_ID, { addDocuments: push })
+
+    expect(sql.calls).toHaveLength(1)
+  })
 })
 
 describe('removeDocumentFromMeili', () => {

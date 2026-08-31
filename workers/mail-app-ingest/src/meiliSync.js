@@ -48,6 +48,7 @@ export async function syncMessageToMeili(sql, env, messageUuid) {
 
   const document = buildMeiliDocument(row);
     const result = await addMeiliDocuments(env, [document]);
+    await sql`UPDATE messages SET search_indexed_at = now() WHERE id = ${messageUuid}`;
     console.log(
       JSON.stringify({
         event: 'meili_synced',
