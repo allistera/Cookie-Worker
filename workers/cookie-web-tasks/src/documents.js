@@ -12,6 +12,7 @@
 // unchanged: that logic is proven correct, and this is already the largest,
 // highest-risk port in the migration.
 
+import { DOCUMENTS_INDEX } from '../../../shared/meili/documents.js';
 import { normalizeDocumentTags } from './documentTags.js';
 import { resolveDailyNoteEventDate, syncDailyNoteEvents } from './dailyEventSync.js';
 import { removeDocumentFromMeili, syncDocumentToMeili } from './documentMeiliSync.js';
@@ -49,6 +50,8 @@ const EMBED_TIMEOUT_MS = 5000;
  *   allowRequest: (sql: import('postgres').Sql, userId: string, scope: string, policy: {limit: number, windowMs: number}) => Promise<boolean>,
  *   embedText: (text: string, apiKey: string, options?: {signal?: AbortSignal}) => Promise<number[]>,
  *   embedTextCached: (text: string, apiKey: string) => Promise<number[]>,
+ *   env: any,
+ *   hybridSearch: (env: any, descriptor: any, query: {userId: string, text?: string, filter?: string, limit: number, semanticRatio?: number, sort?: string[]}, client?: any) => Promise<{id: string}[]>,
  * }} DocumentsDeps
  */
 
@@ -251,7 +254,6 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
   if (rawQuery.length > MAX_SEARCH_QUERY_CHARS) {
     return Response.json({ error: 'q is required (max 500 chars)' }, { status: 400 });
   }
-  const semantic = url.searchParams.get('mode') !== 'keyword';
 
   // Split the raw query into free text, a prefix tsquery, and structured
   // operators (tag:/is:starred). A query containing only empty recognized
@@ -261,6 +263,16 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
   if (!spec.text && !hasFilters) {
     return Response.json({ documents: [] });
   }
+
+  // engine=postgres is the soak-period comparison handle, not a fallback: it
+  // is never selected automatically, and phase 2 deletes it along with the
+  // legs it reaches.
+  const engine = url.searchParams.get('engine') === 'postgres' ? 'postgres' : 'meili';
+  if (engine === 'meili') {
+    return await searchViaMeili(sql, userId, spec, deps);
+  }
+
+  const semantic = url.searchParams.get('mode') !== 'keyword';
 
   // Only hybrid search spends AI quota. Keyword-only type-ahead remains a
   // normal authenticated database query and cannot exhaust the shared AI
@@ -323,6 +335,19 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
     vectorRows.map((/** @type {any} */ r) => r.id),
   ]).slice(0, SEARCH_RESULTS);
 
+  return await respondWithDocuments(sql, userId, ids);
+}
+
+// Hydrates a fused/Meilisearch id list into full document rows (in id order)
+// and wraps them in the search response shape. Shared by both engines so a
+// Postgres-vs-Meilisearch comparison is only ever a difference in which ids
+// come back, never in the response shape.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string[]} ids
+ */
+async function respondWithDocuments(sql, userId, ids) {
   if (ids.length === 0) return Response.json({ documents: [] });
 
   const rows = await fetchSearchDocuments(sql, userId, ids);
@@ -330,6 +355,56 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
   const documents = ids.map((id) => byId.get(id)).filter(Boolean);
 
   return Response.json({ documents });
+}
+
+/**
+ * Structured filters as a Meilisearch expression. user_id is added by
+ * hybridSearch itself, so it is deliberately absent here.
+ *
+ * @param {{tag?: string, starred?: boolean}} filters
+ */
+function meiliFilter(filters) {
+  const parts = [];
+  if (filters.tag) parts.push(`tags = '${filters.tag.replace(/[\\']/g, '\\$&')}'`);
+  if (filters.starred) parts.push('starred = true');
+  return parts.join(' AND ') || undefined;
+}
+
+// The Meilisearch leg of document search. hits carry only ids
+// (attributesToRetrieve inside hybridSearch), so the rows still come from
+// Postgres via respondWithDocuments — the same hydration the Postgres legs
+// use, so both engines return byte-identical response shapes.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{text: string, prefixQuery: string | null, filters: {tag?: string, starred?: boolean}}} spec
+ * @param {DocumentsDeps} deps
+ */
+async function searchViaMeili(sql, userId, spec, deps) {
+  let hits;
+  try {
+    hits = await deps.hybridSearch(deps.env, DOCUMENTS_INDEX, {
+      userId,
+      text: spec.text ?? '',
+      filter: meiliFilter(spec.filters),
+      limit: SEARCH_RESULTS,
+      // No free text means no relevance signal, so fall back to newest-first
+      // — what the recency leg did. DOCUMENTS_INDEX stores updated_at in
+      // milliseconds, unlike the messages index (seconds).
+      ...(spec.text ? {} : { sort: ['updated_at:desc'] }),
+    });
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        event: 'document_search_meili_failed',
+        message: /** @type {Error} */ (error).message,
+      }),
+    );
+    return Response.json({ error: 'Search is unavailable' }, { status: 503 });
+  }
+
+  const ids = hits.map((hit) => hit.id);
+  return await respondWithDocuments(sql, userId, ids);
 }
 
 /**

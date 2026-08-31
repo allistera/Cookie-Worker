@@ -3,6 +3,7 @@ import { put } from '@vercel/blob';
 import postgres from 'postgres';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
+import { hybridSearch } from '../../../shared/meili.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { getDailyNoteSeed, putDailyNoteSeed } from './dailyNoteSeed.js';
 import { createDocument, deleteDocument, getDocuments, updateDocument } from './documents.js';
@@ -102,6 +103,8 @@ async function route(url, request, sql, userId, env, email) {
       allowRequest,
       embedText,
       embedTextCached,
+      env,
+      hybridSearch,
     };
     if (request.method === 'GET') return getDocuments(sql, userId, url, deps);
     if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {

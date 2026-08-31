@@ -26,6 +26,10 @@ function deps(overrides = {}) {
     embedTextCached: vi.fn(async () => {
       throw new Error('embedTextCached should not be called in these tests');
     }),
+    env: {},
+    hybridSearch: vi.fn(async () => {
+      throw new Error('hybridSearch should not be called in these tests');
+    }),
     ...overrides,
   };
 }
@@ -102,11 +106,14 @@ describe('GET /documents', () => {
 // clauses that return before any leg runs are covered here.
 describe('GET /documents?q=… (search)', () => {
   it('429s when the shared ai quota is exhausted', async () => {
+    // engine=postgres: the AI quota check only guards the Postgres legs'
+    // embedTextCached call — Meilisearch (the default engine) does its own
+    // embedding server-side and never touches this worker's quota.
     const sql = createMockSql();
     const response = await getDocuments(
       sql,
       USER_ID,
-      url('?q=roadmap'),
+      url('?q=roadmap&engine=postgres'),
       deps({ openaiApiKey: 'sk-test' }),
     );
     expect(response.status).toBe(429);
@@ -137,13 +144,98 @@ describe('GET /documents?q=… (search)', () => {
   });
 
   it('treats an unrecognized operator value as free text rather than a filter', async () => {
+    // engine=postgres: exercises the keyword leg directly, which the
+    // Meilisearch default engine does not touch.
     const sql = createMockSql();
-    const response = await getDocuments(sql, USER_ID, url('?q=is:archived&mode=keyword'), deps());
+    const response = await getDocuments(
+      sql,
+      USER_ID,
+      url('?q=is:archived&mode=keyword&engine=postgres'),
+      deps(),
+    );
     // 'is:archived' isn't a recognized is: value, so it stays in spec.text
     // and the keyword leg actually runs, rather than short-circuiting to an
     // empty result set the way an empty query does.
     expect(response.status).toBe(200);
     expect(sql).toHaveBeenCalled();
+  });
+});
+
+// The Meilisearch path is the default engine; engine=postgres (covered
+// above) is the soak-period comparison handle onto the unchanged three-leg
+// path, never a fallback.
+describe('document search engine', () => {
+  it('searches Meilisearch by default', async () => {
+    const search = vi.fn(async () => [{ id: DOC_ID }]);
+    const sql = createMockSql([[{ id: DOC_ID, title: 'Roof' }]]);
+
+    const response = await getDocuments(
+      sql,
+      USER_ID,
+      url('?q=roof'),
+      deps({ hybridSearch: search }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the Postgres legs when engine=postgres is asked for', async () => {
+    const search = vi.fn(async () => []);
+    const sql = createMockSql([[], [], [], []]);
+
+    await getDocuments(
+      sql,
+      USER_ID,
+      url('?q=roof&engine=postgres'),
+      deps({ hybridSearch: search }),
+    );
+
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('passes tag and starred filters to Meilisearch', async () => {
+    const search = vi.fn(async () => []);
+    const sql = createMockSql([[]]);
+
+    await getDocuments(
+      sql,
+      USER_ID,
+      url('?q=tag%3Ahome+is%3Astarred+roof'),
+      deps({ hybridSearch: search }),
+    );
+
+    const query = /** @type {any} */ (search).mock.calls[0][2];
+    expect(query.filter).toContain("tags = 'home'");
+    expect(query.filter).toContain('starred = true');
+  });
+
+  // A filters-only query has no relevance signal, so it sorts newest-first —
+  // what the recency leg did.
+  it('sorts by updated_at when there is no free text', async () => {
+    const search = vi.fn(async () => []);
+    const sql = createMockSql([[]]);
+
+    await getDocuments(sql, USER_ID, url('?q=tag%3Ahome'), deps({ hybridSearch: search }));
+
+    expect(/** @type {any} */ (search).mock.calls[0][2].sort).toEqual(['updated_at:desc']);
+  });
+
+  // Meilisearch is required: a failure is an error, not a silent empty list.
+  it('returns 503 when Meilisearch fails', async () => {
+    const search = vi.fn(async () => {
+      throw new Error('meili down');
+    });
+    const sql = createMockSql();
+
+    const response = await getDocuments(
+      sql,
+      USER_ID,
+      url('?q=roof'),
+      deps({ hybridSearch: search }),
+    );
+
+    expect(response.status).toBe(503);
   });
 });
 

@@ -29,5 +29,10 @@
     // Must match data-enricher's OWNER_EMAIL: /tasks/refresh rebuilds that
     // fixed mailbox's AI state, so only this account may trigger it.
     "OWNER_EMAIL": "allisteraall@gmail.com",
+    // Meilisearch Cloud endpoint and index name. The API key is a secret
+    // (MEILISEARCH_API_KEY) set via `wrangler secret put`. Leave the URL empty
+    // to keep the existing Postgres keyword search until the project is ready.
+    "MEILISEARCH_URL": "https://ms-52028f71df74-53700.lon.meilisearch.io",
+    "MEILISEARCH_INDEX": "documents",
   },
 }
