@@ -233,11 +233,16 @@ export async function immediateSendIdempotencyKey(
 
 /**
  * The seams the delivery path depends on, built once per request in
- * worker.js: createResend is injectable for tests.
+ * worker.js: createResend is injectable for tests, and the two index seams
+ * hand a freshly stored sent copy to Meilisearch. Both are fire-and-forget —
+ * worker.js owns the ExecutionContext and the connection the sync runs on, so
+ * search indexing can never fail or delay a send.
  *
  * @typedef {{
  *   env: import('./sentry.js').SendEnv,
  *   createResend: (apiKey: string | undefined) => any,
+ *   indexSentMessage: (messageUuid: string) => void,
+ *   indexSentMessages: (messageUuids: string[]) => void,
  * }} SendServices
  */
 
@@ -245,7 +250,8 @@ export async function immediateSendIdempotencyKey(
 // the inbox list, included in search). Threads with the replied-to message
 // when replyToMessageId is given; otherwise starts a fresh thread. Returns
 // the new message's id so callers (e.g. the scheduled-send flush job) can
-// link back to it.
+// link back to it, plus whether this call is the one that inserted it: a
+// replayed send resolves to the same id but must not be re-indexed.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -284,6 +290,7 @@ async function storeSentMessage(
     cc: [],
     bcc: [],
   });
+  let inserted = false;
   if (!lookup.existing_message_id) {
     /** @type {Array<(sql: import('postgres').Sql | import('postgres').TransactionSql) => any>} */
     const statements = [];
@@ -295,6 +302,10 @@ async function storeSentMessage(
       `,
       );
     }
+    // RETURNING makes the insert self-reporting: a row comes back only when
+    // this call created it, so a concurrent send that won the ON CONFLICT race
+    // is not mistaken for a fresh message.
+    const messagesStatement = statements.length;
     statements.push(
       (sql) => sql`
       INSERT INTO messages (id, thread_id, user_id, from_name, from_address,
@@ -304,6 +315,7 @@ async function storeSentMessage(
               ${fromAddress}, ${recipientsJson}::jsonb, ${subject}, ${makeSnippet(text)},
               ${text}, ${html ?? null}, ${sentAt}, ${messageId}, false, true)
       ON CONFLICT (user_id, message_id) WHERE message_id IS NOT NULL DO NOTHING
+      RETURNING id
     `,
     );
     if (lookup.thread_id) {
@@ -318,8 +330,9 @@ async function storeSentMessage(
       );
     }
     await sql.begin(async (sql) => {
-      for (const statement of statements) {
-        await statement(sql);
+      for (const [index, statement] of statements.entries()) {
+        const result = await statement(sql);
+        if (index === messagesStatement) inserted = result.length > 0;
       }
     });
   }
@@ -340,7 +353,7 @@ async function storeSentMessage(
     }
   }
 
-  return { messageUuid };
+  return { messageUuid, inserted };
 }
 
 // Sends immediately through Resend, from the shared inbound handler (a
@@ -377,8 +390,11 @@ export async function deliverMail(
   if (error) throw new Error(error.message || 'Failed to send email');
 
   let messageUuid = null;
+  // Only a real insert is new mail for the search index; a replay resolves to
+  // an id that is already indexed (or already marked for the drift sweep).
+  let inserted = false;
   try {
-    ({ messageUuid } = await storeSentMessage(
+    ({ messageUuid, inserted } = await storeSentMessage(
       sql,
       userId,
       {
@@ -397,7 +413,7 @@ export async function deliverMail(
     // did go out, so this must never be treated as a failed send.
     console.error('failed to store sent copy:', /** @type {Error} */ (err).message);
   }
-  return { resendId: data.id, messageUuid };
+  return { resendId: data.id, messageUuid, inserted };
 }
 
 /**

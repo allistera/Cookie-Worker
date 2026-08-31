@@ -23,6 +23,11 @@
     // Cookie-Web's production origin, for the CORS allowlist.
     "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
     "SENTRY_ENVIRONMENT": "production",
+    // Meilisearch Cloud endpoint, so a sent copy is indexed as it is stored
+    // instead of waiting for the drift sweep. The API key is a secret
+    // (MEILISEARCH_API_KEY) set via `wrangler secret put`, like the other
+    // Workers that write to the index; with either missing the sync no-ops.
+    "MEILISEARCH_URL": "https://ms-52028f71df74-53700.lon.meilisearch.io",
   },
   // EMAIL_FROM (the visible From for outbound mail) and RESEND_API_KEY are
   // Worker secrets set once via `wrangler secret put`, not vars: Vercel marks

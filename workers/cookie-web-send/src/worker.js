@@ -5,6 +5,7 @@ import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
+import { syncMessageToMeili, syncMessagesToMeili } from '../../../shared/meiliSync.js';
 import {
   deliverMail,
   immediateSendIdempotencyKey,
@@ -40,15 +41,53 @@ export function createSql(databaseUrl) {
 }
 
 /**
+ * Runs a best-effort search sync after the response has been handed back.
+ *
+ * fetch closes the request-scoped client in its `finally` as soon as the route
+ * returns, so anything that outlives the response has to own the connection it
+ * runs on — hence a fresh client here, ended in a `finally` of its own. The
+ * meiliSync helpers swallow their own failures; the outer catch only covers a
+ * connection that could not be opened at all, which must still stay silent as
+ * far as the send is concerned.
+ *
+ * @param {import('./sentry.js').SendEnv} env
+ * @param {ExecutionContext} ctx
+ * @param {(sql: import('postgres').Sql) => Promise<void>} sync
+ */
+function indexAfterResponse(env, ctx, sync) {
+  ctx.waitUntil(
+    (async () => {
+      const sql = createSql(env.HYPERDRIVE.connectionString);
+      try {
+        await sync(sql);
+      } finally {
+        await sql.end({ timeout: 2 }).catch(() => undefined);
+      }
+    })().catch((err) => {
+      console.error('failed to index sent mail for search:', /** @type {Error} */ (err).message);
+    }),
+  );
+}
+
+/**
  * Builds the per-request delivery seams.
  *
  * @param {import('./sentry.js').SendEnv} env
+ * @param {ExecutionContext} ctx
  * @returns {import('./outbound.js').SendServices}
  */
-export function createSendServices(env) {
+export function createSendServices(env, ctx) {
   return {
     env,
     createResend: (apiKey) => new Resend(apiKey),
+    indexSentMessage: (messageUuid) =>
+      indexAfterResponse(env, ctx, (sql) => syncMessageToMeili(sql, env, messageUuid)),
+    // One flush stores up to FLUSH_BATCH_SIZE sent copies; index them in a
+    // single round trip rather than one sync per delivered row.
+    indexSentMessages: (messageUuids) => {
+      if (!messageUuids.length) return;
+      indexAfterResponse(env, ctx, (sql) => syncMessagesToMeili(sql, env, messageUuids));
+    },
   };
 }
 
@@ -149,7 +188,7 @@ async function handleSend(sql, userId, request, services) {
   }
 
   try {
-    const { resendId } = await deliverMail(
+    const { resendId, messageUuid, inserted } = await deliverMail(
       sql,
       userId,
       {
@@ -169,6 +208,10 @@ async function handleSend(sql, userId, request, services) {
       },
       services,
     );
+    // Off the response path on purpose: the sent copy is searchable within
+    // seconds, and a Meilisearch outage only leaves search_indexed_at NULL for
+    // the background drift sweep to repair.
+    if (inserted && messageUuid) services.indexSentMessage(messageUuid);
     return Response.json({ id: resendId });
   } catch (err) {
     console.error('Resend send failed:', err);
@@ -239,7 +282,7 @@ const worker = {
     const segments = url.pathname.split('/').filter(Boolean);
     const resource =
       segments[0] === 'send' && segments.length <= 2 ? (segments[1] ?? 'send') : null;
-    const services = createSendServices(env);
+    const services = createSendServices(env, ctx);
     const sql = createSql(env.HYPERDRIVE.connectionString);
     try {
       if (!resource || !['send', 'scheduled', 'flush'].includes(resource)) {

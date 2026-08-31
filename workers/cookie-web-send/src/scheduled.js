@@ -181,29 +181,34 @@ async function markScheduledSendFailed(sql, id, error, attempts = null) {
 }
 
 // Delivers one claimed row. Never leaves a row claimed ('sending' status)
-// without resolving it to 'pending' (retry), 'sent', or 'failed'.
+// without resolving it to 'pending' (retry), 'sent', or 'failed'. Reports the
+// sent copy's id alongside the outcome, but only when this attempt is the one
+// that inserted it, so handleFlush can index the batch in one go and a replay
+// (an expired lease redelivered under the same idempotency key) indexes
+// nothing new.
 /**
  * @param {import('postgres').Sql} sql
  * @param {any} row
  * @param {import('./outbound.js').SendServices} services
+ * @returns {Promise<{status: string, storedMessageUuid: string | null}>}
  */
 export async function deliverScheduledSend(sql, row, services) {
   const [owner] = await sql`SELECT 1 AS "exists" FROM users WHERE id = ${row.user_id}`;
   if (!owner) {
     await markScheduledSendFailed(sql, row.id, 'Owning user no longer exists');
-    return 'failed';
+    return { status: 'failed', storedMessageUuid: null };
   }
 
   const quota = await claimOutboundEmailQuota(sql, row.user_id);
   if (!quota.authorized) {
     await markScheduledSendFailed(sql, row.id, 'Mailbox access is not provisioned');
-    return 'failed';
+    return { status: 'failed', storedMessageUuid: null };
   }
   if (!quota.quota_claimed) {
     // Rate-limited, not the message's fault — leave it pending for the next
     // flush instead of spending a retry attempt.
     await sql`UPDATE scheduled_sends SET status = 'pending', claimed_at = NULL WHERE id = ${row.id}`;
-    return 'retried';
+    return { status: 'retried', storedMessageUuid: null };
   }
 
   const recipients = parseRecipients(row.toAddresses);
@@ -234,16 +239,19 @@ export async function deliverScheduledSend(sql, row, services) {
     await refundOutboundEmailQuota(sql, row.user_id);
     if (attempts >= MAX_SCHEDULED_SEND_ATTEMPTS) {
       await markScheduledSendFailed(sql, row.id, message, attempts);
-      return 'failed';
+      return { status: 'failed', storedMessageUuid: null };
     }
     await sql`
       UPDATE scheduled_sends
       SET status = 'pending', attempts = ${attempts}, last_error = ${message}, claimed_at = NULL
       WHERE id = ${row.id}
     `;
-    return 'retried';
+    return { status: 'retried', storedMessageUuid: null };
   }
 
+  // Independent of how the bookkeeping below goes: the copy is in Postgres, so
+  // it belongs in the index even if the row cannot be marked sent.
+  const storedMessageUuid = delivered.inserted ? delivered.messageUuid : null;
   try {
     await sql`
       UPDATE scheduled_sends
@@ -251,7 +259,7 @@ export async function deliverScheduledSend(sql, row, services) {
           claimed_at = NULL, last_error = NULL
       WHERE id = ${row.id}
     `;
-    return 'sent';
+    return { status: 'sent', storedMessageUuid };
   } catch (err) {
     // Delivery is irreversible and succeeded. Leave the row leased as
     // `sending`: a later flush can safely reclaim it because the provider call
@@ -260,7 +268,7 @@ export async function deliverScheduledSend(sql, row, services) {
       `scheduled send ${row.id} delivered but could not be marked sent:`,
       /** @type {Error} */ (err).message,
     );
-    return 'unconfirmed';
+    return { status: 'unconfirmed', storedMessageUuid };
   }
 }
 
@@ -317,12 +325,18 @@ export async function handleFlush(sql, services) {
       deliverScheduledSend(sql, row, services),
     );
     await sweepResolvedState(sql);
+    // One sync for the whole batch, not one per delivered row: a full flush
+    // would otherwise fire FLUSH_BATCH_SIZE separate Postgres/Meilisearch
+    // round trips for what is a single addDocuments call.
+    services.indexSentMessages(
+      results.flatMap((result) => (result.storedMessageUuid ? [result.storedMessageUuid] : [])),
+    );
     return Response.json({
       claimed: claimed.length,
-      sent: results.filter((result) => result === 'sent').length,
-      retried: results.filter((result) => result === 'retried').length,
-      failed: results.filter((result) => result === 'failed').length,
-      unconfirmed: results.filter((result) => result === 'unconfirmed').length,
+      sent: results.filter((result) => result.status === 'sent').length,
+      retried: results.filter((result) => result.status === 'retried').length,
+      failed: results.filter((result) => result.status === 'failed').length,
+      unconfirmed: results.filter((result) => result.status === 'unconfirmed').length,
     });
   } catch (err) {
     console.error('POST /send/flush failed:', err);

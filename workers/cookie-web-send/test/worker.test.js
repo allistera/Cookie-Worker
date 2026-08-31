@@ -9,20 +9,41 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 /** @type {any[]} */
 let responses = [];
 let call = 0;
-const mockQuery = vi.fn(async (/** @type {any[]} */ ..._args) => {
+const scriptedQuery = async (/** @type {any[]} */ ..._args) => {
   const response = responses[call++] ?? [];
   if (response instanceof Error) throw response;
   return response;
-});
+};
+const mockQuery = vi.fn(scriptedQuery);
 const sqlEnd = vi.fn(async () => undefined);
+// Every client this suite hands out, in creation order: the search sync has to
+// run on its own connection, not the request-scoped one fetch closes.
+/** @type {any[]} */
+let clients = [];
 vi.mock('postgres', () => ({
   default: () => {
     /** @type {any} */
     const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
     sql.begin = async (/** @type {(sql: any) => unknown} */ callback) => callback(sql);
     sql.end = sqlEnd;
+    clients.push(sql);
     return sql;
   },
+}));
+
+const syncMessageToMeili = vi.fn(
+  async (/** @type {any} */ _sql, /** @type {any} */ _env, /** @type {string} */ _uuid) =>
+    undefined,
+);
+const syncMessagesToMeili = vi.fn(
+  async (/** @type {any} */ _sql, /** @type {any} */ _env, /** @type {string[]} */ _uuids) =>
+    undefined,
+);
+vi.mock('../../../shared/meiliSync.js', () => ({
+  syncMessageToMeili: (/** @type {any} */ sql, /** @type {any} */ env, /** @type {any} */ uuid) =>
+    syncMessageToMeili(sql, env, uuid),
+  syncMessagesToMeili: (/** @type {any} */ sql, /** @type {any} */ env, /** @type {any} */ uuids) =>
+    syncMessagesToMeili(sql, env, uuids),
 }));
 
 const resendSend = vi.fn();
@@ -89,6 +110,7 @@ beforeEach(() => {
   responses = [];
   call = 0;
   waited = [];
+  clients = [];
   verifyAccessToken.mockResolvedValue({ userId: USER_ID });
 });
 
@@ -137,7 +159,7 @@ describe('POST /send security boundaries', () => {
       [{ authorized: true, quota_claimed: true }], // quota claim
       [{ user_id: USER_ID, thread_id: null }], // storeSentMessage lookup
       [], // insert threads (sql.begin)
-      [], // insert messages (sql.begin)
+      [{ id: 'stored' }], // insert messages (sql.begin), RETURNING id
       [], // read receipt insert
     ];
     resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
@@ -302,7 +324,7 @@ describe('POST /send/flush', () => {
       [{ authorized: true, quota_claimed: true }], // claimOutboundEmailQuota
       [{ user_id: 'user-1', thread_id: null }], // storeSentMessage lookup
       [], // insert threads (sql.begin)
-      [], // insert messages (sql.begin)
+      [{ id: 'stored' }], // insert messages (sql.begin), RETURNING id
       // no receipt row: 'sched-1' is not a UUID, so no pixel token is stored
       [], // mark 'sent'
     ];
@@ -460,7 +482,7 @@ describe('POST /send/flush', () => {
       [{ authorized: true, quota_claimed: true }],
       [{ user_id: 'user-1', thread_id: null }],
       [], // insert threads
-      [], // insert messages
+      [{ id: 'stored' }], // insert messages
       new Error('database unavailable'), // mark 'sent' fails
     ];
     resendSend.mockResolvedValue({ data: { id: 'resend-9' }, error: null });
@@ -542,5 +564,136 @@ describe('routing, auth, and cleanup', () => {
     responses = [[]];
     await worker.fetch(request('/send/scheduled', { method: 'GET' }), env, ctx);
     expect(sqlEnd).toHaveBeenCalledOnce();
+  });
+});
+
+describe('search indexing of sent mail', () => {
+  afterEach(() => {
+    // Restore the scripted (call-ordered) driver for suites that rely on it;
+    // the batch test below swaps in a statement-dispatching one.
+    mockQuery.mockImplementation(scriptedQuery);
+  });
+
+  /** The scripted responses for one immediate send that really inserts a row. */
+  function storedSendResponses() {
+    return [
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ user_id: USER_ID, thread_id: null }], // storeSentMessage lookup
+      [], // insert threads (sql.begin)
+      [{ id: 'stored' }], // insert messages (sql.begin), RETURNING id
+      [], // read receipt insert
+    ];
+  }
+
+  /** The message uuid the run actually bound into INSERT INTO messages. */
+  function insertedMessageUuids() {
+    return mockQuery.mock.calls
+      .filter(([parts]) => parts.join(' ').includes('INSERT INTO messages'))
+      .map(([, id]) => id);
+  }
+
+  function flushRequest() {
+    return new Request('https://cookie-web-send.example/send/flush', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer flush-secret' },
+    });
+  }
+
+  test('indexes exactly the copy an immediate send stored, on its own connection', async () => {
+    responses = storedSendResponses();
+    resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+
+    expect(response.status).toBe(200);
+    await Promise.all(waited);
+    expect(syncMessagesToMeili).not.toHaveBeenCalled();
+    expect(syncMessageToMeili).toHaveBeenCalledTimes(1);
+    const [syncSql, syncEnv, syncedId] = syncMessageToMeili.mock.calls[0];
+    expect(syncedId).toBe(insertedMessageUuids()[0]);
+    expect(syncEnv).toEqual(env);
+    // fetch closes the request-scoped client as soon as the route returns, so
+    // the sync must run on a second client of its own and close that itself.
+    expect(clients).toHaveLength(2);
+    expect(syncSql).toBe(clients[1]);
+    expect(syncSql).not.toBe(clients[0]);
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test('indexes every copy a flush batch stored in a single sync call', async () => {
+    const rows = ['sched-1', 'sched-2'].map((id) => ({
+      id,
+      user_id: 'user-1',
+      toAddresses: 'recipient@example.com',
+      subject: 'Hello',
+      text: 'Plain text',
+      html: null,
+      replyToMessageId: null,
+      attempts: 0,
+    }));
+    // The batch runs at FLUSH_CONCURRENCY, so the two rows' statements
+    // interleave — dispatch on the statement instead of on call order.
+    mockQuery.mockImplementation(
+      async (/** @type {any} */ parts, /** @type {any[]} */ ...values) => {
+        const query = parts.join(' ');
+        if (query.includes('UPDATE scheduled_sends s')) return rows;
+        // Checked before the owner probe: the quota claim also selects
+        // FROM users, to report `authorized`.
+        if (query.includes('outbound_email_quotas')) {
+          return [{ authorized: true, quota_claimed: true }];
+        }
+        if (query.includes('SELECT 1 AS "exists" FROM users')) return [{ exists: 1 }];
+        if (query.includes('existing_message_id')) return [{ user_id: 'user-1', thread_id: null }];
+        if (query.includes('INSERT INTO messages')) return [{ id: values[0] }];
+        return [];
+      },
+    );
+    resendSend.mockResolvedValue({ data: { id: 'resend-9' }, error: null });
+    const response = await worker.fetch(flushRequest(), env, ctx);
+
+    expect((await response.json()).sent).toBe(2);
+    await Promise.all(waited);
+    expect(syncMessageToMeili).not.toHaveBeenCalled();
+    expect(syncMessagesToMeili).toHaveBeenCalledTimes(1);
+    const stored = insertedMessageUuids();
+    expect(stored).toHaveLength(2);
+    expect([...syncMessagesToMeili.mock.calls[0][2]].sort()).toEqual([...stored].sort());
+  });
+
+  test('indexes nothing new when the send is an idempotent replay', async () => {
+    responses = [
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      // The Resend id already resolves to a stored copy: no INSERT runs at all.
+      [{ user_id: USER_ID, thread_id: null, existing_message_id: 'already-stored' }],
+      [], // read receipt insert
+    ];
+    resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+
+    expect(response.status).toBe(200);
+    await Promise.all(waited);
+    expect(insertedMessageUuids()).toEqual([]);
+    expect(syncMessageToMeili).not.toHaveBeenCalled();
+    expect(syncMessagesToMeili).not.toHaveBeenCalled();
+    // No sync means no second connection was opened either.
+    expect(clients).toHaveLength(1);
+  });
+
+  test('leaves the send response untouched when indexing fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // The real helper swallows its own failures; this covers the seam's own
+    // guard, so even a connection that cannot be opened stays off the response.
+    syncMessageToMeili.mockRejectedValueOnce(new Error('meilisearch unreachable'));
+    responses = storedSendResponses();
+    resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: 'resend-1' });
+    await expect(Promise.all(waited)).resolves.toBeInstanceOf(Array);
+    expect(consoleError).toHaveBeenCalledWith(
+      'failed to index sent mail for search:',
+      'meilisearch unreachable',
+    );
+    consoleError.mockRestore();
   });
 });
