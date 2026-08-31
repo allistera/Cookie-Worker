@@ -306,6 +306,46 @@ describe('postMessage — unsubscribe action', () => {
 });
 
 describe('getMessage', () => {
+  test('adds a normalized calendar invite without exposing the private Blob URL', async () => {
+    const ics = `BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:booking\nDTSTART:20260902T150000Z\nDTEND:20260902T153000Z\nSUMMARY:Whitburn Recycling Centre\nEND:VEVENT\nEND:VCALENDAR\n`;
+    const readBlob = vi.fn().mockResolvedValue({
+      stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(ics));
+          controller.close();
+        },
+      }),
+    });
+    const sql = createMockSql([
+      [{ id: MESSAGE_ID, thread_id: null, body_html: '<p>Booking</p>', headers: [] }],
+      [
+        {
+          id: 'att-1',
+          filename: 'booking.ics',
+          content_type: 'text/calendar',
+          size_bytes: 250,
+          blob_url: 'https://store.private.blob.vercel-storage.com/booking.ics',
+          downloadable: true,
+        },
+      ],
+    ]);
+
+    const response = await getMessage(sql, USER_ID, MESSAGE_ID, { readBlob });
+    const body = await response.json();
+
+    expect(body.calendar_invite).toEqual({
+      title: 'Whitburn Recycling Centre',
+      description: null,
+      location: null,
+      start_at: '2026-09-02T15:00:00.000Z',
+      end_at: '2026-09-02T15:30:00.000Z',
+    });
+    expect(body.attachments[0].blob_url).toBeUndefined();
+    expect(readBlob).toHaveBeenCalledWith(
+      'https://store.private.blob.vercel-storage.com/booking.ics',
+    );
+  });
+
   test('returns the message body plus its thread history and attachments, with headers stripped', async () => {
     const sql = createMockSql([
       [

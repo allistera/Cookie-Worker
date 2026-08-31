@@ -7,6 +7,7 @@
 
 import { allowRequest } from '../../../shared/rate-limit.js';
 import { DEFAULT_ONE_CLICK_ALLOWLIST, hostMatchesSuffixes } from '../../../shared/safe-https.js';
+import { extractCalendarInvite } from './calendarInvite.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -82,12 +83,19 @@ export function fetchOwnedMessageText(sql, id, userId) {
  */
 export function fetchMessageAttachments(sql, messageId) {
   return sql`
-    SELECT id, filename, content_type, size_bytes, (blob_url IS NOT NULL) AS downloadable
+    SELECT id, filename, content_type, size_bytes, blob_url,
+      (blob_url IS NOT NULL) AS downloadable
     FROM attachments
     WHERE message_id = ${messageId}
     ORDER BY filename
   `;
 }
+
+/**
+ * @typedef {{
+ *   readBlob?: (url: string) => Promise<{stream: ReadableStream<Uint8Array> | null} | null>,
+ * }} CalendarInviteDeps
+ */
 
 /**
  * @param {import('postgres').Sql} sql
@@ -186,8 +194,9 @@ export async function getAttachment(sql, userId, id, blob) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {string | null} id
+ * @param {CalendarInviteDeps} [deps]
  */
-export async function getMessage(sql, userId, id) {
+export async function getMessage(sql, userId, id, deps = {}) {
   if (!id || !UUID_RE.test(id)) {
     return Response.json({ error: 'A valid message id is required' }, { status: 400 });
   }
@@ -203,11 +212,13 @@ export async function getMessage(sql, userId, id) {
     thread_id ? fetchThreadMessages(sql, thread_id, userId) : [],
     fetchMessageAttachments(sql, id),
   ]);
+  const calendar_invite = await extractCalendarInvite(attachments, deps.readBlob);
   return Response.json({
     ...rest,
     unsubscribe: parseListUnsubscribe(headers),
     thread,
-    attachments,
+    calendar_invite,
+    attachments: attachments.map(({ blob_url: _blobUrl, ...attachment }) => attachment),
   });
 }
 

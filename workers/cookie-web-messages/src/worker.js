@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/cloudflare';
-import { getDownloadUrl, issueSignedToken, presignUrl } from '@vercel/blob';
+import { get, getDownloadUrl, issueSignedToken, presignUrl } from '@vercel/blob';
 import postgres from 'postgres';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
@@ -124,7 +124,10 @@ async function route(url, request, sql, userId, env, ctx) {
   }
 
   if (request.method === 'GET') {
-    return getMessage(sql, userId, url.searchParams.get('id'));
+    return getMessage(sql, userId, url.searchParams.get('id'), {
+      readBlob: (/** @type {string} */ blobUrl) =>
+        get(blobUrl, { access: 'private', token: env.BLOB_READ_WRITE_TOKEN }),
+    });
   }
 
   let body;
