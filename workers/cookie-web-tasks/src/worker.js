@@ -188,7 +188,7 @@ async function route(url, request, sql, userId, env, email) {
   }
 
   // /tasks itself
-  if (request.method === 'GET') return getTasks(sql, userId);
+  if (request.method === 'GET') return getTasks(sql, userId, url);
   if (request.method !== 'POST')
     return Response.json(
       { error: 'Method not allowed' },
@@ -202,7 +202,7 @@ async function route(url, request, sql, userId, env, email) {
     if (errorResponse) return errorResponse;
     throw error;
   }
-  return postTasks(sql, userId, body, env.TODOIST_API_TOKEN);
+  return postTasks(sql, userId, body, env);
 }
 
 const worker = {

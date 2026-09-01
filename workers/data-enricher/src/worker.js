@@ -1,9 +1,6 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
-import { retryWithBackoff } from '../../../shared/retry.js';
-import { connectMcp } from './mcp.js';
-import { gatherTodoistTasks } from './todoist.js';
 import { analyzeEmail, fetchImportantMessages } from './analyze.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
 import { buildNews } from './news.js';
@@ -14,7 +11,6 @@ import {
   storeEmailAnalysis,
   storeDigest,
   storeNews,
-  storeTasks,
 } from './store.js';
 
 /** @param {string} databaseUrl */
@@ -38,46 +34,11 @@ function fingerprint(content) {
   return hash.toString(36);
 }
 
-/**
- * @param {import('postgres').Sql} sql
- * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
- * @param {string} userId
- */
-async function gatherTodoist(sql, env, userId) {
-  const tasks = await retryWithBackoff(
-    async () => {
-      let client;
-      try {
-        client = await connectMcp(env.TODOIST_MCP_URL, { bearerToken: env.TODOIST_API_TOKEN });
-        return await gatherTodoistTasks(client);
-      } finally {
-        await client?.close();
-      }
-    },
-    { attempts: 3, isRetryable: isTransientMcpError },
-  );
-  await storeTasks(sql, userId, tasks);
-  console.log(JSON.stringify({ event: 'todoist_gathered', count: tasks.length }));
-}
-
-/**
- * @param {unknown} err
- */
-export function isTransientMcpError(err) {
-  const message = err instanceof Error ? err.message : String(err);
-  return (
-    (/Streamable HTTP error/i.test(message) && /error code: 5\d\d|\b5\d\d\b/.test(message)) ||
-    /MCP connect timed out/i.test(message) ||
-    (err instanceof Error && err.name === 'AbortError') ||
-    err instanceof TypeError
-  );
-}
-
 const ANALYZE_CONCURRENCY = 3;
 
 /**
  * @param {import('postgres').Sql} sql
- * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+ * @param {Env & {OPENAI_API_KEY?: string}} env
  * @param {string} userId
  */
 async function analyzeImportantEmails(sql, env, userId) {
@@ -132,7 +93,7 @@ async function analyzeImportantEmails(sql, env, userId) {
  * category counts. Stored whole so an empty day replaces stale triage output.
  *
  * @param {import('postgres').Sql} sql
- * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+ * @param {Env & {OPENAI_API_KEY?: string}} env
  * @param {string} userId
  */
 async function buildDailyTriage(sql, env, userId) {
@@ -190,7 +151,7 @@ async function buildDailyNews(sql, env, userId) {
 }
 
 /**
- * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+ * @param {Env & {OPENAI_API_KEY?: string}} env
  * @param {Array<(sql: import('postgres').Sql, env: any, userId: string) => Promise<void>>} phases
  */
 async function runPhases(env, phases) {
@@ -225,16 +186,16 @@ async function runPhases(env, phases) {
 /**
  * The nightly run: everything.
  *
- * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+ * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runEnrichment(env) {
-  return runPhases(env, [gatherTodoist, analyzeImportantEmails, buildDailyTriage, buildDailyNews]);
+  return runPhases(env, [analyzeImportantEmails, buildDailyTriage, buildDailyNews]);
 }
 
 /**
  * Just the inbox triage. Kept separate from the full run because that one also
- * re-gathers Todoist and analyses up to ten emails one at a time — far too
- * slow and too expensive to sit behind a button.
+ * analyses up to ten emails one at a time — far too slow and too expensive to
+ * sit behind a button.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
@@ -256,7 +217,7 @@ export async function runTodayRefresh(env) {
 const worker = {
   /**
    * @param {ScheduledController} _controller
-   * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string}} env
+   * @param {Env & {OPENAI_API_KEY?: string}} env
    * @param {ExecutionContext} _ctx
    */
   async scheduled(_controller, env, _ctx) {
@@ -272,7 +233,7 @@ const worker = {
    * phase runs everything, as the cron does.
    *
    * @param {Request} request
-   * @param {Env & {TODOIST_API_TOKEN?: string, OPENAI_API_KEY?: string, HTTP_TRIGGER_TOKEN?: string}} env
+   * @param {Env & {OPENAI_API_KEY?: string, HTTP_TRIGGER_TOKEN?: string}} env
    * @param {ExecutionContext} _ctx
    */
   async fetch(request, env, _ctx) {

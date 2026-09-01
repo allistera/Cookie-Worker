@@ -12,8 +12,6 @@ vi.mock('postgres', () => ({
     return sql;
   },
 }));
-vi.mock('../src/mcp.js', () => ({ connectMcp: vi.fn() }));
-vi.mock('../src/todoist.js', () => ({ gatherTodoistTasks: vi.fn() }));
 vi.mock('../src/analyze.js', () => ({
   fetchImportantMessages: vi.fn(async () => []),
   analyzeEmail: vi.fn(),
@@ -25,7 +23,6 @@ vi.mock('../src/digest.js', () => ({
 vi.mock('../src/news.js', () => ({ buildNews: vi.fn() }));
 vi.mock('../src/store.js', () => ({
   lookupUserId: vi.fn(async () => 'user-1'),
-  storeTasks: vi.fn(),
   storeEmailAnalysis: vi.fn(),
   storeDigest: vi.fn(),
   storeNews: vi.fn(),

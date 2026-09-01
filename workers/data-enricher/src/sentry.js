@@ -15,7 +15,6 @@ const SERVICE = 'data-enricher';
  * @typedef {Env & {
  *   SENTRY_DSN?: string,
  *   OPENAI_API_KEY?: string,
- *   TODOIST_API_TOKEN?: string,
  *   GITHUB_API_TOKEN?: string,
  *   PRODUCT_HUNT_TOKEN?: string,
  *   HTTP_TRIGGER_TOKEN?: string,
@@ -34,7 +33,6 @@ function secrets(env) {
   return [
     env.HYPERDRIVE.connectionString,
     env.OPENAI_API_KEY,
-    env.TODOIST_API_TOKEN,
     env.GITHUB_API_TOKEN,
     env.PRODUCT_HUNT_TOKEN,
     env.HTTP_TRIGGER_TOKEN,

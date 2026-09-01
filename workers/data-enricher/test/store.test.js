@@ -45,13 +45,12 @@ describe('storeTasks', () => {
     const sql = mockSql();
     const stored = await storeTasks(sql, 'user-1', [
       {
-        source: 'todoist',
-        externalId: '8485093748',
-        content: 'File VAT return',
+        source: 'email',
+        externalId: 'msg-9:reply',
+        content: 'Reply to accountant',
         dueDate: '2026-07-18',
-        priority: 4,
-        url: 'https://app.todoist.com/task/8485093748',
-        raw: { id: '8485093748' },
+        messageId: 'msg-9',
+        raw: { importance: 'high' },
       },
       { source: 'email', externalId: 'msg-9', content: 'Reply to accountant', messageId: 'msg-9' },
     ]);
@@ -64,15 +63,15 @@ describe('storeTasks', () => {
     expect(sql.calls[0].values).toContainEqual({
       __pgJson: [
         {
-          source: 'todoist',
-          external_id: '8485093748',
-          content: 'File VAT return',
+          source: 'email',
+          external_id: 'msg-9:reply',
+          content: 'Reply to accountant',
           description: null,
           due_date: '2026-07-18',
-          priority: 4,
-          url: 'https://app.todoist.com/task/8485093748',
-          message_id: null,
-          raw: { id: '8485093748' },
+          priority: null,
+          url: null,
+          message_id: 'msg-9',
+          raw: { importance: 'high' },
         },
         {
           source: 'email',

@@ -14,7 +14,6 @@ const SERVICE = 'cookie-web-tasks';
  *   AUTH0_DOMAIN?: string,
  *   AUTH0_AUDIENCE?: string,
  *   OPENAI_API_KEY?: string,
- *   TODOIST_API_TOKEN?: string,
  *   ENRICHER_TRIGGER_TOKEN?: string,
  *   OWNER_EMAIL?: string,
  *   BLOB_READ_WRITE_TOKEN?: string,
@@ -29,7 +28,6 @@ function secrets(env) {
   return [
     env.HYPERDRIVE.connectionString,
     env.OPENAI_API_KEY,
-    env.TODOIST_API_TOKEN,
     env.ENRICHER_TRIGGER_TOKEN,
     env.BLOB_READ_WRITE_TOKEN,
   ];

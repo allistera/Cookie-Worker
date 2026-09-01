@@ -45,7 +45,6 @@ const env = /** @type {any} */ ({
   AUTH0_AUDIENCE: 'https://cookie-web/api',
   ALLOWED_ORIGIN: PRODUCTION,
   BLOB_READ_WRITE_TOKEN: 'blob-token',
-  TODOIST_API_TOKEN: 'todoist-token',
   ENRICHER: { fetch: vi.fn(async () => ({ ok: true, status: 200 })) },
   ENRICHER_TRIGGER_TOKEN: 'trigger-secret',
   OWNER_EMAIL: 'owner@example.com',

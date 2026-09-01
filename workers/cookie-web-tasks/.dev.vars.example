@@ -2,10 +2,6 @@
 # For local dev, export this before `npm run dev` (dev Supabase project, session pooler):
 #   export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
 
-# Lets task complete/reschedule sync back to the real Todoist task. Without
-# it, complete/reschedule only update Cookie's own copy.
-TODOIST_API_TOKEN=""
-
 # Lets POST /tasks/refresh trigger the data-enricher Worker's on-demand
 # rebuild over the ENRICHER service binding (run `npm run dev -- data-enricher`
 # alongside so wrangler can connect the two locally). Without the token,

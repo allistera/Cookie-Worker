@@ -1,8 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   buildDigest,
   buildNews,
-  closeTodoistTask,
   deleteOwnedTask,
   digestMessageIds,
   fetchLatestSummary,
@@ -11,7 +10,6 @@ import {
   fetchTasks,
   getTasks,
   postTasks,
-  rescheduleTodoistTask,
   updateTaskDueDate,
 } from '../src/tasks.js';
 import { createMockSql } from './helpers.js';
@@ -37,36 +35,53 @@ function nonNull(value) {
 }
 
 describe('fetchTasks', () => {
-  it('reads the tasks table scoped to the user, most-pressing first', () => {
+  it('unions gathered email tasks with built-in task_items, most-pressing first', () => {
     const sql = createMockSql();
-    fetchTasks(sql, USER_ID);
+    fetchTasks(sql, USER_ID, null);
 
     expect(sql.calls[0].text).toContain('FROM tasks t');
     expect(sql.calls[0].text).toContain(
       'LEFT JOIN messages m ON m.id = t.message_id AND m.user_id = t.user_id',
     );
-    expect(sql.calls[0].text).toContain('WHERE t.user_id =');
+    expect(sql.calls[0].text).toContain("t.source = 'email'");
     expect(sql.calls[0].text).toContain('m.from_address AS reply_to');
     expect(sql.calls[0].text).toContain('m.subject AS message_subject');
+    expect(sql.calls[0].text).toContain('UNION ALL');
+    expect(sql.calls[0].text).toContain('FROM task_items t');
+    expect(sql.calls[0].text).toContain("'task' AS source");
+    expect(sql.calls[0].text).toContain('t.parent_id IS NULL');
+    expect(sql.calls[0].text).toContain('t.completed_at IS NULL');
     expect(sql.calls[0].text).toContain(
-      'ORDER BY t.due_date ASC NULLS LAST, t.priority DESC NULLS LAST',
+      'ORDER BY due_date ASC NULLS LAST, priority DESC NULLS LAST, created_at DESC',
     );
-    expect(sql.calls[0].text).toContain('t.gathered_at');
   });
 
-  it('scopes every task to due today or overdue, regardless of source', () => {
+  it('scopes the gathered branch to due today or overdue, falling back to CURRENT_DATE', () => {
     const sql = createMockSql();
-    fetchTasks(sql, USER_ID);
-    expect(sql.calls[0].text).toContain('t.due_date IS NULL OR t.due_date <= CURRENT_DATE');
+    fetchTasks(sql, USER_ID, null);
+    expect(sql.calls[0].text).toContain('t.due_date IS NULL OR t.due_date <= COALESCE(');
+    expect(sql.calls[0].text).toContain('::date, CURRENT_DATE)');
+  });
+
+  it('passes a supplied date through to both branches', () => {
+    const sql = createMockSql();
+    fetchTasks(sql, USER_ID, '2026-08-25');
+    expect(sql.calls[0].values).toContain('2026-08-25');
   });
 
   // Marking the source email Done means the work is handled, so its extracted
-  // action item should not keep asking for attention. Tasks with no source
-  // email (every Todoist one) are unaffected by the join.
-  it('drops a task whose source email is done, and keeps sourceless tasks', () => {
+  // action item should not keep asking for attention.
+  it('drops a gathered task whose source email is done', () => {
     const sql = createMockSql();
-    fetchTasks(sql, USER_ID);
+    fetchTasks(sql, USER_ID, null);
     expect(sql.calls[0].text).toContain('t.message_id IS NULL OR NOT m.is_archived');
+  });
+
+  it('excludes a task_item with no due date, and one already completed', () => {
+    const sql = createMockSql();
+    fetchTasks(sql, USER_ID, null);
+    expect(sql.calls[0].text).toContain('t.due_date <= COALESCE(');
+    expect(sql.calls[0].text).toContain('t.completed_at IS NULL');
   });
 });
 
@@ -297,12 +312,11 @@ describe('buildNews', () => {
 });
 
 describe('fetchOwnedTask', () => {
-  it('selects the completion fields for a task scoped to the owner', () => {
+  it('selects a gathered task scoped to the owner', () => {
     const sql = createMockSql();
     fetchOwnedTask(sql, TASK_ID, USER_ID);
 
     expect(sql.calls[0].text).toContain('FROM tasks t');
-    expect(sql.calls[0].text).toContain('t.external_id');
     expect(sql.calls[0].values).toEqual([TASK_ID, USER_ID]);
   });
 });
@@ -328,49 +342,9 @@ describe('updateTaskDueDate', () => {
   });
 });
 
-describe('closeTodoistTask', () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it('POSTs to the unified API close endpoint with a bearer token', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
-    vi.stubGlobal('fetch', fetchMock);
-
-    await closeTodoistTask('9876543210', 'tok_abc');
-
-    const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://api.todoist.com/api/v1/tasks/9876543210/close');
-    expect(options.method).toBe('POST');
-    expect(options.headers.Authorization).toBe('Bearer tok_abc');
-  });
-
-  it('throws when Todoist responds with a non-2xx status', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }));
-    await expect(closeTodoistTask('1', 'tok')).rejects.toThrow('403');
-  });
-});
-
-describe('rescheduleTodoistTask', () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it('POSTs the new due date to the unified API task endpoint with a bearer token', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
-    vi.stubGlobal('fetch', fetchMock);
-
-    await rescheduleTodoistTask('9876543210', 'tok_abc', '2026-08-25');
-
-    const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://api.todoist.com/api/v1/tasks/9876543210');
-    expect(options.method).toBe('POST');
-    expect(options.headers.Authorization).toBe('Bearer tok_abc');
-    expect(options.headers['Content-Type']).toBe('application/json');
-    expect(JSON.parse(options.body)).toEqual({ due_date: '2026-08-25' });
-  });
-
-  it('throws when Todoist responds with a non-2xx status', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }));
-    await expect(rescheduleTodoistTask('1', 'tok', '2026-08-25')).rejects.toThrow('403');
-  });
-});
+function tasksUrl(query = '') {
+  return new URL(`https://cookie-web-tasks.example/tasks${query}`);
+}
 
 describe('getTasks', () => {
   it("returns the caller's gathered tasks with a null digest/news when unwritten", async () => {
@@ -379,7 +353,7 @@ describe('getTasks', () => {
       [],
       [],
     ]);
-    const response = await getTasks(sql, USER_ID);
+    const response = await getTasks(sql, USER_ID, tasksUrl());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -411,7 +385,7 @@ describe('getTasks', () => {
       [],
       [{ id: ID_A, is_unread: true }],
     ]);
-    const response = await getTasks(sql, USER_ID);
+    const response = await getTasks(sql, USER_ID, tasksUrl());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -423,50 +397,29 @@ describe('getTasks', () => {
       unread: true,
     });
   });
+
+  it('passes a valid date query param through to fetchTasks', async () => {
+    const sql = createMockSql([[], [], []]);
+    await getTasks(sql, USER_ID, tasksUrl('?date=2026-08-25'));
+    expect(sql.calls[0].values).toContain('2026-08-25');
+  });
+
+  it('falls back to null (CURRENT_DATE) for a missing or invalid date, never a 400', async () => {
+    const sql = createMockSql([[], [], []]);
+    const response = await getTasks(sql, USER_ID, tasksUrl('?date=not-a-date'));
+
+    expect(response.status).toBe(200);
+    expect(sql.calls[0].values).not.toContain('not-a-date');
+  });
 });
 
 describe('postTasks', () => {
-  it('completes an email-sourced task without calling Todoist', async () => {
-    vi.stubGlobal('fetch', vi.fn());
-    const sql = createMockSql([[{ id: TASK_ID, source: 'email', external_id: null }], []]);
+  it('completes a gathered task', async () => {
+    const sql = createMockSql([[{ id: TASK_ID }], []]);
     const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'complete' }, undefined);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, closedInTodoist: false });
-    expect(fetch).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
-  });
-
-  it('closes a Todoist-sourced task remotely before dropping the local row', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 204 }));
-    const sql = createMockSql([[{ id: TASK_ID, source: 'todoist', external_id: '9001' }], []]);
-    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'complete' }, 'tok');
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, closedInTodoist: true });
-    expect(fetch).toHaveBeenCalledWith(
-      'https://api.todoist.com/api/v1/tasks/9001/close',
-      expect.objectContaining({ method: 'POST' }),
-    );
-    vi.unstubAllGlobals();
-  });
-
-  it('keeps the local row when the Todoist close fails', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
-    const sql = createMockSql([[{ id: TASK_ID, source: 'todoist', external_id: '9001' }]]);
-    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'complete' }, 'tok');
-
-    expect(response.status).toBe(502);
-    expect(sql.calls.some((/** @type {any} */ c) => c.text.includes('DELETE FROM tasks'))).toBe(
-      false,
-    );
-    vi.unstubAllGlobals();
-  });
-
-  it("404s when the task is not the caller's", async () => {
-    const sql = createMockSql([[]]);
-    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'complete' }, undefined);
-    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ ok: true });
   });
 
   it('rejects a malformed id before touching the database', async () => {
@@ -488,11 +441,61 @@ describe('postTasks', () => {
     expect(sql).not.toHaveBeenCalled();
   });
 
-  it('reschedules an email-sourced task locally without calling Todoist', async () => {
-    vi.stubGlobal('fetch', vi.fn());
+  it('reschedules a gathered task', async () => {
+    const sql = createMockSql([[{ id: TASK_ID }], [{ id: TASK_ID, due_date: '2026-08-25' }]]);
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' },
+      undefined,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      task: { id: TASK_ID, due_date: '2026-08-25' },
+    });
+  });
+
+  it('rejects a malformed due_date before touching the database', async () => {
+    const sql = createMockSql();
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: TASK_ID, action: 'reschedule', due_date: 'next tuesday' },
+      undefined,
+    );
+    expect(response.status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  // Not found in the gathered `tasks` table falls back to task_items via
+  // updateTaskItem, which owns that table's ownership check and Meili sync.
+  it('completes a task_items row via the fallback path when the gathered table has no match', async () => {
     const sql = createMockSql([
-      [{ id: TASK_ID, source: 'email', external_id: null }],
-      [{ id: TASK_ID, due_date: '2026-08-25' }],
+      [],
+      [{ id: TASK_ID, parentId: null }],
+      [
+        {
+          id: TASK_ID,
+          projectId: null,
+          parentId: null,
+          dueDate: null,
+          completedAt: '2026-08-25T00:00:00.000Z',
+        },
+      ],
+    ]);
+    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'complete' }, undefined);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+  });
+
+  it('reschedules a task_items row via the fallback path when the gathered table has no match', async () => {
+    const sql = createMockSql([
+      [],
+      [{ id: TASK_ID, parentId: null }],
+      [{ id: TASK_ID, projectId: null, parentId: null, dueDate: '2026-08-25', completedAt: null }],
     ]);
     const response = await postTasks(
       sql,
@@ -506,55 +509,13 @@ describe('postTasks', () => {
       ok: true,
       task: { id: TASK_ID, due_date: '2026-08-25' },
     });
-    expect(fetch).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
   });
 
-  it('reschedules a Todoist-sourced task remotely before updating the local row', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
-    const sql = createMockSql([
-      [{ id: TASK_ID, source: 'todoist', external_id: '9001' }],
-      [{ id: TASK_ID, due_date: '2026-08-25' }],
-    ]);
-    const response = await postTasks(
-      sql,
-      USER_ID,
-      { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' },
-      'tok',
-    );
+  it('404s when neither the gathered table nor task_items owns the id', async () => {
+    const sql = createMockSql([[], []]);
+    const response = await postTasks(sql, USER_ID, { id: TASK_ID, action: 'complete' }, undefined);
 
-    expect(response.status).toBe(200);
-    expect(fetch).toHaveBeenCalledWith(
-      'https://api.todoist.com/api/v1/tasks/9001',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ due_date: '2026-08-25' }) }),
-    );
-    vi.unstubAllGlobals();
-  });
-
-  it('keeps the original due date when the Todoist reschedule fails', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
-    const sql = createMockSql([[{ id: TASK_ID, source: 'todoist', external_id: '9001' }]]);
-    const response = await postTasks(
-      sql,
-      USER_ID,
-      { id: TASK_ID, action: 'reschedule', due_date: '2026-08-25' },
-      'tok',
-    );
-
-    expect(response.status).toBe(502);
-    expect(sql.calls.some((/** @type {any} */ c) => c.text.includes('UPDATE tasks'))).toBe(false);
-    vi.unstubAllGlobals();
-  });
-
-  it('rejects a malformed due_date before touching the database', async () => {
-    const sql = createMockSql();
-    const response = await postTasks(
-      sql,
-      USER_ID,
-      { id: TASK_ID, action: 'reschedule', due_date: 'next tuesday' },
-      undefined,
-    );
-    expect(response.status).toBe(400);
-    expect(sql).not.toHaveBeenCalled();
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Task not found' });
   });
 });

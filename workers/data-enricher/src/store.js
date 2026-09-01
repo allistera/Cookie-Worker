@@ -11,7 +11,7 @@ import { NEWS_KIND, NEWS_PROMPT_VERSION } from './news.js';
 
 /**
  * @typedef {{
- *   source: 'todoist' | 'email',
+ *   source: 'email',
  *   externalId: string,
  *   content: string,
  *   description?: string | null,

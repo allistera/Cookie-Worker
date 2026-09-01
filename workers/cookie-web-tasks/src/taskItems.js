@@ -1,6 +1,6 @@
 // Cookie-owned tasks. Distinct from `tasks`, which holds the overnight
-// enricher's gathered Todoist and email items and is not a place a person
-// writes to. The two never share a row.
+// enricher's gathered email action items and is not a place a person writes
+// to. The two never share a row.
 
 import { isAncestorOf } from './ancestry.js';
 import { removeTaskItemFromMeili, syncTaskItemToMeili } from './taskItemMeiliSync.js';
@@ -16,7 +16,7 @@ const MAX_DESCRIPTION_LENGTH = 10000;
  *
  * @param {any} value
  */
-function isCalendarDate(value) {
+export function isCalendarDate(value) {
   const text = String(value ?? '');
   if (!DATE_RE.test(text)) return false;
   const date = new Date(`${text}T00:00:00Z`);

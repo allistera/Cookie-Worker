@@ -220,13 +220,11 @@ jobs:
           # answers on data-enricher's public workers.dev URL, so the token
           # stays required end to end.
           secrets: |
-            TODOIST_API_TOKEN
             ENRICHER_TRIGGER_TOKEN
             BLOB_READ_WRITE_TOKEN
             SENTRY_DSN
             MEILISEARCH_API_KEY
         env:
-          TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
           ENRICHER_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
@@ -264,12 +262,10 @@ jobs:
           # optional PRODUCT_HUNT_TOKEN and GITHUB_API_TOKEN are set once with
           # `wrangler secret put` and survive later deploys untouched.
           secrets: |
-            TODOIST_API_TOKEN
             OPENAI_API_KEY
             HTTP_TRIGGER_TOKEN
             SENTRY_DSN
         env:
-          TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HTTP_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}

@@ -2,9 +2,6 @@
 # For local dev, export this before `npm run dev` (dev Supabase project, session pooler):
 #   export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres.PROJECT_REF:password@aws-0-REGION.pooler.supabase.com:5432/postgres"
 
-# Todoist API token; the deployed Worker gets it from GitHub secrets.
-TODOIST_API_TOKEN=""
-
 # Enables the AI analysis of important emails.
 OPENAI_API_KEY=""
 

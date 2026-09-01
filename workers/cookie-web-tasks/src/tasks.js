@@ -1,34 +1,51 @@
-// Ported from Cookie-Web's api/tasks.js — the GET (tasks + digest + news) and
-// POST (complete/reschedule) handlers for AI Today's task list. Behaviorally
-// identical; only the (req, res) mutation style becomes returning a
-// Response, and the Todoist API token is passed in explicitly rather than
-// read from process.env.
+// The GET (tasks + digest + news) and POST (complete/reschedule) handlers for
+// AI Today's task list.
+
+import { isCalendarDate, updateTaskItem } from './taskItems.js';
 
 const RESULTS = 25;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// The authenticated user's gathered tasks (Todoist tasks + AI-extracted email
-// action items), most-pressing first: soonest due, then highest priority.
-// Scoped to due today or overdue - AI Today is a daily view, so anything due
-// later would just be backlog noise here. A task with no due date at all has
-// no "today" claim to make either way, but is shown anyway since there is no
-// future date to defer it by.
-/** @param {import('postgres').Sql} sql @param {string} userId */
-export function fetchTasks(sql, userId) {
+// The authenticated user's gathered tasks, most-pressing first: soonest due,
+// then highest priority. Two sources are unioned: AI-extracted email action
+// items from the overnight enricher's `tasks` table (restricted to
+// source = 'email' - any other row left over from a retired source is
+// ignored), and Cookie's own built-in top-level task_items. Both are scoped
+// to due today or overdue - AI Today is a daily view, so anything
+// due later would just be backlog noise here. `date` lets the caller pick
+// which day is "today"; a missing or invalid one falls back to the
+// database's CURRENT_DATE. A gathered task with no due date at all has no
+// "today" claim to make either way, but is shown anyway since there is no
+// future date to defer it by; a task_item with no due date is backlog, not
+// "today", so it is excluded rather than shown by default.
+/** @param {import('postgres').Sql} sql @param {string} userId @param {string | null} date */
+export function fetchTasks(sql, userId, date) {
   return sql`
-    SELECT t.id, t.source, t.content, t.description, t.due_date,
-           t.priority, t.url, t.message_id, t.gathered_at,
-           m.from_address AS reply_to, m.subject AS message_subject
-    FROM tasks t
-    LEFT JOIN messages m ON m.id = t.message_id AND m.user_id = t.user_id
-    WHERE t.user_id = ${userId}
-      AND (t.due_date IS NULL OR t.due_date <= CURRENT_DATE)
-      -- An action item extracted from mail retires with its source: once the
-      -- email is done, the work it described is handled. The null check keeps
-      -- every sourceless task (all the Todoist ones) untouched by the join.
-      AND (t.message_id IS NULL OR NOT m.is_archived)
-    ORDER BY t.due_date ASC NULLS LAST, t.priority DESC NULLS LAST, t.created_at DESC
+    SELECT * FROM (
+      SELECT t.id, t.source, t.content, t.description, t.due_date,
+             t.priority, t.url, t.message_id, t.gathered_at,
+             m.from_address AS reply_to, m.subject AS message_subject, t.created_at
+      FROM tasks t
+      LEFT JOIN messages m ON m.id = t.message_id AND m.user_id = t.user_id
+      WHERE t.user_id = ${userId}
+        AND t.source = 'email'
+        AND (t.due_date IS NULL OR t.due_date <= COALESCE(${date}::date, CURRENT_DATE))
+        -- An action item extracted from mail retires with its source: once
+        -- the email is done, the work it described is handled.
+        AND (t.message_id IS NULL OR NOT m.is_archived)
+      UNION ALL
+      SELECT t.id, 'task' AS source, t.content, t.description, t.due_date,
+             NULL::smallint AS priority, NULL::text AS url, NULL::uuid AS message_id,
+             NULL::timestamptz AS gathered_at, NULL::text AS reply_to,
+             NULL::text AS message_subject, t.created_at
+      FROM task_items t
+      WHERE t.user_id = ${userId}
+        AND t.parent_id IS NULL
+        AND t.completed_at IS NULL
+        AND t.due_date <= COALESCE(${date}::date, CURRENT_DATE)
+    ) combined
+    ORDER BY due_date ASC NULLS LAST, priority DESC NULLS LAST, created_at DESC
     LIMIT ${RESULTS}
   `;
 }
@@ -173,19 +190,19 @@ export function buildDigest(row, states) {
   };
 }
 
-// One gathered task owned by the caller, returning what completion needs.
+// One gathered task owned by the caller, scoped by id alone: postTasks tries
+// this table first and falls back to task_items when it comes up empty.
 /** @param {import('postgres').Sql} sql @param {string} id @param {string} userId */
 export function fetchOwnedTask(sql, id, userId) {
   return sql`
-    SELECT t.id, t.source, t.external_id
+    SELECT t.id
     FROM tasks t
     WHERE t.id = ${id} AND t.user_id = ${userId}
   `;
 }
 
-// Completing a task removes it from the gathered set; there is no done column.
-// A closed Todoist task is no longer "due today", so the daily enricher will
-// not re-add it.
+// Completing a gathered task removes it from the gathered set; there is no
+// done column.
 /** @param {import('postgres').Sql} sql @param {string} id @param {string} userId */
 export function deleteOwnedTask(sql, id, userId) {
   return sql`
@@ -204,114 +221,37 @@ export function updateTaskDueDate(sql, id, userId, dueDate) {
   `;
 }
 
-// Close a task in Todoist via the unified API (api.todoist.com/api/v1). The
-// deprecated REST v2 base returns 410 Gone. Throws on any non-2xx response.
-/** @param {string} externalId @param {string} token */
-export async function closeTodoistTask(externalId, token) {
-  const response = await fetch(
-    `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(externalId)}/close`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(10000),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`Todoist close responded ${response.status}`);
-  }
-}
-
-// Reschedule a task in Todoist via the unified API (api.todoist.com/api/v1).
-// dueDate is a plain YYYY-MM-DD date, matching this codebase's `date` column.
-// Throws on any non-2xx response.
-/** @param {string} externalId @param {string} token @param {string} dueDate */
-export async function rescheduleTodoistTask(externalId, token, dueDate) {
-  const response = await fetch(
-    `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(externalId)}`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ due_date: dueDate }),
-      signal: AbortSignal.timeout(10000),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`Todoist reschedule responded ${response.status}`);
-  }
-}
-
-// Completes a task: the real Todoist task is closed before dropping our copy,
-// so a failed close leaves the task visible instead of silently vanishing.
-// Without a token configured we fall back to clearing it from Cookie only.
-/**
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- * @param {any} task
- * @param {string | undefined} todoistToken
- */
-async function completeTask(sql, userId, task, todoistToken) {
-  const closedInTodoist = task.source === 'todoist' && Boolean(todoistToken);
-  if (closedInTodoist) {
-    try {
-      await closeTodoistTask(task.external_id, /** @type {string} */ (todoistToken));
-    } catch (err) {
-      console.log(
-        JSON.stringify({
-          event: 'todoist_close_failed',
-          message: /** @type {Error} */ (err).message,
-        }),
-      );
-      return Response.json({ error: 'Failed to close the task in Todoist' }, { status: 502 });
-    }
-  }
-
+// Completes a gathered task: it simply drops out of the gathered set.
+/** @param {import('postgres').Sql} sql @param {string} userId @param {any} task */
+async function completeTask(sql, userId, task) {
   await deleteOwnedTask(sql, task.id, userId);
-  return Response.json({ ok: true, closedInTodoist });
+  return Response.json({ ok: true });
 }
 
-// Reschedules a task to another day. A Todoist-sourced task is rescheduled in
-// Todoist first (when a Todoist token is configured) - the daily sync
-// otherwise clobbers a local-only due_date change back to whatever Todoist
-// still reports the next time it runs. A failed Todoist call leaves the task
-// on its original day instead of drifting out of sync with Todoist.
+// Reschedules a gathered task to another day.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} task
  * @param {string} dueDate
- * @param {string | undefined} todoistToken
  */
-async function rescheduleTask(sql, userId, task, dueDate, todoistToken) {
-  if (task.source === 'todoist' && todoistToken) {
-    try {
-      await rescheduleTodoistTask(task.external_id, todoistToken, dueDate);
-    } catch (err) {
-      console.log(
-        JSON.stringify({
-          event: 'todoist_reschedule_failed',
-          message: /** @type {Error} */ (err).message,
-        }),
-      );
-      return Response.json({ error: 'Failed to reschedule the task in Todoist' }, { status: 502 });
-    }
-  }
-
+async function rescheduleTask(sql, userId, task, dueDate) {
   const [updated] = await updateTaskDueDate(sql, task.id, userId, dueDate);
   return Response.json({ ok: true, task: updated });
 }
 
-// POST /tasks — { id, action: 'complete' } marks a gathered task done;
-// { id, action: 'reschedule', due_date } moves it to another day.
+// POST /tasks — { id, action: 'complete' } marks a task done; { id, action:
+// 'reschedule', due_date } moves it to another day. The id may belong to
+// either source: a gathered `tasks` row is tried first, and a miss there
+// falls back to `task_items` via updateTaskItem, which owns that table's
+// validation, ownership check and Meilisearch sync.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
- * @param {string | undefined} todoistToken
+ * @param {any} env Meilisearch config, passed through to updateTaskItem.
  */
-export async function postTasks(sql, userId, body, todoistToken) {
+export async function postTasks(sql, userId, body, env) {
   const id = String(body.id ?? '');
   const { action } = body;
   if (!UUID_RE.test(id)) {
@@ -331,20 +271,30 @@ export async function postTasks(sql, userId, body, todoistToken) {
   }
 
   const [task] = await fetchOwnedTask(sql, id, userId);
-  if (!task) return Response.json({ error: 'Task not found' }, { status: 404 });
+  if (task) {
+    return action === 'complete'
+      ? completeTask(sql, userId, task)
+      : rescheduleTask(sql, userId, task, /** @type {string} */ (dueDate));
+  }
 
+  const itemBody = action === 'complete' ? { id, completed: true } : { id, dueDate };
+  const response = await updateTaskItem(sql, userId, itemBody, env);
+  if (!response.ok) return response;
+  const { item } = /** @type {any} */ (await response.json());
   return action === 'complete'
-    ? completeTask(sql, userId, task, todoistToken)
-    : rescheduleTask(sql, userId, task, /** @type {string} */ (dueDate), todoistToken);
+    ? Response.json({ ok: true })
+    : Response.json({ ok: true, task: { id: item.id, due_date: item.dueDate } });
 }
 
 // GET /tasks — { tasks: [...], digest: {...} | null, news: {...} | null } for
 // the AI dashboard. All three are returned together because AI Today always
 // renders all of them.
-/** @param {import('postgres').Sql} sql @param {string} userId */
-export async function getTasks(sql, userId) {
+/** @param {import('postgres').Sql} sql @param {string} userId @param {URL} url */
+export async function getTasks(sql, userId, url) {
+  const rawDate = url.searchParams.get('date');
+  const date = isCalendarDate(rawDate) ? rawDate : null;
   const [tasks, [digestRow], [newsRow]] = await Promise.all([
-    fetchTasks(sql, userId),
+    fetchTasks(sql, userId, date),
     fetchLatestSummary(sql, userId, 'daily_digest'),
     fetchLatestSummary(sql, userId, 'daily_news'),
   ]);
