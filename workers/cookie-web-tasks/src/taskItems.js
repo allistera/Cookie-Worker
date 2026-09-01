@@ -87,10 +87,19 @@ export async function getTaskItems(sql, userId, url) {
            t.created_at AS "createdAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
-      AND CASE WHEN ${today}::boolean THEN t.due_date <= ${today ? date : null}::date
+      -- Today also carries the sub-tasks of every task it lists: the panel
+      -- resolves sub-tasks out of the loaded list, and a sub-task rarely has
+      -- a due date of its own to qualify on.
+      AND CASE WHEN ${today}::boolean THEN (t.due_date <= ${today ? date : null}::date
+                 OR EXISTS (SELECT 1 FROM task_items p
+                            WHERE p.id = t.parent_id AND p.user_id = ${userId}
+                              AND p.due_date <= ${today ? date : null}::date))
                WHEN ${inbox}::boolean THEN t.project_id IS NULL
                ELSE t.project_id = ${projectId}::uuid END
-      AND (${includeCompleted}::boolean OR t.completed_at IS NULL)
+      -- Completed sub-tasks stay listed: the panel shows them checked and
+      -- counts them into its "done/total" progress. Only completed top-level
+      -- tasks leave the list.
+      AND (${includeCompleted}::boolean OR t.completed_at IS NULL OR t.parent_id IS NOT NULL)
     -- Only Today sorts by date: it is the one list where the rows carry
     -- different due dates, and the oldest thing owed belongs at the top.
     -- Project and Inbox lists keep their created_at order.
@@ -100,19 +109,16 @@ export async function getTaskItems(sql, userId, url) {
 }
 
 /**
- * POST /task-items — { content, description?, projectId?, dueDate? }. Sub-task
- * creation is not supported yet: a request that supplies parentId is
- * rejected rather than silently landing the task at the top level.
+ * POST /task-items — { content, description?, projectId?, dueDate?,
+ * parentId? }. A sub-task lives in its parent's project: with parentId set,
+ * the project is read from the parent row and any projectId in the body is
+ * ignored, so the two can never disagree.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
  */
 export async function createTaskItem(sql, userId, body) {
-  if (Object.hasOwn(body ?? {}, 'parentId')) {
-    return Response.json({ error: 'Sub-task creation is not supported yet' }, { status: 400 });
-  }
-
   const content = cleanText(body?.content, MAX_CONTENT_LENGTH);
   if (!content) return Response.json({ error: 'Task content is required' }, { status: 400 });
 
@@ -120,8 +126,19 @@ export async function createTaskItem(sql, userId, body) {
     ? cleanText(body.description, MAX_DESCRIPTION_LENGTH)
     : null;
 
-  const projectId = body?.projectId ?? null;
-  if (projectId !== null) {
+  const parentId = body?.parentId ?? null;
+  let projectId = body?.projectId ?? null;
+  if (parentId !== null) {
+    if (!isUuid(parentId)) {
+      return Response.json({ error: 'Task not found' }, { status: 404 });
+    }
+    const [parent] = await sql`
+      SELECT id, project_id AS "projectId" FROM task_items
+      WHERE id = ${parentId} AND user_id = ${userId}
+    `;
+    if (!parent) return Response.json({ error: 'Task not found' }, { status: 404 });
+    projectId = parent.projectId;
+  } else if (projectId !== null) {
     if (!isUuid(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
@@ -134,8 +151,8 @@ export async function createTaskItem(sql, userId, body) {
   const dueDate = hasDueDate ? String(body.dueDate) : null;
 
   const [item] = await sql`
-    INSERT INTO task_items (user_id, project_id, content, description, due_date)
-    VALUES (${userId}, ${projectId}, ${content}, ${description}, ${dueDate})
+    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date)
+    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate})
     RETURNING id, project_id AS "projectId", parent_id AS "parentId", content, description,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", completed_at AS "completedAt", created_at AS "createdAt"
   `;

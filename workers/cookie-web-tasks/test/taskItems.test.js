@@ -18,7 +18,17 @@ describe('GET /task-items', () => {
     expect((await response.json()).items).toHaveLength(1);
     expect(sql.calls[0].text).toContain('FROM task_items t');
     expect(sql.calls[0].text).toContain('t.created_at ASC');
-    expect(sql.calls[0].values).toEqual([USER_ID, false, null, false, PROJECT_ID, false, false]);
+    expect(sql.calls[0].values).toEqual([
+      USER_ID,
+      false,
+      null,
+      USER_ID,
+      null,
+      false,
+      PROJECT_ID,
+      false,
+      false,
+    ]);
   });
 
   // Inbox is a rule, not a row: it means "belongs to no project".
@@ -26,7 +36,17 @@ describe('GET /task-items', () => {
     const sql = createMockSql([[]]);
     await getTaskItems(sql, USER_ID, url('?project=inbox'));
 
-    expect(sql.calls[0].values).toEqual([USER_ID, false, null, true, null, false, false]);
+    expect(sql.calls[0].values).toEqual([
+      USER_ID,
+      false,
+      null,
+      USER_ID,
+      null,
+      true,
+      null,
+      false,
+      false,
+    ]);
     expect(sql.calls[0].values).not.toContain('inbox');
   });
 
@@ -34,7 +54,17 @@ describe('GET /task-items', () => {
     const sql = createMockSql([[]]);
     await getTaskItems(sql, USER_ID, url('?project=inbox&completed=1'));
 
-    expect(sql.calls[0].values).toEqual([USER_ID, false, null, true, null, true, false]);
+    expect(sql.calls[0].values).toEqual([
+      USER_ID,
+      false,
+      null,
+      USER_ID,
+      null,
+      true,
+      null,
+      true,
+      false,
+    ]);
   });
 
   it('400s a project that is neither a uuid nor inbox', async () => {
@@ -84,17 +114,50 @@ describe('POST /task-items', () => {
     expect(response.status).toBe(404);
   });
 
-  // Sub-task creation isn't implemented: a request carrying parentId must be
-  // rejected loudly rather than silently dropping the field and creating a
-  // top-level Inbox task.
-  it('rejects a parentId, which the handler does not implement yet', async () => {
-    const sql = createMockSql([]);
+  // A sub-task always lands in its parent's project — the body's projectId
+  // is ignored so the two can never disagree.
+  it("creates a sub-task in its parent's project, ignoring any projectId", async () => {
+    const sql = createMockSql([
+      [{ id: ITEM_ID, projectId: PROJECT_ID }],
+      [
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          projectId: PROJECT_ID,
+          parentId: ITEM_ID,
+          content: 'Step one',
+        },
+      ],
+    ]);
+
     const response = await createTaskItem(sql, USER_ID, {
-      content: 'Ship it',
+      content: 'Step one',
+      parentId: ITEM_ID,
+      projectId: '44444444-4444-4444-8444-444444444444',
+    });
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).item.parentId).toBe(ITEM_ID);
+    // Call 1 looks up the parent; the INSERT carries the parent's project.
+    expect(sql.calls[1].values).toContain(PROJECT_ID);
+    expect(sql.calls[1].values).toContain(ITEM_ID);
+  });
+
+  it('404s a parentId the caller does not own', async () => {
+    const sql = createMockSql([[]]);
+    const response = await createTaskItem(sql, USER_ID, {
+      content: 'Step one',
       parentId: ITEM_ID,
     });
-    expect(response.status).toBe(400);
-    expect((await response.json()).error).toMatch(/sub-task/i);
+    expect(response.status).toBe(404);
+  });
+
+  it('404s a parentId that is not a uuid without touching the database', async () => {
+    const sql = createMockSql([]);
+    const response = await createTaskItem(sql, USER_ID, {
+      content: 'Step one',
+      parentId: 'nonsense',
+    });
+    expect(response.status).toBe(404);
     expect(sql.calls).toHaveLength(0);
   });
 });
@@ -282,7 +345,17 @@ describe('GET /task-items?project=today', () => {
     const response = await getTaskItems(sql, USER_ID, url('?project=today&date=2026-08-29'));
 
     expect(response.status).toBe(200);
-    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-08-29', false, null, false, true]);
+    expect(sql.calls[0].values).toEqual([
+      USER_ID,
+      true,
+      '2026-08-29',
+      USER_ID,
+      '2026-08-29',
+      false,
+      null,
+      false,
+      true,
+    ]);
     // Overdue tasks belong in Today: a task due last week and still not done
     // would otherwise be visible only inside its own project.
     expect(sql.calls[0].text).toContain('t.due_date <= ');
@@ -335,7 +408,17 @@ describe('GET /task-items?project=today', () => {
 
     await getTaskItems(sql, USER_ID, url('?project=today&date=2026-08-29&completed=1'));
 
-    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-08-29', false, null, true, true]);
+    expect(sql.calls[0].values).toEqual([
+      USER_ID,
+      true,
+      '2026-08-29',
+      USER_ID,
+      '2026-08-29',
+      false,
+      null,
+      true,
+      true,
+    ]);
   });
 
   it('does not treat today as a project id', async () => {
