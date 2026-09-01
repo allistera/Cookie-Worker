@@ -317,7 +317,13 @@ describe('message search engine', () => {
 
 describe('mergeFederatedResults', () => {
   const emailRow = { id: 'm1', subject: 'Roof' };
-  const documentRow = { id: 'd1', title: 'Roof plan', tags: ['home'], starred: true, updated_at: 1 };
+  const documentRow = {
+    id: 'd1',
+    title: 'Roof plan',
+    tags: ['home'],
+    starred: true,
+    updated_at: 1,
+  };
 
   it('re-merges hits from both indexes in federation hit order', () => {
     const hits = [
@@ -328,7 +334,14 @@ describe('mergeFederatedResults', () => {
     const results = mergeFederatedResults(hits, [emailRow], [documentRow]);
 
     expect(results).toEqual([
-      { type: 'document', id: 'd1', title: 'Roof plan', tags: ['home'], starred: true, updated_at: 1 },
+      {
+        type: 'document',
+        id: 'd1',
+        title: 'Roof plan',
+        tags: ['home'],
+        starred: true,
+        updated_at: 1,
+      },
       { type: 'email', ...emailRow },
     ]);
   });
@@ -344,7 +357,14 @@ describe('mergeFederatedResults', () => {
     const wideRow = { ...documentRow, folder_id: 'f1', created_at: 'x' };
     const results = mergeFederatedResults(hits, [], [wideRow]);
     expect(results).toEqual([
-      { type: 'document', id: 'd1', title: 'Roof plan', tags: ['home'], starred: true, updated_at: 1 },
+      {
+        type: 'document',
+        id: 'd1',
+        title: 'Roof plan',
+        tags: ['home'],
+        starred: true,
+        updated_at: 1,
+      },
     ]);
   });
 
@@ -692,7 +712,13 @@ describe('GET /search?scope=', () => {
     const search = vi.fn(async () => [{ id: 'm1' }]);
     const sql = createMockSql([[{ id: 'm1' }]]);
 
-    const response = await handleSearch(sql, USER_ID, url('?q=roof'), ENV, deps({ hybridSearch: search }));
+    const response = await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=roof'),
+      ENV,
+      deps({ hybridSearch: search }),
+    );
 
     expect(response.status).toBe(200);
     const body = await response.json();

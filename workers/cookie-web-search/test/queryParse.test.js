@@ -2,7 +2,11 @@
 // mail-search half; Cookie-Web keeps its copy for the vite fixture).
 import { describe, expect, it } from 'vitest';
 
-import { hasMailOnlyFilters, parseFederatedSearchQuery, parseSearchQuery } from '../src/queryParse.js';
+import {
+  hasMailOnlyFilters,
+  parseFederatedSearchQuery,
+  parseSearchQuery,
+} from '../src/queryParse.js';
 
 describe('parseSearchQuery', () => {
   it('leaves a plain query as free text', () => {

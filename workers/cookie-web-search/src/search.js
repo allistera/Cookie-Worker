@@ -5,11 +5,7 @@
 // Retrieval is served by Meilisearch unconditionally: the old three-leg
 // Postgres path and its engine=postgres comparison handle are gone.
 
-import {
-  hasMailOnlyFilters,
-  parseFederatedSearchQuery,
-  parseSearchQuery,
-} from './queryParse.js';
+import { hasMailOnlyFilters, parseFederatedSearchQuery, parseSearchQuery } from './queryParse.js';
 import {
   MESSAGES_INDEX,
   hybridSearch as realHybridSearch,
@@ -290,10 +286,7 @@ export function mergeFederatedResults(hits, emailRows, documentRows) {
  */
 async function handleScopedSearch(sql, userId, url, env, scope, deps) {
   if (!SCOPES.has(scope)) {
-    return Response.json(
-      { error: 'scope must be one of: all, mail, documents' },
-      { status: 400 },
-    );
+    return Response.json({ error: 'scope must be one of: all, mail, documents' }, { status: 400 });
   }
 
   const q = (url.searchParams.get('q') || '').trim();

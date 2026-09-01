@@ -358,9 +358,7 @@ describe('federatedSearch', () => {
       client,
     );
 
-    expect(calls[0].queries[0].filter).toBe(
-      `user_id = '${USER_ID}' AND is_starred = true`,
-    );
+    expect(calls[0].queries[0].filter).toBe(`user_id = '${USER_ID}' AND is_starred = true`);
   });
 
   it('applies hybrid at the descriptor default when a unit is semantic (the default)', async () => {
