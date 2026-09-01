@@ -131,10 +131,12 @@ jobs:
             SENTRY_DSN
             BLOB_READ_WRITE_TOKEN
             MEILISEARCH_API_KEY
+            OPENAI_API_KEY
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Deploy cookie-web-notifications and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-notifications'

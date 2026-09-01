@@ -352,24 +352,52 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
  *   emailFrom: string | undefined,
  *   sendEmail: (options: {apiKey: string, from: string, to: string[], subject: string, text: string}) => Promise<void>,
  *   oneClickAllowlist?: string[],
+ *   aiUnsubscribe?: (target: {url: string, recipientEmail: string | null}) => Promise<{ok: boolean, reason?: string}>,
  * }} UnsubscribeDeps
  */
+
+/**
+ * First `to` address from messages.recipients ({"to": [{name, address}], ...}
+ * jsonb, occasionally double-encoded as a string by old ingest rows) — the
+ * one piece of user data the AI unsubscribe tier may type into a sender's
+ * form. Returns null rather than guessing when the shape is unexpected.
+ *
+ * @param {any} recipients
+ */
+export function recipientAddress(recipients) {
+  let value = recipients;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  const first = value?.to?.[0];
+  const address = typeof first === 'string' ? first : first?.address;
+  if (typeof address !== 'string') return null;
+  const trimmed = address.trim();
+  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(trimmed) ? trimmed : null;
+}
 
 /**
  * POST /messages — { id, action: 'unsubscribe' } acts on a message owned by
  * the authenticated user. Parses the (untrusted) List-Unsubscribe headers
  * and, in preference order: performs a server-side, SSRF-guarded one-click
- * POST; sends a mailto unsubscribe via Resend; or returns a safe target for
- * the client to open manually. No DB writes.
+ * POST; sends a mailto unsubscribe via Resend; drives the sender's
+ * unsubscribe page with AI (only when the client opted in via allow_ai —
+ * older clients keep the manual contract below); or returns a safe target
+ * for the client to open manually. No DB writes.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {string} id
  * @param {UnsubscribeDeps} deps
+ * @param {boolean} [allowAi]
  */
-async function unsubscribe(sql, userId, id, deps) {
+async function unsubscribe(sql, userId, id, deps, allowAi = false) {
   const rows = await sql`
-    SELECT m.headers
+    SELECT m.headers, m.recipients
     FROM messages m
     WHERE m.id = ${id} AND m.user_id = ${userId}
   `;
@@ -443,8 +471,21 @@ async function unsubscribe(sql, userId, id, deps) {
     }
   }
 
-  // 3. Safe https link for the client to open manually.
+  // 3. AI-driven unsubscribe on the sender's page (when configured and the
+  // client opted in), else a safe https link to open manually. The attempt
+  // never throws; on failure the client shows a failed state rather than the
+  // link, so the response still carries the url for clients that want it.
   if (url && isSafeUnsubscribeUrl(url)) {
+    if (allowAi && deps.aiUnsubscribe) {
+      const outcome = await deps.aiUnsubscribe({
+        url,
+        recipientEmail: recipientAddress(rows[0].recipients),
+      });
+      if (outcome?.ok) {
+        return Response.json({ status: 'unsubscribed', method: 'ai' });
+      }
+      return Response.json({ status: 'ai_failed', method: 'ai', url });
+    }
     return Response.json({ status: 'manual', method: 'link', url });
   }
 
@@ -495,7 +536,7 @@ export async function postMessage(sql, userId, body, deps) {
     return Response.json({ error: 'Too many unsubscribe actions, slow down' }, { status: 429 });
   }
 
-  return unsubscribe(sql, userId, id, deps);
+  return unsubscribe(sql, userId, id, deps, body.allow_ai === true);
 }
 
 /**

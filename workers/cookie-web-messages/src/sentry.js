@@ -18,6 +18,8 @@ const SERVICE = 'cookie-web-messages';
  *   EMAIL_FROM?: string,
  *   UNSUBSCRIBE_ONE_CLICK_ALLOWLIST?: string,
  *   MEILISEARCH_API_KEY?: string,
+ *   OPENAI_API_KEY?: string,
+ *   OPENAI_UNSUBSCRIBE_MODEL?: string,
  * }} MessagesEnv
  */
 
@@ -31,6 +33,7 @@ function secrets(env) {
     env.BLOB_READ_WRITE_TOKEN,
     env.RESEND_API_KEY,
     env.MEILISEARCH_API_KEY,
+    env.OPENAI_API_KEY,
   ];
 }
 

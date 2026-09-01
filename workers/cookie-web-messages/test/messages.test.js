@@ -7,6 +7,7 @@ import {
   getThreadBody,
   patchMessage,
   postMessage,
+  recipientAddress,
 } from '../src/messages.js';
 import { createMockSql } from './helpers.js';
 
@@ -302,6 +303,94 @@ describe('postMessage — unsubscribe action', () => {
       unsubscribeDeps(),
     );
     expect(response.status).toBe(422);
+  });
+});
+
+describe('postMessage — AI unsubscribe tier', () => {
+  const LINK_URL = 'https://news.example.com/u?id=1';
+  const linkOnlyRows = () => [
+    [
+      {
+        headers: [{ key: 'List-Unsubscribe', value: `<${LINK_URL}>` }],
+        recipients: { to: [{ name: 'User', address: 'user@cookie.example' }] },
+      },
+    ],
+  ];
+
+  test('runs the AI attempt for link-only senders when the client opts in', async () => {
+    const aiUnsubscribe = vi.fn().mockResolvedValue({ ok: true });
+    const response = await postMessage(
+      createMockSql(linkOnlyRows()),
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe', allow_ai: true },
+      unsubscribeDeps({ aiUnsubscribe }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'ai' });
+    expect(aiUnsubscribe).toHaveBeenCalledWith({
+      url: LINK_URL,
+      recipientEmail: 'user@cookie.example',
+    });
+  });
+
+  test('reports ai_failed (still carrying the url) when the attempt fails', async () => {
+    const aiUnsubscribe = vi.fn().mockResolvedValue({ ok: false, reason: 'unconfirmed' });
+    const response = await postMessage(
+      createMockSql(linkOnlyRows()),
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe', allow_ai: true },
+      unsubscribeDeps({ aiUnsubscribe }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'ai_failed', method: 'ai', url: LINK_URL });
+  });
+
+  test('keeps the manual contract when the client did not opt in', async () => {
+    const aiUnsubscribe = vi.fn();
+    const response = await postMessage(
+      createMockSql(linkOnlyRows()),
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ aiUnsubscribe }),
+    );
+
+    expect(aiUnsubscribe).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ status: 'manual', method: 'link', url: LINK_URL });
+  });
+
+  test('keeps the manual contract when AI is not configured', async () => {
+    const response = await postMessage(
+      createMockSql(linkOnlyRows()),
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe', allow_ai: true },
+      unsubscribeDeps(),
+    );
+
+    expect(await response.json()).toEqual({ status: 'manual', method: 'link', url: LINK_URL });
+  });
+});
+
+describe('recipientAddress', () => {
+  test('returns the first to-address from the jsonb shape', () => {
+    expect(
+      recipientAddress({ to: [{ name: 'User', address: 'user@cookie.example' }], cc: [] }),
+    ).toBe('user@cookie.example');
+  });
+
+  test('handles double-encoded recipients from old ingest rows', () => {
+    expect(recipientAddress(JSON.stringify({ to: [{ address: 'user@cookie.example' }] }))).toBe(
+      'user@cookie.example',
+    );
+  });
+
+  test('returns null for unexpected shapes and non-addresses', () => {
+    expect(recipientAddress(null)).toBeNull();
+    expect(recipientAddress({})).toBeNull();
+    expect(recipientAddress({ to: [] })).toBeNull();
+    expect(recipientAddress({ to: [{ address: 'not-an-email' }] })).toBeNull();
+    expect(recipientAddress('not json')).toBeNull();
   });
 });
 

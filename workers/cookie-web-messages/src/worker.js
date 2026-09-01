@@ -6,6 +6,7 @@ import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { getContacts } from './contacts.js';
 import { getAttachment, getMessage, getThreadBody, patchMessage, postMessage } from './messages.js';
+import { attemptAiUnsubscribe } from './aiUnsubscribe.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { sendEmail } from './resend.js';
 import { requestPublicHttps, parseAllowlistOverride } from '../../../shared/safe-https.js';
@@ -150,6 +151,15 @@ async function route(url, request, sql, userId, env, ctx) {
       sendEmail,
       // Empty override falls back to the built-in ESP suffix list.
       oneClickAllowlist: allowlistOverride.length ? allowlistOverride : undefined,
+      // Without an OpenAI key the AI tier is absent and link-only senders
+      // keep getting the manual fallback.
+      aiUnsubscribe: env.OPENAI_API_KEY
+        ? (/** @type {{url: string, recipientEmail: string | null}} */ target) =>
+            attemptAiUnsubscribe(target, {
+              apiKey: env.OPENAI_API_KEY,
+              model: env.OPENAI_UNSUBSCRIBE_MODEL,
+            })
+        : undefined,
       onMessageChanged,
     });
   }
