@@ -216,3 +216,76 @@ export async function hybridSearch(env, descriptor, query, client) {
   });
   return result.hits.map((hit) => ({ id: hit.id }));
 }
+
+/**
+ * One index's leg of a federatedSearch call. Pagination (limit/offset) is
+ * deliberately not here — Meilisearch federation paginates the merged result
+ * list, not each query, so it lives in federatedSearch's `options` instead.
+ *
+ * @typedef {{
+ *   descriptor: any,
+ *   q?: string,
+ *   filter?: string,
+ *   semantic?: boolean,
+ *   semanticRatio?: number,
+ *   weight?: number,
+ *   sort?: string[],
+ * }} FederatedSearchUnit
+ */
+
+/**
+ * Federated (cross-index) search via Meilisearch's /multi-search endpoint
+ * with `federation` set, merging hits from several indexes into one
+ * relevance-ranked list instead of running one index at a time. Mirrors
+ * hybridSearch's security guarantee: user_id is filtered inside this
+ * function for every unit, so a caller can never omit it for one leg of a
+ * federated query.
+ *
+ * `semantic: false` on a unit omits `hybrid` entirely for that query (plain
+ * keyword search, no embedding call) — matching the "mode=keyword is
+ * keyword-only, no hybrid" contract type-ahead relies on. Any other value
+ * (including undefined) applies hybrid at the unit's semanticRatio, falling
+ * back to the descriptor's default.
+ *
+ * @param {any} env
+ * @param {FederatedSearchUnit[]} units
+ * @param {{userId: string, limit: number, offset?: number}} options
+ * @param {any} [client]
+ * @returns {Promise<{hits: {id: string, _federation: any}[], estimatedTotalHits: number}>}
+ */
+export async function federatedSearch(env, units, options, client) {
+  const meili = clientFor(env, client);
+  const userFilter = `user_id = '${escapeFilter(options.userId)}'`;
+
+  const queries = units.map((unit) => {
+    const filters = [userFilter];
+    if (unit.filter) filters.push(unit.filter);
+
+    return {
+      indexUid: unit.descriptor.name,
+      q: unit.q ?? '',
+      filter: filters.join(' AND '),
+      attributesToRetrieve: ['id'],
+      ...(unit.sort ? { sort: unit.sort } : {}),
+      ...(unit.semantic === false
+        ? {}
+        : {
+            hybrid: {
+              embedder: 'default',
+              semanticRatio: unit.semanticRatio ?? unit.descriptor.semanticRatio,
+            },
+          }),
+      ...(unit.weight !== undefined ? { federationOptions: { weight: unit.weight } } : {}),
+    };
+  });
+
+  const result = await meili.multiSearch({
+    federation: { limit: options.limit, offset: options.offset ?? 0 },
+    queries,
+  });
+
+  return {
+    hits: result.hits.map((hit) => ({ id: hit.id, _federation: hit._federation })),
+    estimatedTotalHits: result.estimatedTotalHits ?? result.hits.length,
+  };
+}

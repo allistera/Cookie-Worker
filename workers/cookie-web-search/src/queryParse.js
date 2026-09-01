@@ -58,3 +58,68 @@ export function parseSearchQuery(raw) {
 
   return { text, filters };
 }
+
+// sender:alice tag:Personal is:starred — the federated (mail + documents)
+// search operator set: every mail operator parseSearchQuery understands,
+// plus is:starred, which only cookie-web-tasks' document search parser knew
+// about before. tag: and is:starred are the two operators meaningful to both
+// indexes (see MAIL_ONLY_FILTER_KEYS below for the rest).
+const FEDERATED_OPERATOR_RE = /(from|sender|to|tag|has|before|after|in|is):("[^"]*"|\S+)/gi;
+
+/** @param {string} raw */
+export function parseFederatedSearchQuery(raw) {
+  const filters = {};
+  const text = raw
+    .replace(FEDERATED_OPERATOR_RE, (match, key, rawValue) => {
+      const value = rawValue.startsWith('"') ? rawValue.slice(1, -1).trim() : rawValue.trim();
+      switch (key.toLowerCase()) {
+        case 'from':
+        case 'sender':
+          if (value) filters.from = value;
+          break;
+        case 'to':
+          if (value) filters.to = value;
+          break;
+        case 'tag':
+          if (value) filters.tag = value;
+          break;
+        case 'has':
+          if (/^attachments?$/i.test(value)) filters.hasAttachment = true;
+          else return match; // unknown has: value — leave it as free text
+          break;
+        case 'before':
+          if (DATE_RE.test(value)) filters.before = value;
+          else return match;
+          break;
+        case 'after':
+          if (DATE_RE.test(value)) filters.after = value;
+          else return match;
+          break;
+        case 'in':
+          if (FOLDERS.has(value.toLowerCase())) filters.in = value.toLowerCase();
+          else return match; // unknown in: value — leave it as free text
+          break;
+        case 'is':
+          if (/^starred$/i.test(value)) filters.starred = true;
+          else return match; // unknown is: value — leave it as free text
+          break;
+      }
+      return ' ';
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return { text, filters };
+}
+
+// Filters meaningful only to mail — a document has no sender, recipients,
+// attachments, sent date, or folder. When scope=all sees one of these, the
+// documents leg of the federated query is dropped entirely rather than run
+// with the operator silently ignored (which would just return every
+// document as if the operator weren't there).
+export const MAIL_ONLY_FILTER_KEYS = ['from', 'to', 'hasAttachment', 'before', 'after', 'in'];
+
+/** @param {Record<string, any>} filters */
+export function hasMailOnlyFilters(filters) {
+  return MAIL_ONLY_FILTER_KEYS.some((key) => key in filters);
+}

@@ -2,7 +2,7 @@
 // mail-search half; Cookie-Web keeps its copy for the vite fixture).
 import { describe, expect, it } from 'vitest';
 
-import { parseSearchQuery } from '../src/queryParse.js';
+import { hasMailOnlyFilters, parseFederatedSearchQuery, parseSearchQuery } from '../src/queryParse.js';
 
 describe('parseSearchQuery', () => {
   it('leaves a plain query as free text', () => {
@@ -81,5 +81,65 @@ describe('parseSearchQuery', () => {
     const { text, filters } = parseSearchQuery('in:trash report');
     expect(filters).toEqual({});
     expect(text).toBe('in:trash report');
+  });
+});
+
+describe('parseFederatedSearchQuery', () => {
+  it('understands every mail operator parseSearchQuery does', () => {
+    const { text, filters } = parseFederatedSearchQuery(
+      'sender:bob to:alice tag:Work after:2026-01-01 has:attachment in:done budget',
+    );
+    expect(text).toBe('budget');
+    expect(filters).toEqual({
+      from: 'bob',
+      to: 'alice',
+      tag: 'Work',
+      after: '2026-01-01',
+      hasAttachment: true,
+      in: 'done',
+    });
+  });
+
+  it('also recognises is:starred, which parseSearchQuery does not', () => {
+    expect(parseSearchQuery('is:starred').filters).toEqual({});
+
+    const { text, filters } = parseFederatedSearchQuery('is:starred report');
+    expect(text).toBe('report');
+    expect(filters).toEqual({ starred: true });
+  });
+
+  it('leaves an unknown is: value as free text', () => {
+    const { text, filters } = parseFederatedSearchQuery('is:pinned report');
+    expect(filters).toEqual({});
+    expect(text).toBe('is:pinned report');
+  });
+
+  it('combines tag: and is:starred, the two operators shared by both indexes', () => {
+    const { filters } = parseFederatedSearchQuery('tag:Work is:starred budget');
+    expect(filters).toEqual({ tag: 'Work', starred: true });
+  });
+});
+
+describe('hasMailOnlyFilters', () => {
+  it('is false for filters with only tag/starred', () => {
+    expect(hasMailOnlyFilters({})).toBe(false);
+    expect(hasMailOnlyFilters({ tag: 'Work' })).toBe(false);
+    expect(hasMailOnlyFilters({ starred: true })).toBe(false);
+    expect(hasMailOnlyFilters({ tag: 'Work', starred: true })).toBe(false);
+  });
+
+  it.each([
+    ['from', { from: 'bob' }],
+    ['to', { to: 'alice' }],
+    ['hasAttachment', { hasAttachment: true }],
+    ['before', { before: '2026-01-01' }],
+    ['after', { after: '2026-01-01' }],
+    ['in', { in: 'inbox' }],
+  ])('is true when %s is present', (_key, filters) => {
+    expect(hasMailOnlyFilters(filters)).toBe(true);
+  });
+
+  it('is true when a mail-only operator is combined with tag/starred', () => {
+    expect(hasMailOnlyFilters({ tag: 'Work', from: 'bob' })).toBe(true);
   });
 });

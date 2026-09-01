@@ -6,9 +6,26 @@ import {
   addDocuments,
   configureIndex,
   deleteDocuments,
+  federatedSearch,
   hybridSearch,
   meiliMessageFilter,
 } from '../meili.js';
+import { DOCUMENTS_INDEX } from '../meili/documents.js';
+
+// federatedSearch calls client.multiSearch directly (not client.index(...)),
+// so createMockMeili's per-index `search` stub doesn't cover it — this is a
+// minimal stand-in for just that one method.
+/** @param {any} [response] */
+function createMockMultiSearch(response = { hits: [], estimatedTotalHits: 0 }) {
+  const calls = [];
+  const client = {
+    multiSearch: vi.fn(async (params) => {
+      calls.push(params);
+      return response;
+    }),
+  };
+  return { client, calls };
+}
 
 const ENV = { MEILISEARCH_URL: 'https://meili.test', MEILISEARCH_API_KEY: 'key' };
 const USER_ID = '99999999-9999-9999-9999-999999999999';
@@ -307,5 +324,179 @@ describe('meiliMessageFilter', () => {
   it('escapes a single quote and a backslash in from/to/tag values', () => {
     expect(meiliMessageFilter({ tag: "o'brien" })).toContain("labels = 'o\\'brien'");
     expect(meiliMessageFilter({ from: 'back\\slash' })).toContain("from_address = 'back\\\\slash'");
+  });
+});
+
+describe('federatedSearch', () => {
+  it('injects the escaped user_id filter into every query', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [
+        { descriptor: MESSAGES_INDEX, q: 'roof' },
+        { descriptor: DOCUMENTS_INDEX, q: 'roof' },
+      ],
+      { userId: "o'brien", limit: 20 },
+      client,
+    );
+
+    const { queries } = calls[0];
+    expect(queries).toHaveLength(2);
+    for (const query of queries) {
+      expect(query.filter).toContain("user_id = 'o\\'brien'");
+    }
+  });
+
+  it('ands a unit filter onto the user filter', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [{ descriptor: MESSAGES_INDEX, q: 'roof', filter: 'is_starred = true' }],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+
+    expect(calls[0].queries[0].filter).toBe(
+      `user_id = '${USER_ID}' AND is_starred = true`,
+    );
+  });
+
+  it('applies hybrid at the descriptor default when a unit is semantic (the default)', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [{ descriptor: MESSAGES_INDEX, q: 'roof' }],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+
+    expect(calls[0].queries[0].hybrid).toEqual({ embedder: 'default', semanticRatio: 0.5 });
+  });
+
+  it('lets a unit override semanticRatio', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [{ descriptor: MESSAGES_INDEX, q: 'roof', semanticRatio: 1 }],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+
+    expect(calls[0].queries[0].hybrid.semanticRatio).toBe(1);
+  });
+
+  // mode=keyword must skip hybrid entirely — no embedder, no embedding call —
+  // rather than sending semanticRatio: 0, so a unit marked non-semantic never
+  // touches the embedder at all.
+  it('omits hybrid entirely when a unit is not semantic', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [{ descriptor: MESSAGES_INDEX, q: 'roof', semantic: false }],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+
+    expect(calls[0].queries[0].hybrid).toBeUndefined();
+  });
+
+  it('forwards federationOptions.weight when a unit sets one', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [{ descriptor: MESSAGES_INDEX, q: 'roof', weight: 2 }],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+
+    expect(calls[0].queries[0].federationOptions).toEqual({ weight: 2 });
+  });
+
+  it('omits attributesToRetrieve overrides — always ids only', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [{ descriptor: MESSAGES_INDEX, q: 'roof' }],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+
+    expect(calls[0].queries[0].attributesToRetrieve).toEqual(['id']);
+  });
+
+  it('forwards a unit sort when given, and omits it otherwise', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [
+        { descriptor: MESSAGES_INDEX, q: '', sort: ['sent_at:desc'] },
+        { descriptor: DOCUMENTS_INDEX, q: '' },
+      ],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+
+    expect(calls[0].queries[0].sort).toEqual(['sent_at:desc']);
+    expect(calls[0].queries[1].sort).toBeUndefined();
+  });
+
+  it('sends federation limit/offset from options, defaulting offset to 0', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [{ descriptor: MESSAGES_INDEX, q: 'roof' }],
+      { userId: USER_ID, limit: 30 },
+      client,
+    );
+
+    expect(calls[0].federation).toEqual({ limit: 30, offset: 0 });
+  });
+
+  it('passes offset through when given', async () => {
+    const { client, calls } = createMockMultiSearch();
+
+    await federatedSearch(
+      ENV,
+      [{ descriptor: MESSAGES_INDEX, q: 'roof' }],
+      { userId: USER_ID, limit: 30, offset: 10 },
+      client,
+    );
+
+    expect(calls[0].federation).toEqual({ limit: 30, offset: 10 });
+  });
+
+  it('returns hits with id and _federation, plus estimatedTotalHits', async () => {
+    const { client } = createMockMultiSearch({
+      hits: [
+        { id: 'm1', _federation: { indexUid: 'messages', queriesPosition: 0 } },
+        { id: 'd1', _federation: { indexUid: 'documents', queriesPosition: 1 } },
+      ],
+      estimatedTotalHits: 2,
+    });
+
+    const result = await federatedSearch(
+      ENV,
+      [
+        { descriptor: MESSAGES_INDEX, q: 'roof' },
+        { descriptor: DOCUMENTS_INDEX, q: 'roof' },
+      ],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+
+    expect(result.estimatedTotalHits).toBe(2);
+    expect(result.hits).toEqual([
+      { id: 'm1', _federation: { indexUid: 'messages', queriesPosition: 0 } },
+      { id: 'd1', _federation: { indexUid: 'documents', queriesPosition: 1 } },
+    ]);
   });
 });

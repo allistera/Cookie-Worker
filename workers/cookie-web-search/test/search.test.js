@@ -1,8 +1,9 @@
 // Unit tests for handleSearch, served by Meilisearch.
 import { describe, expect, it, vi } from 'vitest';
 
-import { handleSearch } from '../src/search.js';
+import { handleSearch, mergeFederatedResults } from '../src/search.js';
 import { MESSAGES_INDEX } from '../../../shared/meili.js';
+import { DOCUMENTS_INDEX } from '../../../shared/meili/documents.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -14,11 +15,14 @@ function url(query = '') {
   return new URL(`https://cookie-web-search.example/search${query}`);
 }
 
-/** @param {Partial<{hybridSearch: any}>} [overrides] */
+/** @param {Partial<{hybridSearch: any, federatedSearch: any}>} [overrides] */
 function deps(overrides = {}) {
   return {
     hybridSearch: vi.fn(async () => {
       throw new Error('hybridSearch should not be called in these tests');
+    }),
+    federatedSearch: vi.fn(async () => {
+      throw new Error('federatedSearch should not be called in these tests');
     }),
     ...overrides,
   };
@@ -27,6 +31,12 @@ function deps(overrides = {}) {
 /** A hybridSearch stub, loosely typed so `.mock.calls[0][2]` reads back untyped. */
 /** @param {(...args: any[]) => Promise<any>} impl @returns {any} */
 function mockSearch(impl) {
+  return vi.fn(impl);
+}
+
+/** A federatedSearch stub, loosely typed so `.mock.calls[0][1]` etc. read back untyped. */
+/** @param {(...args: any[]) => Promise<any>} impl @returns {any} */
+function mockFederatedSearch(impl) {
   return vi.fn(impl);
 }
 
@@ -302,5 +312,390 @@ describe('message search engine', () => {
     const body = await response.json();
     expect(body.emails).toHaveLength(2);
     expect(sql.calls[0].text).toContain('m.id = ANY(');
+  });
+});
+
+describe('mergeFederatedResults', () => {
+  const emailRow = { id: 'm1', subject: 'Roof' };
+  const documentRow = { id: 'd1', title: 'Roof plan', tags: ['home'], starred: true, updated_at: 1 };
+
+  it('re-merges hits from both indexes in federation hit order', () => {
+    const hits = [
+      { id: 'd1', _federation: { indexUid: 'documents' } },
+      { id: 'm1', _federation: { indexUid: 'messages' } },
+    ];
+
+    const results = mergeFederatedResults(hits, [emailRow], [documentRow]);
+
+    expect(results).toEqual([
+      { type: 'document', id: 'd1', title: 'Roof plan', tags: ['home'], starred: true, updated_at: 1 },
+      { type: 'email', ...emailRow },
+    ]);
+  });
+
+  it('tags an email hit exactly with the existing email row shape, plus type', () => {
+    const hits = [{ id: 'm1', _federation: { indexUid: 'messages' } }];
+    const results = mergeFederatedResults(hits, [emailRow], []);
+    expect(results).toEqual([{ type: 'email', id: 'm1', subject: 'Roof' }]);
+  });
+
+  it('narrows a document hit to id/title/tags/starred/updated_at', () => {
+    const hits = [{ id: 'd1', _federation: { indexUid: 'documents' } }];
+    const wideRow = { ...documentRow, folder_id: 'f1', created_at: 'x' };
+    const results = mergeFederatedResults(hits, [], [wideRow]);
+    expect(results).toEqual([
+      { type: 'document', id: 'd1', title: 'Roof plan', tags: ['home'], starred: true, updated_at: 1 },
+    ]);
+  });
+
+  // A hit whose row never hydrated (e.g. deleted between the Meilisearch
+  // query and the Postgres read) is dropped rather than surfaced as null.
+  it('drops a hit whose row did not hydrate', () => {
+    const hits = [
+      { id: 'm1', _federation: { indexUid: 'messages' } },
+      { id: 'missing', _federation: { indexUid: 'messages' } },
+    ];
+    expect(mergeFederatedResults(hits, [emailRow], [])).toEqual([{ type: 'email', ...emailRow }]);
+  });
+});
+
+describe('GET /search?scope=', () => {
+  it('rejects an unrecognized scope', async () => {
+    const sql = createMockSql([]);
+    const response = await handleSearch(sql, USER_ID, url('?q=roof&scope=bogus'), ENV, deps());
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects a missing q the same way the unscoped endpoint does', async () => {
+    const sql = createMockSql([]);
+    const response = await handleSearch(sql, USER_ID, url('?scope=all'), ENV, deps());
+    expect(response.status).toBe(400);
+  });
+
+  it('returns the fixed empty shape for a query of only empty operators', async () => {
+    const sql = createMockSql([]);
+    const response = await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('from:""')}&scope=all`),
+      ENV,
+      deps(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      query: 'from:""',
+      results: [],
+      estimatedTotalHits: 0,
+      limit: 20,
+      offset: 0,
+    });
+  });
+
+  it('queries both indexes for scope=all with no operators', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(sql, USER_ID, url('?q=roof&scope=all'), ENV, deps({ federatedSearch }));
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.map((u) => u.descriptor.name).sort()).toEqual(['documents', 'messages']);
+  });
+
+  it('drops the documents leg under scope=all when a mail-only operator is present', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('from:bob roof')}&scope=all`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.map((u) => u.descriptor.name)).toEqual(['messages']);
+  });
+
+  it('keeps both legs under scope=all for tag:/is:starred — shared operators', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:Work is:starred roof')}&scope=all`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.map((u) => u.descriptor.name).sort()).toEqual(['documents', 'messages']);
+    const messagesUnit = units.find((u) => u.descriptor.name === MESSAGES_INDEX.name);
+    const documentsUnit = units.find((u) => u.descriptor.name === DOCUMENTS_INDEX.name);
+    expect(messagesUnit.filter).toContain("labels = 'Work'");
+    expect(messagesUnit.filter).toContain('is_starred = true');
+    expect(documentsUnit.filter).toContain("tags = 'Work'");
+    expect(documentsUnit.filter).toContain('starred = true');
+  });
+
+  it('runs a single messages query for scope=mail', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(sql, USER_ID, url('?q=roof&scope=mail'), ENV, deps({ federatedSearch }));
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.map((u) => u.descriptor.name)).toEqual(['messages']);
+  });
+
+  it('runs a single documents query for scope=documents', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=roof&scope=documents'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.map((u) => u.descriptor.name)).toEqual(['documents']);
+  });
+
+  // Documents have no sender/recipients/attachments/sent date/folder, so a
+  // mail-only operator under scope=documents has nothing to filter on —
+  // running it anyway would silently return every document as if the
+  // operator weren't there, the exact failure mode scope=all's leg-dropping
+  // avoids.
+  it('short-circuits with empty results for scope=documents plus a mail-only operator', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    const response = await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('from:alice')}&scope=documents`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      query: 'from:alice',
+      results: [],
+      estimatedTotalHits: 0,
+      limit: 20,
+      offset: 0,
+    });
+    expect(federatedSearch).not.toHaveBeenCalled();
+  });
+
+  it('still runs scope=documents for tag:/is:starred, which are not mail-only', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    const response = await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:Work is:starred roof')}&scope=documents`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(federatedSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it('mode=keyword marks every unit non-semantic', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=roof&scope=all&mode=keyword'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.every((u) => u.semantic === false)).toBe(true);
+  });
+
+  // Filter-only queries (no free text) have no relevance signal, mirroring
+  // the unscoped mail path's fallback to sort:['sent_at:desc'] — but only
+  // when a single leg runs: sent_at (messages, seconds) and updated_at
+  // (documents, milliseconds) are not cross-comparable.
+  it('filter-only scope=mail falls back to sent_at:desc', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:Work')}&scope=mail`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units).toHaveLength(1);
+    expect(units[0].sort).toEqual(['sent_at:desc']);
+  });
+
+  it('filter-only scope=documents falls back to updated_at:desc', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:Work')}&scope=documents`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units).toHaveLength(1);
+    expect(units[0].sort).toEqual(['updated_at:desc']);
+  });
+
+  it('filter-only scope=all with both legs running gets no sort at all', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:Work')}&scope=all`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units).toHaveLength(2);
+    expect(units.every((u) => u.sort === undefined)).toBe(true);
+  });
+
+  // A filter-only, single-leg query still falls back to a mail-only operator
+  // collapsing scope=all to one leg — sort applies there too.
+  it('filter-only scope=all collapsed to mail-only by a mail-only operator still sorts', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('from:bob')}&scope=all`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units).toHaveLength(1);
+    expect(units[0].descriptor.name).toBe('messages');
+    expect(units[0].sort).toEqual(['sent_at:desc']);
+  });
+
+  it('filter-only queries send no hybrid — semantic is false on every unit', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:Work')}&scope=all`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.every((u) => u.semantic === false)).toBe(true);
+  });
+
+  it('hydrates and re-merges results from both indexes, and returns 200', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({
+      hits: [
+        { id: 'd1', _federation: { indexUid: 'documents' } },
+        { id: 'm1', _federation: { indexUid: 'messages' } },
+      ],
+      estimatedTotalHits: 2,
+    }));
+    // fetchSearchEmails runs first (Promise.all order matches call order in
+    // source), then fetchSearchDocuments.
+    const sql = createMockSql([
+      [{ id: 'm1', subject: 'Roof' }],
+      [{ id: 'd1', title: 'Roof plan', tags: [], starred: false, updated_at: 1 }],
+    ]);
+
+    const response = await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=roof&scope=all'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      query: 'roof',
+      results: [
+        { type: 'document', id: 'd1', title: 'Roof plan', tags: [], starred: false, updated_at: 1 },
+        { type: 'email', id: 'm1', subject: 'Roof' },
+      ],
+      estimatedTotalHits: 2,
+      limit: 20,
+      offset: 0,
+    });
+  });
+
+  it('answers 503 when the federated Meilisearch call fails', async () => {
+    const federatedSearch = mockFederatedSearch(async () => {
+      throw new Error('meili down');
+    });
+    const sql = createMockSql([]);
+
+    const response = await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=roof&scope=all'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('clamps limit to the max and falls back to defaults for junk input', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=roof&scope=all&limit=999&offset=-5'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, , options] = federatedSearch.mock.calls[0];
+    expect(options.limit).toBe(50);
+    expect(options.offset).toBe(0);
+  });
+
+  it('leaves the unscoped /search response untouched', async () => {
+    const search = vi.fn(async () => [{ id: 'm1' }]);
+    const sql = createMockSql([[{ id: 'm1' }]]);
+
+    const response = await handleSearch(sql, USER_ID, url('?q=roof'), ENV, deps({ hybridSearch: search }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ emails: [{ id: 'm1' }] });
   });
 });

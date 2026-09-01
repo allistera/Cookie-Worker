@@ -5,24 +5,37 @@
 // Retrieval is served by Meilisearch unconditionally: the old three-leg
 // Postgres path and its engine=postgres comparison handle are gone.
 
-import { parseSearchQuery } from './queryParse.js';
+import {
+  hasMailOnlyFilters,
+  parseFederatedSearchQuery,
+  parseSearchQuery,
+} from './queryParse.js';
 import {
   MESSAGES_INDEX,
   hybridSearch as realHybridSearch,
+  federatedSearch as realFederatedSearch,
   meiliMessageFilter,
 } from '../../../shared/meili.js';
+import { DOCUMENTS_INDEX } from '../../../shared/meili/documents.js';
 
 const MAX_QUERY_CHARS = 500;
 const RESULTS = 20;
 
+// GET /search?scope=… defaults and cap. Fixed by the response contract the
+// frontend is built against — see handleScopedSearch.
+const DEFAULT_SCOPED_LIMIT = 20;
+const MAX_SCOPED_LIMIT = 50;
+const SCOPES = new Set(['all', 'mail', 'documents']);
+
 /**
  * @typedef {{
  *   hybridSearch: (env: any, descriptor: any, query: {userId: string, text?: string, filter?: string, limit: number, semanticRatio?: number, sort?: string[]}, client?: any) => Promise<{id: string}[]>,
+ *   federatedSearch: (env: any, units: import('../../../shared/meili.js').FederatedSearchUnit[], options: {userId: string, limit: number, offset?: number}, client?: any) => Promise<{hits: {id: string, _federation: any}[], estimatedTotalHits: number}>,
  * }} SearchDeps
  */
 
 /** @type {SearchDeps} */
-const DEFAULT_DEPS = { hybridSearch: realHybridSearch };
+const DEFAULT_DEPS = { hybridSearch: realHybridSearch, federatedSearch: realFederatedSearch };
 
 // Fetches the fused result ids in one list-shaped query. Only summary presence
 // is exposed here; the generated text remains on the owned-message endpoint.
@@ -60,6 +73,24 @@ export function fetchSearchEmails(sql, userId, ids) {
       AND NOT m.is_deleted
       AND m.id = ANY(${ids}::uuid[])
     GROUP BY m.id, ai.spam_score
+  `;
+}
+
+// Ported from cookie-web-tasks/src/documents.js's fetchSearchDocuments, narrowed
+// to the fields the federated response contract exposes for a document hit
+// (type "document" — see mergeFederatedResults). user_id is a second gate on
+// top of the escaped filter federatedSearch already applied in Meilisearch —
+// same belt-and-suspenders pattern fetchSearchEmails uses above.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string[]} ids
+ */
+export function fetchSearchDocuments(sql, userId, ids) {
+  return sql`
+    SELECT d.id, d.title, d.tags, d.starred, d.updated_at
+    FROM documents d
+    WHERE d.user_id = ${userId} AND d.id = ANY(${ids}::uuid[])
   `;
 }
 
@@ -137,6 +168,13 @@ async function searchViaMeili(sql, userId, spec, env, semantic, deps) {
  * @param {SearchDeps} [deps]
  */
 export async function handleSearch(sql, userId, url, env, deps = DEFAULT_DEPS) {
+  // scope=all|mail|documents is the federated (mail + documents) path added
+  // for Cookie's cross-content search; its own fixed response shape (see
+  // handleScopedSearch) is unrelated to the shape below, which Cookie-iOS
+  // depends on byte-for-byte. Absent scope keeps that behavior untouched.
+  const scope = url.searchParams.get('scope');
+  if (scope) return handleScopedSearch(sql, userId, url, env, scope, deps);
+
   const q = (url.searchParams.get('q') || '').trim();
   const semantic = url.searchParams.get('mode') !== 'keyword';
   if (!q || q.length > MAX_QUERY_CHARS) {
@@ -154,4 +192,199 @@ export async function handleSearch(sql, userId, url, env, deps = DEFAULT_DEPS) {
   }
 
   return await searchViaMeili(sql, userId, spec, env, semantic, deps);
+}
+
+// meiliMessageFilter has no notion of is:starred (mail search never needed
+// it before this endpoint), so it's layered on here rather than changing
+// that shared, independently-tested filter builder for one caller.
+/** @param {{starred?: true, [key: string]: any}} filters */
+function messagesFilterFor(filters) {
+  const base = meiliMessageFilter(filters);
+  return filters.starred ? [base, 'is_starred = true'].filter(Boolean).join(' AND ') : base;
+}
+
+// Mirrors cookie-web-tasks/src/documents.js's own (unexported) meiliFilter —
+// documents only ever filter on tags/starred, and duplicating this handful
+// of lines keeps this Worker independent of another Worker's source tree.
+/** @param {string} value */
+function escapeMeiliFilterValue(value) {
+  return value.replace(/[\\']/g, '\\$&');
+}
+
+/** @param {{tag?: string, starred?: true, [key: string]: any}} filters */
+function documentsFilterFor(filters) {
+  const parts = [];
+  if (filters.tag) parts.push(`tags = '${escapeMeiliFilterValue(String(filters.tag))}'`);
+  if (filters.starred) parts.push('starred = true');
+  return parts.join(' AND ') || undefined;
+}
+
+/** @param {URL} url */
+function parseScopedLimit(url) {
+  const raw = Number(url.searchParams.get('limit'));
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_SCOPED_LIMIT;
+  return Math.min(Math.floor(raw), MAX_SCOPED_LIMIT);
+}
+
+/** @param {URL} url */
+function parseScopedOffset(url) {
+  const raw = Number(url.searchParams.get('offset'));
+  if (!Number.isFinite(raw) || raw < 0) return 0;
+  return Math.floor(raw);
+}
+
+// Re-merges federated hits — ordered by Meilisearch's federation ranking —
+// with the Postgres rows hydrated for each index, preserving that order. A
+// hit whose row never hydrated (e.g. deleted between the Meilisearch query
+// and the Postgres read) is dropped, matching the .filter(Boolean) every
+// other id-hydration path in this file already does.
+/**
+ * @param {{id: string, _federation?: {indexUid?: string}}[]} hits
+ * @param {any[]} emailRows
+ * @param {any[]} documentRows
+ */
+export function mergeFederatedResults(hits, emailRows, documentRows) {
+  const emailsById = new Map(emailRows.map((row) => [row.id, row]));
+  const documentsById = new Map(documentRows.map((row) => [row.id, row]));
+
+  return hits
+    .map((hit) => {
+      const indexUid = hit._federation?.indexUid;
+      if (indexUid === MESSAGES_INDEX.name) {
+        const row = emailsById.get(hit.id);
+        return row ? { type: 'email', ...row } : null;
+      }
+      if (indexUid === DOCUMENTS_INDEX.name) {
+        const row = documentsById.get(hit.id);
+        return row
+          ? {
+              type: 'document',
+              id: row.id,
+              title: row.title,
+              tags: row.tags,
+              starred: row.starred,
+              updated_at: row.updated_at,
+            }
+          : null;
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+// GET /search?q=…&scope=all|mail|documents — federated mail + documents
+// search via Meilisearch's multi-search federation (shared/meili.js's
+// federatedSearch). scope=mail/documents run the same federated path with a
+// single query unit rather than a separate one, so there is one merge/hydrate
+// code path regardless of scope. tag:/is:starred apply to both indexes; the
+// mail-only operators (in:/from:/to:/has:/before:/after:) drop the documents
+// leg entirely under scope=all rather than running it with the operator
+// silently ignored (see hasMailOnlyFilters).
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {URL} url
+ * @param {any} env
+ * @param {string} scope
+ * @param {SearchDeps} deps
+ */
+async function handleScopedSearch(sql, userId, url, env, scope, deps) {
+  if (!SCOPES.has(scope)) {
+    return Response.json(
+      { error: 'scope must be one of: all, mail, documents' },
+      { status: 400 },
+    );
+  }
+
+  const q = (url.searchParams.get('q') || '').trim();
+  if (!q || q.length > MAX_QUERY_CHARS) {
+    return Response.json({ error: 'q is required (max 500 chars)' }, { status: 400 });
+  }
+
+  const limit = parseScopedLimit(url);
+  const offset = parseScopedOffset(url);
+
+  const spec = parseFederatedSearchQuery(q);
+  const hasFilters = Object.keys(spec.filters).length > 0;
+  if (!spec.text && !hasFilters) {
+    return Response.json({ query: q, results: [], estimatedTotalHits: 0, limit, offset });
+  }
+
+  // Documents have no sender/recipients/attachments/sent date/folder — a
+  // mail-only operator under scope=documents has nothing to filter on, so
+  // this must not run and return every document as if the operator weren't
+  // there (the same failure mode scope=all's leg-dropping avoids).
+  if (scope === 'documents' && hasMailOnlyFilters(spec.filters)) {
+    return Response.json({ query: q, results: [], estimatedTotalHits: 0, limit, offset });
+  }
+
+  // Filter-only queries (no free text) have no relevance signal, so — like
+  // the unscoped mail path — they must not spend an embedding call.
+  const semantic = url.searchParams.get('mode') !== 'keyword' && Boolean(spec.text);
+
+  const units = [];
+  if (scope === 'mail' || scope === 'all') {
+    units.push({
+      descriptor: MESSAGES_INDEX,
+      q: spec.text,
+      filter: messagesFilterFor(spec.filters),
+      ...(semantic ? {} : { semantic: false }),
+    });
+  }
+  const wantsDocuments =
+    scope === 'documents' || (scope === 'all' && !hasMailOnlyFilters(spec.filters));
+  if (wantsDocuments) {
+    units.push({
+      descriptor: DOCUMENTS_INDEX,
+      q: spec.text,
+      filter: documentsFilterFor(spec.filters),
+      ...(semantic ? {} : { semantic: false }),
+    });
+  }
+
+  // No free text means no relevance signal to sort by; fall back to
+  // newest-first, mirroring the unscoped mail path's sort:['sent_at:desc']
+  // (searchViaMeili). Only safe with exactly one leg running — sent_at
+  // (messages, epoch seconds) and updated_at (documents, epoch
+  // milliseconds) are not cross-comparable, so scope=all with both legs
+  // still running gets no sort at all.
+  if (!spec.text && units.length === 1) {
+    const [unit] = units;
+    unit.sort = unit.descriptor === MESSAGES_INDEX ? ['sent_at:desc'] : ['updated_at:desc'];
+  }
+
+  let federated;
+  try {
+    federated = await deps.federatedSearch(env, units, { userId, limit, offset });
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        event: 'federated_search_meili_failed',
+        message: /** @type {Error} */ (error).message,
+      }),
+    );
+    return Response.json({ error: 'Search is unavailable' }, { status: 503 });
+  }
+
+  const mailIds = federated.hits
+    .filter((hit) => hit._federation?.indexUid === MESSAGES_INDEX.name)
+    .map((hit) => hit.id);
+  const documentIds = federated.hits
+    .filter((hit) => hit._federation?.indexUid === DOCUMENTS_INDEX.name)
+    .map((hit) => hit.id);
+
+  const [emailRows, documentRows] = await Promise.all([
+    mailIds.length ? fetchSearchEmails(sql, userId, mailIds) : Promise.resolve([]),
+    documentIds.length ? fetchSearchDocuments(sql, userId, documentIds) : Promise.resolve([]),
+  ]);
+
+  const results = mergeFederatedResults(federated.hits, emailRows, documentRows);
+
+  return Response.json({
+    query: q,
+    results,
+    estimatedTotalHits: federated.estimatedTotalHits,
+    limit,
+    offset,
+  });
 }
