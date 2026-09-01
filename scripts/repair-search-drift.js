@@ -31,7 +31,7 @@ const PAGE_SIZE = 500;
 /**
  * @param {import('postgres').Sql} sql
  * @param {any} env
- * @param {'documents' | 'messages'} target
+ * @param {import('./lib/targets.js').Target} target
  */
 async function repairTarget(sql, env, target) {
   const descriptor = DESCRIPTORS[target];

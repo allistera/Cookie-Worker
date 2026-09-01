@@ -3,6 +3,7 @@
 // writes to. The two never share a row.
 
 import { isAncestorOf } from './ancestry.js';
+import { removeTaskItemFromMeili, syncTaskItemToMeili } from './taskItemMeiliSync.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -117,8 +118,9 @@ export async function getTaskItems(sql, userId, url) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {any} [env] Meilisearch config for the best-effort search sync.
  */
-export async function createTaskItem(sql, userId, body) {
+export async function createTaskItem(sql, userId, body, env) {
   const content = cleanText(body?.content, MAX_CONTENT_LENGTH);
   if (!content) return Response.json({ error: 'Task content is required' }, { status: 400 });
 
@@ -156,12 +158,15 @@ export async function createTaskItem(sql, userId, body) {
     RETURNING id, project_id AS "projectId", parent_id AS "parentId", content, description,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", completed_at AS "completedAt", created_at AS "createdAt"
   `;
+  // Best-effort: a sub-task lands on its parent's search document (the sync
+  // walks up to the root), a top-level task gets its own.
+  await syncTaskItemToMeili(sql, env, item.id);
   return Response.json({ item }, { status: 201 });
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string} id */
 function fetchOwnedTaskItem(sql, userId, id) {
-  return sql`SELECT id FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
+  return sql`SELECT id, parent_id AS "parentId" FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
 }
 
 /**
@@ -171,11 +176,13 @@ function fetchOwnedTaskItem(sql, userId, id) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {any} [env] Meilisearch config for the best-effort search sync.
  */
-export async function updateTaskItem(sql, userId, body) {
+export async function updateTaskItem(sql, userId, body, env) {
   const id = isUuid(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
-  if (!(await fetchOwnedTaskItem(sql, userId, id)).length) {
+  const [existing] = await fetchOwnedTaskItem(sql, userId, id);
+  if (!existing) {
     return Response.json({ error: 'Task not found' }, { status: 404 });
   }
 
@@ -242,6 +249,16 @@ export async function updateTaskItem(sql, userId, body) {
               t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.completed_at AS "completedAt",
               t.created_at AS "createdAt"
   `;
+  // Best-effort search sync. Reparenting moves the row between search
+  // documents (only top-level tasks are indexed, carrying their sub-task
+  // titles): a demoted task loses its own document, and an old parent must
+  // re-push without the departed sub-task. The API allows reparenting even
+  // though the UI never sends it today.
+  if (hasParent && item.parentId !== existing.parentId) {
+    if (existing.parentId === null) await removeTaskItemFromMeili(env, item.id);
+    else await syncTaskItemToMeili(sql, env, existing.parentId);
+  }
+  await syncTaskItemToMeili(sql, env, item.id);
   return Response.json({ item });
 }
 
@@ -251,14 +268,19 @@ export async function updateTaskItem(sql, userId, body) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {any} [env] Meilisearch config for the best-effort search sync.
  */
-export async function deleteTaskItem(sql, userId, body) {
+export async function deleteTaskItem(sql, userId, body, env) {
   const id = isUuid(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
 
   const deleted = await sql`
-    DELETE FROM task_items WHERE id = ${id} AND user_id = ${userId} RETURNING id
+    DELETE FROM task_items WHERE id = ${id} AND user_id = ${userId} RETURNING id, parent_id AS "parentId"
   `;
   if (!deleted.length) return Response.json({ error: 'Task not found' }, { status: 404 });
+  // A top-level task takes its search document (sub-task titles and all) with
+  // it; a deleted sub-task means its parent's document re-pushes without it.
+  if (deleted[0].parentId === null) await removeTaskItemFromMeili(env, id);
+  else await syncTaskItemToMeili(sql, env, deleted[0].parentId);
   return Response.json({ ok: true });
 }

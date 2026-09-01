@@ -117,20 +117,85 @@ export function messagesDriftPage(sql, { limit }) {
   `;
 }
 
-export const PAGE_QUERIES = { documents: documentsPage, messages: messagesPage };
-export const DRIFT_QUERIES = { documents: documentsDriftPage, messages: messagesDriftPage };
+/**
+ * One keyset-paginated page of top-level task rows. Sub-tasks are not their
+ * own Meilisearch documents — each page row aggregates its direct children's
+ * titles into the `subtasks` array TASKS_INDEX.toDocument reads (the same
+ * shape cookie-web-tasks' taskItemMeiliSync.js pushes at write time).
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {{afterId: string | null, limit: number}} page
+ */
+export function taskItemsPage(sql, { afterId, limit }) {
+  const cursor = afterId ? sql`AND t.id > ${afterId}` : sql``;
+  return sql`
+    SELECT t.id, t.user_id, t.content, t.description, t.completed_at, t.updated_at,
+           COALESCE(array_agg(c.content ORDER BY c.created_at) FILTER (WHERE c.id IS NOT NULL),
+                    ARRAY[]::text[]) AS subtasks
+    FROM task_items t
+    LEFT JOIN task_items c ON c.parent_id = t.id
+    WHERE t.parent_id IS NULL
+      ${cursor}
+    GROUP BY t.id
+    ORDER BY t.id
+    LIMIT ${limit}
+  `;
+}
+
+/**
+ * Drift page for task items. Only the top-level row carries the stamp, but a
+ * sub-task write that never reached Meilisearch must still drift its parent
+ * — hence the EXISTS leg comparing children's updated_at against the
+ * parent's stamp. No partial index backs this (unlike documents/messages):
+ * the correlated EXISTS can't live in an index predicate, and task_items is
+ * a small personal table.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {{limit: number}} page
+ */
+export function taskItemsDriftPage(sql, { limit }) {
+  return sql`
+    SELECT t.id, t.user_id, t.content, t.description, t.completed_at, t.updated_at,
+           COALESCE(array_agg(c.content ORDER BY c.created_at) FILTER (WHERE c.id IS NOT NULL),
+                    ARRAY[]::text[]) AS subtasks
+    FROM task_items t
+    LEFT JOIN task_items c ON c.parent_id = t.id
+    WHERE t.parent_id IS NULL
+      AND (t.search_indexed_at IS NULL
+           OR t.search_indexed_at < t.updated_at
+           OR EXISTS (SELECT 1 FROM task_items s
+                      WHERE s.parent_id = t.id AND s.updated_at > t.search_indexed_at))
+    GROUP BY t.id
+    ORDER BY t.updated_at
+    LIMIT ${limit}
+  `;
+}
+
+export const PAGE_QUERIES = {
+  documents: documentsPage,
+  messages: messagesPage,
+  task_items: taskItemsPage,
+};
+export const DRIFT_QUERIES = {
+  documents: documentsDriftPage,
+  messages: messagesDriftPage,
+  task_items: taskItemsDriftPage,
+};
 
 /**
  * Stamps search_indexed_at = now() on every pushed id, so the drift sweep
  * (and a re-run of reindex-meili.js) sees these rows as already indexed.
  *
  * @param {import('postgres').Sql} sql
- * @param {'documents' | 'messages'} target
+ * @param {'documents' | 'messages' | 'task_items'} target
  * @param {string[]} ids
  */
 export function stampIndexed(sql, target, ids) {
   if (target === 'documents') {
     return sql`UPDATE documents SET search_indexed_at = now() WHERE id = ANY(${ids}::uuid[])`;
+  }
+  if (target === 'task_items') {
+    return sql`UPDATE task_items SET search_indexed_at = now() WHERE id = ANY(${ids}::uuid[])`;
   }
   return sql`UPDATE messages SET search_indexed_at = now() WHERE id = ANY(${ids}::uuid[])`;
 }

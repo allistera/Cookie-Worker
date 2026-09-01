@@ -13,6 +13,7 @@ import {
   meiliMessageFilter,
 } from '../../../shared/meili.js';
 import { DOCUMENTS_INDEX } from '../../../shared/meili/documents.js';
+import { TASKS_INDEX } from '../../../shared/meili/tasks.js';
 
 const MAX_QUERY_CHARS = 500;
 const RESULTS = 20;
@@ -21,7 +22,7 @@ const RESULTS = 20;
 // frontend is built against — see handleScopedSearch.
 const DEFAULT_SCOPED_LIMIT = 20;
 const MAX_SCOPED_LIMIT = 50;
-const SCOPES = new Set(['all', 'mail', 'documents']);
+const SCOPES = new Set(['all', 'mail', 'documents', 'tasks']);
 
 /**
  * @typedef {{
@@ -87,6 +88,24 @@ export function fetchSearchDocuments(sql, userId, ids) {
     SELECT d.id, d.title, d.tags, d.starred, d.updated_at
     FROM documents d
     WHERE d.user_id = ${userId} AND d.id = ANY(${ids}::uuid[])
+  `;
+}
+
+// Task hits hydrate the fields the Tasks view needs to render and open a
+// result: projectId routes to /tasks?project=…&task=…, and completedAt is
+// belt-and-suspenders — the tasks leg filters `completed = false` in
+// Meilisearch, but a stale index could still surface one.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string[]} ids
+ */
+export function fetchSearchTasks(sql, userId, ids) {
+  return sql`
+    SELECT t.id, t.content, t.description, t.project_id AS "projectId",
+           to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.completed_at AS "completedAt"
+    FROM task_items t
+    WHERE t.user_id = ${userId} AND t.id = ANY(${ids}::uuid[])
   `;
 }
 
@@ -238,10 +257,12 @@ function parseScopedOffset(url) {
  * @param {{id: string, _federation?: {indexUid?: string}}[]} hits
  * @param {any[]} emailRows
  * @param {any[]} documentRows
+ * @param {any[]} [taskRows]
  */
-export function mergeFederatedResults(hits, emailRows, documentRows) {
+export function mergeFederatedResults(hits, emailRows, documentRows, taskRows = []) {
   const emailsById = new Map(emailRows.map((row) => [row.id, row]));
   const documentsById = new Map(documentRows.map((row) => [row.id, row]));
+  const tasksById = new Map(taskRows.map((row) => [row.id, row]));
 
   return hits
     .map((hit) => {
@@ -263,19 +284,34 @@ export function mergeFederatedResults(hits, emailRows, documentRows) {
             }
           : null;
       }
+      if (indexUid === TASKS_INDEX.name) {
+        const row = tasksById.get(hit.id);
+        return row
+          ? {
+              type: 'task',
+              id: row.id,
+              content: row.content,
+              description: row.description,
+              projectId: row.projectId,
+              dueDate: row.dueDate,
+              completedAt: row.completedAt,
+            }
+          : null;
+      }
       return null;
     })
     .filter(Boolean);
 }
 
-// GET /search?q=…&scope=all|mail|documents — federated mail + documents
-// search via Meilisearch's multi-search federation (shared/meili.js's
-// federatedSearch). scope=mail/documents run the same federated path with a
+// GET /search?q=…&scope=all|mail|documents|tasks — federated mail + documents
+// + tasks search via Meilisearch's multi-search federation (shared/meili.js's
+// federatedSearch). Single-index scopes run the same federated path with a
 // single query unit rather than a separate one, so there is one merge/hydrate
-// code path regardless of scope. tag:/is:starred apply to both indexes; the
-// mail-only operators (in:/from:/to:/has:/before:/after:) drop the documents
-// leg entirely under scope=all rather than running it with the operator
-// silently ignored (see hasMailOnlyFilters).
+// code path regardless of scope. tag:/is:starred apply to mail and documents;
+// the mail-only operators (in:/from:/to:/has:/before:/after:) drop the
+// documents leg entirely under scope=all rather than running it with the
+// operator silently ignored (see hasMailOnlyFilters). Tasks understand no
+// operator at all, so any filter drops the tasks leg the same way.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -286,7 +322,10 @@ export function mergeFederatedResults(hits, emailRows, documentRows) {
  */
 async function handleScopedSearch(sql, userId, url, env, scope, deps) {
   if (!SCOPES.has(scope)) {
-    return Response.json({ error: 'scope must be one of: all, mail, documents' }, { status: 400 });
+    return Response.json(
+      { error: 'scope must be one of: all, mail, documents, tasks' },
+      { status: 400 },
+    );
   }
 
   const q = (url.searchParams.get('q') || '').trim();
@@ -311,6 +350,13 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
     return Response.json({ query: q, results: [], estimatedTotalHits: 0, limit, offset });
   }
 
+  // Tasks understand no structured operator at all — not even tag:/is:starred
+  // (a task has no tags or star). Same rule as above: any operator under
+  // scope=tasks must not run and return every task as if it weren't there.
+  if (scope === 'tasks' && hasFilters) {
+    return Response.json({ query: q, results: [], estimatedTotalHits: 0, limit, offset });
+  }
+
   // Filter-only queries (no free text) have no relevance signal, so — like
   // the unscoped mail path — they must not spend an embedding call.
   const semantic = url.searchParams.get('mode') !== 'keyword' && Boolean(spec.text);
@@ -331,6 +377,18 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
       descriptor: DOCUMENTS_INDEX,
       q: spec.text,
       filter: documentsFilterFor(spec.filters),
+      ...(semantic ? {} : { semantic: false }),
+    });
+  }
+  // No operator applies to tasks, so any filter drops this leg under
+  // scope=all (scope=tasks already short-circuited above). Completed tasks
+  // stay indexed but out of results — see TASKS_INDEX.
+  const wantsTasks = scope === 'tasks' || (scope === 'all' && !hasFilters);
+  if (wantsTasks) {
+    units.push({
+      descriptor: TASKS_INDEX,
+      q: spec.text,
+      filter: 'completed = false',
       ...(semantic ? {} : { semantic: false }),
     });
   }
@@ -365,13 +423,17 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
   const documentIds = federated.hits
     .filter((hit) => hit._federation?.indexUid === DOCUMENTS_INDEX.name)
     .map((hit) => hit.id);
+  const taskIds = federated.hits
+    .filter((hit) => hit._federation?.indexUid === TASKS_INDEX.name)
+    .map((hit) => hit.id);
 
-  const [emailRows, documentRows] = await Promise.all([
+  const [emailRows, documentRows, taskRows] = await Promise.all([
     mailIds.length ? fetchSearchEmails(sql, userId, mailIds) : Promise.resolve([]),
     documentIds.length ? fetchSearchDocuments(sql, userId, documentIds) : Promise.resolve([]),
+    taskIds.length ? fetchSearchTasks(sql, userId, taskIds) : Promise.resolve([]),
   ]);
 
-  const results = mergeFederatedResults(federated.hits, emailRows, documentRows);
+  const results = mergeFederatedResults(federated.hits, emailRows, documentRows, taskRows);
 
   return Response.json({
     query: q,

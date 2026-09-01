@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { DESCRIPTORS, TARGETS, parseTargets } from './targets.js';
 
 describe('parseTargets', () => {
-  it('defaults to both targets when no argument is given', () => {
-    expect(parseTargets([])).toEqual(['documents', 'messages']);
+  it('defaults to every target when no argument is given', () => {
+    expect(parseTargets([])).toEqual(['documents', 'messages', 'task_items']);
   });
 
   it('accepts "documents" alone', () => {
@@ -12,6 +12,10 @@ describe('parseTargets', () => {
 
   it('accepts "messages" alone', () => {
     expect(parseTargets(['messages'])).toEqual(['messages']);
+  });
+
+  it('accepts "task_items" alone', () => {
+    expect(parseTargets(['task_items'])).toEqual(['task_items']);
   });
 
   it('rejects an unknown target', () => {

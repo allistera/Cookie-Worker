@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { handleSearch, mergeFederatedResults } from '../src/search.js';
 import { MESSAGES_INDEX } from '../../../shared/meili.js';
 import { DOCUMENTS_INDEX } from '../../../shared/meili/documents.js';
+import { TASKS_INDEX } from '../../../shared/meili/tasks.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -368,6 +369,31 @@ describe('mergeFederatedResults', () => {
     ]);
   });
 
+  it('narrows a task hit to id/content/description/projectId/dueDate/completedAt', () => {
+    const hits = [{ id: 't1', _federation: { indexUid: 'task_items' } }];
+    const wideRow = {
+      id: 't1',
+      content: 'Plan the trip',
+      description: 'Flights and hotels',
+      projectId: 'p1',
+      dueDate: '2026-09-05',
+      completedAt: null,
+      created_at: 'x',
+    };
+    const results = mergeFederatedResults(hits, [], [], [wideRow]);
+    expect(results).toEqual([
+      {
+        type: 'task',
+        id: 't1',
+        content: 'Plan the trip',
+        description: 'Flights and hotels',
+        projectId: 'p1',
+        dueDate: '2026-09-05',
+        completedAt: null,
+      },
+    ]);
+  });
+
   // A hit whose row never hydrated (e.g. deleted between the Meilisearch
   // query and the Postgres read) is dropped rather than surfaced as null.
   it('drops a hit whose row did not hydrate', () => {
@@ -411,14 +437,34 @@ describe('GET /search?scope=', () => {
     });
   });
 
-  it('queries both indexes for scope=all with no operators', async () => {
+  it('queries all three indexes for scope=all with no operators', async () => {
     const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
     const sql = createMockSql([]);
 
     await handleSearch(sql, USER_ID, url('?q=roof&scope=all'), ENV, deps({ federatedSearch }));
 
     const [, units] = federatedSearch.mock.calls[0];
-    expect(units.map((u) => u.descriptor.name).sort()).toEqual(['documents', 'messages']);
+    expect(units.map((u) => u.descriptor.name).sort()).toEqual([
+      'documents',
+      'messages',
+      'task_items',
+    ]);
+  });
+
+  // Completed tasks stay indexed (so completing one is an update, not a
+  // delete) but must never surface as results.
+  it('filters the tasks leg to uncompleted tasks', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(sql, USER_ID, url('?q=roof&scope=all'), ENV, deps({ federatedSearch }));
+
+    const [, units] = federatedSearch.mock.calls[0];
+    const tasksUnit = units.find((u) => u.descriptor.name === TASKS_INDEX.name);
+    expect(tasksUnit.filter).toContain('completed = false');
+    // A filter Meilisearch can't serve (attribute not filterable) 503s in
+    // production but passes any test that only checks the filter string.
+    expect(TASKS_INDEX.filterable).toContain('completed');
   });
 
   it('drops the documents leg under scope=all when a mail-only operator is present', async () => {
@@ -435,6 +481,58 @@ describe('GET /search?scope=', () => {
 
     const [, units] = federatedSearch.mock.calls[0];
     expect(units.map((u) => u.descriptor.name)).toEqual(['messages']);
+  });
+
+  it('runs a single task_items query for scope=tasks', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(sql, USER_ID, url('?q=roof&scope=tasks'), ENV, deps({ federatedSearch }));
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.map((u) => u.descriptor.name)).toEqual(['task_items']);
+  });
+
+  // Tasks have no sender, tags, star, folder or attachments — no operator
+  // applies. Running the leg anyway would silently return every task as if
+  // the operator weren't there.
+  it.each(['from:alice', 'tag:Work', 'is:starred'])(
+    'short-circuits with empty results for scope=tasks plus %s',
+    async (operator) => {
+      const federatedSearch = mockFederatedSearch(async () => ({
+        hits: [],
+        estimatedTotalHits: 0,
+      }));
+      const sql = createMockSql([]);
+
+      const response = await handleSearch(
+        sql,
+        USER_ID,
+        url(`?q=${encodeURIComponent(`${operator} roof`)}&scope=tasks`),
+        ENV,
+        deps({ federatedSearch }),
+      );
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).results).toEqual([]);
+      expect(federatedSearch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('drops the tasks leg under scope=all when any operator is present', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({ hits: [], estimatedTotalHits: 0 }));
+    const sql = createMockSql([]);
+
+    await handleSearch(
+      sql,
+      USER_ID,
+      url(`?q=${encodeURIComponent('tag:Work roof')}&scope=all`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    const [, units] = federatedSearch.mock.calls[0];
+    expect(units.map((u) => u.descriptor.name).sort()).toEqual(['documents', 'messages']);
   });
 
   it('keeps both legs under scope=all for tag:/is:starred — shared operators', async () => {
@@ -671,6 +769,50 @@ describe('GET /search?scope=', () => {
       limit: 20,
       offset: 0,
     });
+  });
+
+  it('hydrates a task hit from Postgres and returns it as type "task"', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({
+      hits: [{ id: 't1', _federation: { indexUid: 'task_items' } }],
+      estimatedTotalHits: 1,
+    }));
+    // Only the tasks id list is non-empty, so fetchSearchTasks is the sole
+    // Postgres call.
+    const sql = createMockSql([
+      [
+        {
+          id: 't1',
+          content: 'Fix the roof',
+          description: null,
+          projectId: null,
+          dueDate: null,
+          completedAt: null,
+        },
+      ],
+    ]);
+
+    const response = await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=roof&scope=tasks'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.results).toEqual([
+      {
+        type: 'task',
+        id: 't1',
+        content: 'Fix the roof',
+        description: null,
+        projectId: null,
+        dueDate: null,
+        completedAt: null,
+      },
+    ]);
+    expect(sql.calls[0].text).toContain('FROM task_items t');
   });
 
   it('answers 503 when the federated Meilisearch call fails', async () => {

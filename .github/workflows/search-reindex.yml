@@ -16,7 +16,8 @@ on:
         options:
           - documents
           - messages
-          - both
+          - task_items
+          - all
       confirm:
         description: Type "reindex" to confirm — this re-embeds the whole corpus at cost
         required: true
@@ -59,9 +60,10 @@ jobs:
           MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          if [ "${{ inputs.target }}" = "both" ]; then
+          if [ "${{ inputs.target }}" = "all" ]; then
             node scripts/reindex-meili.js documents
             node scripts/reindex-meili.js messages
+            node scripts/reindex-meili.js task_items
           else
             node scripts/reindex-meili.js "${{ inputs.target }}"
           fi

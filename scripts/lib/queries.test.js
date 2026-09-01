@@ -5,6 +5,8 @@ import {
   messagesDriftPage,
   messagesPage,
   stampIndexed,
+  taskItemsDriftPage,
+  taskItemsPage,
 } from './queries.js';
 
 // A minimal stand-in for postgres.js tagged templates: a `sql` tag returns a
@@ -112,6 +114,50 @@ describe('messagesDriftPage', () => {
   });
 });
 
+describe('taskItemsPage', () => {
+  it('pages only top-level tasks, keyset by id', () => {
+    const { sql, render } = makeSql();
+    const q = render(taskItemsPage(sql, { afterId: null, limit: 100 }));
+    expect(q).toContain('WHERE t.parent_id IS NULL');
+    expect(q).not.toContain('t.id > $');
+    expect(q).toContain('ORDER BY t.id');
+  });
+
+  it('adds a keyset cursor once a page has run', () => {
+    const { sql, render } = makeSql();
+    const q = render(taskItemsPage(sql, { afterId: 'some-id', limit: 100 }));
+    expect(q).toContain('AND t.id > $');
+  });
+
+  // Sub-tasks ride along on the parent row as an array of titles — the same
+  // shape TASKS_INDEX.toDocument and taskItemMeiliSync.js use.
+  it('aggregates direct children into a subtasks array', () => {
+    const { sql, render } = makeSql();
+    const q = render(taskItemsPage(sql, { afterId: null, limit: 100 }));
+    expect(q).toContain('LEFT JOIN task_items c ON c.parent_id = t.id');
+    expect(q).toContain('AS subtasks');
+  });
+});
+
+describe('taskItemsDriftPage', () => {
+  it('selects roots never indexed or indexed before their last update', () => {
+    const { sql, render } = makeSql();
+    const q = render(taskItemsDriftPage(sql, { limit: 500 }));
+    expect(q).toContain('WHERE t.parent_id IS NULL');
+    expect(q).toContain('t.search_indexed_at IS NULL');
+    expect(q).toContain('t.search_indexed_at < t.updated_at');
+    expect(q).toContain('ORDER BY t.updated_at');
+  });
+
+  // Only the root row carries the stamp, so a sub-task write whose sync never
+  // landed must drift the parent through the children's updated_at.
+  it('also drifts a root whose sub-task changed after the stamp', () => {
+    const { sql, render } = makeSql();
+    const q = render(taskItemsDriftPage(sql, { limit: 500 }));
+    expect(q).toContain('s.parent_id = t.id AND s.updated_at > t.search_indexed_at');
+  });
+});
+
 describe('stampIndexed', () => {
   it('stamps the documents table for a documents target', () => {
     const { sql, render } = makeSql();
@@ -124,5 +170,11 @@ describe('stampIndexed', () => {
     const { sql, render } = makeSql();
     const q = render(stampIndexed(sql, 'messages', ['a', 'b']));
     expect(q).toContain('UPDATE messages SET search_indexed_at = now()');
+  });
+
+  it('stamps the task_items table for a task_items target', () => {
+    const { sql, render } = makeSql();
+    const q = render(stampIndexed(sql, 'task_items', ['a', 'b']));
+    expect(q).toContain('UPDATE task_items SET search_indexed_at = now()');
   });
 });

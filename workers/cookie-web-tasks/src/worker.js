@@ -68,9 +68,9 @@ async function route(url, request, sql, userId, env, email) {
       if (errorResponse) return errorResponse;
       throw error;
     }
-    if (request.method === 'POST') return createTaskItem(sql, userId, body);
-    if (request.method === 'PATCH') return updateTaskItem(sql, userId, body);
-    return deleteTaskItem(sql, userId, body);
+    if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
+    if (request.method === 'PATCH') return updateTaskItem(sql, userId, body, env);
+    return deleteTaskItem(sql, userId, body, env);
   }
 
   if (segments[0] === 'projects') {

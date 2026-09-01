@@ -8,8 +8,8 @@
 // semantic search.
 //
 // Usage: DATABASE_URL=... MEILISEARCH_URL=... MEILISEARCH_API_KEY=... \
-//        OPENAI_API_KEY=... node scripts/reindex-meili.js [documents|messages]
-// With no argument, both indexes are reindexed.
+//        OPENAI_API_KEY=... node scripts/reindex-meili.js [documents|messages|task_items]
+// With no argument, every index is reindexed.
 
 import process from 'node:process';
 import postgres from 'postgres';
@@ -22,7 +22,7 @@ const BATCH_SIZE = 100;
 /**
  * @param {import('postgres').Sql} sql
  * @param {any} env
- * @param {'documents' | 'messages'} target
+ * @param {import('./lib/targets.js').Target} target
  */
 async function reindexTarget(sql, env, target) {
   const descriptor = DESCRIPTORS[target];
