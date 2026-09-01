@@ -17,7 +17,7 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], enrichmentStateRows?: unknown[]}} [options]
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], labelRows?: unknown[], enrichmentStateRows?: unknown[]}} [options]
  * @returns {any}
  */
 export function createMockSql(options = {}) {
@@ -60,6 +60,9 @@ export function createMockSql(options = {}) {
       // Message insert uses RETURNING id to detect concurrent DO NOTHING races.
       if (query.text.includes('INSERT INTO messages') && query.text.includes('RETURNING')) {
         return Promise.resolve(options.messageInsertReturns ?? [{ id: 'message-1' }]);
+      }
+      if (query.text.includes("l.kind = 'user'")) {
+        return Promise.resolve(options.labelRows ?? []);
       }
       if (query.text.includes('FROM label_rules')) {
         return Promise.resolve(options.ruleRows ?? []);

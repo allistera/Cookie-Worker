@@ -76,6 +76,42 @@ describe('AI enrichment', () => {
     expect(statements).not.toContain('summary');
   });
 
+  test('binds selected labels as JSON rather than a string scalar', async () => {
+    const labelId = '11111111-1111-1111-1111-111111111111';
+    const selectedRows = [{ label_id: labelId, confidence: 0.9 }];
+    const sql = createMockSql({
+      labelRows: [{ id: labelId, name: 'Home', description: null }],
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(
+            responseResult({ labels: [{ id: labelId, confidence: 0.9 }] }),
+          ),
+        }),
+      })),
+    );
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    const statement = sql.transactions[0].find((query) => query.text.includes('json_to_recordset'));
+    expect(statement).toBeDefined();
+    expect(statement.values).toContainEqual({ __pgJson: selectedRows });
+    // A pre-stringified JSON value would be encoded again as a scalar.
+    expect(
+      statement.values.some(
+        (value) => typeof value === 'string' && value === JSON.stringify(selectedRows),
+      ),
+    ).toBe(false);
+  });
+
   test('requires the high-confidence threshold before moving mail to spam', async () => {
     const sql = createMockSql();
     vi.stubGlobal(

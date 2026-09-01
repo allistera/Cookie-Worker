@@ -195,10 +195,12 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
           label_id: label.id,
           confidence: label.confidence,
         }));
+        // sql.json, never a pre-stringified string: postgres.js would store that
+        // as a JSON string scalar rather than the array itself.
         await tx`
           INSERT INTO message_labels (message_id, label_id, source, confidence, model, prompt_version)
           SELECT ${messageUuid}, row.label_id, 'ai', row.confidence, ${model}, ${PROMPT_VERSION}
-          FROM json_to_recordset(${JSON.stringify(labelRows)}::json)
+          FROM json_to_recordset(${tx.json(labelRows)}::json)
             AS row(label_id uuid, confidence numeric)
           ON CONFLICT (message_id, label_id) DO NOTHING
         `;
