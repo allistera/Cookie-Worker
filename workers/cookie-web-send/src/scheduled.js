@@ -17,6 +17,7 @@ export const MAX_PENDING_SCHEDULED_SENDS = 50;
 const MIN_SCHEDULE_LEAD_MS = 60_000;
 const FLUSH_BATCH_SIZE = 20;
 const FLUSH_CONCURRENCY = 4;
+const ATTACHMENT_FLUSH_CONCURRENCY = 1;
 const SCHEDULED_SEND_LEASE_MINUTES = 15;
 // After this many failed delivery attempts a scheduled send stops retrying
 // and is surfaced to the user as failed, rather than silently retried on
@@ -53,12 +54,12 @@ export function parseScheduledFor(sendAt) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: string}} send
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: string, attachments?: any[]}} send
  */
 export async function createScheduledSend(
   sql,
   userId,
-  { recipients, subject, text, html, replyToMessageId, scheduledFor },
+  { recipients, subject, text, html, replyToMessageId, scheduledFor, attachments = [] },
 ) {
   // The count-then-insert cap is not safe under READ COMMITTED on its own:
   // two concurrent transactions can both snapshot count = MAX - 1 and both
@@ -77,7 +78,15 @@ export async function createScheduledSend(
       ) < ${MAX_PENDING_SCHEDULED_SENDS}
       RETURNING id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor"
     `;
-    return row ?? null;
+    if (!row) return null;
+    for (const [position, attachment] of attachments.entries()) {
+      await tx`
+        INSERT INTO scheduled_send_attachments
+          (scheduled_send_id, attachment_id, position)
+        VALUES (${row.id}, ${attachment.id}, ${position})
+      `;
+    }
+    return row;
   });
 }
 
@@ -95,6 +104,33 @@ export async function listScheduledSends(sql, userId) {
   `;
 }
 
+/** @param {unknown} err */
+function isUndefinedScheduledAttachmentsTable(err) {
+  const error = /** @type {{code?: string, message?: string}} */ (err);
+  return error?.code === '42P01' && /scheduled_send_attachments/i.test(String(error.message ?? ''));
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} id
+ */
+async function cancelScheduledSendWithoutAttachments(sql, userId, id) {
+  return sql.begin(async (tx) => {
+    const [row] = await tx`
+      SELECT s.id, s.to_addresses AS "toAddresses", s.subject,
+             s.body_text AS "text", s.body_html AS "html",
+             s.reply_to_message_id AS "replyToMessageId", '[]'::jsonb AS attachments
+      FROM scheduled_sends s
+      WHERE s.id = ${id} AND s.user_id = ${userId} AND s.status = 'pending'
+      FOR UPDATE
+    `;
+    if (!row) return null;
+    await tx`DELETE FROM scheduled_sends WHERE id = ${id}`;
+    return row;
+  });
+}
+
 // Only a still-pending row can be canceled — one already claimed by the
 // flush job (status 'sending') or already resolved ('sent'/'failed') is
 // left alone. Returns the full content so the client can reopen it in the
@@ -105,14 +141,36 @@ export async function listScheduledSends(sql, userId) {
  * @param {string} id
  */
 export async function cancelScheduledSend(sql, userId, id) {
-  const [row] = await sql`
-    DELETE FROM scheduled_sends s
-    WHERE s.id = ${id} AND s.user_id = ${userId} AND s.status = 'pending'
-    RETURNING s.id, s.to_addresses AS "toAddresses", s.subject,
-              s.body_text AS "text", s.body_html AS "html",
-              s.reply_to_message_id AS "replyToMessageId"
-  `;
-  return row ?? null;
+  try {
+    return await sql.begin(async (tx) => {
+      const [row] = await tx`
+        SELECT s.id, s.to_addresses AS "toAddresses", s.subject,
+               s.body_text AS "text", s.body_html AS "html",
+               s.reply_to_message_id AS "replyToMessageId",
+               COALESCE((
+                 SELECT jsonb_agg(jsonb_build_object(
+                   'id', a.id,
+                   'filename', a.filename,
+                   'content_type', a.content_type,
+                   'size_bytes', a.size_bytes,
+                   'downloadable', a.blob_url IS NOT NULL
+                 ) ORDER BY ssa.position)
+                 FROM scheduled_send_attachments ssa
+                 JOIN attachments a ON a.id = ssa.attachment_id
+                 WHERE ssa.scheduled_send_id = s.id
+               ), '[]'::jsonb) AS attachments
+        FROM scheduled_sends s
+        WHERE s.id = ${id} AND s.user_id = ${userId} AND s.status = 'pending'
+        FOR UPDATE
+      `;
+      if (!row) return null;
+      await tx`DELETE FROM scheduled_sends WHERE id = ${id}`;
+      return row;
+    });
+  } catch (err) {
+    if (!isUndefinedScheduledAttachmentsTable(err)) throw err;
+    return cancelScheduledSendWithoutAttachments(sql, userId, id);
+  }
 }
 
 // Atomically claims up to `limit` due rows so two overlapping flush calls
@@ -124,23 +182,57 @@ export async function cancelScheduledSend(sql, userId, id) {
  * @param {number} limit
  */
 async function claimDueScheduledSends(sql, limit) {
-  return sql`
-    UPDATE scheduled_sends s
-    SET status = 'sending', claimed_at = now()
-    FROM (
-      SELECT id FROM scheduled_sends
-      WHERE (status = 'pending' AND scheduled_for <= now())
-         OR (status = 'sending'
-             AND claimed_at < now() - make_interval(mins => ${SCHEDULED_SEND_LEASE_MINUTES}))
-      ORDER BY scheduled_for
-      LIMIT ${limit}
-      FOR UPDATE SKIP LOCKED
-    ) due
-    WHERE s.id = due.id
-    RETURNING s.id, s.user_id, s.to_addresses AS "toAddresses", s.subject,
-              s.body_text AS "text", s.body_html AS "html",
-              s.reply_to_message_id AS "replyToMessageId", s.attempts
-  `;
+  try {
+    return await sql`
+      UPDATE scheduled_sends s
+      SET status = 'sending', claimed_at = now()
+      FROM (
+        SELECT id FROM scheduled_sends
+        WHERE (status = 'pending' AND scheduled_for <= now())
+           OR (status = 'sending'
+               AND claimed_at < now() - make_interval(mins => ${SCHEDULED_SEND_LEASE_MINUTES}))
+        ORDER BY scheduled_for
+        LIMIT ${limit}
+        FOR UPDATE SKIP LOCKED
+      ) due
+      WHERE s.id = due.id
+      RETURNING s.id, s.user_id, s.to_addresses AS "toAddresses", s.subject,
+                s.body_text AS "text", s.body_html AS "html",
+                s.reply_to_message_id AS "replyToMessageId", s.attempts,
+                COALESCE((
+                  SELECT jsonb_agg(jsonb_build_object(
+                    'id', a.id,
+                    'filename', a.filename,
+                    'content_type', a.content_type,
+                    'size_bytes', a.size_bytes,
+                    'blob_url', a.blob_url
+                  ) ORDER BY ssa.position)
+                  FROM scheduled_send_attachments ssa
+                  JOIN attachments a ON a.id = ssa.attachment_id
+                  WHERE ssa.scheduled_send_id = s.id
+                ), '[]'::jsonb) AS attachments
+    `;
+  } catch (err) {
+    if (!isUndefinedScheduledAttachmentsTable(err)) throw err;
+    return sql`
+      UPDATE scheduled_sends s
+      SET status = 'sending', claimed_at = now()
+      FROM (
+        SELECT id FROM scheduled_sends
+        WHERE (status = 'pending' AND scheduled_for <= now())
+           OR (status = 'sending'
+               AND claimed_at < now() - make_interval(mins => ${SCHEDULED_SEND_LEASE_MINUTES}))
+        ORDER BY scheduled_for
+        LIMIT ${limit}
+        FOR UPDATE SKIP LOCKED
+      ) due
+      WHERE s.id = due.id
+      RETURNING s.id, s.user_id, s.to_addresses AS "toAddresses", s.subject,
+                s.body_text AS "text", s.body_html AS "html",
+                s.reply_to_message_id AS "replyToMessageId", s.attempts,
+                '[]'::jsonb AS attachments
+    `;
+  }
 }
 
 /** @param {unknown} err */
@@ -227,6 +319,7 @@ export async function deliverScheduledSend(sql, row, services) {
         // The receipt URL is part of the provider payload, so it must remain
         // stable when an expired lease retries with the same idempotency key.
         readReceiptToken: row.id,
+        attachments: row.attachments ?? [],
       },
       services,
     );
@@ -321,9 +414,19 @@ async function sweepResolvedState(sql) {
 export async function handleFlush(sql, services) {
   try {
     const claimed = await claimDueScheduledSendsWithRetry(sql, FLUSH_BATCH_SIZE);
-    const results = await mapWithConcurrency(claimed, FLUSH_CONCURRENCY, (row) =>
-      deliverScheduledSend(sql, row, services),
-    );
+    const attachmentRows = claimed.filter((row) => row.attachments?.length);
+    const ordinaryRows = claimed.filter((row) => !row.attachments?.length);
+    // Attachment payloads are buffered for the provider. Keep those rows
+    // serial so several large forwards cannot exhaust the isolate's memory.
+    const [ordinaryResults, attachmentResults] = await Promise.all([
+      mapWithConcurrency(ordinaryRows, FLUSH_CONCURRENCY, (row) =>
+        deliverScheduledSend(sql, row, services),
+      ),
+      mapWithConcurrency(attachmentRows, ATTACHMENT_FLUSH_CONCURRENCY, (row) =>
+        deliverScheduledSend(sql, row, services),
+      ),
+    ]);
+    const results = [...ordinaryResults, ...attachmentResults];
     await sweepResolvedState(sql);
     // One sync for the whole batch, not one per delivered row: a full flush
     // would otherwise fire FLUSH_BATCH_SIZE separate Postgres/Meilisearch

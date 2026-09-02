@@ -6,6 +6,8 @@
 // semantic vector for sent mail itself once the message is indexed, so this
 // no longer computes or stores an embedding at all.
 
+import { Buffer } from 'node:buffer';
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SNIPPET_LENGTH = 100;
 export const MAX_OUTBOUND_RECIPIENTS = 20;
@@ -13,6 +15,10 @@ export const MAX_OUTBOUND_SUBJECT_BYTES = 998;
 export const MAX_OUTBOUND_TEXT_BYTES = 100_000;
 export const MAX_OUTBOUND_HTML_BYTES = 200_000;
 export const MAX_OUTBOUND_TOTAL_BYTES = 256_000;
+export const MAX_OUTBOUND_ATTACHMENTS = 20;
+// Resend's 40 MB ceiling is measured after Base64 encoding, and Workers need
+// headroom while converting streamed bytes into a provider-safe Base64 string.
+export const MAX_OUTBOUND_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const OUTBOUND_SENDS_PER_MINUTE = 10;
 
 /** @param {string} value */
@@ -92,6 +98,15 @@ export function parseRecipients(to) {
     .filter(Boolean);
   if (recipients.length > MAX_OUTBOUND_RECIPIENTS) return [];
   return recipients;
+}
+
+/** @param {unknown} value */
+export function parseAttachmentIds(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_OUTBOUND_ATTACHMENTS) return null;
+  const ids = value.map((id) => String(id));
+  if (ids.some((id) => !UUID_RE.test(id)) || new Set(ids).size !== ids.length) return null;
+  return ids;
 }
 
 // Pragmatic RFC 5322 subset: one @, no whitespace or control characters, no
@@ -209,11 +224,11 @@ export async function refundOutboundEmailQuota(sql, userId) {
 // (new requestId, new send). Async because Web Crypto's digest is.
 /**
  * @param {string} userId
- * @param {{recipients: string[], subject: unknown, text: unknown, html: unknown, replyToMessageId: string | null, requestId: string | null}} message
+ * @param {{recipients: string[], subject: unknown, text: unknown, html: unknown, replyToMessageId: string | null, attachmentIds?: string[], requestId: string | null}} message
  */
 export async function immediateSendIdempotencyKey(
   userId,
-  { recipients, subject, text, html, replyToMessageId, requestId },
+  { recipients, subject, text, html, replyToMessageId, attachmentIds = [], requestId },
 ) {
   const bytes = new TextEncoder().encode(
     JSON.stringify({
@@ -223,6 +238,7 @@ export async function immediateSendIdempotencyKey(
       text,
       html: html ?? null,
       replyToMessageId: replyToMessageId ?? null,
+      attachmentIds,
       requestId: requestId ?? null,
     }),
   );
@@ -241,10 +257,90 @@ export async function immediateSendIdempotencyKey(
  * @typedef {{
  *   env: import('./sentry.js').SendEnv,
  *   createResend: (apiKey: string | undefined) => any,
+ *   readBlob: (url: string) => Promise<{stream: ReadableStream<Uint8Array> | null} | null>,
  *   indexSentMessage: (messageUuid: string) => void,
  *   indexSentMessages: (messageUuids: string[]) => void,
  * }} SendServices
  */
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string[]} attachmentIds
+ */
+export async function resolveOwnedAttachments(sql, userId, attachmentIds) {
+  if (attachmentIds.length === 0) return { attachments: [] };
+  const rows = await sql`
+    SELECT a.id, a.filename, a.content_type, a.size_bytes, a.blob_url
+    FROM attachments a
+    JOIN messages m ON m.id = a.message_id
+    WHERE a.id = ANY(${attachmentIds}::uuid[])
+      AND m.user_id = ${userId}
+      AND NOT m.is_deleted
+      AND a.blob_url IS NOT NULL
+    ORDER BY array_position(${attachmentIds}::uuid[], a.id)
+  `;
+  if (rows.length !== attachmentIds.length) return { missing: true };
+
+  let declaredBytes = 0;
+  for (const attachment of rows) {
+    if (attachment.size_bytes === null || attachment.size_bytes === undefined) continue;
+    const size = Number(attachment.size_bytes);
+    if (!Number.isSafeInteger(size) || size < 0) return { invalid: true };
+    declaredBytes += size;
+  }
+  if (declaredBytes > MAX_OUTBOUND_ATTACHMENT_BYTES) return { tooLarge: true };
+  return { attachments: rows };
+}
+
+/**
+ * @param {any} attachment
+ * @param {SendServices['readBlob']} readBlob
+ */
+async function readAttachmentContent(attachment, readBlob) {
+  const result = await readBlob(attachment.blob_url);
+  if (!result?.stream) throw new Error(`Attachment blob is unavailable: ${attachment.id}`);
+  const reader = result.stream.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      bytes += chunk.byteLength;
+      if (bytes > MAX_OUTBOUND_ATTACHMENT_BYTES) {
+        throw new Error('Outbound attachments exceed the provider size limit');
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return {
+    byteLength: bytes,
+    providerAttachment: {
+      content: Buffer.concat(chunks).toString('base64'),
+      filename: attachment.filename || 'attachment',
+      contentType: attachment.content_type || 'application/octet-stream',
+    },
+  };
+}
+
+/** @param {any[]} attachments @param {SendServices['readBlob']} readBlob */
+async function loadProviderAttachments(attachments, readBlob) {
+  const loaded = [];
+  let totalBytes = 0;
+  for (const attachment of attachments) {
+    const loadedAttachment = await readAttachmentContent(attachment, readBlob);
+    totalBytes += loadedAttachment.byteLength;
+    if (totalBytes > MAX_OUTBOUND_ATTACHMENT_BYTES) {
+      throw new Error('Outbound attachments exceed the provider size limit');
+    }
+    loaded.push(loadedAttachment.providerAttachment);
+  }
+  return loaded;
+}
 
 // Stores the sent copy in the existing tables (is_sent=true, excluded from
 // the inbox list, included in search). Threads with the replied-to message
@@ -255,13 +351,22 @@ export async function immediateSendIdempotencyKey(
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null}} message
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null, attachments?: any[]}} message
  * @param {SendServices} services
  */
 async function storeSentMessage(
   sql,
   userId,
-  { recipients, subject, text, html, replyToMessageId, resendId, readReceiptToken },
+  {
+    recipients,
+    subject,
+    text,
+    html,
+    replyToMessageId,
+    resendId,
+    readReceiptToken,
+    attachments = [],
+  },
   services,
 ) {
   const messageId = resendId ? `<${resendId}@resend.cookie-web>` : null;
@@ -334,6 +439,16 @@ async function storeSentMessage(
         const result = await statement(sql);
         if (index === messagesStatement) inserted = result.length > 0;
       }
+      if (inserted) {
+        for (const attachment of attachments) {
+          await sql`
+            INSERT INTO attachments (message_id, filename, content_type, size_bytes, blob_url)
+            VALUES (${messageUuid}, ${attachment.filename ?? null},
+                    ${attachment.content_type ?? null}, ${attachment.size_bytes ?? null},
+                    ${attachment.blob_url})
+          `;
+        }
+      }
     });
   }
 
@@ -362,13 +477,22 @@ async function storeSentMessage(
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string}} message
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[]}} message
  * @param {SendServices} services
  */
 export async function deliverMail(
   sql,
   userId,
-  { recipients, subject, text, html, replyToMessageId, idempotencyKey, readReceiptToken },
+  {
+    recipients,
+    subject,
+    text,
+    html,
+    replyToMessageId,
+    idempotencyKey,
+    readReceiptToken,
+    attachments = [],
+  },
   services,
 ) {
   const receiptToken = readReceiptToken ?? crypto.randomUUID();
@@ -376,6 +500,9 @@ export async function deliverMail(
   const trackedHtml = appendReadReceipt(html, text, receiptUrl);
 
   const resend = services.createResend(services.env.RESEND_API_KEY);
+  const providerAttachments = attachments.length
+    ? await loadProviderAttachments(attachments, services.readBlob)
+    : [];
   /** @type {Record<string, unknown>} */
   const payload = {
     from: configuredEmailFrom(services.env),
@@ -384,6 +511,7 @@ export async function deliverMail(
     text,
   };
   if (trackedHtml) payload.html = trackedHtml;
+  if (providerAttachments.length) payload.attachments = providerAttachments;
   const { data, error } = idempotencyKey
     ? await resend.emails.send(payload, { idempotencyKey })
     : await resend.emails.send(payload);
@@ -405,6 +533,7 @@ export async function deliverMail(
         replyToMessageId,
         resendId: data.id,
         readReceiptToken: receiptUrl ? receiptToken : null,
+        attachments,
       },
       services,
     ));

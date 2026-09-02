@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/cloudflare';
+import { get } from '@vercel/blob';
 import postgres from 'postgres';
 import { Resend } from 'resend';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
@@ -11,7 +12,9 @@ import {
   immediateSendIdempotencyKey,
   claimOutboundEmailQuota,
   ownedReplyToMessageId,
+  parseAttachmentIds,
   refundOutboundEmailQuota,
+  resolveOwnedAttachments,
   validateOutboundMessage,
 } from './outbound.js';
 import {
@@ -80,6 +83,7 @@ export function createSendServices(env, ctx) {
   return {
     env,
     createResend: (apiKey) => new Resend(apiKey),
+    readBlob: (blobUrl) => get(blobUrl, { access: 'private', token: env.BLOB_READ_WRITE_TOKEN }),
     indexSentMessage: (messageUuid) =>
       indexAfterResponse(env, ctx, (sql) => syncMessageToMeili(sql, env, messageUuid)),
     // One flush stores up to FLUSH_BATCH_SIZE sent copies; index them in a
@@ -122,7 +126,16 @@ async function handleSend(sql, userId, request, services) {
     throw error;
   }
 
-  const { to, subject, text, html, replyToMessageId, sendAt, requestId } = body;
+  const {
+    to,
+    subject,
+    text,
+    html,
+    replyToMessageId,
+    sendAt,
+    requestId,
+    attachmentIds: rawAttachmentIds,
+  } = body;
   // Optional client-generated id for idempotency; bounded and restricted so
   // it can only widen the key space, never collide or smuggle content.
   const requestIdText = String(requestId ?? '');
@@ -132,6 +145,13 @@ async function handleSend(sql, userId, request, services) {
     return Response.json({ error: validated.error }, { status: 400 });
   }
   const { recipients, bodyHtml } = validated;
+  const attachmentIds = parseAttachmentIds(rawAttachmentIds);
+  if (attachmentIds === null) {
+    return Response.json(
+      { error: 'attachmentIds must be a unique list of valid ids' },
+      { status: 400 },
+    );
+  }
   // Fixture ids from e2e/dev mode aren't UUIDs — ignore them rather than error.
   let replyTo = UUID_RE.test(replyToMessageId) ? String(replyToMessageId) : null;
 
@@ -148,6 +168,13 @@ async function handleSend(sql, userId, request, services) {
       if (owned.missing) {
         return Response.json({ error: 'Reply target not found' }, { status: 404 });
       }
+      const resolved = await resolveOwnedAttachments(sql, userId, attachmentIds);
+      if (resolved.missing) {
+        return Response.json({ error: 'Attachment not found' }, { status: 404 });
+      }
+      if (resolved.invalid || resolved.tooLarge) {
+        return Response.json({ error: 'Attachments exceed the allowed size' }, { status: 400 });
+      }
       const scheduledSend = await createScheduledSend(sql, userId, {
         recipients,
         subject,
@@ -155,6 +182,7 @@ async function handleSend(sql, userId, request, services) {
         html: bodyHtml,
         replyToMessageId: owned.replyTo ?? null,
         scheduledFor,
+        attachments: resolved.attachments,
       });
       if (!scheduledSend) {
         return Response.json({ error: 'Too many pending scheduled sends' }, { status: 429 });
@@ -166,12 +194,21 @@ async function handleSend(sql, userId, request, services) {
     }
   }
 
+  let attachments;
   try {
     const owned = await ownedReplyToMessageId(sql, userId, replyTo);
     if (owned.missing) {
       return Response.json({ error: 'Reply target not found' }, { status: 404 });
     }
     replyTo = owned.replyTo ?? null;
+    const resolved = await resolveOwnedAttachments(sql, userId, attachmentIds);
+    if (resolved.missing) {
+      return Response.json({ error: 'Attachment not found' }, { status: 404 });
+    }
+    if (resolved.invalid || resolved.tooLarge) {
+      return Response.json({ error: 'Attachments exceed the allowed size' }, { status: 400 });
+    }
+    attachments = resolved.attachments;
     const quota = await claimOutboundEmailQuota(sql, userId);
     if (!quota.authorized) {
       return Response.json({ error: 'Mailbox access is not provisioned' }, { status: 403 });
@@ -203,8 +240,10 @@ async function handleSend(sql, userId, request, services) {
           text,
           html: bodyHtml,
           replyToMessageId: replyTo,
+          attachmentIds,
           requestId: clientRequestId,
         }),
+        attachments,
       },
       services,
     );

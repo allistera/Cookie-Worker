@@ -201,10 +201,12 @@ jobs:
             SCHEDULED_SEND_FLUSH_TOKEN
             SENTRY_DSN
             MEILISEARCH_API_KEY
+            BLOB_READ_WRITE_TOKEN
         env:
           SCHEDULED_SEND_FLUSH_TOKEN: ${{ secrets.COOKIE_WEB_FLUSH_TOKEN }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
 
       - name: Deploy cookie-web-tasks and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-tasks'

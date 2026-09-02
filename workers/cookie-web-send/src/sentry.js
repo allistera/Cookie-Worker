@@ -19,6 +19,7 @@ const SERVICE = 'cookie-web-send';
  *   SCHEDULED_SEND_FLUSH_TOKEN?: string,
  *   MEILISEARCH_URL?: string,
  *   MEILISEARCH_API_KEY?: string,
+ *   BLOB_READ_WRITE_TOKEN?: string,
  * }} SendEnv
  */
 
@@ -37,6 +38,7 @@ function secrets(env) {
     env.RESEND_API_KEY,
     env.SCHEDULED_SEND_FLUSH_TOKEN,
     env.MEILISEARCH_API_KEY,
+    env.BLOB_READ_WRITE_TOKEN,
   ];
 }
 

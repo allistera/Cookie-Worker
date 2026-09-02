@@ -53,6 +53,11 @@ vi.mock('resend', () => ({
   },
 }));
 
+const getBlob = vi.fn();
+vi.mock('@vercel/blob', () => ({
+  get: (...args) => getBlob(...args),
+}));
+
 const verifyAccessToken = vi.fn();
 vi.mock('../../../shared/auth-jwt.js', () => ({
   verifyAccessToken: (...args) => verifyAccessToken(...args),
@@ -66,6 +71,7 @@ vi.mock('../src/sentry.js', () => ({
 }));
 
 const worker = (await import('../src/worker.js')).default;
+const { MAX_OUTBOUND_ATTACHMENT_BYTES } = await import('../src/outbound.js');
 
 const PRODUCTION = 'https://mail.infinitywave.online';
 const USER_ID = '11111111-1111-1111-1111-111111111111';
@@ -77,6 +83,7 @@ const env = /** @type {any} */ ({
   RESEND_API_KEY: 'test-key',
   EMAIL_FROM: 'Cookie <mail@example.com>',
   SCHEDULED_SEND_FLUSH_TOKEN: 'flush-secret',
+  BLOB_READ_WRITE_TOKEN: 'blob-token',
 });
 /** @type {Promise<unknown>[]} */
 let waited = [];
@@ -176,6 +183,108 @@ describe('POST /send security boundaries', () => {
     expect(options.idempotencyKey).toMatch(/^immediate-send\/[0-9a-f]{64}$/);
   });
 
+  test('delivers an owned private attachment and stores it on the sent copy', async () => {
+    const attachmentId = '22222222-2222-4222-8222-222222222222';
+    const attachment = {
+      id: attachmentId,
+      filename: 'plan.pdf',
+      content_type: 'application/pdf',
+      size_bytes: 3,
+      blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
+    };
+    responses = [
+      [attachment],
+      [{ authorized: true, quota_claimed: true }],
+      [{ user_id: USER_ID, thread_id: null }],
+      [],
+      [{ id: 'stored' }],
+      [],
+      [],
+    ];
+    getBlob.mockResolvedValue({
+      statusCode: 200,
+      stream: new Response('pdf').body,
+      blob: { size: 3 },
+    });
+    resendSend.mockResolvedValue({ data: { id: 'resend-forward' }, error: null });
+
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ attachmentIds: [attachmentId] }) }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(getBlob).toHaveBeenCalledWith(attachment.blob_url, {
+      access: 'private',
+      token: 'blob-token',
+    });
+    expect(resendSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachments: [
+          expect.objectContaining({
+            filename: 'plan.pdf',
+            contentType: 'application/pdf',
+            content: 'cGRm',
+          }),
+        ],
+      }),
+      expect.any(Object),
+    );
+    expect(
+      mockQuery.mock.calls.some(([parts]) => parts.join(' ').includes('INSERT INTO attachments')),
+    ).toBe(true);
+  });
+
+  test('rejects malformed and unowned attachment ids before provider delivery', async () => {
+    const malformed = await worker.fetch(
+      request('/send', { body: sendBody({ attachmentIds: ['not-a-uuid'] }) }),
+      env,
+      ctx,
+    );
+    expect(malformed.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+
+    responses = [[]];
+    const unowned = await worker.fetch(
+      request('/send', {
+        body: sendBody({
+          attachmentIds: ['22222222-2222-4222-8222-222222222222'],
+        }),
+      }),
+      env,
+      ctx,
+    );
+    expect(unowned.status).toBe(404);
+    expect(getBlob).not.toHaveBeenCalled();
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('rejects raw attachments that would exceed the provider limit after encoding', async () => {
+    const attachmentId = '22222222-2222-4222-8222-222222222222';
+    responses = [
+      [
+        {
+          id: attachmentId,
+          filename: 'too-large.zip',
+          content_type: 'application/zip',
+          size_bytes: MAX_OUTBOUND_ATTACHMENT_BYTES + 1,
+          blob_url: 'https://store.private.blob.vercel-storage.com/too-large.zip',
+        },
+      ],
+    ];
+
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ attachmentIds: [attachmentId] }) }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(400);
+    expect(getBlob).not.toHaveBeenCalled();
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
   test('refunds the quota and answers 502 when the provider fails', async () => {
     responses = [
       [{ authorized: true, quota_claimed: true }], // quota claim
@@ -236,6 +345,40 @@ describe('POST /send with sendAt (schedule creation)', () => {
     );
     expect(response.status).toBe(429);
   });
+
+  test('stores attachment references beside a scheduled send', async () => {
+    const attachmentId = '22222222-2222-4222-8222-222222222222';
+    responses = [
+      [
+        {
+          id: attachmentId,
+          filename: 'plan.pdf',
+          content_type: 'application/pdf',
+          size_bytes: 3,
+          blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
+        },
+      ],
+      [],
+      [{ id: 'sched-1', scheduledFor: futureIso() }],
+      [],
+    ];
+
+    const response = await worker.fetch(
+      request('/send', {
+        body: sendBody({ sendAt: futureIso(), attachmentIds: [attachmentId] }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(201);
+    expect(
+      mockQuery.mock.calls.some(([parts]) =>
+        parts.join(' ').includes('INSERT INTO scheduled_send_attachments'),
+      ),
+    ).toBe(true);
+    expect(resendSend).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET/DELETE /send/scheduled', () => {
@@ -265,8 +408,9 @@ describe('GET/DELETE /send/scheduled', () => {
       text: 'Body',
       html: null,
       replyToMessageId: null,
+      attachments: [{ id: 'att-1', filename: 'plan.pdf', downloadable: true }],
     };
-    responses = [[row]];
+    responses = [[row], []];
     const response = await worker.fetch(
       request('/send/scheduled', { method: 'DELETE', body: JSON.stringify({ id: USER_ID }) }),
       env,
@@ -275,6 +419,33 @@ describe('GET/DELETE /send/scheduled', () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).scheduledSend).toEqual(row);
+    expect(mockQuery.mock.calls[0][0].join(' ')).toContain('scheduled_send_attachments');
+  });
+
+  test('keeps attachment-free cancellation working before migration 0059 is applied', async () => {
+    const missingTable = Object.assign(
+      new Error('relation "scheduled_send_attachments" does not exist'),
+      { code: '42P01' },
+    );
+    const row = {
+      id: 'sched-1',
+      toAddresses: 'a@b.com',
+      subject: 'Hi',
+      text: 'Body',
+      html: null,
+      replyToMessageId: null,
+      attachments: [],
+    };
+    responses = [missingTable, [row], []];
+    const response = await worker.fetch(
+      request('/send/scheduled', { method: 'DELETE', body: JSON.stringify({ id: USER_ID }) }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).scheduledSend).toEqual(row);
+    expect(mockQuery.mock.calls[1][0].join(' ')).toContain("'[]'::jsonb AS attachments");
   });
 
   test('404s canceling an id that is no longer pending', async () => {
@@ -350,6 +521,63 @@ describe('POST /send/flush', () => {
         idempotencyKey: 'scheduled-send/sched-1',
       },
     );
+  });
+
+  test('flushes scheduled attachments through Resend and into the sent copy', async () => {
+    const attachment = {
+      id: '22222222-2222-4222-8222-222222222222',
+      filename: 'plan.pdf',
+      content_type: 'application/pdf',
+      size_bytes: 3,
+      blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
+    };
+    responses = [
+      [
+        {
+          id: 'sched-forward',
+          user_id: 'user-1',
+          toAddresses: 'recipient@example.com',
+          subject: 'Fwd: Plan',
+          text: 'Forwarded plan',
+          html: null,
+          replyToMessageId: null,
+          attempts: 0,
+          attachments: [attachment],
+        },
+      ],
+      [{ email: 'owner@example.com' }],
+      [{ authorized: true, quota_claimed: true }],
+      [{ user_id: 'user-1', thread_id: null }],
+      [],
+      [{ id: 'stored' }],
+      [],
+      [],
+      [],
+      [],
+    ];
+    getBlob.mockResolvedValue({
+      statusCode: 200,
+      stream: new Response('pdf').body,
+      blob: { size: 3 },
+    });
+    resendSend.mockResolvedValue({ data: { id: 'resend-forward' }, error: null });
+
+    const response = await worker.fetch(
+      flushRequest({ Authorization: 'Bearer flush-secret' }),
+      env,
+      ctx,
+    );
+
+    expect((await response.json()).sent).toBe(1);
+    expect(resendSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachments: [expect.objectContaining({ filename: 'plan.pdf', content: 'cGRm' })],
+      }),
+      { idempotencyKey: 'scheduled-send/sched-forward' },
+    );
+    expect(
+      mockQuery.mock.calls.some(([parts]) => parts.join(' ').includes('INSERT INTO attachments')),
+    ).toBe(true);
   });
 
   test('retries a transient claim connection failure', async () => {

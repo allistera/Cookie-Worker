@@ -29,8 +29,7 @@
     // Workers that write to the index; with either missing the sync no-ops.
     "MEILISEARCH_URL": "https://ms-52028f71df74-53700.lon.meilisearch.io",
   },
-  // EMAIL_FROM (the visible From for outbound mail) and RESEND_API_KEY are
-  // Worker secrets set once via `wrangler secret put`, not vars: Vercel marks
-  // both sensitive, so they cannot be pulled into config or CI. See the
-  // deploy workflow's cookie-web-send step for the full secret inventory.
+  // EMAIL_FROM (the visible From for outbound mail), RESEND_API_KEY, and
+  // BLOB_READ_WRITE_TOKEN are Worker secrets rather than vars. See the deploy
+  // workflow's cookie-web-send step for the synchronized secret inventory.
 }
