@@ -16,10 +16,12 @@
 // that simply points at an internal address. It does NOT close the narrower,
 // timing-dependent DNS-rebinding gap on its own: fetch() re-resolves
 // independently, so a domain re-pointed between our check and fetch()'s own
-// resolution could still slip through. The one-click caller therefore also
-// restricts server-side POSTs to a suffix allowlist of known ESP unsubscribe
-// hosts (DEFAULT_ONE_CLICK_ALLOWLIST below), which closes that gap in
-// practice — see messages.js.
+// resolution could still slip through. Callers accept that residual risk by
+// keeping the request itself inert: requestPublicHttps sends a caller-fixed
+// body, follows no redirects, and exposes only the status and headers — the
+// response body never reaches a client. Callers that need a tighter target
+// set can still layer a suffix allowlist via hostMatchesSuffixes (the
+// calendar worker does).
 
 const DNS_QUERY_TIMEOUT_MS = 5000;
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
@@ -168,44 +170,16 @@ export async function resolvePublicHttpsUrl(rawUrl) {
   return url;
 }
 
-// Suffix allowlist for the server-side one-click POST. The DoH check above
-// cannot pin fetch()'s own DNS resolution, so a domain an attacker controls
-// both in the header and at the authoritative nameserver can still re-point
-// between our check and fetch()'s resolution (DNS rebinding). Restricting the
-// server-side request to known ESP unsubscribe infrastructure closes that gap
-// in practice: senders outside the list degrade gracefully to the existing
-// mailto/manual fallbacks instead of getting a server-side POST. Operators can
-// extend it via UNSUBSCRIBE_ONE_CLICK_ALLOWLIST.
-export const DEFAULT_ONE_CLICK_ALLOWLIST = [
-  'list-manage.com', // Mailchimp
-  'sendgrid.net',
-  'createsend.com', // Campaign Monitor
-  'kmail-lists.com', // Klaviyo
-  'hubspotemail.net',
-  'brevo.com',
-  'sendinblue.com',
-  'constantcontact.com',
-];
-
-/** @param {string} hostname @param {string[]} suffixes */
+/**
+ * Suffix match for optional per-caller host allowlists (the calendar sync
+ * uses this to pin feed URLs to configured providers).
+ * @param {string} hostname @param {string[]} suffixes
+ */
 export function hostMatchesSuffixes(hostname, suffixes) {
   const host = String(hostname ?? '')
     .toLowerCase()
     .replace(/\.$/u, '');
   return suffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
-}
-
-/**
- * Parses the operator's comma-separated extra-suffix override into a list.
- * @param {string | undefined} value
- * @returns {string[]}
- */
-export function parseAllowlistOverride(value) {
-  return String(value ?? '')
-    .split(',')
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean)
-    .filter((entry) => entry.includes('.') && !entry.startsWith('.'));
 }
 
 /**

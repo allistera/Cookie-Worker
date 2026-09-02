@@ -16,7 +16,6 @@ const SERVICE = 'cookie-web-messages';
  *   BLOB_READ_WRITE_TOKEN?: string,
  *   RESEND_API_KEY?: string,
  *   EMAIL_FROM?: string,
- *   UNSUBSCRIBE_ONE_CLICK_ALLOWLIST?: string,
  *   MEILISEARCH_API_KEY?: string,
  *   OPENAI_API_KEY?: string,
  *   OPENAI_UNSUBSCRIBE_MODEL?: string,

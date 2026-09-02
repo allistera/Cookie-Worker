@@ -6,7 +6,6 @@
 // stays a plain, testable function.
 
 import { allowRequest } from '../../../shared/rate-limit.js';
-import { DEFAULT_ONE_CLICK_ALLOWLIST, hostMatchesSuffixes } from '../../../shared/safe-https.js';
 import { extractCalendarInvite } from './calendarInvite.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 
@@ -351,7 +350,6 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
  *   resendApiKey: string | undefined,
  *   emailFrom: string | undefined,
  *   sendEmail: (options: {apiKey: string, from: string, to: string[], subject: string, text: string}) => Promise<void>,
- *   oneClickAllowlist?: string[],
  *   aiUnsubscribe?: (target: {url: string, recipientEmail: string | null}) => Promise<{ok: boolean, reason?: string}>,
  * }} UnsubscribeDeps
  */
@@ -411,36 +409,35 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
   }
   const { oneClick, url, mailto } = parsed;
 
-  // 1. RFC 8058 one-click: server-side POST, only to an SSRF-safe https URL
-  // on a known ESP unsubscribe host. The DoH guard in safeHttps.js can't pin
-  // fetch()'s own DNS resolution, so the host allowlist is what closes the
-  // DNS-rebinding window; anything outside the list falls through to the
-  // mailto/manual fallbacks below instead of getting a server-side request.
-  const allowlist = deps.oneClickAllowlist ?? DEFAULT_ONE_CLICK_ALLOWLIST;
+  // 1. RFC 8058 one-click: server-side POST to any SSRF-safe https URL. The
+  // request boundary (requestPublicHttps) rejects non-https and private/
+  // internal targets via DNS-over-HTTPS before connecting; the residual
+  // DNS-rebinding window is accepted because the POST carries a fixed body
+  // and only the status code is read back — the response never reaches the
+  // client.
   if (oneClick && url && isSafeUnsubscribeUrl(url)) {
     const host = new URL(url).hostname.toLowerCase();
-    if (!hostMatchesSuffixes(host, allowlist)) {
-      console.log(JSON.stringify({ event: 'one_click_skipped_not_allowlisted', host }));
-    } else {
-      try {
-        const resp = await deps.requestPublicHttps(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'List-Unsubscribe=One-Click',
-          timeoutMs: 10_000,
-        });
-        if (resp.status < 400) {
-          return Response.json({ status: 'unsubscribed', method: 'one-click' });
-        }
-        console.log(JSON.stringify({ event: 'one_click_unsubscribe_failed', status: resp.status }));
-      } catch (error) {
-        console.log(
-          JSON.stringify({
-            event: 'one_click_unsubscribe_error',
-            message: /** @type {Error} */ (error).message,
-          }),
-        );
+    try {
+      const resp = await deps.requestPublicHttps(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'List-Unsubscribe=One-Click',
+        timeoutMs: 10_000,
+      });
+      if (resp.status < 400) {
+        return Response.json({ status: 'unsubscribed', method: 'one-click' });
       }
+      console.log(
+        JSON.stringify({ event: 'one_click_unsubscribe_failed', host, status: resp.status }),
+      );
+    } catch (error) {
+      console.log(
+        JSON.stringify({
+          event: 'one_click_unsubscribe_error',
+          host,
+          message: /** @type {Error} */ (error).message,
+        }),
+      );
     }
     // fall through to the fallbacks below on any failure/timeout — never 500.
   }

@@ -208,35 +208,7 @@ describe('postMessage — unsubscribe action', () => {
     );
   });
 
-  test('skips the server-side POST for hosts outside the one-click allowlist', async () => {
-    const sql = createMockSql([
-      [
-        {
-          headers: [
-            { key: 'List-Unsubscribe', value: '<https://attacker.example/unsubscribe?id=123>' },
-            { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
-          ],
-        },
-      ],
-    ]);
-    const requestPublicHttps = vi.fn().mockResolvedValue({ status: 204 });
-    const response = await postMessage(
-      sql,
-      USER_ID,
-      { id: MESSAGE_ID, action: 'unsubscribe' },
-      unsubscribeDeps({ requestPublicHttps }),
-    );
-
-    // Falls through to the manual link — no server-side request is made.
-    expect(requestPublicHttps).not.toHaveBeenCalled();
-    expect(await response.json()).toEqual({
-      status: 'manual',
-      method: 'link',
-      url: 'https://attacker.example/unsubscribe?id=123',
-    });
-  });
-
-  test('sends one-click to an operator-extended allowlist entry', async () => {
+  test('sends one-click to any https host, not just known ESPs', async () => {
     const sql = createMockSql([
       [
         {
@@ -252,12 +224,38 @@ describe('postMessage — unsubscribe action', () => {
       sql,
       USER_ID,
       { id: MESSAGE_ID, action: 'unsubscribe' },
-      unsubscribeDeps({ requestPublicHttps, oneClickAllowlist: ['acme-esp.example'] }),
+      unsubscribeDeps({ requestPublicHttps }),
     );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'one-click' });
-    expect(requestPublicHttps).toHaveBeenCalledTimes(1);
+    expect(requestPublicHttps).toHaveBeenCalledWith(
+      'https://unsub.acme-esp.example/u?id=1',
+      expect.objectContaining({ method: 'POST', body: 'List-Unsubscribe=One-Click' }),
+    );
+  });
+
+  test('never makes a server-side request for a non-https one-click URL', async () => {
+    const sql = createMockSql([
+      [
+        {
+          headers: [
+            { key: 'List-Unsubscribe', value: '<http://unsub.acme-esp.example/u?id=1>' },
+            { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+          ],
+        },
+      ],
+    ]);
+    const requestPublicHttps = vi.fn().mockResolvedValue({ status: 204 });
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ requestPublicHttps }),
+    );
+
+    expect(requestPublicHttps).not.toHaveBeenCalled();
+    expect((await response.json()).method).not.toBe('one-click');
   });
 
   test('hands the client a mailto: URI when Resend is not configured', async () => {

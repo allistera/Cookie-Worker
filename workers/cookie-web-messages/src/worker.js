@@ -9,7 +9,7 @@ import { getAttachment, getMessage, getThreadBody, patchMessage, postMessage } f
 import { attemptAiUnsubscribe } from './aiUnsubscribe.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { sendEmail } from './resend.js';
-import { requestPublicHttps, parseAllowlistOverride } from '../../../shared/safe-https.js';
+import { requestPublicHttps } from '../../../shared/safe-https.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 /** @param {string} databaseUrl */
@@ -143,14 +143,11 @@ async function route(url, request, sql, userId, env, ctx) {
   const onMessageChanged = (/** @type {string} */ messageId) => reindexMessage(env, ctx, messageId);
 
   if (request.method === 'POST') {
-    const allowlistOverride = parseAllowlistOverride(env.UNSUBSCRIBE_ONE_CLICK_ALLOWLIST);
     return postMessage(sql, userId, body, {
       requestPublicHttps,
       resendApiKey: env.RESEND_API_KEY,
       emailFrom: env.EMAIL_FROM,
       sendEmail,
-      // Empty override falls back to the built-in ESP suffix list.
-      oneClickAllowlist: allowlistOverride.length ? allowlistOverride : undefined,
       // Without an OpenAI key the AI tier is absent and link-only senders
       // keep getting the manual fallback.
       aiUnsubscribe: env.OPENAI_API_KEY
