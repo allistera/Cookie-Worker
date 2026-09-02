@@ -9,6 +9,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CONTENT_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 10000;
+// Todoist-style: 1 is the most urgent, 4 is the default and shows as "no
+// priority". Mirrors the CHECK on task_items.priority (migration 0058).
+const MIN_PRIORITY = 1;
+const MAX_PRIORITY = 4;
+export const DEFAULT_PRIORITY = MAX_PRIORITY;
 
 /**
  * A real calendar date in YYYY-MM-DD. DATE_RE alone admits 2026-02-31, which
@@ -21,6 +26,17 @@ export function isCalendarDate(value) {
   if (!DATE_RE.test(text)) return false;
   const date = new Date(`${text}T00:00:00Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === text;
+}
+
+/**
+ * An integer in 1..4. Strings are refused even when numeric: the wire is
+ * JSON and a client that sends "2" has a bug worth hearing about, not one
+ * worth papering over.
+ *
+ * @param {any} value
+ */
+export function isPriority(value) {
+  return Number.isInteger(value) && value >= MIN_PRIORITY && value <= MAX_PRIORITY;
 }
 
 /** @param {any} value */
@@ -84,8 +100,8 @@ export async function getTaskItems(sql, userId, url) {
 
   const items = await sql`
     SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
-           t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.completed_at AS "completedAt",
-           t.created_at AS "createdAt"
+           t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
+           t.completed_at AS "completedAt", t.created_at AS "createdAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
       -- Today also carries the sub-tasks of every task it lists: the panel
@@ -111,7 +127,7 @@ export async function getTaskItems(sql, userId, url) {
 
 /**
  * POST /task-items — { content, description?, projectId?, dueDate?,
- * parentId? }. A sub-task lives in its parent's project: with parentId set,
+ * priority?, parentId? }. A sub-task lives in its parent's project: with parentId set,
  * the project is read from the parent row and any projectId in the body is
  * ignored, so the two can never disagree.
  *
@@ -152,11 +168,19 @@ export async function createTaskItem(sql, userId, body, env) {
   }
   const dueDate = hasDueDate ? String(body.dueDate) : null;
 
+  // Absent or null means the default; anything else must be a real priority.
+  const hasPriority = body?.priority !== undefined && body?.priority !== null;
+  if (hasPriority && !isPriority(body.priority)) {
+    return Response.json({ error: 'priority must be an integer from 1 to 4' }, { status: 400 });
+  }
+  const priority = hasPriority ? body.priority : DEFAULT_PRIORITY;
+
   const [item] = await sql`
-    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date)
-    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate})
+    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority)
+    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority})
     RETURNING id, project_id AS "projectId", parent_id AS "parentId", content, description,
-              to_char(due_date, 'YYYY-MM-DD') AS "dueDate", completed_at AS "completedAt", created_at AS "createdAt"
+              to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, completed_at AS "completedAt",
+              created_at AS "createdAt"
   `;
   // Best-effort: a sub-task lands on its parent's search document (the sync
   // walks up to the root), a top-level task gets its own.
@@ -171,7 +195,8 @@ function fetchOwnedTaskItem(sql, userId, id) {
 
 /**
  * PATCH /task-items — { id, content?, description?, projectId?, parentId?,
- * dueDate?, completed? }. projectId: null moves the task to the Inbox.
+ * dueDate?, priority?, completed? }. projectId: null moves the task to the
+ * Inbox; priority: null resets it to the default (4).
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -191,13 +216,22 @@ export async function updateTaskItem(sql, userId, body, env) {
   const hasProject = Object.hasOwn(body, 'projectId');
   const hasParent = Object.hasOwn(body, 'parentId');
   const hasDueDate = Object.hasOwn(body, 'dueDate');
+  const hasPriority = Object.hasOwn(body, 'priority');
   const hasCompleted = Object.hasOwn(body, 'completed');
 
   const content = hasContent ? cleanText(body.content, MAX_CONTENT_LENGTH) : null;
   if (hasContent && !content) {
     return Response.json({ error: 'Task content is required' }, { status: 400 });
   }
-  if (!hasContent && !hasDescription && !hasProject && !hasParent && !hasDueDate && !hasCompleted) {
+  if (
+    !hasContent &&
+    !hasDescription &&
+    !hasProject &&
+    !hasParent &&
+    !hasDueDate &&
+    !hasPriority &&
+    !hasCompleted
+  ) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
 
@@ -232,6 +266,14 @@ export async function updateTaskItem(sql, userId, body, env) {
   }
   const dueDate = !hasDueDate || clearsDueDate ? null : String(body.dueDate);
 
+  // Same bargain as dueDate: a bad value is refused, never coerced. null is
+  // the one non-integer accepted, and it means "back to the default".
+  const clearsPriority = hasPriority && body.priority === null;
+  if (hasPriority && !clearsPriority && !isPriority(body.priority)) {
+    return Response.json({ error: 'priority must be an integer from 1 to 4' }, { status: 400 });
+  }
+  const priority = !hasPriority || clearsPriority ? DEFAULT_PRIORITY : body.priority;
+
   const [item] = await sql`
     UPDATE task_items t SET
       content      = COALESCE(${hasContent ? content : null}, t.content),
@@ -239,6 +281,7 @@ export async function updateTaskItem(sql, userId, body, env) {
       project_id   = CASE WHEN ${hasProject}::boolean THEN ${projectId}::uuid ELSE t.project_id END,
       parent_id    = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE t.parent_id END,
       due_date     = CASE WHEN ${hasDueDate}::boolean THEN ${dueDate}::date ELSE t.due_date END,
+      priority     = CASE WHEN ${hasPriority}::boolean THEN ${priority}::smallint ELSE t.priority END,
       completed_at = CASE
         WHEN ${hasCompleted}::boolean THEN (CASE WHEN ${Boolean(body.completed)}::boolean THEN now() ELSE NULL END)
         ELSE t.completed_at
@@ -246,8 +289,8 @@ export async function updateTaskItem(sql, userId, body, env) {
       updated_at   = now()
     WHERE t.id = ${id} AND t.user_id = ${userId}
     RETURNING t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
-              t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.completed_at AS "completedAt",
-              t.created_at AS "createdAt"
+              t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
+              t.completed_at AS "completedAt", t.created_at AS "createdAt"
   `;
   // Best-effort search sync. Reparenting moves the row between search
   // documents (only top-level tasks are indexed, carrying their sub-task

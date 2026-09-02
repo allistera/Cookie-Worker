@@ -429,3 +429,112 @@ describe('GET /task-items?project=today', () => {
     expect(sql.calls[0].values).not.toContain('today');
   });
 });
+
+// Todoist-style: 1 is the most urgent, 4 is the default and reads as "no
+// priority". Like dueDate, a bad value is refused rather than coerced — a
+// silently clamped or nulled priority would overwrite what the task had.
+describe('priority', () => {
+  it('defaults a new task to priority 4', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, content: 'Ship it', priority: 4 }]]);
+
+    const response = await createTaskItem(sql, USER_ID, { content: 'Ship it' });
+
+    expect(response.status).toBe(201);
+    expect(sql.calls[0].text).toContain('priority');
+    expect(sql.calls[0].values).toContain(4);
+  });
+
+  it('creates a task with the given priority', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, content: 'Ship it', priority: 1 }]]);
+
+    const response = await createTaskItem(sql, USER_ID, { content: 'Ship it', priority: 1 });
+
+    expect(response.status).toBe(201);
+    expect(sql.calls[0].values).toContain(1);
+    await expect(response.json()).resolves.toMatchObject({ item: { priority: 1 } });
+  });
+
+  it.each([0, 5, 2.5, '2', 'high', true])('rejects %j on create', async (priority) => {
+    const sql = createMockSql([]);
+
+    const response = await createTaskItem(sql, USER_ID, { content: 'Ship it', priority });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'priority must be an integer from 1 to 4',
+    });
+    expect(sql.calls).toHaveLength(0);
+  });
+
+  it('sets a priority', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, priority: 2 }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, priority: 2 });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ item: { priority: 2 } });
+    const update = sql.calls[1];
+    expect(update.text).toContain('priority     = CASE WHEN');
+    expect(update.values).toContain(2);
+  });
+
+  it('resets to the default when priority is null', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, priority: 4 }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, priority: null });
+
+    expect(response.status).toBe(200);
+    expect(sql.calls[1].values).toContain(4);
+  });
+
+  it.each([0, 5, 2.5, '2', 'high', true])(
+    'rejects %j on update before touching the row',
+    async (priority) => {
+      const sql = createMockSql([[{ id: ITEM_ID }]]);
+
+      const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, priority });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: 'priority must be an integer from 1 to 4',
+      });
+      // Only the ownership lookup ran; no UPDATE.
+      expect(sql.calls).toHaveLength(1);
+    },
+  );
+
+  it('counts priority alone as a change', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, priority: 3 }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, priority: 3 });
+
+    expect(response.status).toBe(200);
+  });
+
+  it('leaves priority alone when the body does not mention it', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, content: 'Renamed' }]]);
+
+    await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Renamed' });
+
+    // The CASE guard is false, so the column keeps t.priority.
+    const update = sql.calls[1];
+    const guardIndex = update.text
+      .split('?')
+      .findIndex((part) => part.includes('priority     = CASE WHEN'));
+    expect(update.values[guardIndex]).toBe(false);
+  });
+
+  it('returns priority on every read path', async () => {
+    const list = createMockSql([[]]);
+    await getTaskItems(list, USER_ID, url('?project=inbox'));
+    expect(list.calls[0].text).toContain('t.priority');
+
+    const create = createMockSql([[{ id: ITEM_ID }]]);
+    await createTaskItem(create, USER_ID, { content: 'Ship it' });
+    expect(create.calls[0].text).toMatch(/RETURNING[\s\S]*priority/);
+
+    const update = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID }]]);
+    await updateTaskItem(update, USER_ID, { id: ITEM_ID, content: 'Renamed' });
+    expect(update.calls[1].text).toMatch(/RETURNING[\s\S]*t\.priority/);
+  });
+});
