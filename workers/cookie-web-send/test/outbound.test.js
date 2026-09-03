@@ -11,9 +11,11 @@ import {
   immediateSendIdempotencyKey,
   parseAttachmentIds,
   parseRecipients,
+  resolveOwnedAttachments,
   validateOutboundMessage,
 } from '../src/outbound.js';
 import { parseScheduledFor } from '../src/scheduled.js';
+import { createMockSql } from './helpers.js';
 
 describe('parseRecipients', () => {
   it('parses a comma-separated to field into trimmed addresses', () => {
@@ -168,5 +170,65 @@ describe('immediateSendIdempotencyKey', () => {
       requestId: 'retry-2',
     });
     expect(first).not.toBe(second);
+  });
+});
+
+describe('resolveOwnedAttachments', () => {
+  const USER_ID = '99999999-9999-4999-8999-999999999999';
+  const INBOUND_ID = '11111111-1111-4111-8111-111111111111';
+  const UPLOAD_ID = '22222222-2222-4222-8222-222222222222';
+
+  it('resolves a composer upload, not just a forwarded inbound attachment', async () => {
+    // Before migration 0060 this query joined `attachments` alone, so a
+    // scheduled send carrying a composer upload resolved to nothing and never
+    // went out.
+    const sql = createMockSql([
+      [{ id: UPLOAD_ID, filename: 'plan.pdf', size_bytes: 10, blob_url: 'b', source: 'upload' }],
+    ]);
+
+    const result = await resolveOwnedAttachments(sql, USER_ID, [UPLOAD_ID]);
+
+    expect(result.missing).toBeUndefined();
+    expect(result.attachments?.[0].source).toBe('upload');
+    expect(sql.calls[0].text).toMatch(/outbound_attachments/);
+  });
+
+  it('keeps working against a database that has not taken 0060 yet', async () => {
+    const undefinedTable = Object.assign(
+      new Error('relation "outbound_attachments" does not exist'),
+      {
+        code: '42P01',
+      },
+    );
+    /** @type {any} */
+    let call = 0;
+    /** @type {any} */
+    const sql = Object.assign(
+      (/** @type {any} */ strings, /** @type {any[]} */ ...values) => {
+        call += 1;
+        sql.calls.push({ text: strings.join('?'), values });
+        if (call === 1) return Promise.reject(undefinedTable);
+        return Promise.resolve([
+          {
+            id: INBOUND_ID,
+            filename: 'plan.pdf',
+            size_bytes: 10,
+            blob_url: 'b',
+            source: 'inbound',
+          },
+        ]);
+      },
+      { calls: /** @type {{text: string, values: unknown[]}[]} */ ([]) },
+    );
+
+    const result = await resolveOwnedAttachments(sql, USER_ID, [INBOUND_ID]);
+
+    expect(result.attachments ?? []).toHaveLength(1);
+    expect(sql.calls[1].text).not.toMatch(/outbound_attachments/);
+  });
+
+  it('rejects the whole send when an id resolves to neither source', async () => {
+    const sql = createMockSql([[]]);
+    expect((await resolveOwnedAttachments(sql, USER_ID, [UPLOAD_ID])).missing).toBe(true);
   });
 });

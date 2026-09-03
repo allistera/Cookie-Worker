@@ -27,6 +27,10 @@ const MAX_SCHEDULED_SEND_ATTEMPTS = 5;
 // accumulate forever; the flush job is the only periodic cron trigger this
 // app has, so it doubles as the sweep for both.
 const RESOLVED_STATE_RETENTION_DAYS = 30;
+// An upload the composer never sent is only reclaimable once it is old enough
+// that no in-progress compose could still be holding it.
+const ORPHAN_UPLOAD_RETENTION_HOURS = 24;
+const ORPHAN_UPLOAD_SWEEP_LIMIT = 50;
 const FLUSH_CLAIM_ATTEMPTS = 3;
 const FLUSH_CLAIM_BASE_DELAY_MS = 500;
 const TRANSIENT_DB_ERROR_CODES = new Set([
@@ -80,10 +84,12 @@ export async function createScheduledSend(
     `;
     if (!row) return null;
     for (const [position, attachment] of attachments.entries()) {
+      const isUpload = attachment.source === 'upload';
       await tx`
         INSERT INTO scheduled_send_attachments
-          (scheduled_send_id, attachment_id, position)
-        VALUES (${row.id}, ${attachment.id}, ${position})
+          (scheduled_send_id, attachment_id, outbound_attachment_id, position)
+        VALUES (${row.id}, ${isUpload ? null : attachment.id}::uuid,
+                ${isUpload ? attachment.id : null}::uuid, ${position})
       `;
     }
     return row;
@@ -107,7 +113,12 @@ export async function listScheduledSends(sql, userId) {
 /** @param {unknown} err */
 function isUndefinedScheduledAttachmentsTable(err) {
   const error = /** @type {{code?: string, message?: string}} */ (err);
-  return error?.code === '42P01' && /scheduled_send_attachments/i.test(String(error.message ?? ''));
+  // Either half of the join can be missing mid-rollout: scheduled_send_attachments
+  // arrives with 0059, outbound_attachments with 0060.
+  return (
+    error?.code === '42P01' &&
+    /scheduled_send_attachments|outbound_attachments/i.test(String(error.message ?? ''))
+  );
 }
 
 /**
@@ -149,14 +160,15 @@ export async function cancelScheduledSend(sql, userId, id) {
                s.reply_to_message_id AS "replyToMessageId",
                COALESCE((
                  SELECT jsonb_agg(jsonb_build_object(
-                   'id', a.id,
-                   'filename', a.filename,
-                   'content_type', a.content_type,
-                   'size_bytes', a.size_bytes,
-                   'downloadable', a.blob_url IS NOT NULL
+                   'id', COALESCE(a.id, oa.id),
+                   'filename', COALESCE(a.filename, oa.filename),
+                   'content_type', COALESCE(a.content_type, oa.content_type),
+                   'size_bytes', COALESCE(a.size_bytes, oa.size_bytes),
+                   'downloadable', COALESCE(a.blob_url, oa.blob_url) IS NOT NULL
                  ) ORDER BY ssa.position)
                  FROM scheduled_send_attachments ssa
-                 JOIN attachments a ON a.id = ssa.attachment_id
+                 LEFT JOIN attachments a ON a.id = ssa.attachment_id
+                 LEFT JOIN outbound_attachments oa ON oa.id = ssa.outbound_attachment_id
                  WHERE ssa.scheduled_send_id = s.id
                ), '[]'::jsonb) AS attachments
         FROM scheduled_sends s
@@ -201,14 +213,15 @@ async function claimDueScheduledSends(sql, limit) {
                 s.reply_to_message_id AS "replyToMessageId", s.attempts,
                 COALESCE((
                   SELECT jsonb_agg(jsonb_build_object(
-                    'id', a.id,
-                    'filename', a.filename,
-                    'content_type', a.content_type,
-                    'size_bytes', a.size_bytes,
-                    'blob_url', a.blob_url
+                    'id', COALESCE(a.id, oa.id),
+                    'filename', COALESCE(a.filename, oa.filename),
+                    'content_type', COALESCE(a.content_type, oa.content_type),
+                    'size_bytes', COALESCE(a.size_bytes, oa.size_bytes),
+                    'blob_url', COALESCE(a.blob_url, oa.blob_url)
                   ) ORDER BY ssa.position)
                   FROM scheduled_send_attachments ssa
-                  JOIN attachments a ON a.id = ssa.attachment_id
+                  LEFT JOIN attachments a ON a.id = ssa.attachment_id
+                  LEFT JOIN outbound_attachments oa ON oa.id = ssa.outbound_attachment_id
                   WHERE ssa.scheduled_send_id = s.id
                 ), '[]'::jsonb) AS attachments
     `;
@@ -388,8 +401,11 @@ async function mapWithConcurrency(items, concurrency, operation) {
 
 // Best-effort; a sweep failure must never block the flush job's actual
 // purpose of sending due mail.
-/** @param {import('postgres').Sql} sql */
-async function sweepResolvedState(sql) {
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {import('./outbound.js').SendServices} services
+ */
+async function sweepResolvedState(sql, services) {
   try {
     await sql`
       DELETE FROM scheduled_sends
@@ -399,6 +415,61 @@ async function sweepResolvedState(sql) {
     await sql`DELETE FROM message_read_receipts WHERE expires_at < now()`;
   } catch (err) {
     console.error('resolved-state sweep failed:', /** @type {Error} */ (err).message);
+  }
+  await sweepOrphanedUploads(sql, services);
+}
+
+// A composer upload the user never sent (draft abandoned, tab closed) keeps
+// its bytes in Blob forever otherwise. This flush is the only periodic cron
+// this product has, so it doubles as that sweep too.
+//
+// Three things put a row out of reach: a pending scheduled send still needs
+// it; a saved draft still references it, and a draft can sit untouched for
+// weeks past this window; and a sent copy may share the same blob_url, since
+// storeSentMessage records it on the sent message's own attachments row —
+// deleting those bytes would empty an attachment still readable in Sent.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {import('./outbound.js').SendServices} services
+ */
+async function sweepOrphanedUploads(sql, services) {
+  try {
+    const orphans = await sql`
+      DELETE FROM outbound_attachments oa
+      WHERE oa.id IN (
+        SELECT candidate.id
+        FROM outbound_attachments candidate
+        WHERE candidate.created_at
+                < now() - make_interval(hours => ${ORPHAN_UPLOAD_RETENTION_HOURS})
+          AND NOT EXISTS (
+            SELECT 1 FROM scheduled_send_attachments ssa
+            WHERE ssa.outbound_attachment_id = candidate.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM draft_attachments da
+            WHERE da.outbound_attachment_id = candidate.id
+          )
+        ORDER BY candidate.created_at
+        LIMIT ${ORPHAN_UPLOAD_SWEEP_LIMIT}
+      )
+      RETURNING oa.blob_url,
+                NOT EXISTS (
+                  SELECT 1 FROM attachments a WHERE a.blob_url = oa.blob_url
+                ) AS "blobUnreferenced"
+    `;
+    for (const orphan of orphans) {
+      if (!orphan.blobUnreferenced) continue;
+      try {
+        await services.deleteBlob(orphan.blob_url);
+      } catch (err) {
+        console.error(
+          'failed to delete orphaned attachment blob:',
+          /** @type {Error} */ (err).message,
+        );
+      }
+    }
+  } catch (err) {
+    console.error('orphaned-upload sweep failed:', /** @type {Error} */ (err).message);
   }
 }
 
@@ -427,7 +498,7 @@ export async function handleFlush(sql, services) {
       ),
     ]);
     const results = [...ordinaryResults, ...attachmentResults];
-    await sweepResolvedState(sql);
+    await sweepResolvedState(sql, services);
     // One sync for the whole batch, not one per delivered row: a full flush
     // would otherwise fire FLUSH_BATCH_SIZE separate Postgres/Meilisearch
     // round trips for what is a single addDocuments call.

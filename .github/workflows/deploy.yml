@@ -87,6 +87,19 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
+      - name: Deploy cookie-web-drafts and synchronize its secrets
+        if: inputs.worker == 'all' || inputs.worker == 'cookie-web-drafts'
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/cookie-web-drafts
+          command: deploy
+          secrets: |
+            SENTRY_DSN
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
       - name: Deploy cookie-web-emails and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-emails'
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
@@ -294,6 +307,7 @@ jobs:
           inputs.worker != 'all' &&
           inputs.worker != 'cookie-web-ai' &&
           inputs.worker != 'cookie-web-calendar' &&
+          inputs.worker != 'cookie-web-drafts' &&
           inputs.worker != 'cookie-web-emails' &&
           inputs.worker != 'cookie-web-labels' &&
           inputs.worker != 'cookie-web-messages' &&

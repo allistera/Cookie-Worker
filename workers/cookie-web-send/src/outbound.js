@@ -258,6 +258,7 @@ export async function immediateSendIdempotencyKey(
  *   env: import('./sentry.js').SendEnv,
  *   createResend: (apiKey: string | undefined) => any,
  *   readBlob: (url: string) => Promise<{stream: ReadableStream<Uint8Array> | null} | null>,
+ *   deleteBlob: (url: string) => Promise<unknown>,
  *   indexSentMessage: (messageUuid: string) => void,
  *   indexSentMessages: (messageUuids: string[]) => void,
  * }} SendServices
@@ -268,18 +269,64 @@ export async function immediateSendIdempotencyKey(
  * @param {string} userId
  * @param {string[]} attachmentIds
  */
+/** @param {unknown} err */
+export function isUndefinedOutboundAttachmentsTable(err) {
+  const error = /** @type {{code?: string, message?: string}} */ (err);
+  return error?.code === '42P01' && /outbound_attachments/i.test(String(error.message ?? ''));
+}
+
+/**
+ * Inbound attachments are owned through their message; composer uploads
+ * (migration 0060) are owned directly. Both arrive as the same opaque id, so
+ * resolve across the two and let callers treat them uniformly.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string[]} attachmentIds
+ */
+async function selectOwnedAttachmentRows(sql, userId, attachmentIds) {
+  try {
+    return await sql`
+      SELECT * FROM (
+        SELECT a.id, a.filename, a.content_type, a.size_bytes, a.blob_url,
+               'inbound' AS source
+        FROM attachments a
+        JOIN messages m ON m.id = a.message_id
+        WHERE a.id = ANY(${attachmentIds}::uuid[])
+          AND m.user_id = ${userId}
+          AND NOT m.is_deleted
+          AND a.blob_url IS NOT NULL
+        UNION ALL
+        SELECT o.id, o.filename, o.content_type, o.size_bytes, o.blob_url,
+               'upload' AS source
+        FROM outbound_attachments o
+        WHERE o.id = ANY(${attachmentIds}::uuid[])
+          AND o.user_id = ${userId}
+      ) owned
+      ORDER BY array_position(${attachmentIds}::uuid[], owned.id)
+    `;
+  } catch (err) {
+    // Rolling deploy: this release can run before migration 0060. Forwarded
+    // attachments keep working; an upload id resolves to nothing and the send
+    // is rejected as a missing attachment rather than delivered without it.
+    if (!isUndefinedOutboundAttachmentsTable(err)) throw err;
+    return sql`
+      SELECT a.id, a.filename, a.content_type, a.size_bytes, a.blob_url,
+             'inbound' AS source
+      FROM attachments a
+      JOIN messages m ON m.id = a.message_id
+      WHERE a.id = ANY(${attachmentIds}::uuid[])
+        AND m.user_id = ${userId}
+        AND NOT m.is_deleted
+        AND a.blob_url IS NOT NULL
+      ORDER BY array_position(${attachmentIds}::uuid[], a.id)
+    `;
+  }
+}
+
 export async function resolveOwnedAttachments(sql, userId, attachmentIds) {
   if (attachmentIds.length === 0) return { attachments: [] };
-  const rows = await sql`
-    SELECT a.id, a.filename, a.content_type, a.size_bytes, a.blob_url
-    FROM attachments a
-    JOIN messages m ON m.id = a.message_id
-    WHERE a.id = ANY(${attachmentIds}::uuid[])
-      AND m.user_id = ${userId}
-      AND NOT m.is_deleted
-      AND a.blob_url IS NOT NULL
-    ORDER BY array_position(${attachmentIds}::uuid[], a.id)
-  `;
+  const rows = await selectOwnedAttachmentRows(sql, userId, attachmentIds);
   if (rows.length !== attachmentIds.length) return { missing: true };
 
   let declaredBytes = 0;
