@@ -130,6 +130,11 @@ describe('thread summarization', () => {
     saveMessageSummary(sql, '11111111-1111-1111-1111-111111111111', 'Cabinets arrive Tuesday.');
 
     expect(query).toContain('INSERT INTO message_ai (message_id, summary, status, processed_at)');
+    // The spam retention sweep reads processed_at as the verdict time; a
+    // summary must not push a spam message's deletion out.
+    expect(query).toContain(
+      'processed_at = COALESCE(message_ai.processed_at, EXCLUDED.processed_at)',
+    );
     expect(query).toContain('ON CONFLICT (message_id) DO UPDATE SET');
     expect(query).toContain('summary = EXCLUDED.summary');
     expect(query).toContain("status = 'completed'");

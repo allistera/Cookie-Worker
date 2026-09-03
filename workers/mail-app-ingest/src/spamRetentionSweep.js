@@ -9,7 +9,8 @@ export const DEFAULT_SPAM_RETENTION_DAYS = 30;
 
 /**
  * Soft-deletes spam that has sat in the Spam folder longer than its owner's
- * retention (users.prefs.spamRetentionDays, 30 by default, bounded to 1–365
+ * retention. Only what the folder lists is eligible (folderPredicate('spam')
+ * in cookie-web-emails): spam the user moved to Done is theirs to keep. (users.prefs.spamRetentionDays, 30 by default, bounded to 1–365
  * here as well as at the API so a hand-edited value cannot wipe or pin a
  * mailbox). The clock starts when the verdict landed — message_ai.processed_at,
  * set by both the classifier and a user's own report — so a message reported
@@ -40,7 +41,7 @@ export async function purgeExpiredSpam(env, deps = {}) {
         JOIN messages m ON m.id = ai.message_id
         JOIN users u ON u.id = m.user_id
         WHERE ai.spam_verdict = 'spam'
-          AND NOT m.is_deleted
+          AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
           AND COALESCE(ai.processed_at, m.created_at) < now() - make_interval(
             days => LEAST(365, GREATEST(1,
               CASE WHEN jsonb_typeof(u.prefs -> 'spamRetentionDays') = 'number'

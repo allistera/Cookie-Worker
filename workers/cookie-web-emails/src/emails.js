@@ -91,7 +91,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
                 ELSE m.recipients END AS recipients,
            m.subject, m.snippet, ${sortAt} AS sort_at,
            m.sent_at, m.is_unread, m.is_starred,
-           m.is_sent, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
+           m.is_sent, m.is_archived, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
            BOOL_OR(NULLIF(BTRIM(ai.summary), '') IS NOT NULL) AS has_ai_summary,
            (m.body_html IS NOT NULL) AS has_html,
            EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,

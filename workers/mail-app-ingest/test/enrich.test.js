@@ -163,6 +163,66 @@ describe('AI enrichment', () => {
     expect(upsert.text).toContain("WHERE message_ai.provider IS DISTINCT FROM 'user'");
   });
 
+  test('stands down entirely — labels included — when the user ruled while it ran', async () => {
+    const sql = createMockSql({ lockedAiRows: [{ provider: 'user' }] });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const result = await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    const statements = sql.transactions[0].map((query) => query.text);
+    expect(statements[0]).toContain('FOR UPDATE');
+    expect(statements).toHaveLength(1);
+    expect(result).toEqual({ verdict: 'inbox', selectedLabels: 0 });
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'ai_enrichment_superseded', message_id: '<id>' }),
+    );
+    log.mockRestore();
+  });
+
+  test('never re-classifies a message the user already ruled on', async () => {
+    const sql = createMockSql({
+      enrichmentStateRows: [{ status: 'failed', spam_verdict: 'spam', provider: 'user' }],
+    });
+
+    const result = await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    expect(result.verdict).toBe('spam');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(sql.transactions).toHaveLength(0);
+  });
+
+  test('a failed classification cannot flip a user verdict to failed', async () => {
+    const sql = createMockSql();
+    const workingFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+    try {
+      await expect(
+        enrichMessage(
+          sql,
+          { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+          'message-1',
+          'key',
+        ),
+      ).rejects.toThrow();
+    } finally {
+      vi.stubGlobal('fetch', workingFetch);
+    }
+
+    const failure = sql.queries.find((query) => query.text.includes("'failed', 'openai'"));
+    expect(failure).toBeDefined();
+    expect(failure.text).toContain("WHERE message_ai.provider IS DISTINCT FROM 'user'");
+  });
+
   // Classification changes labels and, via spam_verdict, is_spam — both
   // indexed. The mark must be inside the same transaction, or a failed
   // post-classification sync would leave the message indexed as unlabelled

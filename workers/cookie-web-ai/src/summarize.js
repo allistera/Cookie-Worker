@@ -157,7 +157,9 @@ export function saveMessageSummary(sql, id, summary) {
     ON CONFLICT (message_id) DO UPDATE SET
       summary = EXCLUDED.summary,
       status = 'completed',
-      processed_at = EXCLUDED.processed_at,
+      -- processed_at is when the spam verdict landed — the spam retention
+      -- sweep's clock — so an existing stamp is kept, not refreshed.
+      processed_at = COALESCE(message_ai.processed_at, EXCLUDED.processed_at),
       updated_at = now()
   `;
 }

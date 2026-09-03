@@ -17,7 +17,7 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], labelRows?: unknown[], enrichmentStateRows?: unknown[]}} [options]
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], labelRows?: unknown[], enrichmentStateRows?: unknown[], lockedAiRows?: unknown[]}} [options]
  * @returns {any}
  */
 export function createMockSql(options = {}) {
@@ -69,6 +69,12 @@ export function createMockSql(options = {}) {
       }
       if (query.text.includes('LEFT JOIN message_ai')) {
         return Promise.resolve(options.enrichmentStateRows ?? []);
+      }
+      if (
+        query.text.includes('FROM message_ai WHERE message_id') &&
+        query.text.includes('FOR UPDATE')
+      ) {
+        return Promise.resolve(options.lockedAiRows ?? []);
       }
       return Promise.resolve([]);
     };
