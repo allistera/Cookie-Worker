@@ -30,6 +30,8 @@ describe('handleList', () => {
       nextCursor: null,
       readReceiptsAvailable: false,
       unreadCount: 0,
+      spamCount: 0,
+      snoozedCount: 0,
       userId: USER_ID,
     });
   });
@@ -44,6 +46,8 @@ describe('handleList', () => {
     const body = await response.json();
     expect(body).toMatchObject({ emails: [], nextCursor: null });
     expect(body).not.toHaveProperty('unreadCount');
+    expect(body).not.toHaveProperty('spamCount');
+    expect(body).not.toHaveProperty('snoozedCount');
     expect(body).not.toHaveProperty('userId');
   });
 
@@ -101,7 +105,27 @@ describe('handleState', () => {
     const response = await handleState(stubSql([{ unread: 7 }]), USER_ID);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ unreadCount: 7, userId: USER_ID });
+    expect(await response.json()).toEqual({
+      unreadCount: 7,
+      spamCount: 0,
+      snoozedCount: 0,
+      userId: USER_ID,
+    });
+  });
+
+  // The sidebar only lists Spam and Snoozed while those folders hold
+  // something, so the counts have to arrive with the bootstrap, before either
+  // folder is ever opened.
+  test('reports how many messages the Spam and Snoozed folders hold', async () => {
+    const rows = [{ unread: 7, spam: 2, snoozed: 3 }];
+    const response = await handleState(stubSql(rows), USER_ID);
+
+    expect(await response.json()).toEqual({
+      unreadCount: 7,
+      spamCount: 2,
+      snoozedCount: 3,
+      userId: USER_ID,
+    });
   });
 
   test('answers 500 without leaking details when the query fails', async () => {

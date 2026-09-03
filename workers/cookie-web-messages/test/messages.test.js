@@ -639,6 +639,96 @@ describe('patchMessage', () => {
     const response = await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_starred: true });
     expect(response.status).toBe(404);
   });
+
+  // is_spam is the user's own verdict. It lives in message_ai.spam_verdict —
+  // the column the Spam folder, unread badge, digest and search index already
+  // read — so the request runs as a transaction: the ownership-checked
+  // UPDATE first, then the verdict upsert stamped provider = 'user', then the
+  // system "Spam" label so the row looks like AI-flagged spam.
+  describe('is_spam', () => {
+    const SPAM_LABEL_ID = '44444444-4444-4444-4444-444444444444';
+
+    test('reports spam inside a transaction and pins the Spam label', async () => {
+      const sql = createMockSql([
+        [{ id: MESSAGE_ID, is_unread: true }], // ownership-checked UPDATE
+        [], // message_ai upsert
+        [{ id: SPAM_LABEL_ID }], // system Spam label upsert
+        [], // message_labels insert
+      ]);
+      const response = await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_spam: true });
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).message).toEqual({
+        id: MESSAGE_ID,
+        is_unread: true,
+        is_spam: true,
+      });
+      expect(sql.begin).toHaveBeenCalledTimes(1);
+      const texts = sql.calls.map((call) => call.text);
+      expect(texts[0]).toMatch(/UPDATE messages m SET/);
+      expect(texts[0]).toMatch(/search_indexed_at = NULL/);
+      expect(texts[1]).toMatch(/INSERT INTO message_ai/);
+      expect(texts[1]).toMatch(/ON CONFLICT \(message_id\) DO UPDATE/);
+      expect(texts[1]).toMatch(/provider = 'user'/);
+      expect(sql.calls[1].values).toContain('spam');
+      expect(texts[2]).toMatch(/INSERT INTO labels/);
+      expect(texts[2]).toContain("'Spam', '#64748b', 'system'");
+      expect(texts[3]).toMatch(/INSERT INTO message_labels/);
+      expect(sql.calls[3].values).toContain(SPAM_LABEL_ID);
+    });
+
+    test('clearing spam writes an inbox verdict and drops the Spam label', async () => {
+      const sql = createMockSql([
+        [{ id: MESSAGE_ID }], // ownership-checked UPDATE
+        [], // message_ai upsert
+        [], // Spam label removal
+      ]);
+      const response = await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_spam: false });
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).message.is_spam).toBe(false);
+      expect(sql.calls[1].values).toContain('inbox');
+      expect(sql.calls[2].text).toMatch(/DELETE FROM message_labels/);
+      expect(sql.calls[2].text).toContain("l.name = 'Spam'");
+      expect(sql.calls).toHaveLength(3);
+    });
+
+    test('never writes a verdict for a message the caller does not own', async () => {
+      const onMessageChanged = vi.fn();
+      const sql = createMockSql([[]]);
+      const response = await patchMessage(
+        sql,
+        USER_ID,
+        { id: MESSAGE_ID, is_spam: true },
+        { onMessageChanged },
+      );
+
+      expect(response.status).toBe(404);
+      expect(sql.calls).toHaveLength(1);
+      expect(onMessageChanged).not.toHaveBeenCalled();
+    });
+
+    test('reindexes the message after the verdict lands', async () => {
+      const onMessageChanged = vi.fn();
+      const sql = createMockSql([[{ id: MESSAGE_ID }], [], []]);
+      await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_spam: false }, { onMessageChanged });
+      expect(onMessageChanged).toHaveBeenCalledWith(MESSAGE_ID);
+    });
+
+    test('rejects a non-boolean is_spam', async () => {
+      const sql = createMockSql();
+      const response = await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_spam: 'yes' });
+      expect(response.status).toBe(400);
+      expect(sql).not.toHaveBeenCalled();
+    });
+
+    test('flag-only requests stay a single statement outside a transaction', async () => {
+      const sql = createMockSql([[{ id: MESSAGE_ID }]]);
+      await patchMessage(sql, USER_ID, { id: MESSAGE_ID, is_starred: true });
+      expect(sql.begin).not.toHaveBeenCalled();
+      expect(sql.calls).toHaveLength(1);
+    });
+  });
 });
 
 // is_unread/is_starred/is_archived/is_deleted/scheduled_for and the label set

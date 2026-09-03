@@ -238,6 +238,10 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
           provider = EXCLUDED.provider, model = EXCLUDED.model,
           prompt_version = EXCLUDED.prompt_version, error_code = NULL,
           processed_at = now(), updated_at = now()
+        -- A user who reported (or cleared) spam from the reader while this
+        -- classification was in flight has the final say: cookie-web-messages
+        -- stamps that row provider = 'user', and it is never overwritten.
+        WHERE message_ai.provider IS DISTINCT FROM 'user'
       `;
       // Classification changes two indexed fields — the message's labels and,
       // through spam_verdict, is_spam. Mark the row drifted inside the same

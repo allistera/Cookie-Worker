@@ -142,6 +142,27 @@ describe('AI enrichment', () => {
     expect(statements).toContain('INSERT INTO message_ai');
   });
 
+  // A user can report or clear spam from the reader while classification is
+  // still in flight (Realtime shows new mail before enrichment finishes).
+  // cookie-web-messages stamps that row provider = 'user'; the upsert must
+  // leave such rows alone rather than overturn the user's verdict.
+  test('never overwrites a verdict the user recorded while classification ran', async () => {
+    const sql = createMockSql();
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    const upsert = sql.transactions[0].find((query) =>
+      query.text.includes('INSERT INTO message_ai'),
+    );
+    expect(upsert).toBeDefined();
+    expect(upsert.text).toContain("WHERE message_ai.provider IS DISTINCT FROM 'user'");
+  });
+
   // Classification changes labels and, via spam_verdict, is_spam — both
   // indexed. The mark must be inside the same transaction, or a failed
   // post-classification sync would leave the message indexed as unlabelled

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { fetchEmails, fetchUnreadCount } from '../src/emails.js';
+import { fetchEmails, fetchSnoozedCount, fetchSpamCount, fetchUnreadCount } from '../src/emails.js';
 
 // Ported from Cookie-Web's api/_lib/__tests__/emails-query.test.js — the
 // folder-predicate and query-shape suite, unchanged apart from moving with
@@ -37,7 +37,7 @@ describe('fetchEmails', () => {
 
     fetchEmails(capture.sql, USER_ID, 50, cursor, 'inbox');
 
-    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score');
+    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict');
     expect(capture.query()).toContain('ai.summary');
     expect(capture.query()).toContain('AS has_ai_summary');
     expect(capture.query()).toContain('m.scheduled_for');
@@ -73,7 +73,7 @@ describe('fetchEmails', () => {
 
     expect(capture.query()).toContain('m.scheduled_for > now()');
     expect(capture.query()).not.toContain("? = 'snoozed'");
-    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score');
+    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict');
   });
 
   test.each([
@@ -89,7 +89,7 @@ describe('fetchEmails', () => {
 
     expect(capture.query()).toContain('AND (m.is_archived)');
     expect(capture.query()).not.toContain("? = 'done'");
-    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score');
+    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict');
   });
 
   test('inlines the inbox folder predicate so the 0035 partial index can apply', () => {
@@ -158,5 +158,36 @@ describe('fetchUnreadCount', () => {
     expect(capture.query()).toContain('WHERE m.user_id = ? AND m.is_unread');
     const whereOnwards = capture.query().slice(capture.query().indexOf('WHERE m.user_id'));
     expect(whereOnwards).not.toContain('spam');
+  });
+});
+
+// The Spam folder predicate (folderPredicate('spam') plus the list's
+// NOT is_deleted) and this count must agree, or the sidebar would show a
+// folder that opens empty — or hide one that has mail in it.
+describe('fetchSpamCount', () => {
+  test('counts exactly what the Spam folder lists', () => {
+    const capture = captureQuery();
+
+    fetchSpamCount(capture.sql, USER_ID);
+
+    const query = capture.query();
+    expect(query).toContain("ai.spam_verdict = 'spam'");
+    expect(query).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
+    expect(query).toContain('count(*)::int AS spam');
+  });
+});
+
+// Likewise for Snoozed: the count and folderPredicate('snoozed') must agree.
+describe('fetchSnoozedCount', () => {
+  test('counts exactly what the Snoozed folder lists', () => {
+    const capture = captureQuery();
+
+    fetchSnoozedCount(capture.sql, USER_ID);
+
+    const query = capture.query();
+    expect(query).toContain('m.scheduled_for > now()');
+    expect(query).toContain("COALESCE(ai.spam_verdict, 'inbox') <> 'spam'");
+    expect(query).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
+    expect(query).toContain('count(m.id)::int AS snoozed');
   });
 });

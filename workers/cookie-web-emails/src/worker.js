@@ -1,8 +1,10 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
+import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { handleList, handleState } from './emails.js';
+import { getSpamRetention, putSpamRetention } from './spamRetention.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 /** @param {string} databaseUrl */
@@ -18,7 +20,7 @@ export function createSql(databaseUrl) {
 }
 
 /**
- * Routes GET /emails and /emails/state — the two resources Cookie-Web's
+ * Routes GET /emails, /emails/state and GET/PUT /emails/spam-retention — the resources Cookie-Web's
  * api/emails.js served, previously reached as /api/emails and
  * /api/emails?resource=state.
  *
@@ -29,9 +31,29 @@ export function createSql(databaseUrl) {
  */
 async function route(url, request, sql, userId) {
   const segments = url.pathname.split('/').filter(Boolean);
-  const isState = segments.length === 2 && segments[1] === 'state';
-  if (segments[0] !== 'emails' || (segments.length > 1 && !isState)) {
+  const sub = segments.length === 2 ? segments[1] : null;
+  const isState = sub === 'state';
+  const isSpamRetention = sub === 'spam-retention';
+  if (segments[0] !== 'emails' || (segments.length > 1 && !isState && !isSpamRetention)) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
+  }
+  if (isSpamRetention) {
+    if (request.method === 'GET') return getSpamRetention(sql, userId);
+    if (request.method !== 'PUT') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, PUT' } },
+      );
+    }
+    let body;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) return errorResponse;
+      throw error;
+    }
+    return putSpamRetention(sql, userId, body);
   }
   if (request.method !== 'GET') {
     return Response.json(

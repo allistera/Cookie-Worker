@@ -52,7 +52,7 @@ export function fetchSearchEmails(sql, userId, ids) {
                 ELSE m.recipients END AS recipients,
            m.subject, m.snippet,
            m.sent_at, m.is_unread, m.is_starred,
-           m.is_sent, m.scheduled_for, m.follow_up_at, ai.spam_score,
+           m.is_sent, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
            BOOL_OR(NULLIF(BTRIM(ai.summary), '') IS NOT NULL) AS has_ai_summary,
            (m.body_html IS NOT NULL) AS has_html,
            EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
@@ -69,7 +69,7 @@ export function fetchSearchEmails(sql, userId, ids) {
     WHERE m.user_id = ${userId}
       AND NOT m.is_deleted
       AND m.id = ANY(${ids}::uuid[])
-    GROUP BY m.id, ai.spam_score
+    GROUP BY m.id, ai.spam_score, ai.spam_verdict
   `;
 }
 
