@@ -17,7 +17,9 @@ describe('GET /task-items', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).items).toHaveLength(1);
     expect(sql.calls[0].text).toContain('FROM task_items t');
-    expect(sql.calls[0].text).toContain('t.created_at ASC');
+    // Arranged order first (drag and drop), creation order as the tiebreak.
+    expect(sql.calls[0].text).toContain('t.position ASC, t.created_at ASC');
+    expect(sql.calls[0].text).toContain('t.position,');
     expect(sql.calls[0].values).toEqual([
       USER_ID,
       false,
@@ -208,6 +210,30 @@ describe('PATCH /task-items', () => {
     expect((await response.json()).error).toContain('own descendant');
     expect(sql.calls.some((call) => call.text.includes('UPDATE task_items'))).toBe(false);
   });
+
+  // Drag-and-drop ordering: the client sends the midpoint of the new
+  // neighbours' positions, so one UPDATE places the row.
+  it('re-arranges a task by position', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, position: 1.5 }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, position: 1.5 });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).item.position).toBe(1.5);
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items'));
+    expect(update.text).toContain('position     = CASE WHEN ?::boolean THEN ?::double precision');
+    expect(update.values).toContain(1.5);
+  });
+
+  it.each(['1.5', null, Number.NaN, Number.POSITIVE_INFINITY])(
+    'refuses position %s rather than coercing it',
+    async (position) => {
+      const sql = createMockSql([[{ id: ITEM_ID }]]);
+      const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, position });
+      expect(response.status).toBe(400);
+      expect(sql.calls.some((call) => call.text.includes('UPDATE task_items'))).toBe(false);
+    },
+  );
 
   it('moves a task to the Inbox with projectId null', async () => {
     const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, projectId: null }]]);

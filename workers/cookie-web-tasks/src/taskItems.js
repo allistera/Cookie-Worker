@@ -101,7 +101,7 @@ export async function getTaskItems(sql, userId, url) {
   const items = await sql`
     SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
            t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
-           t.completed_at AS "completedAt", t.created_at AS "createdAt"
+           t.position, t.completed_at AS "completedAt", t.created_at AS "createdAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
       -- Today also carries the sub-tasks of every task it lists: the panel
@@ -119,8 +119,10 @@ export async function getTaskItems(sql, userId, url) {
       AND (${includeCompleted}::boolean OR t.completed_at IS NULL OR t.parent_id IS NOT NULL)
     -- Only Today sorts by date: it is the one list where the rows carry
     -- different due dates, and the oldest thing owed belongs at the top.
-    -- Project and Inbox lists keep their created_at order.
-    ORDER BY CASE WHEN ${today}::boolean THEN t.due_date END ASC NULLS LAST, t.created_at ASC
+    -- Project and Inbox lists are in the order the person arranged them
+    -- (position, migration 0062, seeded from created_at).
+    ORDER BY CASE WHEN ${today}::boolean THEN t.due_date END ASC NULLS LAST,
+             t.position ASC, t.created_at ASC
   `;
   return Response.json({ items });
 }
@@ -179,8 +181,8 @@ export async function createTaskItem(sql, userId, body, env) {
     INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority)
     VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority})
     RETURNING id, project_id AS "projectId", parent_id AS "parentId", content, description,
-              to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, completed_at AS "completedAt",
-              created_at AS "createdAt"
+              to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
+              completed_at AS "completedAt", created_at AS "createdAt"
   `;
   // Best-effort: a sub-task lands on its parent's search document (the sync
   // walks up to the root), a top-level task gets its own.
@@ -195,8 +197,9 @@ function fetchOwnedTaskItem(sql, userId, id) {
 
 /**
  * PATCH /task-items — { id, content?, description?, projectId?, parentId?,
- * dueDate?, priority?, completed? }. projectId: null moves the task to the
- * Inbox; priority: null resets it to the default (4).
+ * dueDate?, priority?, completed?, position? }. projectId: null moves the task
+ * to the Inbox; priority: null resets it to the default (4); position is the
+ * list order, a finite number the client picks between the new neighbours.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -218,6 +221,7 @@ export async function updateTaskItem(sql, userId, body, env) {
   const hasDueDate = Object.hasOwn(body, 'dueDate');
   const hasPriority = Object.hasOwn(body, 'priority');
   const hasCompleted = Object.hasOwn(body, 'completed');
+  const hasPosition = Object.hasOwn(body, 'position');
 
   const content = hasContent ? cleanText(body.content, MAX_CONTENT_LENGTH) : null;
   if (hasContent && !content) {
@@ -230,10 +234,19 @@ export async function updateTaskItem(sql, userId, body, env) {
     !hasParent &&
     !hasDueDate &&
     !hasPriority &&
-    !hasCompleted
+    !hasCompleted &&
+    !hasPosition
   ) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
+
+  // Same bargain as priority: a bad value is refused, never coerced. There
+  // is no "clear" — a row always has a place in its list.
+  // Number.isFinite does not coerce, so a numeric string is refused too.
+  if (hasPosition && !Number.isFinite(body.position)) {
+    return Response.json({ error: 'position must be a finite number' }, { status: 400 });
+  }
+  const position = hasPosition ? body.position : null;
 
   const description = hasDescription ? cleanText(body.description, MAX_DESCRIPTION_LENGTH) : null;
 
@@ -282,6 +295,7 @@ export async function updateTaskItem(sql, userId, body, env) {
       parent_id    = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE t.parent_id END,
       due_date     = CASE WHEN ${hasDueDate}::boolean THEN ${dueDate}::date ELSE t.due_date END,
       priority     = CASE WHEN ${hasPriority}::boolean THEN ${priority}::smallint ELSE t.priority END,
+      position     = CASE WHEN ${hasPosition}::boolean THEN ${position}::double precision ELSE t.position END,
       completed_at = CASE
         WHEN ${hasCompleted}::boolean THEN (CASE WHEN ${Boolean(body.completed)}::boolean THEN now() ELSE NULL END)
         ELSE t.completed_at
@@ -290,7 +304,7 @@ export async function updateTaskItem(sql, userId, body, env) {
     WHERE t.id = ${id} AND t.user_id = ${userId}
     RETURNING t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
               t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
-              t.completed_at AS "completedAt", t.created_at AS "createdAt"
+              t.position, t.completed_at AS "completedAt", t.created_at AS "createdAt"
   `;
   // Best-effort search sync. Reparenting moves the row between search
   // documents (only top-level tasks are indexed, carrying their sub-task
