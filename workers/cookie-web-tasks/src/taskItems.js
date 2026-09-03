@@ -197,9 +197,9 @@ function fetchOwnedTaskItem(sql, userId, id) {
 
 /**
  * PATCH /task-items — { id, content?, description?, projectId?, parentId?,
- * dueDate?, priority?, completed?, position? }. projectId: null moves the task
- * to the Inbox; priority: null resets it to the default (4); position is the
- * list order, a finite number the client picks between the new neighbours.
+ * dueDate?, priority?, completed? }. projectId: null moves the task to the
+ * Inbox; priority: null resets it to the default (4). List order is not a
+ * per-row field: see reorderTaskItems.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -221,7 +221,6 @@ export async function updateTaskItem(sql, userId, body, env) {
   const hasDueDate = Object.hasOwn(body, 'dueDate');
   const hasPriority = Object.hasOwn(body, 'priority');
   const hasCompleted = Object.hasOwn(body, 'completed');
-  const hasPosition = Object.hasOwn(body, 'position');
 
   const content = hasContent ? cleanText(body.content, MAX_CONTENT_LENGTH) : null;
   if (hasContent && !content) {
@@ -234,19 +233,10 @@ export async function updateTaskItem(sql, userId, body, env) {
     !hasParent &&
     !hasDueDate &&
     !hasPriority &&
-    !hasCompleted &&
-    !hasPosition
+    !hasCompleted
   ) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
-
-  // Same bargain as priority: a bad value is refused, never coerced. There
-  // is no "clear" — a row always has a place in its list.
-  // Number.isFinite does not coerce, so a numeric string is refused too.
-  if (hasPosition && !Number.isFinite(body.position)) {
-    return Response.json({ error: 'position must be a finite number' }, { status: 400 });
-  }
-  const position = hasPosition ? body.position : null;
 
   const description = hasDescription ? cleanText(body.description, MAX_DESCRIPTION_LENGTH) : null;
 
@@ -295,7 +285,6 @@ export async function updateTaskItem(sql, userId, body, env) {
       parent_id    = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE t.parent_id END,
       due_date     = CASE WHEN ${hasDueDate}::boolean THEN ${dueDate}::date ELSE t.due_date END,
       priority     = CASE WHEN ${hasPriority}::boolean THEN ${priority}::smallint ELSE t.priority END,
-      position     = CASE WHEN ${hasPosition}::boolean THEN ${position}::double precision ELSE t.position END,
       completed_at = CASE
         WHEN ${hasCompleted}::boolean THEN (CASE WHEN ${Boolean(body.completed)}::boolean THEN now() ELSE NULL END)
         ELSE t.completed_at
@@ -317,6 +306,42 @@ export async function updateTaskItem(sql, userId, body, env) {
   }
   await syncTaskItemToMeili(sql, env, item.id);
   return Response.json({ item });
+}
+
+export const MAX_REORDER_IDS = 500;
+
+/**
+ * POST /task-items/reorder — { ids }: the whole visible order of one list,
+ * as Cookie-Web's drag and drop leaves it. The rows are numbered 1..n in one
+ * statement, so a drop is a single small request and the order can never
+ * run out of precision the way midpoint positions do. Ids the caller does
+ * not own are simply not updated (the join drops them), so a stray id
+ * cannot move somebody else's task; the response says which rows changed.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {any} body
+ */
+export async function reorderTaskItems(sql, userId, body) {
+  const ids = Array.isArray(body?.ids) ? body.ids : null;
+  if (!ids?.length || ids.length > MAX_REORDER_IDS || !ids.every(isUuid)) {
+    return Response.json(
+      { error: `ids must be a list of 1 to ${MAX_REORDER_IDS} task ids` },
+      { status: 400 },
+    );
+  }
+  if (new Set(ids).size !== ids.length) {
+    return Response.json({ error: 'ids must not repeat' }, { status: 400 });
+  }
+
+  const items = await sql`
+    UPDATE task_items t
+    SET position = ord.position, updated_at = now()
+    FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ord(id, position)
+    WHERE t.id = ord.id AND t.user_id = ${userId}
+    RETURNING t.id, t.position
+  `;
+  return Response.json({ items });
 }
 
 /**
