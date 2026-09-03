@@ -581,7 +581,7 @@ describe('POST /task-items/reorder', () => {
     [{ ids: ['nope'] }, 'a non-uuid'],
     [{ ids: [ITEM_ID, ITEM_ID] }, 'a repeated id'],
     [{ ids: Array.from({ length: 501 }, () => ITEM_ID) }, 'too many ids'],
-  ])('400s %j (%s) without touching the database', async (body) => {
+  ])('400s %j (%s) without touching the database', async (body, _label) => {
     const sql = createMockSql([]);
     const response = await reorderTaskItems(sql, USER_ID, body);
     expect(response.status).toBe(400);
