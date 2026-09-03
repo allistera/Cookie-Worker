@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createTaskItem, deleteTaskItem, getTaskItems, updateTaskItem } from '../src/taskItems.js';
+import {
+  createTaskItem,
+  deleteTaskItem,
+  getTaskItems,
+  reorderTaskItems,
+  updateTaskItem,
+} from '../src/taskItems.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '99999999-9999-9999-9999-999999999999';
@@ -17,7 +23,9 @@ describe('GET /task-items', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).items).toHaveLength(1);
     expect(sql.calls[0].text).toContain('FROM task_items t');
-    expect(sql.calls[0].text).toContain('t.created_at ASC');
+    // Arranged order first (drag and drop), creation order as the tiebreak.
+    expect(sql.calls[0].text).toContain('t.position ASC, t.created_at ASC');
+    expect(sql.calls[0].text).toContain('t.position,');
     expect(sql.calls[0].values).toEqual([
       USER_ID,
       false,
@@ -536,5 +544,47 @@ describe('priority', () => {
     const update = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID }]]);
     await updateTaskItem(update, USER_ID, { id: ITEM_ID, content: 'Renamed' });
     expect(update.calls[1].text).toMatch(/RETURNING[\s\S]*t\.priority/);
+  });
+});
+
+// Drag-and-drop ordering: Cookie-Web sends the whole visible order and the
+// rows are numbered 1..n in one statement.
+describe('POST /task-items/reorder', () => {
+  const OTHER_ID = '33333333-3333-4333-8333-333333333333';
+
+  it('numbers the given rows in one ownership-scoped UPDATE', async () => {
+    const sql = createMockSql([
+      [
+        { id: OTHER_ID, position: 1 },
+        { id: ITEM_ID, position: 2 },
+      ],
+    ]);
+
+    const response = await reorderTaskItems(sql, USER_ID, { ids: [OTHER_ID, ITEM_ID] });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).items).toEqual([
+      { id: OTHER_ID, position: 1 },
+      { id: ITEM_ID, position: 2 },
+    ]);
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).toContain(
+      'FROM unnest(?::uuid[]) WITH ORDINALITY AS ord(id, position)',
+    );
+    expect(sql.calls[0].text).toContain('WHERE t.id = ord.id AND t.user_id = ?');
+    expect(sql.calls[0].values).toEqual([[OTHER_ID, ITEM_ID], USER_ID]);
+  });
+
+  it.each([
+    [{}, 'no ids'],
+    [{ ids: [] }, 'an empty list'],
+    [{ ids: ['nope'] }, 'a non-uuid'],
+    [{ ids: [ITEM_ID, ITEM_ID] }, 'a repeated id'],
+    [{ ids: Array.from({ length: 501 }, () => ITEM_ID) }, 'too many ids'],
+  ])('400s %j (%s) without touching the database', async (body, _label) => {
+    const sql = createMockSql([]);
+    const response = await reorderTaskItems(sql, USER_ID, body);
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
   });
 });

@@ -320,3 +320,28 @@ describe('cleanup and error reporting', () => {
     expect(sqlEnd).toHaveBeenCalledOnce();
   });
 });
+
+describe('POST /task-items/reorder', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+
+  test('dispatches to the reorder handler', async () => {
+    mockQuery.mockResolvedValueOnce([{ id: ID, position: 1 }]);
+    const response = await worker.fetch(
+      request('/task-items/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [ID] }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).items).toEqual([{ id: ID, position: 1 }]);
+  });
+
+  test('refuses other methods', async () => {
+    const response = await worker.fetch(request('/task-items/reorder'), env, ctx);
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('POST');
+  });
+});

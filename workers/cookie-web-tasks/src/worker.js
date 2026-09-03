@@ -13,7 +13,13 @@ import { createProject, deleteProject, getProjects, updateProject } from './proj
 import { allowRequest } from './rateLimit.js';
 import { postRefresh } from './refresh.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
-import { createTaskItem, deleteTaskItem, getTaskItems, updateTaskItem } from './taskItems.js';
+import {
+  createTaskItem,
+  deleteTaskItem,
+  getTaskItems,
+  reorderTaskItems,
+  updateTaskItem,
+} from './taskItems.js';
 import { getTasks, postTasks } from './tasks.js';
 
 // Vercel's body cap is 4.5 MB; keep that for document payloads, but use a much
@@ -34,6 +40,7 @@ export function createSql(databaseUrl) {
 
 /**
  * Routes GET/POST /tasks, POST /tasks/refresh, GET/PUT /tasks/interests,
+ * POST /task-items/reorder,
  * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, and
  * GET/POST/PATCH/DELETE /documents — the resources Cookie-Web's api/tasks.js
  * served, previously reached only via
@@ -52,7 +59,16 @@ async function route(url, request, sql, userId, env, email) {
   const segments = url.pathname.split('/').filter(Boolean);
 
   if (segments[0] === 'task-items') {
-    if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
+    const reorder = segments.length === 2 && segments[1] === 'reorder';
+    if (segments.length > 1 && !reorder) {
+      return Response.json({ error: 'Not Found' }, { status: 404 });
+    }
+    if (reorder && request.method !== 'POST') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'POST' } },
+      );
+    }
     if (request.method === 'GET') return getTaskItems(sql, userId, url);
     if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {
       return Response.json(
@@ -68,6 +84,7 @@ async function route(url, request, sql, userId, env, email) {
       if (errorResponse) return errorResponse;
       throw error;
     }
+    if (reorder) return reorderTaskItems(sql, userId, body);
     if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
     if (request.method === 'PATCH') return updateTaskItem(sql, userId, body, env);
     return deleteTaskItem(sql, userId, body, env);

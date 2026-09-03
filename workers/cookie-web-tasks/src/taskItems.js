@@ -101,7 +101,7 @@ export async function getTaskItems(sql, userId, url) {
   const items = await sql`
     SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
            t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
-           t.completed_at AS "completedAt", t.created_at AS "createdAt"
+           t.position, t.completed_at AS "completedAt", t.created_at AS "createdAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
       -- Today also carries the sub-tasks of every task it lists: the panel
@@ -119,8 +119,10 @@ export async function getTaskItems(sql, userId, url) {
       AND (${includeCompleted}::boolean OR t.completed_at IS NULL OR t.parent_id IS NOT NULL)
     -- Only Today sorts by date: it is the one list where the rows carry
     -- different due dates, and the oldest thing owed belongs at the top.
-    -- Project and Inbox lists keep their created_at order.
-    ORDER BY CASE WHEN ${today}::boolean THEN t.due_date END ASC NULLS LAST, t.created_at ASC
+    -- Project and Inbox lists are in the order the person arranged them
+    -- (position, migration 0062, seeded from created_at).
+    ORDER BY CASE WHEN ${today}::boolean THEN t.due_date END ASC NULLS LAST,
+             t.position ASC, t.created_at ASC
   `;
   return Response.json({ items });
 }
@@ -179,8 +181,8 @@ export async function createTaskItem(sql, userId, body, env) {
     INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority)
     VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority})
     RETURNING id, project_id AS "projectId", parent_id AS "parentId", content, description,
-              to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, completed_at AS "completedAt",
-              created_at AS "createdAt"
+              to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
+              completed_at AS "completedAt", created_at AS "createdAt"
   `;
   // Best-effort: a sub-task lands on its parent's search document (the sync
   // walks up to the root), a top-level task gets its own.
@@ -196,7 +198,8 @@ function fetchOwnedTaskItem(sql, userId, id) {
 /**
  * PATCH /task-items — { id, content?, description?, projectId?, parentId?,
  * dueDate?, priority?, completed? }. projectId: null moves the task to the
- * Inbox; priority: null resets it to the default (4).
+ * Inbox; priority: null resets it to the default (4). List order is not a
+ * per-row field: see reorderTaskItems.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -290,7 +293,7 @@ export async function updateTaskItem(sql, userId, body, env) {
     WHERE t.id = ${id} AND t.user_id = ${userId}
     RETURNING t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
               t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
-              t.completed_at AS "completedAt", t.created_at AS "createdAt"
+              t.position, t.completed_at AS "completedAt", t.created_at AS "createdAt"
   `;
   // Best-effort search sync. Reparenting moves the row between search
   // documents (only top-level tasks are indexed, carrying their sub-task
@@ -303,6 +306,42 @@ export async function updateTaskItem(sql, userId, body, env) {
   }
   await syncTaskItemToMeili(sql, env, item.id);
   return Response.json({ item });
+}
+
+export const MAX_REORDER_IDS = 500;
+
+/**
+ * POST /task-items/reorder — { ids }: the whole visible order of one list,
+ * as Cookie-Web's drag and drop leaves it. The rows are numbered 1..n in one
+ * statement, so a drop is a single small request and the order can never
+ * run out of precision the way midpoint positions do. Ids the caller does
+ * not own are simply not updated (the join drops them), so a stray id
+ * cannot move somebody else's task; the response says which rows changed.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {any} body
+ */
+export async function reorderTaskItems(sql, userId, body) {
+  const ids = Array.isArray(body?.ids) ? body.ids : null;
+  if (!ids?.length || ids.length > MAX_REORDER_IDS || !ids.every(isUuid)) {
+    return Response.json(
+      { error: `ids must be a list of 1 to ${MAX_REORDER_IDS} task ids` },
+      { status: 400 },
+    );
+  }
+  if (new Set(ids).size !== ids.length) {
+    return Response.json({ error: 'ids must not repeat' }, { status: 400 });
+  }
+
+  const items = await sql`
+    UPDATE task_items t
+    SET position = ord.position, updated_at = now()
+    FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ord(id, position)
+    WHERE t.id = ord.id AND t.user_id = ${userId}
+    RETURNING t.id, t.position
+  `;
+  return Response.json({ items });
 }
 
 /**
