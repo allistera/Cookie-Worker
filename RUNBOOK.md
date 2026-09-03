@@ -36,6 +36,7 @@ Send a message from an external account to the configured Cloudflare Email Routi
 - `message_ai.status` becomes `completed`.
 - Suggested tags appear in Cookie Web.
 - Spam above the threshold appears in the hidden Spam folder, not the inbox.
+- Spam older than the owner's retention (default 30 days, Settings → Spam) is soft-deleted by the ingest cron; a `spam_purged` event with the count is logged on ticks that delete anything.
 - A scheduled or manually triggered recovery emits `ai_recovery_complete`.
 
 Check Sentry for errors tagged with the Worker environment and processing stage.

@@ -17,7 +17,7 @@ describe('fetchSearchEmails', () => {
     expect(query).toContain("BOOL_OR(NULLIF(BTRIM(ai.summary), '') IS NOT NULL)");
     expect(query).toContain('AS has_ai_summary');
     expect(query).toContain('LEFT JOIN message_ai ai ON ai.message_id = m.id');
-    expect(query).toContain('GROUP BY m.id, ai.spam_score');
+    expect(query).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict');
     expect(query).toContain('NOT m.is_deleted');
     expect(query).toContain('m.is_sent');
     expect(query).toContain('m.follow_up_at');

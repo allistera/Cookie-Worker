@@ -4,7 +4,7 @@
 // requests need answering before any auth check runs.
 
 const ALLOWED_HEADERS = 'Authorization, Content-Type';
-const ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
+const ALLOWED_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
 
 /**
  * @param {string | null} origin The request's Origin header.

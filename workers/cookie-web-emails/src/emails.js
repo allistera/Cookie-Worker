@@ -91,7 +91,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
                 ELSE m.recipients END AS recipients,
            m.subject, m.snippet, ${sortAt} AS sort_at,
            m.sent_at, m.is_unread, m.is_starred,
-           m.is_sent, m.scheduled_for, m.follow_up_at, ai.spam_score,
+           m.is_sent, m.is_archived, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
            BOOL_OR(NULLIF(BTRIM(ai.summary), '') IS NOT NULL) AS has_ai_summary,
            (m.body_html IS NOT NULL) AS has_html,
            EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
@@ -109,7 +109,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
       AND NOT m.is_deleted
       AND (${folderPredicate(sql, folder, labelName)})
       ${cursor ? sql`AND (${sortAt}, m.id) < (${cursor.sentAt}::timestamptz, ${cursor.id}::uuid)` : sql``}
-    GROUP BY m.id, ai.spam_score
+    GROUP BY m.id, ai.spam_score, ai.spam_verdict
     ORDER BY ${sortAt} DESC, m.id DESC
     LIMIT ${limit + 1}
   `;
@@ -137,6 +137,45 @@ export function fetchUnreadCount(sql, userId) {
   `;
 }
 
+// How many messages the Spam folder holds. The sidebar only lists Spam
+// while this is non-zero, so it travels with the unread count on every
+// bootstrap and first-page payload. Same predicate as folderPredicate('spam')
+// (plus the list's NOT is_deleted) so the count and the folder always agree;
+// the join keeps it on the 0010 partial index message_ai_spam_idx.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ */
+export function fetchSpamCount(sql, userId) {
+  return sql`
+    SELECT count(*)::int AS spam
+    FROM messages m
+    JOIN message_ai ai ON ai.message_id = m.id
+    WHERE m.user_id = ${userId}
+      AND ai.spam_verdict = 'spam'
+      AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+  `;
+}
+
+// How many messages the Snoozed folder holds — the sidebar lists Snoozed
+// only while this is non-zero, so it travels with the spam count. Same
+// predicate as folderPredicate('snoozed') plus the list's NOT is_deleted.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ */
+export function fetchSnoozedCount(sql, userId) {
+  return sql`
+    SELECT count(m.id)::int AS snoozed
+    FROM messages m
+    LEFT JOIN message_ai ai ON ai.message_id = m.id
+    WHERE m.user_id = ${userId}
+      AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+      AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+      AND m.scheduled_for > now()
+  `;
+}
+
 /**
  * GET /emails/state — lightweight app bootstrap for routes that need the
  * unread badge and Realtime channel identity but do not render the mailbox
@@ -147,8 +186,17 @@ export function fetchUnreadCount(sql, userId) {
  */
 export async function handleState(sql, userId) {
   try {
-    const [userRow] = await fetchUnreadCount(sql, userId);
-    return Response.json({ unreadCount: userRow?.unread ?? 0, userId });
+    const [[userRow], [spamRow], [snoozedRow]] = await Promise.all([
+      fetchUnreadCount(sql, userId),
+      fetchSpamCount(sql, userId),
+      fetchSnoozedCount(sql, userId),
+    ]);
+    return Response.json({
+      unreadCount: userRow?.unread ?? 0,
+      spamCount: spamRow?.spam ?? 0,
+      snoozedCount: snoozedRow?.snoozed ?? 0,
+      userId,
+    });
   } catch (err) {
     console.error('GET /emails/state failed:', err);
     return Response.json({ error: 'Failed to load inbox state' }, { status: 500 });
@@ -159,8 +207,10 @@ export async function handleState(sql, userId) {
  * GET /emails?limit=50&before=<sent_at>|<id>&folder=inbox|sent|spam|snoozed|done|starred|label
  * returns the authenticated user's selected folder (inbox by default), newest
  * first. Responds {emails, nextCursor, readReceiptsAvailable, unreadCount,
- * userId}; nextCursor is null on the last page. unreadCount always covers the
- * inbox (sent mail is never unread). userId lets the client subscribe to its
+ * spamCount, snoozedCount, userId}; nextCursor is null on the last page.
+ * unreadCount always covers the inbox (sent mail is never unread), and
+ * spamCount/snoozedCount the Spam and Snoozed folders, whichever folder was
+ * listed — the sidebar shows those two only while they hold something. userId lets the client subscribe to its
  * Realtime inbox-ping channel.
  *
  * @param {import('postgres').Sql} sql
@@ -196,11 +246,13 @@ export async function handleList(sql, userId, url) {
   }
 
   try {
-    // The unread count only matters on a list's first page; the client
-    // ignores it on cursor pages, so skip the aggregate there.
-    const [rows, [userRow]] = await Promise.all([
+    // The unread and spam counts only matter on a list's first page; the
+    // client ignores them on cursor pages, so skip the aggregates there.
+    const [rows, [userRow], [spamRow], [snoozedRow]] = await Promise.all([
       fetchEmails(sql, userId, limit, cursor, folder, labelName),
       cursor ? [] : fetchUnreadCount(sql, userId),
+      cursor ? [] : fetchSpamCount(sql, userId),
+      cursor ? [] : fetchSnoozedCount(sql, userId),
     ]);
     const hasMore = rows.length > limit;
     const emails = hasMore ? rows.slice(0, limit) : rows;
@@ -220,6 +272,8 @@ export async function handleList(sql, userId, url) {
     };
     if (!cursor) {
       payload.unreadCount = userRow?.unread ?? 0;
+      payload.spamCount = spamRow?.spam ?? 0;
+      payload.snoozedCount = snoozedRow?.snoozed ?? 0;
       payload.userId = userId;
     }
     return Response.json(payload);

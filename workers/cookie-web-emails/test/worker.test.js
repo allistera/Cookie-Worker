@@ -13,6 +13,7 @@ vi.mock('postgres', () => ({
     const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
     sql.begin = async (/** @type {(sql: any) => unknown} */ callback) => callback(sql);
     sql.end = sqlEnd;
+    sql.json = (/** @type {unknown} */ value) => value;
     return sql;
   },
 }));
@@ -87,6 +88,8 @@ describe('routing', () => {
       emails: [],
       nextCursor: null,
       unreadCount: 0,
+      spamCount: 0,
+      snoozedCount: 0,
       userId: 'user-1',
     });
   });
@@ -95,7 +98,64 @@ describe('routing', () => {
     mockQuery.mockResolvedValueOnce([{ unread: 3 }]);
     const response = await worker.fetch(request('/emails/state'), env, ctx);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ unreadCount: 3, userId: 'user-1' });
+    expect(await response.json()).toEqual({
+      unreadCount: 3,
+      spamCount: 0,
+      snoozedCount: 0,
+      userId: 'user-1',
+    });
+  });
+
+  test('GET /emails/spam-retention returns the stored preference with its bounds', async () => {
+    mockQuery.mockResolvedValueOnce([{ days: 14 }]);
+    const response = await worker.fetch(request('/emails/spam-retention'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      spamRetentionDays: 14,
+      defaultDays: 30,
+      minDays: 1,
+      maxDays: 365,
+    });
+  });
+
+  test('PUT /emails/spam-retention stores a new retention', async () => {
+    mockQuery.mockResolvedValueOnce([{ days: 60 }]);
+    const response = await worker.fetch(
+      request('/emails/spam-retention', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spamRetentionDays: 60 }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).spamRetentionDays).toBe(60);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  test('PUT /emails/spam-retention rejects a malformed body before touching the database', async () => {
+    const response = await worker.fetch(
+      request('/emails/spam-retention', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not json',
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('other methods on /emails/spam-retention return 405 allowing GET and PUT', async () => {
+    const response = await worker.fetch(
+      request('/emails/spam-retention', { method: 'POST' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('GET, PUT');
   });
 
   test('an unknown path returns 404', async () => {

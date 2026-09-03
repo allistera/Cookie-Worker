@@ -537,8 +537,73 @@ export async function postMessage(sql, userId, body, deps) {
 }
 
 /**
- * PATCH /messages — updates is_unread/is_starred/is_archived/is_deleted
- * and/or scheduled_for on a message owned by the authenticated user.
+ * Records the user's own spam verdict for a message they own. The Spam
+ * folder, the inbox unread badge, the daily digest and the search index all
+ * read `message_ai.spam_verdict`, so a user report writes the same column the
+ * AI classifier does instead of introducing a second flag. The row is
+ * stamped `provider = 'user'` and `status = 'completed'`: enrichment no-ops
+ * on completed rows and its upsert skips user-provided rows, so a later or
+ * in-flight classification can never overturn what the user decided.
+ *
+ * The AI classifier also pins its spam to the system "Spam" label so the row
+ * wears a pill; a user report applies the same label, and clearing the
+ * report removes it again, so both kinds of spam look alike in the list.
+ *
+ * @param {import('postgres').TransactionSql} tx
+ * @param {string} messageId
+ * @param {boolean} isSpam
+ */
+async function applySpamVerdict(tx, messageId, isSpam) {
+  const verdict = isSpam ? 'spam' : 'inbox';
+  const reason = isSpam ? 'Reported as spam by the user' : 'Marked not spam by the user';
+  await tx`
+    INSERT INTO message_ai (
+      message_id, status, spam_verdict, spam_score, spam_reason,
+      provider, model, prompt_version, error_code, processed_at, updated_at
+    ) VALUES (
+      ${messageId}, 'completed', ${verdict}, NULL, ${reason},
+      'user', NULL, 'user-report', NULL, now(), now()
+    )
+    ON CONFLICT (message_id) DO UPDATE SET
+      status = 'completed', spam_verdict = EXCLUDED.spam_verdict,
+      spam_score = NULL, spam_reason = EXCLUDED.spam_reason,
+      provider = 'user', model = NULL, prompt_version = EXCLUDED.prompt_version,
+      error_code = NULL, processed_at = now(), updated_at = now()
+  `;
+  if (isSpam) {
+    const [spamLabel] = await tx`
+      INSERT INTO labels (user_id, name, color, kind, description, auto_apply)
+      SELECT m.user_id, 'Spam', '#64748b', 'system', 'High-confidence spam detected by Cookie AI', false
+      FROM messages m WHERE m.id = ${messageId}
+      ON CONFLICT (user_id, name) DO UPDATE
+      SET kind = 'system', auto_apply = false
+      RETURNING id
+    `;
+    if (spamLabel) {
+      await tx`
+        INSERT INTO message_labels (message_id, label_id, source)
+        VALUES (${messageId}, ${spamLabel.id}, 'manual')
+        ON CONFLICT (message_id, label_id) DO NOTHING
+      `;
+    }
+  } else {
+    await tx`
+      DELETE FROM message_labels ml
+      USING labels l
+      WHERE ml.message_id = ${messageId}
+        AND l.id = ml.label_id
+        AND l.kind = 'system'
+        AND l.name = 'Spam'
+    `;
+  }
+}
+
+/**
+ * PATCH /messages — updates is_unread/is_starred/is_archived/is_deleted/
+ * is_spam and/or scheduled_for on a message owned by the authenticated user.
+ * is_spam is the user's own verdict (see applySpamVerdict); it lives in
+ * message_ai rather than on the messages row, so a request that carries it
+ * runs as a transaction: the ownership-checked UPDATE first, then the verdict.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -546,8 +611,8 @@ export async function postMessage(sql, userId, body, deps) {
  * @param {ReindexDeps} [deps]
  */
 export async function patchMessage(sql, userId, body, deps = {}) {
-  const { is_unread, is_starred, is_archived, is_deleted } = body ?? {};
-  const flags = [is_unread, is_starred, is_archived, is_deleted];
+  const { is_unread, is_starred, is_archived, is_deleted, is_spam } = body ?? {};
+  const flags = [is_unread, is_starred, is_archived, is_deleted, is_spam];
   const id = UUID_RE.test(body?.id) ? String(body.id) : null;
   const flagsValid = flags.every((f) => f === undefined || f === true || f === false);
   const hasScheduledChange = Object.hasOwn(body ?? {}, 'scheduled_for');
@@ -563,26 +628,37 @@ export async function patchMessage(sql, userId, body, deps = {}) {
     );
   }
 
-  const rows = await sql`
-    UPDATE messages m SET
-      is_unread   = COALESCE(${is_unread ?? null}::boolean, m.is_unread),
-      is_starred  = COALESCE(${is_starred ?? null}::boolean, m.is_starred),
-      is_archived = COALESCE(${is_archived ?? null}::boolean, m.is_archived),
-      is_deleted  = COALESCE(${is_deleted ?? null}::boolean, m.is_deleted),
-      -- Every column this statement writes is part of the message's search
-      -- document, so clear the stamp in the same statement: the row is marked
-      -- as drifted the instant it changes, whatever happens to the sync below.
-      search_indexed_at = NULL,
-      scheduled_for = CASE
-        WHEN ${hasScheduledChange}::boolean THEN ${scheduledFor}::timestamptz
-        ELSE m.scheduled_for
-      END
-    WHERE m.id = ${id} AND m.user_id = ${userId}
-    RETURNING m.id, m.is_unread, m.is_starred, m.is_archived, m.is_deleted, m.scheduled_for
-  `;
-  if (rows.length === 0) {
+  /** @param {import('postgres').Sql | import('postgres').TransactionSql} tx */
+  const update = async (tx) => {
+    const rows = await tx`
+      UPDATE messages m SET
+        is_unread   = COALESCE(${is_unread ?? null}::boolean, m.is_unread),
+        is_starred  = COALESCE(${is_starred ?? null}::boolean, m.is_starred),
+        is_archived = COALESCE(${is_archived ?? null}::boolean, m.is_archived),
+        is_deleted  = COALESCE(${is_deleted ?? null}::boolean, m.is_deleted),
+        -- Every column this statement writes (and, via is_spam, the verdict
+        -- written after it) is part of the message's search document, so
+        -- clear the stamp in the same statement: the row is marked as
+        -- drifted the instant it changes, whatever happens to the sync below.
+        search_indexed_at = NULL,
+        scheduled_for = CASE
+          WHEN ${hasScheduledChange}::boolean THEN ${scheduledFor}::timestamptz
+          ELSE m.scheduled_for
+        END
+      WHERE m.id = ${id} AND m.user_id = ${userId}
+      RETURNING m.id, m.is_unread, m.is_starred, m.is_archived, m.is_deleted, m.scheduled_for
+    `;
+    if (rows.length === 0) return null;
+    if (is_spam === undefined) return rows[0];
+    // The UPDATE above is the ownership check: the verdict only lands on a
+    // row the caller was allowed to change.
+    await applySpamVerdict(/** @type {import('postgres').TransactionSql} */ (tx), id, is_spam);
+    return { ...rows[0], is_spam };
+  };
+  const message = is_spam === undefined ? await update(sql) : await sql.begin(update);
+  if (!message) {
     return Response.json({ error: 'Message not found' }, { status: 404 });
   }
   deps.onMessageChanged?.(id);
-  return Response.json({ message: rows[0] });
+  return Response.json({ message });
 }

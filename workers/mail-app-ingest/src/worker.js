@@ -5,6 +5,7 @@ import { AI_MODEL, enrichMessage } from './enrich.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
 import { sweepSearchDrift } from './searchDriftSweep.js';
+import { purgeExpiredSpam } from './spamRetentionSweep.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import {
   captureHandledException,
@@ -245,6 +246,7 @@ const worker = {
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil(recoverPendingEnrichment(env));
     ctx.waitUntil(sweepSearchDrift(env, { createSql }));
+    ctx.waitUntil(purgeExpiredSpam(env, { createSql }));
   },
 };
 

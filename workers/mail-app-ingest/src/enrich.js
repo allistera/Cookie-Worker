@@ -148,7 +148,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       ORDER BY l.name
     `,
     sql`
-      SELECT ai.status, ai.spam_verdict
+      SELECT ai.status, ai.spam_verdict, ai.provider
       FROM messages m
       LEFT JOIN message_ai ai ON ai.message_id = m.id
       WHERE m.id = ${messageUuid}
@@ -167,7 +167,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
   // this Worker to enrich (Meilisearch generates the message's embedding
   // itself once the message is indexed, so this function never re-runs for
   // that reason).
-  if (state.status === 'completed') {
+  if (state.status === 'completed' || state.provider === 'user') {
     return { verdict, selectedLabels };
   }
 
@@ -188,7 +188,21 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
         : 'inbox';
     selectedLabels = selected.length;
 
+    let superseded = false;
     await sql.begin(async (tx) => {
+      // A user report or "Not spam" from the reader (cookie-web-messages
+      // stamps the row provider = 'user') can commit while classification is
+      // in flight. Lock the row first: either that verdict is already there
+      // and this classification stands down entirely — labels included, so
+      // a cleared Spam pill cannot come back — or the user's transaction
+      // queues behind this one and has the last word.
+      const [current] = await tx`
+        SELECT provider FROM message_ai WHERE message_id = ${messageUuid} FOR UPDATE
+      `;
+      if (current?.provider === 'user') {
+        superseded = true;
+        return;
+      }
       await tx`DELETE FROM message_labels WHERE message_id = ${messageUuid} AND source = 'ai'`;
       if (selected.length > 0) {
         const labelRows = selected.map((label) => ({
@@ -238,6 +252,10 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
           provider = EXCLUDED.provider, model = EXCLUDED.model,
           prompt_version = EXCLUDED.prompt_version, error_code = NULL,
           processed_at = now(), updated_at = now()
+        -- A user who reported (or cleared) spam from the reader while this
+        -- classification was in flight has the final say: cookie-web-messages
+        -- stamps that row provider = 'user', and it is never overwritten.
+        WHERE message_ai.provider IS DISTINCT FROM 'user'
       `;
       // Classification changes two indexed fields — the message's labels and,
       // through spam_verdict, is_spam. Mark the row drifted inside the same
@@ -248,15 +266,25 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       // message in the index as unlabelled and not-spam, permanently.
       await tx`UPDATE messages SET search_indexed_at = NULL WHERE id = ${messageUuid}`;
     });
+    if (superseded) {
+      console.log(
+        JSON.stringify({ event: 'ai_enrichment_superseded', message_id: record.messageId }),
+      );
+      return { verdict: state.spam_verdict || 'inbox', selectedLabels: 0 };
+    }
     console.log(JSON.stringify({ event: 'ai_enriched', message_id: record.messageId, verdict }));
 
     return { verdict, selectedLabels };
   } catch (error) {
+    // Same guard as the success path: a user's verdict is complete and must
+    // not be flipped to 'failed', or the recovery sweep would retry it on
+    // every tick for nothing.
     await sql`
       INSERT INTO message_ai (message_id, status, provider, model, prompt_version, error_code, updated_at)
       VALUES (${messageUuid}, 'failed', 'openai', ${model}, ${PROMPT_VERSION}, 'enrichment_failed', now())
       ON CONFLICT (message_id) DO UPDATE SET
         status = 'failed', error_code = 'enrichment_failed', updated_at = now()
+      WHERE message_ai.provider IS DISTINCT FROM 'user'
     `.catch(() => undefined);
     throw error;
   }

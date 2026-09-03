@@ -508,9 +508,9 @@ describe('scheduled recovery', () => {
     postgres.mockReturnValue(sql);
     const context = ctx();
     await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
-    // Two independent jobs share this cron: enrichment recovery and the
-    // search-drift sweep. Neither may be able to fail the other.
-    expect(context.waitUntil).toHaveBeenCalledTimes(2);
+    // Three independent jobs share this cron: enrichment recovery, the
+    // search-drift sweep and the spam purge. None may be able to fail another.
+    expect(context.waitUntil).toHaveBeenCalledTimes(3);
     await vi.waitFor(() => expect(sql.end).toHaveBeenCalled());
     const recoveryQuery = sql.mock.calls
       .map((call) => call[0].join('?'))
