@@ -7,12 +7,16 @@
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Matches Cookie-Web's outbound validation ceilings so a draft can never grow
-// into something the send API would refuse to deliver.
-const MAX_TO_BYTES = 4_000;
+// Mirrors cookie-web-send's outbound ceilings exactly, so a draft can never
+// grow into something the send path would refuse to deliver. The recipient
+// bound is its MAX_RECIPIENTS_FIELD_CHARS (20 addresses x 512); the aggregate
+// is its MAX_OUTBOUND_TOTAL_BYTES, which the per-field caps alone do not
+// imply — 100KB of text plus 200KB of html clears both and still cannot send.
+const MAX_TO_BYTES = 10_240;
 const MAX_SUBJECT_BYTES = 998;
 const MAX_TEXT_BYTES = 100_000;
 const MAX_HTML_BYTES = 200_000;
+const MAX_TOTAL_BYTES = 256_000;
 const MAX_ATTACHMENTS = 20;
 // Autosave means a runaway client could otherwise mint rows forever.
 export const MAX_DRAFTS_PER_USER = 200;
@@ -39,11 +43,15 @@ export function parseDraftBody(body) {
   const text = String(body.text ?? '');
   const html = body.html === null || body.html === undefined ? null : String(body.html);
 
+  const subjectBytes = byteLength(subject);
+  const textBytes = byteLength(text);
+  const htmlBytes = html === null ? 0 : byteLength(html);
   if (
     byteLength(toAddresses) > MAX_TO_BYTES ||
-    byteLength(subject) > MAX_SUBJECT_BYTES ||
-    byteLength(text) > MAX_TEXT_BYTES ||
-    (html !== null && byteLength(html) > MAX_HTML_BYTES)
+    subjectBytes > MAX_SUBJECT_BYTES ||
+    textBytes > MAX_TEXT_BYTES ||
+    htmlBytes > MAX_HTML_BYTES ||
+    subjectBytes + textBytes + htmlBytes > MAX_TOTAL_BYTES
   ) {
     return null;
   }

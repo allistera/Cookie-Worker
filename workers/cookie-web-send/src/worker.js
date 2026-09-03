@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/cloudflare';
-import { get } from '@vercel/blob';
+import { del, get } from '@vercel/blob';
 import postgres from 'postgres';
 import { Resend } from 'resend';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
@@ -84,6 +84,8 @@ export function createSendServices(env, ctx) {
     env,
     createResend: (apiKey) => new Resend(apiKey),
     readBlob: (blobUrl) => get(blobUrl, { access: 'private', token: env.BLOB_READ_WRITE_TOKEN }),
+    // Used only by the flush job's orphaned-upload sweep.
+    deleteBlob: (blobUrl) => del(blobUrl, { token: env.BLOB_READ_WRITE_TOKEN }),
     indexSentMessage: (messageUuid) =>
       indexAfterResponse(env, ctx, (sql) => syncMessageToMeili(sql, env, messageUuid)),
     // One flush stores up to FLUSH_BATCH_SIZE sent copies; index them in a

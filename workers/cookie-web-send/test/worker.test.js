@@ -600,7 +600,9 @@ describe('POST /send/flush', () => {
       failed: 0,
       unconfirmed: 0,
     });
-    expect(mockQuery).toHaveBeenCalledTimes(4); // failed claim, claim, sweep x2
+    // Failed claim, claim retry, then the three sweeps every flush runs:
+    // resolved sends, expired receipts, orphaned uploads.
+    expect(mockQuery).toHaveBeenCalledTimes(5);
   });
 
   test('returns 500 after persistent transient claim failures', async () => {

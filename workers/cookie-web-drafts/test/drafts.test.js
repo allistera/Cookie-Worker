@@ -52,8 +52,19 @@ describe('parseDraftBody', () => {
     [{ attachmentIds: [ATTACHMENT_ID, ATTACHMENT_ID] }, 'duplicate attachment ids'],
     [{ attachmentIds: ['not-a-uuid'] }, 'malformed attachment id'],
     [{ followUpAt: 'whenever' }, 'unparseable follow-up'],
+    // Each field is individually legal here; only their sum is not.
+    [{ text: 'x'.repeat(90_000), html: 'y'.repeat(180_000) }, 'aggregate over the send ceiling'],
   ])('refuses a draft the send API would later reject: %s', (overrides, _label) => {
     expect(parseDraftBody(draft(overrides))).toBeNull();
+  });
+});
+
+describe('recipient field bound', () => {
+  test('accepts the longest recipient list the send path allows', () => {
+    // cookie-web-send bounds this field at MAX_OUTBOUND_RECIPIENTS * 512;
+    // a tighter cap here would reject drafts that are perfectly sendable.
+    const longest = Array.from({ length: 20 }, () => `${'a'.repeat(240)}@example.com`).join(', ');
+    expect(accepted({ to: longest, text: 'Body' }).toAddresses).toBe(longest);
   });
 });
 
