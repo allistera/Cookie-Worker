@@ -1,0 +1,4 @@
+{
+  "extends": "../../jsconfig.json",
+  "include": ["worker-configuration.d.ts", "src/**/*.js", "test/**/*.js"]
+}
