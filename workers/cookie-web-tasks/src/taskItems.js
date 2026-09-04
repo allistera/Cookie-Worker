@@ -311,12 +311,20 @@ export async function updateTaskItem(sql, userId, body, env) {
 export const MAX_REORDER_IDS = 500;
 
 /**
- * POST /task-items/reorder — { ids }: the whole visible order of one list,
- * as Cookie-Web's drag and drop leaves it. The rows are numbered 1..n in one
- * statement, so a drop is a single small request and the order can never
- * run out of precision the way midpoint positions do. Ids the caller does
- * not own are simply not updated (the join drops them), so a stray id
- * cannot move somebody else's task; the response says which rows changed.
+ * POST /task-items/reorder — { ids }: rows in their new order, as Cookie-Web's
+ * drag and drop leaves them. The rows keep the set of position values they
+ * already had between them: the values are sorted and dealt back out in the
+ * requested order. That makes a partial reorder safe — Today lists tasks from
+ * many projects, and re-arranging a day there must not fling those tasks to
+ * the top of their own projects, which numbering them 1..n would do. A whole
+ * list re-arranged is just the same permutation over all of its values.
+ *
+ * Ids the caller does not own are left out of the permutation (the join
+ * drops them), so a stray id cannot move somebody else's task; the response
+ * says which rows changed. Ties in position fall back to created_at order on
+ * read, so two rows sharing a value cannot be swapped — values are seeded
+ * from created_at to the microsecond (migration 0062), so ties do not arise
+ * in practice.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -335,10 +343,25 @@ export async function reorderTaskItems(sql, userId, body) {
   }
 
   const items = await sql`
+    WITH wanted AS (
+      SELECT t.id, ord.n
+      FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ord(id, n)
+      JOIN task_items t ON t.id = ord.id AND t.user_id = ${userId}
+    ),
+    slots AS (
+      SELECT t.position, row_number() OVER (ORDER BY t.position, t.created_at, t.id) AS n
+      FROM task_items t
+      WHERE t.id IN (SELECT id FROM wanted)
+    ),
+    placed AS (
+      SELECT w.id, s.position
+      FROM (SELECT id, row_number() OVER (ORDER BY n) AS n FROM wanted) w
+      JOIN slots s ON s.n = w.n
+    )
     UPDATE task_items t
-    SET position = ord.position, updated_at = now()
-    FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ord(id, position)
-    WHERE t.id = ord.id AND t.user_id = ${userId}
+    SET position = placed.position, updated_at = now()
+    FROM placed
+    WHERE t.id = placed.id AND t.user_id = ${userId}
     RETURNING t.id, t.position
   `;
   return Response.json({ items });

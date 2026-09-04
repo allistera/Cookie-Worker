@@ -547,12 +547,12 @@ describe('priority', () => {
   });
 });
 
-// Drag-and-drop ordering: Cookie-Web sends the whole visible order and the
-// rows are numbered 1..n in one statement.
+// Drag-and-drop ordering: Cookie-Web sends the rows in their new order and
+// their existing position values are permuted to match, in one statement.
 describe('POST /task-items/reorder', () => {
   const OTHER_ID = '33333333-3333-4333-8333-333333333333';
 
-  it('numbers the given rows in one ownership-scoped UPDATE', async () => {
+  it('permutes the given rows\u2019 positions in one ownership-scoped UPDATE', async () => {
     const sql = createMockSql([
       [
         { id: OTHER_ID, position: 1 },
@@ -568,11 +568,14 @@ describe('POST /task-items/reorder', () => {
       { id: ITEM_ID, position: 2 },
     ]);
     expect(sql.calls).toHaveLength(1);
-    expect(sql.calls[0].text).toContain(
-      'FROM unnest(?::uuid[]) WITH ORDINALITY AS ord(id, position)',
-    );
-    expect(sql.calls[0].text).toContain('WHERE t.id = ord.id AND t.user_id = ?');
-    expect(sql.calls[0].values).toEqual([[OTHER_ID, ITEM_ID], USER_ID]);
+    const { text, values } = sql.calls[0];
+    expect(text).toContain('FROM unnest(?::uuid[]) WITH ORDINALITY AS ord(id, n)');
+    // The rows keep the position values they had between them, dealt back
+    // out in the new order, so a partial reorder (Today) does not fling
+    // tasks to the top of their own projects.
+    expect(text).toContain('row_number() OVER (ORDER BY t.position, t.created_at, t.id)');
+    expect(text).toContain('WHERE t.id = placed.id AND t.user_id = ?');
+    expect(values).toEqual([[OTHER_ID, ITEM_ID], USER_ID, USER_ID]);
   });
 
   it.each([
