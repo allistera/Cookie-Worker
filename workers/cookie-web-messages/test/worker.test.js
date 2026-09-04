@@ -251,6 +251,13 @@ describe('cleanup and error reporting', () => {
       expect(captureHandledException).toHaveBeenCalledOnce();
     });
 
+    test('retries the caller lookup too, rather than answering 401', async () => {
+      verifyAccessToken.mockRejectedValueOnce(dropped()).mockResolvedValue({ userId: 'user-1' });
+      const response = await worker.fetch(request('/messages/contacts'), env, ctx);
+      expect(response.status).toBe(200);
+      expect(createClient).toHaveBeenCalledTimes(2);
+    });
+
     test('does not retry a read that failed for another reason', async () => {
       mockQuery.mockRejectedValueOnce(new Error('syntax error')).mockResolvedValue([]);
       const response = await worker.fetch(request('/messages/contacts'), env, ctx);

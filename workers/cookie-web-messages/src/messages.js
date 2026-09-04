@@ -8,6 +8,7 @@
 import { allowRequest } from '../../../shared/rate-limit.js';
 import { extractCalendarInvite } from './calendarInvite.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SIGNED_URL_TTL_MS = 5 * 60 * 1000;
@@ -174,6 +175,9 @@ export async function getAttachment(sql, userId, id, blob) {
       }),
     );
   } catch (error) {
+    // A dropped connection is the worker's to retry, not this handler's to
+    // report.
+    if (isTransientDbError(error)) throw error;
     console.log(
       JSON.stringify({
         event: 'attachment_download_failed',
