@@ -325,7 +325,10 @@ describe('POST /task-items/reorder', () => {
   const ID = '11111111-1111-4111-8111-111111111111';
 
   test('dispatches to the reorder handler', async () => {
-    mockQuery.mockResolvedValueOnce([{ id: ID, position: 1 }]);
+    // The handler reads the rows' positions, then writes them back.
+    mockQuery
+      .mockResolvedValueOnce([{ id: ID, position: 1 }])
+      .mockResolvedValueOnce([{ id: ID, position: 1 }]);
     const response = await worker.fetch(
       request('/task-items/reorder', {
         method: 'POST',
