@@ -92,6 +92,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
            m.subject, m.snippet, ${sortAt} AS sort_at,
            m.sent_at, m.is_unread, m.is_starred,
            m.is_sent, m.is_archived, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
+           ai.priority,
            BOOL_OR(NULLIF(BTRIM(ai.summary), '') IS NOT NULL) AS has_ai_summary,
            (m.body_html IS NOT NULL) AS has_html,
            EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
@@ -109,7 +110,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
       AND NOT m.is_deleted
       AND (${folderPredicate(sql, folder, labelName)})
       ${cursor ? sql`AND (${sortAt}, m.id) < (${cursor.sentAt}::timestamptz, ${cursor.id}::uuid)` : sql``}
-    GROUP BY m.id, ai.spam_score, ai.spam_verdict
+    GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority
     ORDER BY ${sortAt} DESC, m.id DESC
     LIMIT ${limit + 1}
   `;

@@ -37,7 +37,8 @@ describe('fetchEmails', () => {
 
     fetchEmails(capture.sql, USER_ID, 50, cursor, 'inbox');
 
-    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict');
+    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority');
+    expect(capture.query()).toContain('ai.priority,');
     expect(capture.query()).toContain('ai.summary');
     expect(capture.query()).toContain('AS has_ai_summary');
     expect(capture.query()).toContain('m.scheduled_for');
@@ -73,7 +74,7 @@ describe('fetchEmails', () => {
 
     expect(capture.query()).toContain('m.scheduled_for > now()');
     expect(capture.query()).not.toContain("? = 'snoozed'");
-    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict');
+    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority');
   });
 
   test.each([
@@ -89,7 +90,7 @@ describe('fetchEmails', () => {
 
     expect(capture.query()).toContain('AND (m.is_archived)');
     expect(capture.query()).not.toContain("? = 'done'");
-    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict');
+    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority');
   });
 
   test('inlines the inbox folder predicate so the 0035 partial index can apply', () => {
