@@ -548,15 +548,19 @@ describe('priority', () => {
 });
 
 // Drag-and-drop ordering: Cookie-Web sends the rows in their new order and
-// their existing position values are permuted to match, in one statement.
+// the position values those rows already hold are dealt back out to match.
 describe('POST /task-items/reorder', () => {
   const OTHER_ID = '33333333-3333-4333-8333-333333333333';
 
-  it('permutes the given rows\u2019 positions in one ownership-scoped UPDATE', async () => {
+  it('deals the given rows\u2019 own positions out in the new order', async () => {
     const sql = createMockSql([
       [
-        { id: OTHER_ID, position: 1 },
-        { id: ITEM_ID, position: 2 },
+        { id: ITEM_ID, position: 10 },
+        { id: OTHER_ID, position: 20 },
+      ],
+      [
+        { id: OTHER_ID, position: 10 },
+        { id: ITEM_ID, position: 20 },
       ],
     ]);
 
@@ -564,18 +568,40 @@ describe('POST /task-items/reorder', () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).items).toEqual([
-      { id: OTHER_ID, position: 1 },
-      { id: ITEM_ID, position: 2 },
+      { id: OTHER_ID, position: 10 },
+      { id: ITEM_ID, position: 20 },
     ]);
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[0].text).toContain('WHERE user_id = ? AND id = ANY(?::uuid[])');
+    const update = sql.calls[1];
+    expect(update.text).toContain('FROM unnest(?::uuid[], ?::float8[]) AS placed(id, position)');
+    expect(update.text).toContain('WHERE t.id = placed.id AND t.user_id = ?');
+    // The requested order, carrying the sorted existing values.
+    expect(update.values).toEqual([[OTHER_ID, ITEM_ID], [10, 20], USER_ID]);
+  });
+
+  // Yesterday's renumbering left each list at 1..n, so rows from different
+  // projects can share a value; Today must still be able to swap them.
+  it('pushes tied positions apart so every row gets its own', async () => {
+    const sql = createMockSql([
+      [
+        { id: ITEM_ID, position: 3 },
+        { id: OTHER_ID, position: 3 },
+      ],
+      [],
+    ]);
+
+    await reorderTaskItems(sql, USER_ID, { ids: [OTHER_ID, ITEM_ID] });
+
+    expect(sql.calls[1].values).toEqual([[OTHER_ID, ITEM_ID], [3, 3.001], USER_ID]);
+  });
+
+  it('leaves out ids the caller does not own and writes nothing when none remain', async () => {
+    const sql = createMockSql([[]]);
+    const response = await reorderTaskItems(sql, USER_ID, { ids: [OTHER_ID] });
+    expect(response.status).toBe(200);
+    expect((await response.json()).items).toEqual([]);
     expect(sql.calls).toHaveLength(1);
-    const { text, values } = sql.calls[0];
-    expect(text).toContain('FROM unnest(?::uuid[]) WITH ORDINALITY AS ord(id, n)');
-    // The rows keep the position values they had between them, dealt back
-    // out in the new order, so a partial reorder (Today) does not fling
-    // tasks to the top of their own projects.
-    expect(text).toContain('row_number() OVER (ORDER BY t.position, t.created_at, t.id)');
-    expect(text).toContain('WHERE t.id = placed.id AND t.user_id = ?');
-    expect(values).toEqual([[OTHER_ID, ITEM_ID], USER_ID, USER_ID]);
   });
 
   it.each([

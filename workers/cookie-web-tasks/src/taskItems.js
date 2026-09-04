@@ -309,22 +309,39 @@ export async function updateTaskItem(sql, userId, body, env) {
 }
 
 export const MAX_REORDER_IDS = 500;
+// How far apart two rows that shared a position are pushed. Positions are
+// epoch seconds (migration 0062) or small integers from an earlier renumber,
+// so a thousandth never crosses a neighbour outside the reordered set.
+export const POSITION_TIE_STEP = 0.001;
+
+/**
+ * The position values a set of rows will carry after being re-arranged: the
+ * values they hold now, sorted, with any ties pushed apart so every row gets
+ * a value of its own. Shared values arise from the earlier renumbering of
+ * each list 1..n; without this, two Today rows from different projects at
+ * "3" could never swap.
+ *
+ * @param {{position: number}[]} rows in their current order
+ */
+export function dealtPositions(rows) {
+  const slots = rows.map((row) => Number(row.position)).sort((a, b) => a - b);
+  for (let i = 1; i < slots.length; i += 1) {
+    if (slots[i] <= slots[i - 1]) slots[i] = slots[i - 1] + POSITION_TIE_STEP;
+  }
+  return slots;
+}
 
 /**
  * POST /task-items/reorder — { ids }: rows in their new order, as Cookie-Web's
  * drag and drop leaves them. The rows keep the set of position values they
- * already had between them: the values are sorted and dealt back out in the
+ * already had between them (see dealtPositions), dealt back out in the
  * requested order. That makes a partial reorder safe — Today lists tasks from
  * many projects, and re-arranging a day there must not fling those tasks to
  * the top of their own projects, which numbering them 1..n would do. A whole
  * list re-arranged is just the same permutation over all of its values.
  *
- * Ids the caller does not own are left out of the permutation (the join
- * drops them), so a stray id cannot move somebody else's task; the response
- * says which rows changed. Ties in position fall back to created_at order on
- * read, so two rows sharing a value cannot be swapped — values are seeded
- * from created_at to the microsecond (migration 0062), so ties do not arise
- * in practice.
+ * Ids the caller does not own are simply absent from the read, so a stray id
+ * cannot move somebody else's task; the response says which rows changed.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -342,25 +359,19 @@ export async function reorderTaskItems(sql, userId, body) {
     return Response.json({ error: 'ids must not repeat' }, { status: 400 });
   }
 
+  const owned = await sql`
+    SELECT id, position FROM task_items
+    WHERE user_id = ${userId} AND id = ANY(${ids}::uuid[])
+  `;
+  const current = new Map(owned.map((row) => [String(row.id), row]));
+  const ordered = ids.filter((id) => current.has(id));
+  if (!ordered.length) return Response.json({ items: [] });
+
+  const slots = dealtPositions(ordered.map((id) => current.get(id)));
   const items = await sql`
-    WITH wanted AS (
-      SELECT t.id, ord.n
-      FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ord(id, n)
-      JOIN task_items t ON t.id = ord.id AND t.user_id = ${userId}
-    ),
-    slots AS (
-      SELECT t.position, row_number() OVER (ORDER BY t.position, t.created_at, t.id) AS n
-      FROM task_items t
-      WHERE t.id IN (SELECT id FROM wanted)
-    ),
-    placed AS (
-      SELECT w.id, s.position
-      FROM (SELECT id, row_number() OVER (ORDER BY n) AS n FROM wanted) w
-      JOIN slots s ON s.n = w.n
-    )
     UPDATE task_items t
     SET position = placed.position, updated_at = now()
-    FROM placed
+    FROM unnest(${ordered}::uuid[], ${slots}::float8[]) AS placed(id, position)
     WHERE t.id = placed.id AND t.user_id = ${userId}
     RETURNING t.id, t.position
   `;
