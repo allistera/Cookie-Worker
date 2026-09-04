@@ -116,3 +116,14 @@ describe('removeTaskItemFromMeili', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+// A divider has nothing to find; the row read refuses it so nothing is pushed.
+it('reads only task rows, so a divider is never pushed', async () => {
+  const sql = createMockSql([[{ id: TASK_ID }], []]);
+  const push = vi.fn(async () => ({ taskUid: 1 }));
+
+  await syncTaskItemToMeili(sql, ENV, TASK_ID, { addDocuments: push });
+
+  expect(sql.calls[1].text).toContain("t.kind = 'task'");
+  expect(push).not.toHaveBeenCalled();
+});
