@@ -101,7 +101,8 @@ export async function getTaskItems(sql, userId, url) {
   const items = await sql`
     SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
            t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
-           t.position, t.completed_at AS "completedAt", t.created_at AS "createdAt"
+           t.position, t.today_position AS "todayPosition",
+           t.completed_at AS "completedAt", t.created_at AS "createdAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
       -- Today also carries the sub-tasks of every task it lists: the panel
@@ -119,9 +120,14 @@ export async function getTaskItems(sql, userId, url) {
       AND (${includeCompleted}::boolean OR t.completed_at IS NULL OR t.parent_id IS NOT NULL)
     -- Only Today sorts by date: it is the one list where the rows carry
     -- different due dates, and the oldest thing owed belongs at the top.
-    -- Project and Inbox lists are in the order the person arranged them
-    -- (position, migration 0062, seeded from created_at).
+    -- Within a day it follows today_position (migration 0063), an order
+    -- Today alone reads and writes, so re-arranging a day there never
+    -- disturbs the projects the tasks live in; rows never arranged there
+    -- fall in after the ones that were. Project and Inbox lists are in the
+    -- order the person arranged them (position, migration 0062, seeded
+    -- from created_at).
     ORDER BY CASE WHEN ${today}::boolean THEN t.due_date END ASC NULLS LAST,
+             CASE WHEN ${today}::boolean THEN t.today_position END ASC NULLS LAST,
              t.position ASC, t.created_at ASC
   `;
   return Response.json({ items });
@@ -182,7 +188,8 @@ export async function createTaskItem(sql, userId, body, env) {
     VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority})
     RETURNING id, project_id AS "projectId", parent_id AS "parentId", content, description,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
-              completed_at AS "completedAt", created_at AS "createdAt"
+              today_position AS "todayPosition", completed_at AS "completedAt",
+              created_at AS "createdAt"
   `;
   // Best-effort: a sub-task lands on its parent's search document (the sync
   // walks up to the root), a top-level task gets its own.
@@ -293,7 +300,8 @@ export async function updateTaskItem(sql, userId, body, env) {
     WHERE t.id = ${id} AND t.user_id = ${userId}
     RETURNING t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
               t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
-              t.position, t.completed_at AS "completedAt", t.created_at AS "createdAt"
+              t.position, t.today_position AS "todayPosition", t.completed_at AS "completedAt",
+              t.created_at AS "createdAt"
   `;
   // Best-effort search sync. Reparenting moves the row between search
   // documents (only top-level tasks are indexed, carrying their sub-task
@@ -332,16 +340,22 @@ export function dealtPositions(rows) {
 }
 
 /**
- * POST /task-items/reorder — { ids }: rows in their new order, as Cookie-Web's
- * drag and drop leaves them. The rows keep the set of position values they
- * already had between them (see dealtPositions), dealt back out in the
- * requested order. That makes a partial reorder safe — Today lists tasks from
- * many projects, and re-arranging a day there must not fling those tasks to
- * the top of their own projects, which numbering them 1..n would do. A whole
- * list re-arranged is just the same permutation over all of its values.
+ * POST /task-items/reorder — { ids, view? }: rows in their new order, as
+ * Cookie-Web's drag and drop leaves them.
  *
- * Ids the caller does not own are simply absent from the read, so a stray id
- * cannot move somebody else's task; the response says which rows changed.
+ * For a project or Inbox list (no view) the rows keep the set of position
+ * values they already had between them (see dealtPositions), dealt back out
+ * in the requested order.
+ *
+ * With view: 'today' the rows are one day of the Today list, which spans
+ * every project. Today has an order of its own — today_position (migration
+ * 0063), numbered 1..n here and read only by Today's ORDER BY — so a day
+ * re-arranged there never moves a task among its siblings in its own
+ * project, which any rewrite of `position` for a cross-project set would.
+ *
+ * Ids the caller does not own are simply absent from the read (or left out
+ * by the join), so a stray id cannot move somebody else's task; the response
+ * says which rows changed.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -357,6 +371,21 @@ export async function reorderTaskItems(sql, userId, body) {
   }
   if (new Set(ids).size !== ids.length) {
     return Response.json({ error: 'ids must not repeat' }, { status: 400 });
+  }
+  const view = body?.view ?? null;
+  if (view !== null && view !== 'today') {
+    return Response.json({ error: 'view must be "today" or absent' }, { status: 400 });
+  }
+
+  if (view === 'today') {
+    const items = await sql`
+      UPDATE task_items t
+      SET today_position = ord.n, updated_at = now()
+      FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ord(id, n)
+      WHERE t.id = ord.id AND t.user_id = ${userId}
+      RETURNING t.id, t.today_position AS "todayPosition"
+    `;
+    return Response.json({ items });
   }
 
   const owned = await sql`
