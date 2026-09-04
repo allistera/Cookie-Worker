@@ -25,7 +25,7 @@ describe('GET /task-items', () => {
     expect(sql.calls[0].text).toContain('FROM task_items t');
     // Arranged order first (drag and drop), creation order as the tiebreak.
     expect(sql.calls[0].text).toContain('t.position ASC, t.created_at ASC');
-    expect(sql.calls[0].text).toContain('t.position,');
+    expect(sql.calls[0].text).toContain('t.position, t.today_position AS "todayPosition"');
     expect(sql.calls[0].values).toEqual([
       USER_ID,
       false,
@@ -34,6 +34,7 @@ describe('GET /task-items', () => {
       null,
       false,
       PROJECT_ID,
+      false,
       false,
       false,
     ]);
@@ -54,6 +55,7 @@ describe('GET /task-items', () => {
       null,
       false,
       false,
+      false,
     ]);
     expect(sql.calls[0].values).not.toContain('inbox');
   });
@@ -71,6 +73,7 @@ describe('GET /task-items', () => {
       true,
       null,
       true,
+      false,
       false,
     ]);
   });
@@ -246,6 +249,35 @@ describe('DELETE /task-items', () => {
 
 // A malformed date used to collapse to null and be written, wiping whatever
 // date the task already had. Phase 2 puts a date control on this field.
+// A Today rank (today_position) is scoped to the day it was arranged on;
+// changing the due date must drop it, or the task would carry an old rank
+// into the new day and displace rows arranged there.
+describe('changing the due date clears the Today rank', () => {
+  it('nulls today_position in the same UPDATE as the date', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, dueDate: '2026-09-05' }]]);
+
+    await updateTaskItem(sql, USER_ID, { id: ITEM_ID, dueDate: '2026-09-05' });
+
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items'));
+    expect(update.text).toContain(
+      'today_position = CASE WHEN ?::boolean THEN NULL ELSE t.today_position END',
+    );
+  });
+
+  it('leaves today_position alone for other edits', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, content: 'Renamed' }]]);
+
+    await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Renamed' });
+
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items'));
+    // The hasDueDate flag drives both the date and the rank reset.
+    const flagIndex = update.text
+      .split('?')
+      .findIndex((part) => part.includes('due_date     = CASE WHEN '));
+    expect(update.values[flagIndex]).toBe(false);
+  });
+});
+
 describe('dueDate validation', () => {
   it('rejects a malformed dueDate instead of clearing the date', async () => {
     const sql = createMockSql([[{ id: ITEM_ID }]]);
@@ -363,6 +395,7 @@ describe('GET /task-items?project=today', () => {
       null,
       false,
       true,
+      true,
     ]);
     // Overdue tasks belong in Today: a task due last week and still not done
     // would otherwise be visible only inside its own project.
@@ -424,6 +457,7 @@ describe('GET /task-items?project=today', () => {
       '2026-08-29',
       false,
       null,
+      true,
       true,
       true,
     ]);
@@ -594,6 +628,40 @@ describe('POST /task-items/reorder', () => {
     await reorderTaskItems(sql, USER_ID, { ids: [OTHER_ID, ITEM_ID] });
 
     expect(sql.calls[1].values).toEqual([[OTHER_ID, ITEM_ID], [3, 3.001], USER_ID]);
+  });
+
+  // Today has an order of its own: a day re-arranged there is numbered in
+  // today_position, and `position` — the projects' order — is untouched.
+  it('numbers today_position for view: today and leaves position alone', async () => {
+    const sql = createMockSql([
+      [
+        { id: OTHER_ID, todayPosition: 1 },
+        { id: ITEM_ID, todayPosition: 2 },
+      ],
+    ]);
+
+    const response = await reorderTaskItems(sql, USER_ID, {
+      ids: [OTHER_ID, ITEM_ID],
+      view: 'today',
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).items).toEqual([
+      { id: OTHER_ID, todayPosition: 1 },
+      { id: ITEM_ID, todayPosition: 2 },
+    ]);
+    expect(sql.calls).toHaveLength(1);
+    const { text, values } = sql.calls[0];
+    expect(text).toContain('SET today_position = ord.n');
+    expect(text).not.toContain('SET position');
+    expect(values).toEqual([[OTHER_ID, ITEM_ID], USER_ID]);
+  });
+
+  it('refuses a view other than today', async () => {
+    const sql = createMockSql([]);
+    const response = await reorderTaskItems(sql, USER_ID, { ids: [ITEM_ID], view: 'inbox' });
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
   });
 
   it('leaves out ids the caller does not own and writes nothing when none remain', async () => {
