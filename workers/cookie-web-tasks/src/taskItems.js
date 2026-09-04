@@ -291,6 +291,10 @@ export async function updateTaskItem(sql, userId, body, env) {
       project_id   = CASE WHEN ${hasProject}::boolean THEN ${projectId}::uuid ELSE t.project_id END,
       parent_id    = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE t.parent_id END,
       due_date     = CASE WHEN ${hasDueDate}::boolean THEN ${dueDate}::date ELSE t.due_date END,
+      -- A Today rank belongs to the day it was arranged on: a task moved to
+      -- another date joins that day unranked, after its arranged rows,
+      -- rather than displacing them with a rank from elsewhere.
+      today_position = CASE WHEN ${hasDueDate}::boolean THEN NULL ELSE t.today_position END,
       priority     = CASE WHEN ${hasPriority}::boolean THEN ${priority}::smallint ELSE t.priority END,
       completed_at = CASE
         WHEN ${hasCompleted}::boolean THEN (CASE WHEN ${Boolean(body.completed)}::boolean THEN now() ELSE NULL END)

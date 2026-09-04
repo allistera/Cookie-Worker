@@ -249,6 +249,35 @@ describe('DELETE /task-items', () => {
 
 // A malformed date used to collapse to null and be written, wiping whatever
 // date the task already had. Phase 2 puts a date control on this field.
+// A Today rank (today_position) is scoped to the day it was arranged on;
+// changing the due date must drop it, or the task would carry an old rank
+// into the new day and displace rows arranged there.
+describe('changing the due date clears the Today rank', () => {
+  it('nulls today_position in the same UPDATE as the date', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, dueDate: '2026-09-05' }]]);
+
+    await updateTaskItem(sql, USER_ID, { id: ITEM_ID, dueDate: '2026-09-05' });
+
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items'));
+    expect(update.text).toContain(
+      'today_position = CASE WHEN ?::boolean THEN NULL ELSE t.today_position END',
+    );
+  });
+
+  it('leaves today_position alone for other edits', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID }], [{ id: ITEM_ID, content: 'Renamed' }]]);
+
+    await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Renamed' });
+
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items'));
+    // The hasDueDate flag drives both the date and the rank reset.
+    const flagIndex = update.text
+      .split('?')
+      .findIndex((part) => part.includes('due_date     = CASE WHEN '));
+    expect(update.values[flagIndex]).toBe(false);
+  });
+});
+
 describe('dueDate validation', () => {
   it('rejects a malformed dueDate instead of clearing the date', async () => {
     const sql = createMockSql([[{ id: ITEM_ID }]]);
