@@ -14,6 +14,8 @@ import {
  * The id may be any row in a task tree: only top-level tasks are indexed
  * (TASKS_INDEX carries sub-task titles on the parent), so the sync walks up
  * to the root first. Writing a sub-task therefore re-pushes its parent.
+ * Dividers (kind = 'divider', migration 0064) have nothing to find and are
+ * never pushed.
  *
  * @param {import('postgres').Sql} sql
  * @param {any} env
@@ -41,7 +43,7 @@ export async function syncTaskItemToMeili(sql, env, taskId, deps = {}) {
                       ARRAY[]::text[]) AS subtasks
       FROM task_items t
       LEFT JOIN task_items c ON c.parent_id = t.id
-      WHERE t.id = ${root.id}
+      WHERE t.id = ${root.id} AND t.kind = 'task'
       GROUP BY t.id
     `;
     if (!row) return;

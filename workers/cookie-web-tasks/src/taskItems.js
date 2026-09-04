@@ -14,6 +14,10 @@ const MAX_DESCRIPTION_LENGTH = 10000;
 const MIN_PRIORITY = 1;
 const MAX_PRIORITY = 4;
 export const DEFAULT_PRIORITY = MAX_PRIORITY;
+// A row is a task, or a divider: a rule dropped between tasks to group them
+// (migration 0064). A divider has no content, date, parent or sub-tasks; it
+// only takes its place in the list's order and moves between projects.
+const KINDS = ['task', 'divider'];
 
 /**
  * A real calendar date in YYYY-MM-DD. DATE_RE alone admits 2026-02-31, which
@@ -99,7 +103,7 @@ export async function getTaskItems(sql, userId, url) {
   const includeCompleted = url.searchParams.get('completed') === '1';
 
   const items = await sql`
-    SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
+    SELECT t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
            t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
            t.position, t.today_position AS "todayPosition",
            t.completed_at AS "completedAt", t.created_at AS "createdAt"
@@ -135,9 +139,13 @@ export async function getTaskItems(sql, userId, url) {
 
 /**
  * POST /task-items — { content, description?, projectId?, dueDate?,
- * priority?, parentId? }. A sub-task lives in its parent's project: with parentId set,
+ * priority?, parentId?, kind? }. A sub-task lives in its parent's project: with parentId set,
  * the project is read from the parent row and any projectId in the body is
  * ignored, so the two can never disagree.
+ *
+ * kind: 'divider' creates a divider in the given project (or the Inbox): no
+ * content, and never a sub-task. It lands at the bottom like any new row;
+ * the client then re-arranges the list to put it where it was asked for.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -145,6 +153,12 @@ export async function getTaskItems(sql, userId, url) {
  * @param {any} [env] Meilisearch config for the best-effort search sync.
  */
 export async function createTaskItem(sql, userId, body, env) {
+  const kind = body?.kind ?? 'task';
+  if (!KINDS.includes(kind)) {
+    return Response.json({ error: 'kind must be "task" or "divider"' }, { status: 400 });
+  }
+  if (kind === 'divider') return createDivider(sql, userId, body);
+
   const content = cleanText(body?.content, MAX_CONTENT_LENGTH);
   if (!content) return Response.json({ error: 'Task content is required' }, { status: 400 });
 
@@ -159,10 +173,13 @@ export async function createTaskItem(sql, userId, body, env) {
       return Response.json({ error: 'Task not found' }, { status: 404 });
     }
     const [parent] = await sql`
-      SELECT id, project_id AS "projectId" FROM task_items
+      SELECT id, kind, project_id AS "projectId" FROM task_items
       WHERE id = ${parentId} AND user_id = ${userId}
     `;
     if (!parent) return Response.json({ error: 'Task not found' }, { status: 404 });
+    if (parent.kind === 'divider') {
+      return Response.json({ error: 'A divider cannot have sub-tasks' }, { status: 400 });
+    }
     projectId = parent.projectId;
   } else if (projectId !== null) {
     if (!isUuid(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
@@ -186,7 +203,7 @@ export async function createTaskItem(sql, userId, body, env) {
   const [item] = await sql`
     INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority)
     VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority})
-    RETURNING id, project_id AS "projectId", parent_id AS "parentId", content, description,
+    RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
               today_position AS "todayPosition", completed_at AS "completedAt",
               created_at AS "createdAt"
@@ -197,16 +214,46 @@ export async function createTaskItem(sql, userId, body, env) {
   return Response.json({ item }, { status: 201 });
 }
 
+/**
+ * A divider has nothing to validate but its project. It is not indexed for
+ * search: there is nothing in it to find.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {any} body
+ */
+async function createDivider(sql, userId, body) {
+  if ((body?.parentId ?? null) !== null) {
+    return Response.json({ error: 'A divider cannot be a sub-task' }, { status: 400 });
+  }
+  const projectId = body?.projectId ?? null;
+  if (projectId !== null) {
+    if (!isUuid(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
+      return Response.json({ error: 'Project not found' }, { status: 404 });
+    }
+  }
+  const [item] = await sql`
+    INSERT INTO task_items (user_id, project_id, kind, content)
+    VALUES (${userId}, ${projectId}, 'divider', '')
+    RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description,
+              to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
+              today_position AS "todayPosition", completed_at AS "completedAt",
+              created_at AS "createdAt"
+  `;
+  return Response.json({ item }, { status: 201 });
+}
+
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string} id */
 function fetchOwnedTaskItem(sql, userId, id) {
-  return sql`SELECT id, parent_id AS "parentId" FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
+  return sql`SELECT id, kind, parent_id AS "parentId" FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
 }
 
 /**
  * PATCH /task-items — { id, content?, description?, projectId?, parentId?,
  * dueDate?, priority?, completed? }. projectId: null moves the task to the
  * Inbox; priority: null resets it to the default (4). List order is not a
- * per-row field: see reorderTaskItems.
+ * per-row field: see reorderTaskItems. A divider only ever moves between
+ * projects; every other change is refused.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -244,6 +291,15 @@ export async function updateTaskItem(sql, userId, body, env) {
   ) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
+  if (
+    existing.kind === 'divider' &&
+    (hasContent || hasDescription || hasParent || hasDueDate || hasPriority || hasCompleted)
+  ) {
+    return Response.json(
+      { error: 'A divider can only be moved between projects' },
+      { status: 400 },
+    );
+  }
 
   const description = hasDescription ? cleanText(body.description, MAX_DESCRIPTION_LENGTH) : null;
 
@@ -259,8 +315,10 @@ export async function updateTaskItem(sql, userId, body, env) {
     if (parentId === id) {
       return Response.json({ error: 'A task cannot be its own parent' }, { status: 400 });
     }
-    if (!isUuid(parentId) || !(await fetchOwnedTaskItem(sql, userId, parentId)).length) {
-      return Response.json({ error: 'Task not found' }, { status: 404 });
+    const [parent] = isUuid(parentId) ? await fetchOwnedTaskItem(sql, userId, parentId) : [];
+    if (!parent) return Response.json({ error: 'Task not found' }, { status: 404 });
+    if (parent.kind === 'divider') {
+      return Response.json({ error: 'A divider cannot have sub-tasks' }, { status: 400 });
     }
     if (await isAncestorOf(sql, { table: 'task_items', userId, id, candidateParentId: parentId })) {
       return Response.json({ error: 'A task cannot become its own descendant' }, { status: 400 });
@@ -302,11 +360,13 @@ export async function updateTaskItem(sql, userId, body, env) {
       END,
       updated_at   = now()
     WHERE t.id = ${id} AND t.user_id = ${userId}
-    RETURNING t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
+    RETURNING t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
               t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
               t.position, t.today_position AS "todayPosition", t.completed_at AS "completedAt",
               t.created_at AS "createdAt"
   `;
+  // A divider has no search document to keep current.
+  if (existing.kind === 'divider') return Response.json({ item });
   // Best-effort search sync. Reparenting moves the row between search
   // documents (only top-level tasks are indexed, carrying their sub-task
   // titles): a demoted task loses its own document, and an old parent must
@@ -424,9 +484,12 @@ export async function deleteTaskItem(sql, userId, body, env) {
   if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
 
   const deleted = await sql`
-    DELETE FROM task_items WHERE id = ${id} AND user_id = ${userId} RETURNING id, parent_id AS "parentId"
+    DELETE FROM task_items WHERE id = ${id} AND user_id = ${userId}
+    RETURNING id, kind, parent_id AS "parentId"
   `;
   if (!deleted.length) return Response.json({ error: 'Task not found' }, { status: 404 });
+  // A divider was never indexed, so there is nothing to take out.
+  if (deleted[0].kind === 'divider') return Response.json({ ok: true });
   // A top-level task takes its search document (sub-task titles and all) with
   // it; a deleted sub-task means its parent's document re-pushes without it.
   if (deleted[0].parentId === null) await removeTaskItemFromMeili(env, id);

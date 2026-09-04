@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createTaskItem,
   deleteTaskItem,
@@ -683,5 +683,124 @@ describe('POST /task-items/reorder', () => {
     const response = await reorderTaskItems(sql, USER_ID, body);
     expect(response.status).toBe(400);
     expect(sql.calls).toHaveLength(0);
+  });
+});
+
+// A divider (kind = 'divider', migration 0064) is a rule between rows: it
+// takes a place in the list's order and moves between projects, and that is
+// all. It has no content to search for, so it never reaches Meilisearch.
+describe('dividers', () => {
+  const DIVIDER = { id: ITEM_ID, kind: 'divider', projectId: PROJECT_ID, content: '' };
+  const env = { MEILISEARCH_HOST: 'https://meili.test', MEILISEARCH_API_KEY: 'k' };
+
+  it('creates a divider with no content in the given project, without indexing it', async () => {
+    const sql = createMockSql([[{ id: PROJECT_ID }], [DIVIDER]]);
+
+    const response = await createTaskItem(
+      sql,
+      USER_ID,
+      { kind: 'divider', projectId: PROJECT_ID },
+      env,
+    );
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).item.kind).toBe('divider');
+    const insert = sql.calls.find((call) => call.text.includes('INSERT INTO task_items'));
+    expect(insert.text).toContain("'divider', ''");
+    expect(insert.values).toEqual([USER_ID, PROJECT_ID]);
+    expect(sql.calls.some((call) => call.text.includes('WITH RECURSIVE'))).toBe(false);
+  });
+
+  it('creates an Inbox divider when no project is given', async () => {
+    const sql = createMockSql([[{ ...DIVIDER, projectId: null }]]);
+    const response = await createTaskItem(sql, USER_ID, { kind: 'divider' });
+    expect(response.status).toBe(201);
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  it('404s a divider in a project the caller does not own', async () => {
+    const sql = createMockSql([[]]);
+    const response = await createTaskItem(sql, USER_ID, { kind: 'divider', projectId: PROJECT_ID });
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses a divider as a sub-task', async () => {
+    const sql = createMockSql([]);
+    const response = await createTaskItem(sql, USER_ID, { kind: 'divider', parentId: ITEM_ID });
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
+  });
+
+  it('refuses a kind it does not know', async () => {
+    const sql = createMockSql([]);
+    const response = await createTaskItem(sql, USER_ID, { kind: 'section', content: 'x' });
+    expect(response.status).toBe(400);
+  });
+
+  it('refuses a sub-task under a divider, on create and on reparent', async () => {
+    const created = await createTaskItem(createMockSql([[DIVIDER]]), USER_ID, {
+      content: 'Step one',
+      parentId: ITEM_ID,
+    });
+    expect(created.status).toBe(400);
+    expect((await created.json()).error).toContain('sub-tasks');
+
+    const other = '33333333-3333-4333-8333-333333333333';
+    const moved = await updateTaskItem(
+      createMockSql([[{ id: other, kind: 'task' }], [DIVIDER]]),
+      USER_ID,
+      {
+        id: other,
+        parentId: ITEM_ID,
+      },
+    );
+    expect(moved.status).toBe(400);
+  });
+
+  it('moves a divider between projects without a search sync', async () => {
+    const sql = createMockSql([[DIVIDER], [{ id: PROJECT_ID }], [{ ...DIVIDER }]]);
+
+    const response = await updateTaskItem(
+      sql,
+      USER_ID,
+      { id: ITEM_ID, projectId: PROJECT_ID },
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(sql.calls.some((call) => call.text.includes('UPDATE task_items'))).toBe(true);
+    expect(sql.calls.some((call) => call.text.includes('WITH RECURSIVE'))).toBe(false);
+  });
+
+  it.each([
+    [{ content: 'Named' }],
+    [{ dueDate: '2026-09-04' }],
+    [{ completed: true }],
+    [{ priority: 1 }],
+    [{ parentId: '33333333-3333-4333-8333-333333333333' }],
+  ])('refuses any other change to a divider: %j', async (change) => {
+    const sql = createMockSql([[DIVIDER]]);
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, ...change });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('divider');
+    expect(sql.calls.some((call) => call.text.includes('UPDATE task_items'))).toBe(false);
+  });
+
+  it('deletes a divider without touching the search index', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, kind: 'divider', parentId: null }]]);
+    vi.stubGlobal('fetch', vi.fn());
+
+    const response = await deleteTaskItem(sql, USER_ID, { id: ITEM_ID }, env);
+
+    expect(response.status).toBe(200);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(sql.calls).toHaveLength(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('lists the kind of every row', async () => {
+    const sql = createMockSql([[DIVIDER]]);
+    await getTaskItems(sql, USER_ID, url(`?project=${PROJECT_ID}`));
+    expect(sql.calls[0].text).toContain('SELECT t.id, t.kind,');
   });
 });
