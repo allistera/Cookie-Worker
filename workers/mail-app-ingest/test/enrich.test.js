@@ -47,6 +47,7 @@ describe('AI enrichment', () => {
     expect(request.model).toBe(AI_MODEL);
     expect(request.text.format).toMatchObject({ type: 'json_schema', strict: true });
     expect(request.input[0].content).toContain('untrusted data');
+    expect(request.input[0].content).toContain('Set priority to high only when');
     // Summaries are user-requested through Cookie-Web's reader; enrichment
     // must not ask the model for one.
     expect(request.text.format.schema.properties).not.toHaveProperty('summary');
