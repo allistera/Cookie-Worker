@@ -210,6 +210,61 @@ describe('cleanup and error reporting', () => {
     expect(captureHandledException).toHaveBeenCalledOnce();
     expect(sqlEnd).toHaveBeenCalledOnce();
   });
+
+  // The socket to Hyperdrive drops under a query now and then (Sentry
+  // COOKIE-WEB-M and -R). A read is idempotent, so it gets one more go on a
+  // fresh connection; a write does not.
+  describe('a dropped connection', () => {
+    const dropped = () => new Error('Network connection lost.');
+
+    test('retries a read once on a fresh connection, and nobody hears of it', async () => {
+      mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([]);
+      const response = await worker.fetch(request('/messages/contacts'), env, ctx);
+      expect(response.status).toBe(200);
+      expect(createClient).toHaveBeenCalledTimes(2);
+      expect(captureHandledException).not.toHaveBeenCalled();
+      // The dead connection and the fresh one are both closed.
+      expect(sqlEnd).toHaveBeenCalledTimes(2);
+    });
+
+    test('gives up after the second drop and reports it', async () => {
+      mockQuery.mockRejectedValue(dropped());
+      const response = await worker.fetch(request('/messages/contacts'), env, ctx);
+      expect(response.status).toBe(500);
+      expect(createClient).toHaveBeenCalledTimes(2);
+      expect(captureHandledException).toHaveBeenCalledOnce();
+    });
+
+    test('does not retry a write', async () => {
+      mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([]);
+      const response = await worker.fetch(
+        request('/messages', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: MESSAGE_ID, is_starred: true }),
+        }),
+        env,
+        ctx,
+      );
+      expect(response.status).toBe(500);
+      expect(createClient).toHaveBeenCalledOnce();
+      expect(captureHandledException).toHaveBeenCalledOnce();
+    });
+
+    test('retries the caller lookup too, rather than answering 401', async () => {
+      verifyAccessToken.mockRejectedValueOnce(dropped()).mockResolvedValue({ userId: 'user-1' });
+      const response = await worker.fetch(request('/messages/contacts'), env, ctx);
+      expect(response.status).toBe(200);
+      expect(createClient).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not retry a read that failed for another reason', async () => {
+      mockQuery.mockRejectedValueOnce(new Error('syntax error')).mockResolvedValue([]);
+      const response = await worker.fetch(request('/messages/contacts'), env, ctx);
+      expect(response.status).toBe(500);
+      expect(createClient).toHaveBeenCalledOnce();
+    });
+  });
 });
 
 describe('search reindex after a write', () => {

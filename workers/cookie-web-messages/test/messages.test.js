@@ -938,3 +938,15 @@ describe('fetchThreadMessages', () => {
     expect(query).not.toContain('m.body_text');
   });
 });
+
+// getAttachment reports its own failures as a 500, but a dropped connection
+// is the worker's to retry on a fresh one, so that one is let through.
+describe('getAttachment on a dropped connection', () => {
+  test('rethrows a transient database error instead of answering 500', async () => {
+    const sql = /** @type {any} */ (() => Promise.reject(new Error('Network connection lost.')));
+    const blob = /** @type {any} */ ({});
+    await expect(
+      getAttachment(sql, 'user-1', '11111111-1111-1111-1111-111111111111', blob),
+    ).rejects.toThrow('Network connection lost');
+  });
+});

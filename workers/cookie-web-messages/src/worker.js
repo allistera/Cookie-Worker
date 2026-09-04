@@ -4,6 +4,8 @@ import postgres from 'postgres';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 import { getContacts } from './contacts.js';
 import { getAttachment, getMessage, getThreadBody, patchMessage, postMessage } from './messages.js';
 import { attemptAiUnsubscribe } from './aiUnsubscribe.js';
@@ -178,21 +180,37 @@ const worker = {
     }
 
     const url = new URL(request.url);
-    const sql = createSql(env.HYPERDRIVE.connectionString);
+    let sql = createSql(env.HYPERDRIVE.connectionString);
     try {
-      let userId;
-      try {
-        ({ userId } = await verifyAccessToken(request, env, sql));
-      } catch (error) {
-        return withCors(
-          authFailureResponse(error),
-          origin,
-          env.ALLOWED_ORIGIN,
-          env.SENTRY_ENVIRONMENT,
-        );
-      }
-
-      const response = await route(url, request, sql, userId, env, ctx);
+      // The socket to Hyperdrive drops under a query now and then (Sentry
+      // COOKIE-WEB-M, COOKIE-WEB-R: "Network connection lost", once every
+      // week or two, always mid-read). Every GET here is idempotent, so it
+      // gets one more go on a fresh connection before the person sees a
+      // failure — the caller lookup included, which otherwise turned a
+      // dropped socket into a 401. A write does not: its body is spent, and
+      // it may have landed.
+      const response = await retryWithBackoff(
+        async (attempt) => {
+          if (attempt > 1) {
+            ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
+            sql = createSql(env.HYPERDRIVE.connectionString);
+            console.log(JSON.stringify({ event: 'read_retried', path: url.pathname }));
+          }
+          let userId;
+          try {
+            ({ userId } = await verifyAccessToken(request, env, sql));
+          } catch (error) {
+            if (isTransientDbError(error)) throw error;
+            return authFailureResponse(error);
+          }
+          return route(url, request, sql, userId, env, ctx);
+        },
+        {
+          attempts: request.method === 'GET' ? 2 : 1,
+          baseDelayMs: 100,
+          isRetryable: isTransientDbError,
+        },
+      );
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(

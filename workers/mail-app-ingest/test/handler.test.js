@@ -583,6 +583,7 @@ describe('helpers', () => {
       true,
     );
     expect(isTransientDbError(new Error('write timed out'))).toBe(true);
+    expect(isTransientDbError(new Error('Network connection lost.'))).toBe(true);
     expect(isTransientDbError(new Error('syntax error'))).toBe(false);
   });
 
