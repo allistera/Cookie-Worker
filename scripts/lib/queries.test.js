@@ -118,7 +118,7 @@ describe('taskItemsPage', () => {
   it('pages only top-level tasks, keyset by id', () => {
     const { sql, render } = makeSql();
     const q = render(taskItemsPage(sql, { afterId: null, limit: 100 }));
-    expect(q).toContain('WHERE t.parent_id IS NULL');
+    expect(q).toContain("WHERE t.parent_id IS NULL AND t.kind = 'task'");
     expect(q).not.toContain('t.id > $');
     expect(q).toContain('ORDER BY t.id');
   });
@@ -143,7 +143,9 @@ describe('taskItemsDriftPage', () => {
   it('selects roots never indexed or indexed before their last update', () => {
     const { sql, render } = makeSql();
     const q = render(taskItemsDriftPage(sql, { limit: 500 }));
-    expect(q).toContain('WHERE t.parent_id IS NULL');
+    // A divider never carries a stamp, so without this it would drift
+    // forever and be published as a blank task.
+    expect(q).toContain("WHERE t.parent_id IS NULL AND t.kind = 'task'");
     expect(q).toContain('t.search_indexed_at IS NULL');
     expect(q).toContain('t.search_indexed_at < t.updated_at');
     expect(q).toContain('ORDER BY t.updated_at');

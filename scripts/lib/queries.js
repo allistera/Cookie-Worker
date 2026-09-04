@@ -122,6 +122,8 @@ export function messagesDriftPage(sql, { limit }) {
  * own Meilisearch documents — each page row aggregates its direct children's
  * titles into the `subtasks` array TASKS_INDEX.toDocument reads (the same
  * shape cookie-web-tasks' taskItemMeiliSync.js pushes at write time).
+ * Dividers (kind = 'divider') have nothing to find and are left out, as the
+ * write-time sync leaves them out.
  *
  * @param {import('postgres').Sql} sql
  * @param {{afterId: string | null, limit: number}} page
@@ -134,7 +136,7 @@ export function taskItemsPage(sql, { afterId, limit }) {
                     ARRAY[]::text[]) AS subtasks
     FROM task_items t
     LEFT JOIN task_items c ON c.parent_id = t.id
-    WHERE t.parent_id IS NULL
+    WHERE t.parent_id IS NULL AND t.kind = 'task'
       ${cursor}
     GROUP BY t.id
     ORDER BY t.id
@@ -160,7 +162,7 @@ export function taskItemsDriftPage(sql, { limit }) {
                     ARRAY[]::text[]) AS subtasks
     FROM task_items t
     LEFT JOIN task_items c ON c.parent_id = t.id
-    WHERE t.parent_id IS NULL
+    WHERE t.parent_id IS NULL AND t.kind = 'task'
       AND (t.search_indexed_at IS NULL
            OR t.search_indexed_at < t.updated_at
            OR EXISTS (SELECT 1 FROM task_items s
