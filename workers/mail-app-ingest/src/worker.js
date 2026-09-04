@@ -7,6 +7,7 @@ import { MimePartLimitError, parseEmail } from './parse.js';
 import { sweepSearchDrift } from './searchDriftSweep.js';
 import { purgeExpiredSpam } from './spamRetentionSweep.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 import {
   captureHandledException,
   createSentryOptions,
@@ -412,19 +413,8 @@ export function isStoreTimeout(err) {
   return err instanceof Error && err.message.startsWith('store timed out');
 }
 
-/**
- * @param {unknown} err
- */
-export function isTransientDbError(err) {
-  const code = /** @type {{code?: unknown}} */ (err)?.code;
-  const message = err instanceof Error ? err.message : String(err);
-  return (
-    code === 'CONNECT_TIMEOUT' ||
-    code === '08006' ||
-    code === '08001' ||
-    /Failed to connect to database|CONNECT_TIMEOUT|timed? ?out/i.test(message)
-  );
-}
+// Shared with cookie-web-messages, which retries reads on the same errors.
+export { isTransientDbError };
 
 /**
  * @param {string} databaseUrl
