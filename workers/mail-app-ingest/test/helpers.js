@@ -17,7 +17,7 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], labelRows?: unknown[], enrichmentStateRows?: unknown[], lockedAiRows?: unknown[]}} [options]
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], aiRuleRows?: unknown[], labelRows?: unknown[], enrichmentStateRows?: unknown[], lockedAiRows?: unknown[]}} [options]
  * @returns {any}
  */
 export function createMockSql(options = {}) {
@@ -65,7 +65,11 @@ export function createMockSql(options = {}) {
         return Promise.resolve(options.labelRows ?? []);
       }
       if (query.text.includes('FROM label_rules')) {
-        return Promise.resolve(options.ruleRows ?? []);
+        return Promise.resolve(
+          query.text.includes("r.kind = 'ai'")
+            ? (options.aiRuleRows ?? [])
+            : (options.ruleRows ?? []),
+        );
       }
       if (query.text.includes('LEFT JOIN message_ai')) {
         return Promise.resolve(options.enrichmentStateRows ?? []);
