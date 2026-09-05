@@ -122,13 +122,14 @@ describe('routing', () => {
     expect((await response.json()).filename).toBe('plan.pdf');
   });
 
-  test('GET /messages/thread-body dispatches to getThreadBody', async () => {
+  test('the retired /messages/thread-body path is 404, like any unknown sub-path', async () => {
     const response = await worker.fetch(
       request(`/messages/thread-body?id=${MESSAGE_ID}`),
       env,
       ctx,
     );
     expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Not Found' });
   });
 
   test('GET /messages/contacts dispatches to getContacts', async () => {
