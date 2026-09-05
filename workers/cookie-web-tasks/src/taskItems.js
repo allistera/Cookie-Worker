@@ -2,6 +2,7 @@
 // enricher's gathered email action items and is not a place a person writes
 // to. The two never share a row.
 
+import { normalizeTaskMetadata } from './taskMetadata.js';
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
 import { isAncestorOf } from './ancestry.js';
 import { removeTaskItemFromMeili, syncTaskItemToMeili } from './taskItemMeiliSync.js';
@@ -105,7 +106,8 @@ export async function getTaskItems(sql, userId, url) {
 
   const items = await sql`
     SELECT t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
-           t.description, t.recurrence, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
+           t.description, t.recurrence, to_char(t.due_time, 'HH24:MI') AS "dueTime",
+           t.time_zone AS "timeZone", t.labels, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
            t.position, t.today_position AS "todayPosition",
            t.completed_at AS "completedAt", t.created_at AS "createdAt"
     FROM task_items t
@@ -139,8 +141,8 @@ export async function getTaskItems(sql, userId, url) {
 }
 
 /**
- * POST /task-items — { content, description?, projectId?, dueDate?,
- * priority?, parentId?, kind?, recurrence?, today? }. A sub-task lives in its parent's project: with parentId set,
+ * POST /task-items — { content, description?, projectId?, dueDate?, dueTime?,
+ * timeZone?, labels?, priority?, parentId?, kind?, recurrence?, today? }. A sub-task lives in its parent's project: with parentId set,
  * the project is read from the parent row and any projectId in the body is
  * ignored, so the two can never disagree.
  *
@@ -216,6 +218,12 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
     }
   }
   const recurrence = rule?.text ?? null;
+  let metadata;
+  try {
+    metadata = normalizeTaskMetadata({ ...body, dueDate });
+  } catch (error) {
+    return Response.json({ error: /** @type {Error} */ (error).message }, { status: 400 });
+  }
 
   // Absent or null means the default; anything else must be a real priority.
   const hasPriority = body?.priority !== undefined && body?.priority !== null;
@@ -225,9 +233,10 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
   const priority = hasPriority ? body.priority : DEFAULT_PRIORITY;
 
   const [item] = await sql`
-    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority, recurrence)
-    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority}, ${recurrence})
+    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority, recurrence, due_time, time_zone, labels)
+    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority}, ${recurrence}, ${metadata.dueTime}::time, ${metadata.timeZone}, ${metadata.labels}::text[])
     RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description, recurrence,
+              to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", labels,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
               today_position AS "todayPosition", completed_at AS "completedAt",
               created_at AS "createdAt"
@@ -260,6 +269,7 @@ async function createDivider(sql, userId, body) {
     INSERT INTO task_items (user_id, project_id, kind, content)
     VALUES (${userId}, ${projectId}, 'divider', '')
     RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description, recurrence,
+              to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", labels,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
               today_position AS "todayPosition", completed_at AS "completedAt",
               created_at AS "createdAt"
@@ -272,13 +282,14 @@ function fetchOwnedTaskItem(sql, userId, id) {
   // Keep Postgres microseconds for the concurrency comparison; a JS Date
   // truncates them and would make reopening completed tasks fail spuriously.
   return sql`SELECT id, kind, project_id AS "projectId", parent_id AS "parentId", recurrence,
-    to_char(due_date, 'YYYY-MM-DD') AS "dueDate", completed_at::text AS "completedAt"
+    to_char(due_date, 'YYYY-MM-DD') AS "dueDate", completed_at::text AS "completedAt",
+    to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", labels
     FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
 }
 
 /**
  * PATCH /task-items — { id, content?, description?, projectId?, parentId?,
- * dueDate?, priority?, completed?, recurrence?, today?, expectedDueDate? }. projectId: null moves the task to the
+ * dueDate?, dueTime?, timeZone?, labels?, priority?, completed?, recurrence?, today?, expectedDueDate? }. projectId: null moves the task to the
  * Inbox; priority: null resets it to the default (4). List order is not a
  * per-row field: see reorderTaskItems. A divider only ever moves between
  * projects; every other change is refused.
@@ -304,6 +315,8 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   const hasPriority = Object.hasOwn(body, 'priority');
   const hasCompleted = Object.hasOwn(body, 'completed');
   const hasRecurrence = Object.hasOwn(body, 'recurrence');
+  const hasTime = Object.hasOwn(body, 'dueTime') || Object.hasOwn(body, 'timeZone');
+  const hasLabels = Object.hasOwn(body, 'labels');
 
   const content = hasContent ? cleanText(body.content, MAX_CONTENT_LENGTH) : null;
   if (hasContent && !content) {
@@ -317,7 +330,9 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
     !hasDueDate &&
     !hasPriority &&
     !hasCompleted &&
-    !hasRecurrence
+    !hasRecurrence &&
+    !hasTime &&
+    !hasLabels
   ) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
@@ -329,7 +344,9 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
       hasDueDate ||
       hasPriority ||
       hasCompleted ||
-      hasRecurrence)
+      hasRecurrence ||
+      hasTime ||
+      hasLabels)
   ) {
     return Response.json(
       { error: 'A divider can only be moved between projects' },
@@ -449,7 +466,23 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   }
   const changesDate = hasDueDate || setsSchedule || advances;
   const changesRecurrence = hasRecurrence || clearsDueDate;
-  const guardsSchedule = changesDate || changesRecurrence || hasCompleted;
+  const guardsSchedule = changesDate || changesRecurrence || hasCompleted || hasTime;
+  let metadata;
+  try {
+    metadata = normalizeTaskMetadata({
+      dueDate: changesDate ? dueDate : existing.dueDate,
+      dueTime: clearsDueDate
+        ? null
+        : Object.hasOwn(body, 'dueTime')
+          ? body.dueTime
+          : existing.dueTime,
+      timeZone: Object.hasOwn(body, 'timeZone') ? body.timeZone : existing.timeZone,
+      labels: hasLabels ? body.labels : (existing.labels ?? []),
+    });
+  } catch (error) {
+    return Response.json({ error: /** @type {Error} */ (error).message }, { status: 400 });
+  }
+  const changesTime = hasTime || clearsDueDate;
 
   // Same bargain as dueDate: a bad value is refused, never coerced. null is
   // the one non-integer accepted, and it means "back to the default".
@@ -471,6 +504,9 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
       -- rather than displacing them with a rank from elsewhere.
       today_position = CASE WHEN ${changesDate}::boolean THEN NULL ELSE t.today_position END,
       priority     = CASE WHEN ${hasPriority}::boolean THEN ${priority}::smallint ELSE t.priority END,
+      due_time = CASE WHEN ${changesTime}::boolean THEN ${metadata.dueTime}::time ELSE t.due_time END,
+      time_zone = CASE WHEN ${changesTime}::boolean THEN ${metadata.timeZone} ELSE t.time_zone END,
+      labels = CASE WHEN ${hasLabels}::boolean THEN ${metadata.labels}::text[] ELSE t.labels END,
       recurrence = CASE WHEN ${changesRecurrence}::boolean THEN ${recurrence} ELSE t.recurrence END,
       completed_at = CASE
         WHEN ${advances}::boolean THEN NULL
@@ -481,10 +517,13 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
     WHERE t.id = ${id} AND t.user_id = ${userId}
       AND (NOT ${guardsSchedule}::boolean OR (
         t.due_date IS NOT DISTINCT FROM ${existing.dueDate ?? null}::date
+        AND t.due_time IS NOT DISTINCT FROM ${existing.dueTime ?? null}::time
+        AND t.time_zone IS NOT DISTINCT FROM ${existing.timeZone ?? null}
         AND t.recurrence IS NOT DISTINCT FROM ${existing.recurrence ?? null}
         AND t.completed_at IS NOT DISTINCT FROM ${existing.completedAt ?? null}::timestamptz))
     RETURNING t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
-              t.description, t.recurrence, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
+              t.description, t.recurrence, to_char(t.due_time, 'HH24:MI') AS "dueTime",
+           t.time_zone AS "timeZone", t.labels, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
               t.position, t.today_position AS "todayPosition", t.completed_at AS "completedAt",
               t.created_at AS "createdAt"
   `;

@@ -13,5 +13,10 @@ ENRICHER_TRIGGER_TOKEN=""
 # BLOB_READ_WRITE_TOKEN.
 BLOB_READ_WRITE_TOKEN=""
 
+# Natural-language task quick add. The same Responses API key is used by the
+# calendar and other Cookie AI endpoints. Without it, the UI falls back to the
+# editable Advanced form.
+OPENAI_API_KEY=""
+
 # Optional locally; required in production to send sanitized errors to Sentry.
 SENTRY_DSN=""

@@ -20,6 +20,7 @@ import {
   reorderTaskItems,
   updateTaskItem,
 } from './taskItems.js';
+import { interpretTask } from './taskAi.js';
 import { getTasks, postTasks } from './tasks.js';
 
 // Vercel's body cap is 4.5 MB; keep that for document payloads, but use a much
@@ -40,7 +41,7 @@ export function createSql(databaseUrl) {
 
 /**
  * Routes GET/POST /tasks, POST /tasks/refresh, GET/PUT /tasks/interests,
- * POST /task-items/reorder,
+ * POST /task-items/reorder, POST /task-items/interpret,
  * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, and
  * GET/POST/PATCH/DELETE /documents — the resources Cookie-Web's api/tasks.js
  * served, previously reached only via
@@ -60,10 +61,11 @@ async function route(url, request, sql, userId, env, email) {
 
   if (segments[0] === 'task-items') {
     const reorder = segments.length === 2 && segments[1] === 'reorder';
-    if (segments.length > 1 && !reorder) {
+    const interpret = segments.length === 2 && segments[1] === 'interpret';
+    if (segments.length > 1 && !reorder && !interpret) {
       return Response.json({ error: 'Not Found' }, { status: 404 });
     }
-    if (reorder && request.method !== 'POST') {
+    if ((reorder || interpret) && request.method !== 'POST') {
       return Response.json(
         { error: 'Method not allowed' },
         { status: 405, headers: { Allow: 'POST' } },
@@ -84,6 +86,7 @@ async function route(url, request, sql, userId, env, email) {
       if (errorResponse) return errorResponse;
       throw error;
     }
+    if (interpret) return interpretTask(sql, userId, body, env);
     if (reorder) return reorderTaskItems(sql, userId, body);
     if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
     if (request.method === 'PATCH') return updateTaskItem(sql, userId, body, env);

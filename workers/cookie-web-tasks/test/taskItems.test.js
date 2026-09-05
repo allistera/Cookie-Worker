@@ -110,6 +110,48 @@ describe('POST /task-items', () => {
     expect((await response.json()).item.projectId).toBeNull();
   });
 
+  it('stores a local due time, its time zone, and normalized labels', async () => {
+    const sql = createMockSql([
+      [
+        {
+          id: ITEM_ID,
+          content: 'Call plumber',
+          dueDate: '2026-09-11',
+          dueTime: '15:00',
+          timeZone: 'Europe/London',
+          labels: ['home'],
+        },
+      ],
+    ]);
+
+    const response = await createTaskItem(sql, USER_ID, {
+      content: 'Call plumber',
+      dueDate: '2026-09-11',
+      dueTime: '15:00',
+      timeZone: 'Europe/London',
+      labels: ['@Home', 'home'],
+    });
+
+    expect(response.status).toBe(201);
+    expect(sql.calls[0].text).toContain('due_time, time_zone, labels');
+    expect(sql.calls[0].values).toEqual(
+      expect.arrayContaining(['15:00', 'Europe/London', ['home']]),
+    );
+  });
+
+  it('rejects a due time without a date', async () => {
+    const response = await createTaskItem(createMockSql([]), USER_ID, {
+      content: 'Call plumber',
+      dueTime: '15:00',
+      timeZone: 'Europe/London',
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining('requires a due date'),
+    });
+  });
+
   it('rejects a blank content', async () => {
     const sql = createMockSql([]);
     const response = await createTaskItem(sql, USER_ID, { content: '   ' });
@@ -227,6 +269,63 @@ describe('PATCH /task-items', () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).item.projectId).toBeNull();
+  });
+
+  it('updates due time and labels together', async () => {
+    const existing = {
+      id: ITEM_ID,
+      projectId: null,
+      parentId: null,
+      kind: 'task',
+      dueDate: '2026-09-11',
+      dueTime: null,
+      timeZone: null,
+      labels: [],
+      recurrence: null,
+      completedAt: null,
+    };
+    const sql = createMockSql([
+      [existing],
+      [[{ ...existing, dueTime: '15:00', timeZone: 'Europe/London', labels: ['home'] }]].flat(),
+    ]);
+
+    const response = await updateTaskItem(sql, USER_ID, {
+      id: ITEM_ID,
+      dueTime: '15:00',
+      timeZone: 'Europe/London',
+      labels: ['Home'],
+    });
+
+    expect(response.status).toBe(200);
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items t SET'));
+    expect(update.text).toContain('due_time');
+    expect(update.text).toContain('labels');
+    expect(update.values).toEqual(expect.arrayContaining(['15:00', 'Europe/London', ['home']]));
+  });
+
+  it('clears due time and zone when the due date is removed', async () => {
+    const existing = {
+      id: ITEM_ID,
+      projectId: null,
+      parentId: null,
+      kind: 'task',
+      dueDate: '2026-09-11',
+      dueTime: '15:00',
+      timeZone: 'Europe/London',
+      labels: [],
+      recurrence: null,
+      completedAt: null,
+    };
+    const sql = createMockSql([
+      [existing],
+      [{ ...existing, dueDate: null, dueTime: null, timeZone: null }],
+    ]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, dueDate: null });
+
+    expect(response.status).toBe(200);
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items t SET'));
+    expect(update.values).toContain(null);
   });
 });
 
