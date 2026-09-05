@@ -91,7 +91,7 @@ Each replaces a Vercel API file; the first three routed multiple resources throu
 - `cookie-web-drafts` is new rather than a port: nothing served drafts before, since the only outbound state that survived a reload was the undo-send holding row. `GET /drafts`, `POST /drafts`, `GET/PATCH/DELETE /drafts/:id`. Autosave writes are rate-limited per user (`drafts-autosave` scope); reads never are, so opening the Drafts view always works.
 - `cookie-web-labels` replaces `api/labels.js` + `api/_lib/label-rules.js`: `GET/POST/PATCH/DELETE /labels` and `/labels/rules`.
 - `cookie-web-messages` replaces `api/messages.js` + `api/_lib/contacts.js`: `GET/POST/PATCH /messages`, plus `/messages/attachment`, `/messages/thread-body`, `/messages/contacts`.
-- `cookie-web-tasks` replaces `api/tasks.js` and its full dependency chain (`api/_lib/enricher.js`, `interests.js`, `dailyNoteSeed.js`, `imageUpload.js`, and the ~700-line `documents.js` folders/documents/templates/search subsystem): `GET/POST /tasks`, plus `/tasks/refresh`, `/tasks/interests`, `/tasks/daily-note-seed`, `/tasks/image-upload`, and `GET/POST/PATCH/DELETE /documents`.
+- `cookie-web-tasks` replaces `api/tasks.js` and its full dependency chain (`api/_lib/enricher.js`, `interests.js`, `dailyNoteSeed.js`, `imageUpload.js`, and the ~700-line `documents.js` folders/documents/templates/search subsystem): `GET/POST /tasks`, CRUD and natural-language interpretation under `/task-items`, plus `/tasks/refresh`, `/tasks/interests`, `/tasks/daily-note-seed`, `/tasks/image-upload`, and `GET/POST/PATCH/DELETE /documents`.
 - `cookie-web-notifications` replaces `api/notification-event.js` (never multiplexed — it was a single endpoint on Vercel too): `POST /notification-event`, the claim/ack lease that guarantees exactly one tab shows a new-mail browser notification.
 - `cookie-web-receipts` replaces `api/read-receipts.js` (also never multiplexed): `GET /read-receipts`. `?messageIds=` is the SPA's authenticated receipt-status read; `?token=` is the unauthenticated 1×1 tracking pixel embedded in sent mail — recipients' email clients hold no bearer token, so auth deliberately does not run on that path, and the response is byte-identical for valid, invalid, expired, or rate-limited tokens so mailbox state never leaks. Its per-IP flood guard ports over per-isolate (was per-serverless-instance) and keys on `CF-Connecting-IP` instead of parsing `X-Forwarded-For`. Old sent mail still points its pixel at Cookie-Web's Vercel origin; a `vercel.json` redirect forwards those opens here.
 
@@ -249,3 +249,19 @@ rank, and leaves it incomplete. A stale/concurrent update returns 409. Save date
 or recurrence edits separately before completing. Clearing `dueDate` clears
 recurrence; setting `recurrence: null` alone preserves the date. Subtask states
 are preserved and no separate occurrence history is recorded.
+
+### Natural-language task quick add
+
+Apply Cookie-Web migration `0067_task_items_time_and_labels.sql` before
+deploying `cookie-web-tasks`. `POST /task-items/interpret` accepts `{ text,
+timeZone }` and returns a task draft. The Worker extracts `p1`–`p4`,
+`#Project`, and `@label` deterministically, matches only an existing project
+owned by the caller, and uses the OpenAI Responses API for title, date, local
+time, description, and recurrence. Interpretation shares the Postgres-backed
+`ai` quota and allows 10 requests per user per minute.
+
+POST/PATCH `/task-items` accepts `dueTime` as 24-hour `HH:MM`, its IANA
+`timeZone`, and up to 20 labels. The response returns the same fields. Clearing
+the due date also clears its time and zone. `OPENAI_API_KEY` is synchronized to
+this Worker by the deploy workflow; without it the interpretation endpoint
+returns a message directing the client to Advanced entry.

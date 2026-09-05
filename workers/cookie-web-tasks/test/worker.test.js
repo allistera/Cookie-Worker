@@ -348,3 +348,47 @@ describe('POST /task-items/reorder', () => {
     expect(response.headers.get('Allow')).toBe('POST');
   });
 });
+
+describe('POST /task-items/interpret', () => {
+  test('dispatches to the natural-language task interpreter', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              output_text: JSON.stringify({
+                content: 'Call plumber',
+                description: '',
+                dueDate: '2026-09-11',
+                dueTime: '15:00',
+                recurrence: '',
+              }),
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          ),
+      ),
+    );
+
+    const response = await worker.fetch(
+      request('/task-items/interpret', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'Call plumber Friday 3pm p1 @home', timeZone: 'UTC' }),
+      }),
+      { ...env, OPENAI_API_KEY: 'test-key' },
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      draft: { content: 'Call plumber', priority: 1, labels: ['home'] },
+    });
+  });
+
+  test('refuses other methods', async () => {
+    const response = await worker.fetch(request('/task-items/interpret'), env, ctx);
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('POST');
+  });
+});

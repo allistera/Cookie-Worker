@@ -235,11 +235,13 @@ jobs:
           # answers on data-enricher's public workers.dev URL, so the token
           # stays required end to end.
           secrets: |
+            OPENAI_API_KEY
             ENRICHER_TRIGGER_TOKEN
             BLOB_READ_WRITE_TOKEN
             SENTRY_DSN
             MEILISEARCH_API_KEY
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ENRICHER_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
