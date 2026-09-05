@@ -4,6 +4,7 @@ import {
   AI_MODEL,
   classifyEmail,
   enrichMessage,
+  PROMPT_VERSION,
   SPAM_THRESHOLD,
 } from '../src/enrich.js';
 import { createMockSql } from './helpers.js';
@@ -113,6 +114,88 @@ describe('AI enrichment', () => {
     ).toBe(false);
   });
 
+  test('sends AI rule prompts with the labels and applies confident matches', async () => {
+    const labelId = '11111111-1111-1111-1111-111111111111';
+    const sql = createMockSql({
+      aiRuleRows: [
+        {
+          id: 'rule-1',
+          prompt: 'Receipts from online shops',
+          action: 'apply_label',
+          label_id: labelId,
+        },
+        { id: 'rule-2', prompt: 'Weekly newsletters', action: 'mark_done', label_id: null },
+        {
+          id: 'rule-3',
+          prompt: 'Anything about the kitchen',
+          action: 'apply_label',
+          label_id: labelId,
+        },
+      ],
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(
+            responseResult({
+              rules: [
+                { id: 'rule-1', confidence: 0.92 },
+                { id: 'rule-2', confidence: 0.85 },
+                { id: 'rule-3', confidence: 0.4 },
+                { id: 'rule-unknown', confidence: 0.99 },
+              ],
+            }),
+          ),
+        }),
+      })),
+    );
+
+    const result = await enrichMessage(
+      sql,
+      {
+        messageId: '<id>',
+        fromAddress: 'shop@example.com',
+        subject: 'Your order',
+        bodyText: 'Body',
+      },
+      'message-1',
+      'key',
+    );
+
+    expect(result.matchedRules).toBe(2);
+    const request = JSON.parse(mockedFetch().mock.calls[0][1].body);
+    expect(request.input[0].content).toContain('plain-language description');
+    expect(JSON.parse(request.input[1].content).rules).toEqual([
+      { id: 'rule-1', description: 'Receipts from online shops' },
+      { id: 'rule-2', description: 'Weekly newsletters' },
+      { id: 'rule-3', description: 'Anything about the kitchen' },
+    ]);
+    expect(request.text.format.schema.required).toContain('rules');
+
+    const statements = sql.transactions[0];
+    const ruleLabel = statements.find(
+      (query) =>
+        query.text.includes('INSERT INTO message_labels') && query.text.includes('rule_id'),
+    );
+    expect(ruleLabel.values).toEqual([
+      'message-1',
+      labelId,
+      0.92,
+      AI_MODEL,
+      PROMPT_VERSION,
+      'rule-1',
+    ]);
+    expect(ruleLabel.text).toContain("'ai'");
+    expect(
+      statements.filter((query) => query.text.includes('SET is_archived = true')),
+    ).toHaveLength(1);
+    expect(
+      statements.filter((query) => query.text.includes('INSERT INTO message_labels')),
+    ).toHaveLength(1);
+  });
+
   test('requires the high-confidence threshold before moving mail to spam', async () => {
     const sql = createMockSql();
     vi.stubGlobal(
@@ -178,7 +261,7 @@ describe('AI enrichment', () => {
     const statements = sql.transactions[0].map((query) => query.text);
     expect(statements[0]).toContain('FOR UPDATE');
     expect(statements).toHaveLength(1);
-    expect(result).toEqual({ verdict: 'inbox', selectedLabels: 0 });
+    expect(result).toEqual({ verdict: 'inbox', selectedLabels: 0, matchedRules: 0 });
     expect(log).toHaveBeenCalledWith(
       JSON.stringify({ event: 'ai_enrichment_superseded', message_id: '<id>' }),
     );

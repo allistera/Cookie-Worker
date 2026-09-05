@@ -102,6 +102,65 @@ describe('createRule', () => {
     expect(response.status).toBe(201);
   });
 
+  test('creates an AI rule from a prompt, with no condition rows', async () => {
+    const sql = createMockSql([
+      [
+        {
+          id: RULE_ID,
+          name: 'Receipts',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          kind: 'ai',
+          prompt: 'Receipts and order confirmations from online shops',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+    ]);
+    const response = await createRule(sql, USER_ID, {
+      name: 'Receipts',
+      kind: 'ai',
+      prompt: '  Receipts and order confirmations from online shops ',
+      action: 'apply_label',
+      label_id: LABEL_ID,
+    });
+    expect(response.status).toBe(201);
+    const { rule } = await response.json();
+    expect(rule).toMatchObject({ kind: 'ai', conditions: [] });
+    const insert = sql.calls.find((call) => call.text.includes('INSERT INTO label_rules'));
+    expect(insert.values).toContain('Receipts and order confirmations from online shops');
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO label_rule_conditions'))).toBe(
+      false,
+    );
+  });
+
+  test.each([
+    ['an AI rule without a prompt', { kind: 'ai', action: 'apply_label', label_id: LABEL_ID }],
+    [
+      'an AI rule that also carries conditions',
+      {
+        kind: 'ai',
+        prompt: 'Receipts',
+        action: 'apply_label',
+        label_id: LABEL_ID,
+        conditions: CONDITIONS,
+      },
+    ],
+    [
+      'a conditions rule that also carries a prompt',
+      { prompt: 'Receipts', action: 'apply_label', label_id: LABEL_ID, conditions: CONDITIONS },
+    ],
+    [
+      'an unknown kind',
+      { kind: 'regex', prompt: 'Receipts', action: 'apply_label', label_id: LABEL_ID },
+    ],
+  ])('rejects %s before querying the database', async (_name, body) => {
+    const sql = createMockSql();
+    const response = await createRule(sql, USER_ID, body);
+    expect(response.status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
   test('rejects apply_label with no label_id before querying the database', async () => {
     const sql = createMockSql();
     const response = await createRule(sql, USER_ID, {
@@ -242,6 +301,68 @@ describe('updateRule', () => {
     expect(sql.begin).toHaveBeenCalledOnce();
     const { rule } = await response.json();
     expect(rule.conditions).toEqual([{ ...CONDITIONS[0], position: 0 }]);
+  });
+
+  test('switching a conditions rule to AI stores the prompt and clears its conditions', async () => {
+    const sql = createMockSql([
+      [
+        {
+          name: 'Invoices',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          kind: 'conditions',
+          prompt: null,
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+      [
+        {
+          id: RULE_ID,
+          name: 'Invoices',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          kind: 'ai',
+          prompt: 'Invoices and bills',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+      [],
+    ]);
+    const response = await updateRule(sql, USER_ID, {
+      id: RULE_ID,
+      kind: 'ai',
+      prompt: 'Invoices and bills',
+    });
+    expect(response.status).toBe(200);
+    const { rule } = await response.json();
+    expect(rule).toMatchObject({ kind: 'ai', prompt: 'Invoices and bills', conditions: [] });
+    expect(sql.calls.some((call) => call.text.includes('DELETE FROM label_rule_conditions'))).toBe(
+      true,
+    );
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO label_rule_conditions'))).toBe(
+      false,
+    );
+  });
+
+  test('switching an AI rule back to conditions requires conditions', async () => {
+    const sql = createMockSql([
+      [
+        {
+          name: 'Invoices',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          kind: 'ai',
+          prompt: 'Invoices and bills',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+    ]);
+    const response = await updateRule(sql, USER_ID, { id: RULE_ID, kind: 'conditions' });
+    expect(response.status).toBe(400);
+    expect(sql.begin).not.toHaveBeenCalled();
   });
 
   test('returns 404 when the rule is not found or not user-owned', async () => {

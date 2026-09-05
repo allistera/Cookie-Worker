@@ -62,12 +62,14 @@ export function matchesRule(record, rule) {
 }
 
 /**
- * Fetches the user's enabled rules and applies every match. `apply_label`
- * tags the message; `mark_done` archives it (the same terminal state the
- * reader "Done" action sets). Runs inside the caller's storage transaction
- * so a rule either lands with the message or not at all — a null label_id
- * must never be inserted into message_labels (NOT NULL), which would roll
- * back the whole ingest.
+ * Fetches the user's enabled conditions rules and applies every match.
+ * `apply_label` tags the message; `mark_done` archives it (the same terminal
+ * state the reader "Done" action sets). Runs inside the caller's storage
+ * transaction so a rule either lands with the message or not at all — a null
+ * label_id must never be inserted into message_labels (NOT NULL), which would
+ * roll back the whole ingest. Prompt-defined rules (label_rules.kind = 'ai')
+ * have no condition rows, so the inner join leaves them out here; enrich.js
+ * evaluates those with the classifier.
  *
  * @param {import('postgres').TransactionSql} tx
  * @param {string} userId

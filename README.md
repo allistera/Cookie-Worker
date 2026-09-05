@@ -112,7 +112,7 @@ Forwarding is the primary outcome. Storage, AI, search-indexing, and monitoring 
 ```text
 Cloudflare Email Routing
   -> parse MIME
-  -> store idempotently through Hyperdrive (+ apply matching tag rules)
+  -> store idempotently through Hyperdrive (+ apply matching conditions rules)
   -> forward original email
   -> close ingest database client
   -> waitUntil(AI classification on a fresh client)
@@ -126,7 +126,7 @@ Transient forwarding errors are re-thrown so the sending server can retry. Perma
 - Rejects parsing above 10 MiB while still forwarding the original.
 - Stores messages idempotently by user and RFC Message-ID.
 - Creates durable pending AI state inside the storage transaction.
-- Applies user-defined tag rules (subject/body/from/to conditions) synchronously inside the storage transaction, before AI enrichment runs.
+- Applies user-defined conditions rules (subject/body/from/to matching) synchronously inside the storage transaction, before AI enrichment runs. Prompt-defined AI rules (`label_rules.kind = 'ai'`) are judged by the enrichment classifier in the same call that auto-tags by label description, and apply their label or mark the message done above the shared 0.7 confidence bar.
 - Auto-tags enabled user labels from a strict structured response.
 - Moves only spam scored at least `0.98` into the Spam folder. A verdict the user recorded from the reader (`message_ai.provider = 'user'`) is never overwritten.
 - Indexes the message into Meilisearch, which generates its own vector.

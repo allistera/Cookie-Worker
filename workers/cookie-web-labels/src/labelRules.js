@@ -1,17 +1,28 @@
 // Ported from Cookie-Web's api/_lib/label-rules.js, previously reached via
 // api/labels.js?resource=rules purely to stay under Vercel Hobby's
 // function-count limit. Now a clean path: GET/POST/PATCH/DELETE /labels/rules.
-// Rule matching itself still runs in Cookie-Worker's mail-app-ingest at
-// inbound storage time — this only manages rule definitions.
+// Rule matching itself still runs in Cookie-Worker's mail-app-ingest — this
+// only manages rule definitions. A rule is matched either by its conditions
+// (kind = 'conditions', exact string matching at inbound storage time) or by
+// a plain-language prompt (kind = 'ai', judged by the enrichment classifier
+// alongside label auto-tagging).
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FIELDS = ['subject', 'body', 'from', 'to'];
 const OPERATORS = ['contains', 'equals', 'starts_with', 'ends_with'];
 const MATCH_TYPES = ['all', 'any'];
 const ACTIONS = ['apply_label', 'mark_done'];
+const KINDS = ['conditions', 'ai'];
 const MAX_NAME = 100;
 const MAX_VALUE = 200;
 const MAX_CONDITIONS = 10;
+const MAX_PROMPT = 500;
+
+/** @param {unknown} value */
+function normalizePrompt(value) {
+  const prompt = String(value ?? '').trim();
+  return prompt && prompt.length <= MAX_PROMPT ? prompt : null;
+}
 
 /** @param {any} input */
 function normalizeConditions(input) {
@@ -40,8 +51,8 @@ function normalizeConditions(input) {
  */
 export async function listRules(sql, userId) {
   const rows = await sql`
-    SELECT r.id, r.name, r.label_id, r.action, r.match_type, r.enabled, r.created_at,
-           c.id AS condition_id, c.field, c.operator, c.value, c.position
+    SELECT r.id, r.name, r.label_id, r.action, r.kind, r.prompt, r.match_type, r.enabled,
+           r.created_at, c.id AS condition_id, c.field, c.operator, c.value, c.position
     FROM label_rules r
     LEFT JOIN label_rule_conditions c ON c.rule_id = r.id
     WHERE r.user_id = ${userId}
@@ -58,6 +69,8 @@ export async function listRules(sql, userId) {
         name: row.name,
         label_id: row.label_id,
         action: row.action,
+        kind: row.kind ?? 'conditions',
+        prompt: row.prompt ?? null,
         match_type: row.match_type,
         enabled: row.enabled,
         conditions: [],
@@ -88,10 +101,18 @@ export async function createRule(sql, userId, body) {
   const labelId = UUID_RE.test(body?.label_id) ? String(body.label_id) : null;
   const matchType = MATCH_TYPES.includes(body?.match_type) ? body.match_type : 'all';
   const enabled = body?.enabled === true || body?.enabled === false ? body.enabled : true;
-  const conditions = normalizeConditions(body?.conditions);
+  const kind = KINDS.includes(body?.kind) ? body.kind : 'conditions';
+  // An AI rule is its prompt; a conditions rule is its conditions. Neither
+  // kind may carry the other's matcher.
+  const prompt = kind === 'ai' ? normalizePrompt(body?.prompt) : null;
+  const hasConditions = Array.isArray(body?.conditions) && body.conditions.length > 0;
+  const conditions =
+    kind === 'ai' ? (hasConditions ? null : []) : normalizeConditions(body?.conditions);
 
   if (
     !conditions ||
+    (kind === 'ai' && !prompt) ||
+    (kind === 'conditions' && body?.prompt) ||
     (name && name.length > MAX_NAME) ||
     (action === 'apply_label' && !labelId) ||
     (action === 'mark_done' && labelId)
@@ -99,7 +120,7 @@ export async function createRule(sql, userId, body) {
     return Response.json(
       {
         error:
-          'A valid action (with label_id for apply_label) and 1-10 valid conditions are required',
+          'A valid action (with label_id for apply_label) and either 1-10 valid conditions or an AI prompt (max 500 chars) are required',
       },
       { status: 400 },
     );
@@ -115,28 +136,30 @@ export async function createRule(sql, userId, body) {
       let inserted;
       if (action === 'apply_label') {
         [inserted] = await tx`
-          INSERT INTO label_rules (user_id, label_id, name, action, match_type, enabled)
-          SELECT ${userId}, ${labelId}, ${name}, ${action}, ${matchType}, ${enabled}
+          INSERT INTO label_rules (user_id, label_id, name, action, kind, prompt, match_type, enabled)
+          SELECT ${userId}, ${labelId}, ${name}, ${action}, ${kind}, ${prompt}, ${matchType}, ${enabled}
           WHERE EXISTS (
             SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
           )
-          RETURNING id, name, label_id, action, match_type, enabled
+          RETURNING id, name, label_id, action, kind, prompt, match_type, enabled
         `;
         if (!inserted) return null;
       } else {
         [inserted] = await tx`
-          INSERT INTO label_rules (user_id, label_id, name, action, match_type, enabled)
-          VALUES (${userId}, NULL, ${name}, ${action}, ${matchType}, ${enabled})
-          RETURNING id, name, label_id, action, match_type, enabled
+          INSERT INTO label_rules (user_id, label_id, name, action, kind, prompt, match_type, enabled)
+          VALUES (${userId}, NULL, ${name}, ${action}, ${kind}, ${prompt}, ${matchType}, ${enabled})
+          RETURNING id, name, label_id, action, kind, prompt, match_type, enabled
         `;
       }
 
-      await tx`
-        INSERT INTO label_rule_conditions (rule_id, field, operator, value, position)
-        SELECT ${inserted.id}, row.field, row.operator, row.value, row.position
-        FROM json_to_recordset(${positionedConditions}::json)
-          AS row(field text, operator text, value text, position int)
-      `;
+      if (positionedConditions.length > 0) {
+        await tx`
+          INSERT INTO label_rule_conditions (rule_id, field, operator, value, position)
+          SELECT ${inserted.id}, row.field, row.operator, row.value, row.position
+          FROM json_to_recordset(${positionedConditions}::json)
+            AS row(field text, operator text, value text, position int)
+        `;
+      }
       return inserted;
     });
   } catch (error) {
@@ -168,31 +191,60 @@ export async function updateRule(sql, userId, body) {
   const hasMatchType = Object.hasOwn(body ?? {}, 'match_type');
   const hasEnabled = Object.hasOwn(body ?? {}, 'enabled');
   const hasConditions = Object.hasOwn(body ?? {}, 'conditions');
+  const hasKind = Object.hasOwn(body ?? {}, 'kind');
+  const hasPrompt = Object.hasOwn(body ?? {}, 'prompt');
 
   const name = String(body?.name ?? '').trim() || null;
   const labelId = UUID_RE.test(body?.label_id) ? String(body.label_id) : null;
   const conditions = hasConditions ? normalizeConditions(body?.conditions) : undefined;
+  const prompt = hasPrompt ? normalizePrompt(body?.prompt) : undefined;
 
   if (
     !id ||
-    (!hasName && !hasAction && !hasLabelId && !hasMatchType && !hasEnabled && !hasConditions) ||
+    (!hasName &&
+      !hasAction &&
+      !hasLabelId &&
+      !hasMatchType &&
+      !hasEnabled &&
+      !hasConditions &&
+      !hasKind &&
+      !hasPrompt) ||
     (hasAction && !ACTIONS.includes(body.action)) ||
     (hasLabelId && !labelId) ||
     (hasName && name && name.length > MAX_NAME) ||
     (hasMatchType && !MATCH_TYPES.includes(body.match_type)) ||
     (hasEnabled && body.enabled !== true && body.enabled !== false) ||
-    (hasConditions && !conditions)
+    (hasConditions && !conditions) ||
+    (hasKind && !KINDS.includes(body.kind)) ||
+    (hasPrompt && !prompt)
   ) {
     return Response.json({ error: 'id and a valid rule update are required' }, { status: 400 });
   }
 
   const [existing] = await sql`
-    SELECT r.name, r.label_id, r.action, r.match_type, r.enabled
+    SELECT r.name, r.label_id, r.action, r.kind, r.prompt, r.match_type, r.enabled
     FROM label_rules r
     WHERE r.id = ${id} AND r.user_id = ${userId}
   `;
   if (!existing) {
     return Response.json({ error: 'Rule not found' }, { status: 404 });
+  }
+
+  // The matcher follows the kind: an AI rule keeps (or takes) a prompt and
+  // drops any conditions; a conditions rule keeps (or takes) conditions and
+  // drops any prompt. Switching from AI to conditions therefore has to bring
+  // conditions along, as there are none to keep.
+  const existingKind = existing.kind ?? 'conditions';
+  const resultKind = hasKind ? body.kind : existingKind;
+  const resultPrompt = resultKind === 'ai' ? (hasPrompt ? prompt : existing.prompt) : null;
+  if (
+    (resultKind === 'ai' && (!resultPrompt || (conditions?.length ?? 0) > 0)) ||
+    (resultKind === 'conditions' && (hasPrompt || (existingKind === 'ai' && !hasConditions)))
+  ) {
+    return Response.json(
+      { error: 'an AI rule needs a prompt and no conditions; a conditions rule needs conditions' },
+      { status: 400 },
+    );
   }
 
   const resultAction = hasAction ? body.action : existing.action;
@@ -221,9 +273,17 @@ export async function updateRule(sql, userId, body) {
     }
   }
 
-  const positionedConditions = hasConditions
-    ? /** @type {any[]} */ (conditions).map((condition, position) => ({ ...condition, position }))
-    : null;
+  // Conditions are replaced when supplied, and cleared when the rule becomes
+  // (or stays) an AI rule; null leaves them untouched.
+  const positionedConditions =
+    resultKind === 'ai'
+      ? []
+      : hasConditions
+        ? /** @type {any[]} */ (conditions).map((condition, position) => ({
+            ...condition,
+            position,
+          }))
+        : null;
 
   const [rule] = await sql.begin(async (tx) => {
     const rows = await tx`
@@ -231,20 +291,24 @@ export async function updateRule(sql, userId, body) {
       SET name = ${hasName ? name : existing.name},
           label_id = ${resultLabelId},
           action = ${resultAction},
+          kind = ${resultKind},
+          prompt = ${resultPrompt},
           match_type = ${hasMatchType ? body.match_type : existing.match_type},
           enabled = ${hasEnabled ? body.enabled : existing.enabled},
           updated_at = now()
       WHERE r.id = ${id} AND r.user_id = ${userId}
-      RETURNING r.id, r.name, r.label_id, r.action, r.match_type, r.enabled
+      RETURNING r.id, r.name, r.label_id, r.action, r.kind, r.prompt, r.match_type, r.enabled
     `;
     if (positionedConditions) {
       await tx`DELETE FROM label_rule_conditions WHERE rule_id = ${id}`;
-      await tx`
-        INSERT INTO label_rule_conditions (rule_id, field, operator, value, position)
-        SELECT ${id}, row.field, row.operator, row.value, row.position
-        FROM json_to_recordset(${positionedConditions}::json)
-          AS row(field text, operator text, value text, position int)
-      `;
+      if (positionedConditions.length > 0) {
+        await tx`
+          INSERT INTO label_rule_conditions (rule_id, field, operator, value, position)
+          SELECT ${id}, row.field, row.operator, row.value, row.position
+          FROM json_to_recordset(${positionedConditions}::json)
+            AS row(field text, operator text, value text, position int)
+        `;
+      }
     }
     return rows;
   });
