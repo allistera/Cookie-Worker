@@ -232,3 +232,20 @@ npx wrangler secret put GITHUB_API_TOKEN
 After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`.
 
 See [RUNBOOK.md](RUNBOOK.md) for deployment checks, AI recovery, secret rotation, and rollback.
+
+### Task recurrence
+
+Apply Cookie-Web migration `0066_task_items_recurrence.sql` before deploying
+`cookie-web-tasks`. POST/PATCH `/task-items` accepts a nullable `recurrence`
+string: `every Monday`, `every 2nd Tuesday` (monthly), `every last Friday`,
+`every N days`, or `every N weeks` (N = 1–365), plus `daily`/`weekly` aliases.
+Responses include the normalized `recurrence` and date-only `dueDate`.
+When setting recurrence, send `today: YYYY-MM-DD` if there is no due date.
+
+Completing a recurring occurrence requires `completed: true`, the caller's local
+`today`, and `expectedDueDate` matching the displayed occurrence. It advances the
+same task to the next future date, preserves interval cadence, resets its Today
+rank, and leaves it incomplete. A stale/concurrent update returns 409. Save date
+or recurrence edits separately before completing. Clearing `dueDate` clears
+recurrence; setting `recurrence: null` alone preserves the date. Subtask states
+are preserved and no separate occurrence history is recorded.

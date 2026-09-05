@@ -2,6 +2,7 @@
 // enricher's gathered email action items and is not a place a person writes
 // to. The two never share a row.
 
+import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
 import { isAncestorOf } from './ancestry.js';
 import { removeTaskItemFromMeili, syncTaskItemToMeili } from './taskItemMeiliSync.js';
 
@@ -104,7 +105,7 @@ export async function getTaskItems(sql, userId, url) {
 
   const items = await sql`
     SELECT t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
-           t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
+           t.description, t.recurrence, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
            t.position, t.today_position AS "todayPosition",
            t.completed_at AS "completedAt", t.created_at AS "createdAt"
     FROM task_items t
@@ -139,7 +140,7 @@ export async function getTaskItems(sql, userId, url) {
 
 /**
  * POST /task-items — { content, description?, projectId?, dueDate?,
- * priority?, parentId?, kind? }. A sub-task lives in its parent's project: with parentId set,
+ * priority?, parentId?, kind?, recurrence?, today? }. A sub-task lives in its parent's project: with parentId set,
  * the project is read from the parent row and any projectId in the body is
  * ignored, so the two can never disagree.
  *
@@ -191,7 +192,30 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
   if (hasDueDate && !isCalendarDate(body.dueDate)) {
     return Response.json({ error: 'dueDate must be a YYYY-MM-DD date' }, { status: 400 });
   }
-  const dueDate = hasDueDate ? String(body.dueDate) : null;
+  let dueDate = hasDueDate ? String(body.dueDate) : null;
+  const hasRecurrence =
+    body?.recurrence !== undefined && body.recurrence !== null && body.recurrence !== '';
+  const rule = !hasRecurrence ? null : parseTaskRecurrence(body.recurrence);
+  if (hasRecurrence && !rule) {
+    return Response.json(
+      { error: 'Use a repeat schedule such as every Monday, every 2nd Tuesday, or every 3 days' },
+      { status: 400 },
+    );
+  }
+  if (rule) {
+    const start = dueDate ?? body?.today;
+    if (!isCalendarDate(start))
+      return Response.json(
+        { error: 'A repeat schedule requires today or dueDate as YYYY-MM-DD' },
+        { status: 400 },
+      );
+    try {
+      dueDate = taskOccurrence(rule.text, start);
+    } catch {
+      return Response.json({ error: 'Schedule exceeds supported dates' }, { status: 400 });
+    }
+  }
+  const recurrence = rule?.text ?? null;
 
   // Absent or null means the default; anything else must be a real priority.
   const hasPriority = body?.priority !== undefined && body?.priority !== null;
@@ -201,9 +225,9 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
   const priority = hasPriority ? body.priority : DEFAULT_PRIORITY;
 
   const [item] = await sql`
-    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority)
-    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority})
-    RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description,
+    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority, recurrence)
+    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority}, ${recurrence})
+    RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description, recurrence,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
               today_position AS "todayPosition", completed_at AS "completedAt",
               created_at AS "createdAt"
@@ -235,7 +259,7 @@ async function createDivider(sql, userId, body) {
   const [item] = await sql`
     INSERT INTO task_items (user_id, project_id, kind, content)
     VALUES (${userId}, ${projectId}, 'divider', '')
-    RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description,
+    RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description, recurrence,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
               today_position AS "todayPosition", completed_at AS "completedAt",
               created_at AS "createdAt"
@@ -245,12 +269,16 @@ async function createDivider(sql, userId, body) {
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string} id */
 function fetchOwnedTaskItem(sql, userId, id) {
-  return sql`SELECT id, kind, project_id AS "projectId", parent_id AS "parentId" FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
+  // Keep Postgres microseconds for the concurrency comparison; a JS Date
+  // truncates them and would make reopening completed tasks fail spuriously.
+  return sql`SELECT id, kind, project_id AS "projectId", parent_id AS "parentId", recurrence,
+    to_char(due_date, 'YYYY-MM-DD') AS "dueDate", completed_at::text AS "completedAt"
+    FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
 }
 
 /**
  * PATCH /task-items — { id, content?, description?, projectId?, parentId?,
- * dueDate?, priority?, completed? }. projectId: null moves the task to the
+ * dueDate?, priority?, completed?, recurrence?, today?, expectedDueDate? }. projectId: null moves the task to the
  * Inbox; priority: null resets it to the default (4). List order is not a
  * per-row field: see reorderTaskItems. A divider only ever moves between
  * projects; every other change is refused.
@@ -275,6 +303,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   const hasDueDate = Object.hasOwn(body, 'dueDate');
   const hasPriority = Object.hasOwn(body, 'priority');
   const hasCompleted = Object.hasOwn(body, 'completed');
+  const hasRecurrence = Object.hasOwn(body, 'recurrence');
 
   const content = hasContent ? cleanText(body.content, MAX_CONTENT_LENGTH) : null;
   if (hasContent && !content) {
@@ -287,13 +316,20 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
     !hasParent &&
     !hasDueDate &&
     !hasPriority &&
-    !hasCompleted
+    !hasCompleted &&
+    !hasRecurrence
   ) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
   if (
     existing.kind === 'divider' &&
-    (hasContent || hasDescription || hasParent || hasDueDate || hasPriority || hasCompleted)
+    (hasContent ||
+      hasDescription ||
+      hasParent ||
+      hasDueDate ||
+      hasPriority ||
+      hasCompleted ||
+      hasRecurrence)
   ) {
     return Response.json(
       { error: 'A divider can only be moved between projects' },
@@ -349,7 +385,71 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   if (hasDueDate && !clearsDueDate && !isCalendarDate(body.dueDate)) {
     return Response.json({ error: 'dueDate must be a YYYY-MM-DD date' }, { status: 400 });
   }
-  const dueDate = !hasDueDate || clearsDueDate ? null : String(body.dueDate);
+  let dueDate = !hasDueDate || clearsDueDate ? null : String(body.dueDate);
+  let recurrence = hasRecurrence
+    ? body.recurrence === ''
+      ? null
+      : body.recurrence
+    : (existing.recurrence ?? null);
+  if (recurrence !== null) {
+    const rule = parseTaskRecurrence(recurrence);
+    if (!rule)
+      return Response.json(
+        { error: 'Use a repeat schedule such as every Monday, every 2nd Tuesday, or every 3 days' },
+        { status: 400 },
+      );
+    recurrence = rule.text;
+  }
+  if (hasCompleted && typeof body.completed !== 'boolean') {
+    return Response.json({ error: 'completed must be a boolean' }, { status: 400 });
+  }
+  // Clearing the date also stops repetition. Removing only repetition keeps the date.
+  if (clearsDueDate) {
+    if (hasRecurrence && recurrence)
+      return Response.json({ error: 'A repeat schedule requires a due date' }, { status: 400 });
+    recurrence = null;
+  }
+  const advances = body.completed === true && recurrence !== null && !existing.completedAt;
+  if (advances && (hasRecurrence || hasDueDate)) {
+    return Response.json(
+      { error: 'Save schedule changes before completing the task' },
+      { status: 400 },
+    );
+  }
+  if (advances && (!isCalendarDate(body.today) || !isCalendarDate(body.expectedDueDate))) {
+    return Response.json(
+      { error: 'Completing a recurring task requires today and expectedDueDate as YYYY-MM-DD' },
+      { status: 400 },
+    );
+  }
+  if (
+    body.completed === true &&
+    Object.hasOwn(body, 'expectedDueDate') &&
+    (recurrence === null || body.expectedDueDate !== existing.dueDate)
+  ) {
+    return Response.json(
+      { error: 'This occurrence has already changed. Reload the tasks.' },
+      { status: 409 },
+    );
+  }
+  const setsSchedule = hasRecurrence && recurrence !== null;
+  try {
+    if (setsSchedule) {
+      const start = dueDate ?? existing.dueDate ?? body.today;
+      if (!isCalendarDate(start))
+        return Response.json(
+          { error: 'A repeat schedule requires today or dueDate as YYYY-MM-DD' },
+          { status: 400 },
+        );
+      dueDate = taskOccurrence(recurrence, start);
+    }
+    if (advances) dueDate = taskOccurrence(recurrence, existing.dueDate, body.today);
+  } catch {
+    return Response.json({ error: 'Schedule exceeds supported dates' }, { status: 400 });
+  }
+  const changesDate = hasDueDate || setsSchedule || advances;
+  const changesRecurrence = hasRecurrence || clearsDueDate;
+  const guardsSchedule = changesDate || changesRecurrence || hasCompleted;
 
   // Same bargain as dueDate: a bad value is refused, never coerced. null is
   // the one non-integer accepted, and it means "back to the default".
@@ -365,24 +465,34 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
       description  = CASE WHEN ${hasDescription}::boolean THEN ${description} ELSE t.description END,
       project_id   = CASE WHEN ${hasProject}::boolean THEN ${projectId}::uuid ELSE t.project_id END,
       parent_id    = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE t.parent_id END,
-      due_date     = CASE WHEN ${hasDueDate}::boolean THEN ${dueDate}::date ELSE t.due_date END,
+      due_date     = CASE WHEN ${changesDate}::boolean THEN ${dueDate}::date ELSE t.due_date END,
       -- A Today rank belongs to the day it was arranged on: a task moved to
       -- another date joins that day unranked, after its arranged rows,
       -- rather than displacing them with a rank from elsewhere.
-      today_position = CASE WHEN ${hasDueDate}::boolean THEN NULL ELSE t.today_position END,
+      today_position = CASE WHEN ${changesDate}::boolean THEN NULL ELSE t.today_position END,
       priority     = CASE WHEN ${hasPriority}::boolean THEN ${priority}::smallint ELSE t.priority END,
+      recurrence = CASE WHEN ${changesRecurrence}::boolean THEN ${recurrence} ELSE t.recurrence END,
       completed_at = CASE
+        WHEN ${advances}::boolean THEN NULL
         WHEN ${hasCompleted}::boolean THEN (CASE WHEN ${Boolean(body.completed)}::boolean THEN now() ELSE NULL END)
         ELSE t.completed_at
       END,
       updated_at   = now()
     WHERE t.id = ${id} AND t.user_id = ${userId}
+      AND (NOT ${guardsSchedule}::boolean OR (
+        t.due_date IS NOT DISTINCT FROM ${existing.dueDate ?? null}::date
+        AND t.recurrence IS NOT DISTINCT FROM ${existing.recurrence ?? null}
+        AND t.completed_at IS NOT DISTINCT FROM ${existing.completedAt ?? null}::timestamptz))
     RETURNING t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
-              t.description, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
+              t.description, t.recurrence, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
               t.position, t.today_position AS "todayPosition", t.completed_at AS "completedAt",
               t.created_at AS "createdAt"
   `;
-  if (!item) return Response.json({ error: 'Task not found' }, { status: 404 });
+  if (!item)
+    return Response.json(
+      { error: 'The task changed. Reload the tasks and try again.' },
+      { status: 409 },
+    );
   // A divider has no search document to keep current.
   if (existing.kind === 'divider') return Response.json({ item });
   if (hasProject) {

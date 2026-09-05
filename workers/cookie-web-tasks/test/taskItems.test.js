@@ -852,3 +852,180 @@ it('inherits the new parent project when reparenting and moves the descendants t
       .every(({ values }) => values.includes(PROJECT_ID)),
   ).toBe(true);
 });
+
+describe('recurring task items', () => {
+  const existing = {
+    id: ITEM_ID,
+    kind: 'task',
+    parentId: null,
+    recurrence: 'every 3 days',
+    dueDate: '2026-09-05',
+    completedAt: null,
+  };
+  function valueAfter(query, text) {
+    return query.values[query.text.split('?').findIndex((part) => part.includes(text))];
+  }
+
+  it('creates and returns a normalized recurring task with its first matching date', async () => {
+    const item = { ...existing, recurrence: 'every 2nd tuesday', dueDate: '2026-09-08' };
+    const sql = createMockSql([[item]]);
+    const response = await createTaskItem(sql, USER_ID, {
+      content: 'Pay bills',
+      recurrence: 'every 2nd Tuesday',
+      today: '2026-09-05',
+    });
+    expect(response.status).toBe(201);
+    expect((await response.json()).item).toEqual(item);
+    expect(sql.calls[0].values).toContain('2026-09-08');
+    expect(sql.calls[0].values).toContain('every 2nd tuesday');
+  });
+
+  it.each(['every zero days', {}, 3])(
+    'rejects unsupported recurrence %s without inserting',
+    async (recurrence) => {
+      const sql = createMockSql([]);
+      const response = await createTaskItem(sql, USER_ID, {
+        content: 'Repeat',
+        recurrence,
+        today: '2026-09-05',
+      });
+      expect(response.status).toBe(400);
+      expect(sql.calls).toHaveLength(0);
+    },
+  );
+
+  it('requires a local date when creating a recurring task without a due date', async () => {
+    const sql = createMockSql([]);
+    expect(
+      (await createTaskItem(sql, USER_ID, { content: 'Repeat', recurrence: 'every Monday' }))
+        .status,
+    ).toBe(400);
+  });
+
+  it('uses an explicit due date as the starting date', async () => {
+    const sql = createMockSql([[existing]]);
+    await createTaskItem(sql, USER_ID, {
+      content: 'Repeat',
+      recurrence: 'every 3 days',
+      dueDate: '2026-10-01',
+      today: '2026-09-05',
+    });
+    expect(sql.calls[0].values).toContain('2026-10-01');
+  });
+
+  it('advances overdue tasks along the original schedule and keeps them open', async () => {
+    const updated = { ...existing, dueDate: '2026-09-14' };
+    const sql = createMockSql([[existing], [updated]]);
+    const response = await updateTaskItem(sql, USER_ID, {
+      id: ITEM_ID,
+      completed: true,
+      today: '2026-09-12',
+      expectedDueDate: '2026-09-05',
+    });
+    expect((await response.json()).item).toEqual(updated);
+    const query = sql.calls[1];
+    expect(valueAfter(query, 'due_date     = CASE WHEN ')).toBe(true);
+    expect(query.values).toContain('2026-09-14');
+    expect(valueAfter(query, 'completed_at = CASE\n        WHEN ')).toBe(true);
+    expect(valueAfter(query, 'today_position = CASE WHEN ')).toBe(true);
+    expect(query.text).toContain('t.due_date IS NOT DISTINCT FROM');
+    expect(query.text).toContain('t.recurrence IS NOT DISTINCT FROM');
+    expect(query.text).toContain('t.user_id =');
+  });
+
+  it('rejects a stale completion before updating', async () => {
+    const sql = createMockSql([[{ ...existing, dueDate: '2026-09-08' }]]);
+    const response = await updateTaskItem(sql, USER_ID, {
+      id: ITEM_ID,
+      completed: true,
+      today: '2026-09-05',
+      expectedDueDate: '2026-09-05',
+    });
+    expect(response.status).toBe(409);
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  it('reports a concurrent schedule change instead of skipping another occurrence', async () => {
+    const sql = createMockSql([[existing], []]);
+    const response = await updateTaskItem(sql, USER_ID, {
+      id: ITEM_ID,
+      completed: true,
+      today: '2026-09-05',
+      expectedDueDate: '2026-09-05',
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it.each([
+    { completed: true },
+    { completed: 'true' },
+    { completed: true, today: '2026-02-30', expectedDueDate: '2026-09-05' },
+    {
+      completed: true,
+      today: '2026-09-05',
+      expectedDueDate: '2026-09-05',
+      recurrence: 'every Monday',
+    },
+    { recurrence: 'whenever' },
+  ])('rejects invalid recurring updates %s', async (change) => {
+    const sql = createMockSql([[existing]]);
+    expect((await updateTaskItem(sql, USER_ID, { id: ITEM_ID, ...change })).status).toBe(400);
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  it('sets recurrence on an undated task using the caller local date', async () => {
+    const sql = createMockSql([[{ ...existing, dueDate: null, recurrence: null }], [existing]]);
+    await updateTaskItem(sql, USER_ID, {
+      id: ITEM_ID,
+      recurrence: 'every Monday',
+      today: '2026-09-05',
+    });
+    expect(sql.calls[1].values).toContain('2026-09-07');
+    expect(sql.calls[1].values).toContain('every monday');
+  });
+
+  it('removes recurrence without clearing the due date', async () => {
+    const sql = createMockSql([[existing], [{ ...existing, recurrence: null }]]);
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, recurrence: null });
+    expect((await response.json()).item.dueDate).toBe('2026-09-05');
+    expect(valueAfter(sql.calls[1], 'due_date     = CASE WHEN ')).toBe(false);
+    expect(valueAfter(sql.calls[1], 'recurrence = CASE WHEN ')).toBe(true);
+  });
+
+  it('clears recurrence when the date is removed', async () => {
+    const sql = createMockSql([[existing], [{ ...existing, dueDate: null, recurrence: null }]]);
+    await updateTaskItem(sql, USER_ID, { id: ITEM_ID, dueDate: null });
+    const query = sql.calls[1];
+    const index = query.text
+      .split('?')
+      .findIndex((part) => part.includes('recurrence = CASE WHEN '));
+    expect(query.values.slice(index, index + 2)).toEqual([true, null]);
+  });
+
+  it('does not allow recurrence on a divider', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, kind: 'divider' }]]);
+    expect(
+      (await updateTaskItem(sql, USER_ID, { id: ITEM_ID, recurrence: 'every day' })).status,
+    ).toBe(400);
+  });
+});
+
+it('preserves database timestamp precision for reopening completed tasks', async () => {
+  const completedAt = '2026-09-05 12:34:56.123456+00';
+  const sql = createMockSql([[{ id: ITEM_ID, completedAt }], [{ id: ITEM_ID, completedAt: null }]]);
+  expect((await updateTaskItem(sql, USER_ID, { id: ITEM_ID, completed: false })).status).toBe(200);
+  expect(sql.calls[0].text).toContain('completed_at::text AS "completedAt"');
+  expect(sql.calls[1].values).toContain(completedAt);
+});
+
+it('rejects completing a stale recurring occurrence after recurrence was removed', async () => {
+  const sql = createMockSql([[{ id: ITEM_ID, recurrence: null, dueDate: '2026-09-05' }]]);
+  const response = await updateTaskItem(sql, USER_ID, {
+    id: ITEM_ID,
+    completed: true,
+    today: '2026-09-05',
+    expectedDueDate: '2026-09-05',
+  });
+  expect(response.status).toBe(409);
+  expect(sql.calls).toHaveLength(1);
+});
