@@ -6,6 +6,7 @@ import { allowRequest } from '../../../shared/rate-limit.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { RATE_LIMIT } from './openai.js';
 import { handleCompose } from './compose.js';
+import { handleDocument } from './document.js';
 import { handleSummarize } from './summarize.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
@@ -37,6 +38,12 @@ const ROUTES = {
     notConfigured: 'AI summarization is not configured',
     unavailable: 'AI summarization is temporarily unavailable',
     tooMany: 'Too many summary requests, slow down',
+  },
+  document: {
+    handler: handleDocument,
+    notConfigured: 'AI documents are not configured',
+    unavailable: 'AI documents are temporarily unavailable',
+    tooMany: 'Too many document requests, slow down',
   },
 };
 

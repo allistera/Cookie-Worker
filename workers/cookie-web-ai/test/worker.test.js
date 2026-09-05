@@ -89,6 +89,7 @@ describe('auth and configuration', () => {
   test.each([
     ['/compose', 'AI compose is not configured'],
     ['/summarize', 'AI summarization is not configured'],
+    ['/document', 'AI documents are not configured'],
   ])('%s answers 503 with its own wording when no OpenAI key is set', async (path, error) => {
     const response = await worker.fetch(
       request(path, { body: '{}' }),
@@ -116,6 +117,7 @@ describe('rate limiting', () => {
   test.each([
     ['/compose', 'Too many compose requests, slow down'],
     ['/summarize', 'Too many summary requests, slow down'],
+    ['/document', 'Too many document requests, slow down'],
   ])('%s answers 429 with its own wording when the quota is exhausted', async (path, error) => {
     allowRequest.mockResolvedValue(false);
     const response = await worker.fetch(request(path, { body: '{}' }), env, ctx);
@@ -145,6 +147,14 @@ describe('routing', () => {
     const response = await worker.fetch(request('/summarize', { body: '{}' }), env, ctx);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'A valid message id is required' });
+  });
+
+  test('POST /document dispatches to the document handler (reaches its validation)', async () => {
+    const response = await worker.fetch(request('/document', { body: '{}' }), env, ctx);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'instruction is required (max 1000 chars)',
+    });
   });
 
   test('an unknown path returns 404', async () => {
