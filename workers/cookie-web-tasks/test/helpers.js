@@ -22,6 +22,7 @@ export function createMockSql(results = []) {
   const queue = [...results];
   /** @type {{text: string, values: unknown[]}[]} */
   const calls = [];
+  const controlCalls = [];
 
   /** @type {any} */
   const sql = vi.fn((/** @type {any} */ strings, /** @type {any[]} */ ...values) => {
@@ -35,6 +36,10 @@ export function createMockSql(results = []) {
       calls.push({ text: `SET(${Object.keys(strings).join(',')})`, values: [] });
       return { __set: strings };
     }
+    if (strings.join('').includes('pg_advisory_xact_lock')) {
+      controlCalls.push({ text: strings.join('?'), values });
+      return Promise.resolve([]);
+    }
     calls.push({ text: strings.join('?'), values });
     return Promise.resolve(queue.length ? queue.shift() : []);
   });
@@ -43,5 +48,6 @@ export function createMockSql(results = []) {
   sql.begin = vi.fn(async (/** @type {(sql: any) => unknown} */ callback) => callback(sql));
   sql.end = vi.fn(async () => undefined);
   sql.calls = calls;
+  sql.controlCalls = controlCalls;
   return sql;
 }

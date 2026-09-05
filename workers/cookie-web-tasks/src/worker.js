@@ -251,7 +251,26 @@ const worker = {
         );
       }
 
-      const response = await route(url, request, sql, userId, env, email);
+      /** @type {Array<(sql: import('postgres').Sql) => Promise<unknown>>} */
+      const indexing = [];
+      const requestEnv = {
+        ...env,
+        deferSearchSync: (/** @type {(sql: import('postgres').Sql) => Promise<unknown>} */ job) =>
+          indexing.push(job),
+      };
+      const response = await route(url, request, sql, userId, requestEnv, email);
+      if (indexing.length) {
+        ctx.waitUntil(
+          (async () => {
+            const backgroundSql = createSql(env.HYPERDRIVE.connectionString);
+            try {
+              for (const job of indexing) await job(backgroundSql);
+            } finally {
+              await backgroundSql.end({ timeout: 2 }).catch(() => undefined);
+            }
+          })().catch((error) => captureHandledException('search_sync', error, env)),
+        );
+      }
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(

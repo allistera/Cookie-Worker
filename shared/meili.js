@@ -151,15 +151,24 @@ function clientFor(env, client) {
  */
 export async function configureIndex(env, descriptor, client) {
   const index = clientFor(env, client).index(descriptor.name);
-  await index.updateSettings({
-    searchableAttributes: descriptor.searchable,
-    filterableAttributes: descriptor.filterable,
-    sortableAttributes: descriptor.sortable,
-    ...(descriptor.rankingRules ? { rankingRules: descriptor.rankingRules } : {}),
-    embedders: {
-      default: { ...descriptor.embedder, apiKey: env.OPENAI_API_KEY },
-    },
-  });
+  await completedTask(
+    index.updateSettings({
+      searchableAttributes: descriptor.searchable,
+      filterableAttributes: descriptor.filterable,
+      sortableAttributes: descriptor.sortable,
+      ...(descriptor.rankingRules ? { rankingRules: descriptor.rankingRules } : {}),
+      embedders: {
+        default: { ...descriptor.embedder, apiKey: env.OPENAI_API_KEY },
+      },
+    }),
+  );
+}
+
+/** @param {import('meilisearch').EnqueuedTaskPromise} pending */
+async function completedTask(pending) {
+  const task = await pending.waitTask({ timeout: 20_000, interval: 250 });
+  if (task.status !== 'succeeded') throw new Error(`Meilisearch task ${task.uid} ${task.status}`);
+  return { taskUid: task.uid, status: task.status };
 }
 
 /**
@@ -172,9 +181,11 @@ export async function configureIndex(env, descriptor, client) {
  */
 export function addDocuments(env, descriptor, rows, client) {
   const index = clientFor(env, client).index(descriptor.name);
-  return index.addDocuments(rows.map(descriptor.toDocument), {
-    primaryKey: descriptor.primaryKey,
-  });
+  return completedTask(
+    index.addDocuments(rows.map(descriptor.toDocument), {
+      primaryKey: descriptor.primaryKey,
+    }),
+  );
 }
 
 /**
@@ -184,7 +195,7 @@ export function addDocuments(env, descriptor, rows, client) {
  * @param {any} [client]
  */
 export function deleteDocuments(env, descriptor, ids, client) {
-  return clientFor(env, client).index(descriptor.name).deleteDocuments(ids);
+  return completedTask(clientFor(env, client).index(descriptor.name).deleteDocuments(ids));
 }
 
 /**

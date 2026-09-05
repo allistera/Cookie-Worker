@@ -17,18 +17,25 @@ import {
  * @param {{addDocuments?: Function}} [deps]
  */
 export async function syncDocumentToMeili(sql, env, documentId, deps = {}) {
+  if (env?.deferSearchSync) {
+    env.deferSearchSync((freshSql) =>
+      syncDocumentToMeili(freshSql, { ...env, deferSearchSync: undefined }, documentId, deps),
+    );
+    return;
+  }
   if (!meiliAvailable(env)) return;
   const addDocs = deps.addDocuments ?? addDocumentsDefault;
 
   try {
     const [row] = await sql`
-      SELECT d.id, d.user_id, d.title, d.content_text, d.tags, d.starred, d.updated_at
+      SELECT d.id, d.xmin::text AS row_version, d.user_id, d.title, d.content_text, d.tags, d.starred, d.updated_at
       FROM documents d
       WHERE d.id = ${documentId}
     `;
     if (!row) return;
     await addDocs(env, DOCUMENTS_INDEX, [row]);
-    await sql`UPDATE documents SET search_indexed_at = now() WHERE id = ${documentId}`;
+    await sql`UPDATE documents SET search_indexed_at = CASE WHEN xmin::text = ${row.row_version}
+      THEN now() ELSE NULL END WHERE id = ${documentId}`;
   } catch (error) {
     console.log(
       JSON.stringify({
@@ -46,6 +53,12 @@ export async function syncDocumentToMeili(sql, env, documentId, deps = {}) {
  * @param {{deleteDocuments?: Function}} [deps]
  */
 export async function removeDocumentFromMeili(env, documentId, deps = {}) {
+  if (env?.deferSearchSync) {
+    env.deferSearchSync(() =>
+      removeDocumentFromMeili({ ...env, deferSearchSync: undefined }, documentId, deps),
+    );
+    return;
+  }
   if (!meiliAvailable(env)) return;
   const removeDocs = deps.deleteDocuments ?? deleteDocumentsDefault;
 

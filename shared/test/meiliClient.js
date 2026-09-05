@@ -9,18 +9,22 @@ import { vi } from 'vitest';
  */
 export function createMockMeili(responses = {}) {
   const calls = [];
+  const task = (uid) =>
+    Object.assign(Promise.resolve({ taskUid: uid, status: 'enqueued' }), {
+      waitTask: async () => responses.task ?? { uid, status: 'succeeded' },
+    });
   const index = (name) => ({
-    updateSettings: vi.fn(async (args) => {
+    updateSettings: vi.fn((args) => {
       calls.push({ index: name, method: 'updateSettings', args });
-      return { taskUid: 1 };
+      return task(1);
     }),
-    addDocuments: vi.fn(async (docs, opts) => {
+    addDocuments: vi.fn((docs, opts) => {
       calls.push({ index: name, method: 'addDocuments', args: { docs, opts } });
-      return { taskUid: 2 };
+      return task(2);
     }),
-    deleteDocuments: vi.fn(async (ids) => {
+    deleteDocuments: vi.fn((ids) => {
       calls.push({ index: name, method: 'deleteDocuments', args: ids });
-      return { taskUid: 3 };
+      return task(3);
     }),
     search: vi.fn(async (text, params) => {
       calls.push({ index: name, method: 'search', args: { text, params } });

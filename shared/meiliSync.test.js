@@ -101,7 +101,7 @@ describe('syncMessageToMeili', () => {
     expect(sql.calls[0].text).toContain('m.xmin::text AS row_version');
 
     const updateText = sql.calls[1].text;
-    expect(updateText).toContain('SET search_indexed_at = now()');
+    expect(updateText).toContain('SET search_indexed_at = CASE WHEN');
     expect(updateText).toContain('m.xmin::text = v.row_version');
     // The version read from the SELECT is what the stamp is conditioned on,
     // so a row written since is not matched and stays NULL.
@@ -194,9 +194,9 @@ describe('syncMessagesToMeili', () => {
 
     const updateText = sql.calls[1].text;
     expect(updateText).toContain('UPDATE messages m');
-    expect(updateText).toContain('SET search_indexed_at = now()');
+    expect(updateText).toContain('SET search_indexed_at = CASE WHEN');
     expect(updateText).toContain('FROM unnest(');
-    expect(updateText).toContain('m.id = v.id AND m.xmin::text = v.row_version');
+    expect(updateText).toContain('m.xmin::text = v.row_version THEN now() ELSE NULL END');
     expect(sql.mock.calls[1][1]).toEqual([MESSAGE_ID]);
     expect(sql.mock.calls[1][2]).toEqual(['77']);
   });

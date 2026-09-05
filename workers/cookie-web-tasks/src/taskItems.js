@@ -152,7 +152,7 @@ export async function getTaskItems(sql, userId, url) {
  * @param {any} body
  * @param {any} [env] Meilisearch config for the best-effort search sync.
  */
-export async function createTaskItem(sql, userId, body, env) {
+async function createTaskItemUnlocked(sql, userId, body, env) {
   const kind = body?.kind ?? 'task';
   if (!KINDS.includes(kind)) {
     return Response.json({ error: 'kind must be "task" or "divider"' }, { status: 400 });
@@ -245,7 +245,7 @@ async function createDivider(sql, userId, body) {
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string} id */
 function fetchOwnedTaskItem(sql, userId, id) {
-  return sql`SELECT id, kind, parent_id AS "parentId" FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
+  return sql`SELECT id, kind, project_id AS "projectId", parent_id AS "parentId" FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
 }
 
 /**
@@ -260,7 +260,7 @@ function fetchOwnedTaskItem(sql, userId, id) {
  * @param {any} body
  * @param {any} [env] Meilisearch config for the best-effort search sync.
  */
-export async function updateTaskItem(sql, userId, body, env) {
+async function updateTaskItemUnlocked(sql, userId, body, env) {
   const id = isUuid(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
   const [existing] = await fetchOwnedTaskItem(sql, userId, id);
@@ -270,7 +270,7 @@ export async function updateTaskItem(sql, userId, body, env) {
 
   const hasContent = Object.hasOwn(body, 'content');
   const hasDescription = Object.hasOwn(body, 'description');
-  const hasProject = Object.hasOwn(body, 'projectId');
+  let hasProject = Object.hasOwn(body, 'projectId');
   const hasParent = Object.hasOwn(body, 'parentId');
   const hasDueDate = Object.hasOwn(body, 'dueDate');
   const hasPriority = Object.hasOwn(body, 'priority');
@@ -303,7 +303,7 @@ export async function updateTaskItem(sql, userId, body, env) {
 
   const description = hasDescription ? cleanText(body.description, MAX_DESCRIPTION_LENGTH) : null;
 
-  const projectId = hasProject ? (body.projectId ?? null) : null;
+  let projectId = hasProject ? (body.projectId ?? null) : null;
   if (hasProject && projectId !== null) {
     if (!isUuid(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
@@ -311,18 +311,35 @@ export async function updateTaskItem(sql, userId, body, env) {
   }
 
   const parentId = hasParent ? (body.parentId ?? null) : null;
+  let targetParent;
   if (hasParent && parentId !== null) {
     if (parentId === id) {
       return Response.json({ error: 'A task cannot be its own parent' }, { status: 400 });
     }
-    const [parent] = isUuid(parentId) ? await fetchOwnedTaskItem(sql, userId, parentId) : [];
-    if (!parent) return Response.json({ error: 'Task not found' }, { status: 404 });
-    if (parent.kind === 'divider') {
+    if (isUuid(parentId)) [targetParent] = await fetchOwnedTaskItem(sql, userId, parentId);
+    if (!targetParent) return Response.json({ error: 'Task not found' }, { status: 404 });
+    if (targetParent.kind === 'divider') {
       return Response.json({ error: 'A divider cannot have sub-tasks' }, { status: 400 });
     }
     if (await isAncestorOf(sql, { table: 'task_items', userId, id, candidateParentId: parentId })) {
       return Response.json({ error: 'A task cannot become its own descendant' }, { status: 400 });
     }
+  }
+
+  const effectiveParent = hasParent ? parentId : existing.parentId;
+  if (effectiveParent && (hasParent || hasProject)) {
+    const parent = targetParent ?? (await fetchOwnedTaskItem(sql, userId, effectiveParent))[0];
+    if (!parent) return Response.json({ error: 'Task not found' }, { status: 404 });
+    // A child belongs to its parent's project. Detach it explicitly before
+    // moving it independently; reparenting always inherits the new project.
+    if (!hasParent && projectId !== parent.projectId) {
+      return Response.json(
+        { error: 'Move the parent task or detach this sub-task first' },
+        { status: 400 },
+      );
+    }
+    projectId = parent.projectId;
+    hasProject = true;
   }
 
   // A malformed date must be refused, not quietly turned into null: that wrote
@@ -365,8 +382,21 @@ export async function updateTaskItem(sql, userId, body, env) {
               t.position, t.today_position AS "todayPosition", t.completed_at AS "completedAt",
               t.created_at AS "createdAt"
   `;
+  if (!item) return Response.json({ error: 'Task not found' }, { status: 404 });
   // A divider has no search document to keep current.
   if (existing.kind === 'divider') return Response.json({ item });
+  if (hasProject) {
+    await sql`
+      WITH RECURSIVE descendants AS (
+        SELECT id FROM task_items WHERE parent_id = ${id} AND user_id = ${userId}
+        UNION
+        SELECT child.id FROM task_items child JOIN descendants d ON child.parent_id = d.id
+        WHERE child.user_id = ${userId}
+      )
+      UPDATE task_items SET project_id = ${projectId}, updated_at = now()
+      WHERE id IN (SELECT id FROM descendants) AND user_id = ${userId}
+    `;
+  }
   // Best-effort search sync. Reparenting moves the row between search
   // documents (only top-level tasks are indexed, carrying their sub-task
   // titles): a demoted task loses its own document, and an old parent must
@@ -495,4 +525,22 @@ export async function deleteTaskItem(sql, userId, body, env) {
   if (deleted[0].parentId === null) await removeTaskItemFromMeili(env, id);
   else await syncTaskItemToMeili(sql, env, deleted[0].parentId);
   return Response.json({ ok: true });
+}
+
+// Structural reads and writes share a per-owner lock, so a concurrent child
+// insert cannot observe the old project halfway through moving its parent.
+/** @param {import('postgres').Sql} sql @param {string} userId @param {any} body @param {any} [env] */
+export async function createTaskItem(sql, userId, body, env) {
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
+    return createTaskItemUnlocked(/** @type {any} */ (tx), userId, body, env);
+  });
+}
+
+/** @param {import('postgres').Sql} sql @param {string} userId @param {any} body @param {any} [env] */
+export async function updateTaskItem(sql, userId, body, env) {
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
+    return updateTaskItemUnlocked(/** @type {any} */ (tx), userId, body, env);
+  });
 }

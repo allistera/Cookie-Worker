@@ -54,7 +54,7 @@ describe('syncDocumentToMeili', () => {
 
     await syncDocumentToMeili(sql, ENV, DOC_ID, { addDocuments: push });
 
-    expect(sql.calls[1].text).toContain('search_indexed_at = now()');
+    expect(sql.calls[1].text).toContain('search_indexed_at = CASE WHEN');
     expect(sql.calls[1].values).toContain(DOC_ID);
   });
 
@@ -91,4 +91,37 @@ describe('removeDocumentFromMeili', () => {
       removeDocumentFromMeili(ENV, DOC_ID, { deleteDocuments: remove }),
     ).resolves.toBeUndefined();
   });
+});
+
+it('defers indexing to a fresh connection and waits for completion before stamping', async () => {
+  const requestSql = createMockSql([]);
+  const backgroundSql = createMockSql([[{ id: DOC_ID, row_version: '42' }], []]);
+  let job;
+  let complete;
+  const push = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  await syncDocumentToMeili(
+    requestSql,
+    {
+      ...ENV,
+      deferSearchSync: (work) => {
+        job = work;
+      },
+    },
+    DOC_ID,
+    { addDocuments: push },
+  );
+  expect(requestSql.calls).toHaveLength(0);
+  expect(push).not.toHaveBeenCalled();
+  const background = job(backgroundSql);
+  await Promise.resolve();
+  expect(backgroundSql.calls).toHaveLength(1);
+  complete({ taskUid: 7, status: 'succeeded' });
+  await background;
+  expect(backgroundSql.calls[1].values).toContain('42');
+  expect(backgroundSql.calls[1].text).toContain('xmin::text');
 });

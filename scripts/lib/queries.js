@@ -17,7 +17,7 @@
 export function documentsPage(sql, { afterId, limit }) {
   const cursor = afterId ? sql`AND id > ${afterId}` : sql``;
   return sql`
-    SELECT id, user_id, title, content_text, tags, starred, updated_at
+    SELECT id, xmin::text AS row_version, user_id, title, content_text, tags, starred, updated_at
     FROM documents
     WHERE true
       ${cursor}
@@ -36,7 +36,7 @@ export function messagesPage(sql, { afterId, limit }) {
   const cursor = afterId ? sql`AND m.id > ${afterId}` : sql``;
   return sql`
     SELECT
-      m.id, m.user_id, m.from_name, m.from_address, m.recipients, m.subject, m.body_text,
+      m.id, m.xmin::text AS row_version, m.user_id, m.from_name, m.from_address, m.recipients, m.subject, m.body_text,
       m.sent_at, m.scheduled_for, m.is_unread, m.is_starred, m.is_archived, m.is_sent, m.is_deleted,
       ai.spam_verdict,
       EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
@@ -68,7 +68,7 @@ export function messagesPage(sql, { afterId, limit }) {
  */
 export function documentsDriftPage(sql, { limit }) {
   return sql`
-    SELECT id, user_id, title, content_text, tags, starred, updated_at
+    SELECT id, xmin::text AS row_version, user_id, title, content_text, tags, starred, updated_at
     FROM documents
     WHERE search_indexed_at IS NULL OR search_indexed_at < updated_at
     ORDER BY updated_at
@@ -97,7 +97,7 @@ export function documentsDriftPage(sql, { limit }) {
 export function messagesDriftPage(sql, { limit }) {
   return sql`
     SELECT
-      m.id, m.user_id, m.from_name, m.from_address, m.recipients, m.subject, m.body_text,
+      m.id, m.xmin::text AS row_version, m.user_id, m.from_name, m.from_address, m.recipients, m.subject, m.body_text,
       m.sent_at, m.scheduled_for, m.is_unread, m.is_starred, m.is_archived, m.is_sent, m.is_deleted,
       ai.spam_verdict,
       EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
@@ -131,7 +131,8 @@ export function messagesDriftPage(sql, { limit }) {
 export function taskItemsPage(sql, { afterId, limit }) {
   const cursor = afterId ? sql`AND t.id > ${afterId}` : sql``;
   return sql`
-    SELECT t.id, t.user_id, t.content, t.description, t.completed_at, t.updated_at,
+    SELECT t.id, t.xmin::text AS row_version,
+           COALESCE(string_agg(c.id::text || ':' || c.xmin::text, ',' ORDER BY c.id), '') AS child_versions, t.user_id, t.content, t.description, t.completed_at, t.updated_at,
            COALESCE(array_agg(c.content ORDER BY c.created_at) FILTER (WHERE c.id IS NOT NULL),
                     ARRAY[]::text[]) AS subtasks
     FROM task_items t
@@ -157,7 +158,8 @@ export function taskItemsPage(sql, { afterId, limit }) {
  */
 export function taskItemsDriftPage(sql, { limit }) {
   return sql`
-    SELECT t.id, t.user_id, t.content, t.description, t.completed_at, t.updated_at,
+    SELECT t.id, t.xmin::text AS row_version,
+           COALESCE(string_agg(c.id::text || ':' || c.xmin::text, ',' ORDER BY c.id), '') AS child_versions, t.user_id, t.content, t.description, t.completed_at, t.updated_at,
            COALESCE(array_agg(c.content ORDER BY c.created_at) FILTER (WHERE c.id IS NOT NULL),
                     ARRAY[]::text[]) AS subtasks
     FROM task_items t
@@ -191,13 +193,20 @@ export const DRIFT_QUERIES = {
  * @param {import('postgres').Sql} sql
  * @param {'documents' | 'messages' | 'task_items'} target
  * @param {string[]} ids
+ * @param {string[]} versions
+ * @param {string[]} [childVersions]
  */
-export function stampIndexed(sql, target, ids) {
+export function stampIndexed(sql, target, ids, versions, childVersions = []) {
   if (target === 'documents') {
-    return sql`UPDATE documents SET search_indexed_at = now() WHERE id = ANY(${ids}::uuid[])`;
+    return sql`UPDATE documents t SET search_indexed_at = CASE WHEN t.xmin::text = v.row_version THEN now() ELSE NULL END FROM unnest(${ids}::uuid[], ${versions}::text[]) AS v(id, row_version) WHERE t.id = v.id`;
   }
   if (target === 'task_items') {
-    return sql`UPDATE task_items SET search_indexed_at = now() WHERE id = ANY(${ids}::uuid[])`;
+    return sql`UPDATE task_items t SET search_indexed_at = CASE WHEN t.xmin::text = v.row_version
+        AND (SELECT COALESCE(string_agg(c.id::text || ':' || c.xmin::text, ',' ORDER BY c.id), '')
+             FROM task_items c WHERE c.parent_id = t.id) = v.child_versions
+      THEN now() ELSE NULL END
+      FROM unnest(${ids}::uuid[], ${versions}::text[], ${childVersions}::text[]) AS v(id, row_version, child_versions)
+      WHERE t.id = v.id`;
   }
-  return sql`UPDATE messages SET search_indexed_at = now() WHERE id = ANY(${ids}::uuid[])`;
+  return sql`UPDATE messages t SET search_indexed_at = CASE WHEN t.xmin::text = v.row_version THEN now() ELSE NULL END FROM unnest(${ids}::uuid[], ${versions}::text[]) AS v(id, row_version) WHERE t.id = v.id`;
 }

@@ -804,3 +804,51 @@ describe('dividers', () => {
     expect(sql.calls[0].text).toContain('SELECT t.id, t.kind,');
   });
 });
+
+describe('task project invariants', () => {
+  it('moves every descendant in the same transaction as its parent', async () => {
+    const sql = createMockSql([
+      [{ id: ITEM_ID, parentId: null, projectId: PROJECT_ID }],
+      [{ id: ITEM_ID, parentId: null, projectId: null }],
+      [],
+    ]);
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, projectId: null });
+    expect(response.status).toBe(200);
+    expect(sql.begin).toHaveBeenCalledTimes(1);
+    expect(sql.controlCalls[0].values).toEqual([USER_ID]);
+    const cascade = sql.calls.find(({ text }) => text.includes('WITH RECURSIVE descendants'));
+    expect(cascade.text).toContain('child.parent_id = d.id');
+    expect(cascade.text).toContain('UPDATE task_items SET project_id');
+    expect(cascade.values).toContain(ITEM_ID);
+    expect(cascade.values).toContain(null);
+  });
+
+  it('refuses an independent project move of a still-attached child', async () => {
+    const sql = createMockSql([
+      [{ id: ITEM_ID, parentId: PROJECT_ID, projectId: PROJECT_ID }],
+      [{ id: PROJECT_ID, projectId: PROJECT_ID }],
+    ]);
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, projectId: null });
+    expect(response.status).toBe(400);
+    expect(sql.calls.some(({ text }) => text.includes('UPDATE task_items'))).toBe(false);
+  });
+});
+
+it('inherits the new parent project when reparenting and moves the descendants too', async () => {
+  const parentId = '33333333-3333-4333-8333-333333333333';
+  const sql = createMockSql([
+    [{ id: ITEM_ID, parentId: null, projectId: null }],
+    [{ id: parentId, projectId: PROJECT_ID }],
+    [],
+    [{ id: ITEM_ID, parentId, projectId: PROJECT_ID }],
+    [],
+  ]);
+  const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, parentId });
+  expect(response.status).toBe(200);
+  expect((await response.json()).item.projectId).toBe(PROJECT_ID);
+  expect(
+    sql.calls
+      .filter(({ text }) => text.includes('UPDATE task_items'))
+      .every(({ values }) => values.includes(PROJECT_ID)),
+  ).toBe(true);
+});

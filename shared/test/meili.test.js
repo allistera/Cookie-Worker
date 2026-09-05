@@ -498,3 +498,32 @@ describe('federatedSearch', () => {
     ]);
   });
 });
+
+describe('index acknowledgement', () => {
+  it.each(['failed', 'canceled'])(
+    'rejects a %s task after enqueue acknowledgement',
+    async (status) => {
+      const { client } = createMockMeili({ task: { uid: 2, status } });
+      await expect(addDocuments(ENV, MESSAGES_INDEX, [], client)).rejects.toThrow(status);
+      await expect(deleteDocuments(ENV, MESSAGES_INDEX, ['m1'], client)).rejects.toThrow(status);
+    },
+  );
+
+  it('does not resolve a write until the engine finishes the task', async () => {
+    let complete;
+    const completion = new Promise((resolve) => {
+      complete = resolve;
+    });
+    const pending = Object.assign(Promise.resolve({ taskUid: 7 }), { waitTask: () => completion });
+    const client = /** @type {any} */ ({ index: () => ({ addDocuments: () => pending }) });
+    let finished = false;
+    const write = addDocuments(ENV, MESSAGES_INDEX, [], client).then(() => {
+      finished = true;
+    });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    complete({ uid: 7, status: 'succeeded' });
+    await write;
+    expect(finished).toBe(true);
+  });
+});

@@ -51,7 +51,9 @@ describe('documentsPage', () => {
   it('selects exactly the columns DOCUMENTS_INDEX.toDocument reads', () => {
     const { sql, render } = makeSql();
     const q = render(documentsPage(sql, { afterId: null, limit: 100 }));
-    expect(q).toContain('id, user_id, title, content_text, tags, starred, updated_at');
+    expect(q).toContain(
+      'id, xmin::text AS row_version, user_id, title, content_text, tags, starred, updated_at',
+    );
   });
 });
 
@@ -163,20 +165,20 @@ describe('taskItemsDriftPage', () => {
 describe('stampIndexed', () => {
   it('stamps the documents table for a documents target', () => {
     const { sql, render } = makeSql();
-    const q = render(stampIndexed(sql, 'documents', ['a', 'b']));
-    expect(q).toContain('UPDATE documents SET search_indexed_at = now()');
-    expect(q).toContain('WHERE id = ANY($::uuid[])');
+    const q = render(stampIndexed(sql, 'documents', ['a', 'b'], ['1', '2']));
+    expect(q).toContain('UPDATE documents t SET search_indexed_at = CASE WHEN');
+    expect(q).toContain('WHERE t.id = v.id');
   });
 
   it('stamps the messages table for a messages target', () => {
     const { sql, render } = makeSql();
-    const q = render(stampIndexed(sql, 'messages', ['a', 'b']));
-    expect(q).toContain('UPDATE messages SET search_indexed_at = now()');
+    const q = render(stampIndexed(sql, 'messages', ['a', 'b'], ['1', '2']));
+    expect(q).toContain('UPDATE messages t SET search_indexed_at = CASE WHEN');
   });
 
   it('stamps the task_items table for a task_items target', () => {
     const { sql, render } = makeSql();
-    const q = render(stampIndexed(sql, 'task_items', ['a', 'b']));
-    expect(q).toContain('UPDATE task_items SET search_indexed_at = now()');
+    const q = render(stampIndexed(sql, 'task_items', ['a', 'b'], ['1', '2']));
+    expect(q).toContain('UPDATE task_items t SET search_indexed_at = CASE WHEN');
   });
 });

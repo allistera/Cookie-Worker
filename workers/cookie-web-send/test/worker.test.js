@@ -173,7 +173,7 @@ describe('POST /send security boundaries', () => {
     const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ id: 'resend-1' });
+    expect(await response.json()).toMatchObject({ id: 'resend-1', messageId: expect.any(String) });
     const [payload, options] = resendSend.mock.calls[0];
     expect(payload.to).toEqual(['recipient@example.com']);
     expect(payload.from).toBe('Cookie <mail@example.com>');
@@ -488,6 +488,7 @@ describe('POST /send/flush', () => {
       html: null,
       replyToMessageId: null,
       attempts: 0,
+      followUpAt: futureIso(3600000),
     };
     responses = [
       [claimedRow], // claimDueScheduledSends
@@ -514,6 +515,13 @@ describe('POST /send/flush', () => {
       failed: 0,
       unconfirmed: 0,
     });
+    const messageWrite = mockQuery.mock.calls.find(([strings]) =>
+      strings.join('').includes('INSERT INTO messages'),
+    );
+    if (!messageWrite) throw new Error('Expected sent-copy insert');
+    expect(messageWrite[0].join('')).toContain('follow_up_at');
+    expect(messageWrite.slice(1)).toContain(claimedRow.followUpAt);
+    expect(mockQuery.mock.calls[0][0].join('')).toContain('s.follow_up_at AS "followUpAt"');
     expect(resendSend).toHaveBeenCalledTimes(1);
     expect(resendSend).toHaveBeenCalledWith(
       expect.objectContaining({ to: ['recipient@example.com'] }),
@@ -918,7 +926,7 @@ describe('search indexing of sent mail', () => {
     const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ id: 'resend-1' });
+    expect(await response.json()).toMatchObject({ id: 'resend-1', messageId: expect.any(String) });
     await expect(Promise.all(waited)).resolves.toBeInstanceOf(Array);
     expect(consoleError).toHaveBeenCalledWith(
       'failed to index sent mail for search:',

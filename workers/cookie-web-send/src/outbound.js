@@ -247,6 +247,33 @@ export async function immediateSendIdempotencyKey(
   return `immediate-send/${hex}`;
 }
 
+/** A retry must send byte-identical tracking HTML to the provider.
+ * @param {string | undefined} idempotencyKey
+ */
+async function receiptTokenFor(idempotencyKey) {
+  if (!idempotencyKey) return crypto.randomUUID();
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`receipt:${idempotencyKey}`)),
+  );
+  digest[6] = (digest[6] & 15) | 64;
+  digest[8] = (digest[8] & 63) | 128;
+  const hex = [...digest.slice(0, 16)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** @param {unknown} value @param {string | number} [after] */
+export function parseFollowUpAt(value, after = Date.now()) {
+  const timestamp = Date.parse(String(value ?? ''));
+  const afterTimestamp = new Date(after).getTime();
+  if (
+    !Number.isFinite(timestamp) ||
+    !Number.isFinite(afterTimestamp) ||
+    timestamp < Math.max(Date.now(), afterTimestamp) + 60_000
+  )
+    return null;
+  return new Date(timestamp).toISOString();
+}
+
 /**
  * The seams the delivery path depends on, built once per request in
  * worker.js: createResend is injectable for tests, and the two index seams
@@ -398,7 +425,7 @@ async function loadProviderAttachments(attachments, readBlob) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null, attachments?: any[]}} message
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null, attachments?: any[], followUpAt?: string | null}} message
  * @param {SendServices} services
  */
 async function storeSentMessage(
@@ -413,6 +440,7 @@ async function storeSentMessage(
     resendId,
     readReceiptToken,
     attachments = [],
+    followUpAt,
   },
   services,
 ) {
@@ -462,10 +490,10 @@ async function storeSentMessage(
       (sql) => sql`
       INSERT INTO messages (id, thread_id, user_id, from_name, from_address,
                             recipients, subject, snippet, body_text, body_html, sent_at,
-                            message_id, is_unread, is_sent)
+                            message_id, is_unread, is_sent, follow_up_at)
       VALUES (${messageUuid}, ${threadUuid}, ${userId}, ${fromName},
               ${fromAddress}, ${recipientsJson}::jsonb, ${subject}, ${makeSnippet(text)},
-              ${text}, ${html ?? null}, ${sentAt}, ${messageId}, false, true)
+              ${text}, ${html ?? null}, ${sentAt}, ${messageId}, false, true, ${followUpAt ?? null}::timestamptz)
       ON CONFLICT (user_id, message_id) WHERE message_id IS NOT NULL DO NOTHING
       RETURNING id
     `,
@@ -499,6 +527,12 @@ async function storeSentMessage(
     });
   }
 
+  // A retry repairs a sent copy whose first reminder write was interrupted.
+  if (lookup.existing_message_id && followUpAt) {
+    await sql`UPDATE messages SET follow_up_at = ${followUpAt}::timestamptz
+      WHERE id = ${messageUuid} AND user_id = ${userId} AND is_sent`;
+  }
+
   // Best effort and outside the sent-copy transaction: during a rolling
   // migration, a missing receipt table must not roll back the sent message.
   if (readReceiptToken) {
@@ -524,7 +558,7 @@ async function storeSentMessage(
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[]}} message
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[], followUpAt?: string | null}} message
  * @param {SendServices} services
  */
 export async function deliverMail(
@@ -539,10 +573,11 @@ export async function deliverMail(
     idempotencyKey,
     readReceiptToken,
     attachments = [],
+    followUpAt,
   },
   services,
 ) {
-  const receiptToken = readReceiptToken ?? crypto.randomUUID();
+  const receiptToken = readReceiptToken ?? (await receiptTokenFor(idempotencyKey));
   const receiptUrl = buildReadReceiptUrl(receiptToken);
   const trackedHtml = appendReadReceipt(html, text, receiptUrl);
 
@@ -581,6 +616,7 @@ export async function deliverMail(
         resendId: data.id,
         readReceiptToken: receiptUrl ? receiptToken : null,
         attachments,
+        followUpAt,
       },
       services,
     ));

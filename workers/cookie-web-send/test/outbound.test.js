@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 // built on Web Crypto.
 import {
   appendReadReceipt,
+  deliverMail,
+  parseFollowUpAt,
   buildReadReceiptUrl,
   claimOutboundEmailQuota,
   immediateSendIdempotencyKey,
@@ -231,4 +233,41 @@ describe('resolveOwnedAttachments', () => {
     const sql = createMockSql([[]]);
     expect((await resolveOwnedAttachments(sql, USER_ID, [UPLOAD_ID])).missing).toBe(true);
   });
+});
+
+describe('retry payload stability', () => {
+  it('sends byte-identical tracking HTML for the same logical send', async () => {
+    const payloads = [];
+    const sql = /** @type {any} */ (async () => [{ existing_message_id: 'existing' }]);
+    const services = /** @type {any} */ ({
+      env: { EMAIL_FROM: 'Cookie <sender@example.com>' },
+      createResend: () => ({
+        emails: {
+          send: async (payload) => {
+            payloads.push(payload);
+            return { data: { id: 'provider-1' } };
+          },
+        },
+      }),
+    });
+    const body = {
+      recipients: ['recipient@example.com'],
+      subject: 'Hi',
+      text: 'Body',
+      html: '<p>Body</p>',
+      replyToMessageId: null,
+      idempotencyKey: 'logical-send-1',
+    };
+    await deliverMail(sql, 'owner', body, services);
+    await deliverMail(sql, 'owner', body, services);
+    await deliverMail(sql, 'owner', { ...body, idempotencyKey: 'logical-send-2' }, services);
+    expect(payloads[0]).toEqual(payloads[1]);
+    expect(payloads[2].html).not.toBe(payloads[1].html);
+  });
+});
+
+it('requires a follow-up after the scheduled send, not just after now', () => {
+  const sendAt = Date.now() + 3600000;
+  expect(parseFollowUpAt(new Date(sendAt - 1000).toISOString(), sendAt)).toBeNull();
+  expect(parseFollowUpAt(new Date(sendAt + 120000).toISOString(), sendAt)).toBeTruthy();
 });

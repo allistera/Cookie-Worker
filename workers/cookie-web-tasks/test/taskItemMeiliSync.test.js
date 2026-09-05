@@ -78,7 +78,7 @@ describe('syncTaskItemToMeili', () => {
 
     await syncTaskItemToMeili(sql, ENV, SUBTASK_ID, { addDocuments: push });
 
-    expect(sql.calls[2].text).toContain('search_indexed_at = now()');
+    expect(sql.calls[2].text).toContain('search_indexed_at = CASE WHEN');
     expect(sql.calls[2].values).toContain(TASK_ID);
   });
 

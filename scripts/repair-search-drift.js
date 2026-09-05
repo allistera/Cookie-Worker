@@ -43,7 +43,13 @@ async function repairTarget(sql, env, target) {
 
     await retryMeiliCall(() => addDocuments(env, descriptor, rows));
     const ids = rows.map((row) => String(row.id));
-    await stampIndexed(sql, target, ids);
+    await stampIndexed(
+      sql,
+      target,
+      ids,
+      rows.map((row) => String(row.row_version)),
+      rows.map((row) => row.child_versions ?? ''),
+    );
 
     total += rows.length;
     console.log(`[${target}] repaired ${total} rows so far`);

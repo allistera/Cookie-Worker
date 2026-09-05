@@ -225,8 +225,9 @@ export async function syncMessagesToMeili(sql, env, messageUuids) {
  * Stamps search_indexed_at on rows that have not changed since they were
  * read, using xmin — the transaction that last wrote the row — as a version
  * token. Any UPDATE between the SELECT above and this stamp bumps xmin, so
- * the stamp is skipped and search_indexed_at stays NULL for the drift sweep
- * to repair.
+ * the stamp is cleared and search_indexed_at becomes NULL for the drift sweep
+ * to repair. Clearing is essential if an older indexing job finishes after
+ * a newer one was already stamped: its late payload can overwrite the index.
  *
  * `WHERE search_indexed_at IS NULL` would not do: a writer marks the row
  * NULL before firing its own sync, so a row raced by a second mutation is
@@ -241,8 +242,8 @@ export async function syncMessagesToMeili(sql, env, messageUuids) {
 function stampIndexed(sql, ids, versions) {
   return sql`
     UPDATE messages m
-    SET search_indexed_at = now()
+    SET search_indexed_at = CASE WHEN m.xmin::text = v.row_version THEN now() ELSE NULL END
     FROM unnest(${ids}::uuid[], ${versions}::text[]) AS v(id, row_version)
-    WHERE m.id = v.id AND m.xmin::text = v.row_version
+    WHERE m.id = v.id
   `;
 }

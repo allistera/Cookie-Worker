@@ -58,12 +58,12 @@ export function parseScheduledFor(sendAt) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: string, attachments?: any[]}} send
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: string, attachments?: any[], followUpAt?: string | null}} send
  */
 export async function createScheduledSend(
   sql,
   userId,
-  { recipients, subject, text, html, replyToMessageId, scheduledFor, attachments = [] },
+  { recipients, subject, text, html, replyToMessageId, scheduledFor, attachments = [], followUpAt },
 ) {
   // The count-then-insert cap is not safe under READ COMMITTED on its own:
   // two concurrent transactions can both snapshot count = MAX - 1 and both
@@ -73,14 +73,15 @@ export async function createScheduledSend(
     await tx`SELECT pg_advisory_xact_lock(hashtext(${userId}::text)::bigint)`;
     const [row] = await tx`
       INSERT INTO scheduled_sends
-        (user_id, to_addresses, subject, body_text, body_html, reply_to_message_id, scheduled_for)
+        (user_id, to_addresses, subject, body_text, body_html, reply_to_message_id, scheduled_for, follow_up_at)
       SELECT ${userId}, ${recipients.join(', ')}, ${subject}, ${text}, ${html ?? null},
-             ${replyToMessageId}::uuid, ${scheduledFor}::timestamptz
+             ${replyToMessageId}::uuid, ${scheduledFor}::timestamptz, ${followUpAt ?? null}::timestamptz
       WHERE (
         SELECT count(*) FROM scheduled_sends s
         WHERE s.user_id = ${userId} AND s.status = 'pending'
       ) < ${MAX_PENDING_SCHEDULED_SENDS}
-      RETURNING id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor"
+      RETURNING id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor",
+                follow_up_at AS "followUpAt"
     `;
     if (!row) return null;
     for (const [position, attachment] of attachments.entries()) {
@@ -103,7 +104,7 @@ export async function createScheduledSend(
 export async function listScheduledSends(sql, userId) {
   return sql`
     SELECT s.id, s.to_addresses AS "toAddresses", s.subject, s.scheduled_for AS "scheduledFor",
-           s.status, s.last_error AS "lastError"
+           s.follow_up_at AS "followUpAt", s.status, s.last_error AS "lastError"
     FROM scheduled_sends s
     WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed')
     ORDER BY s.scheduled_for ASC
@@ -131,7 +132,7 @@ async function cancelScheduledSendWithoutAttachments(sql, userId, id) {
     const [row] = await tx`
       SELECT s.id, s.to_addresses AS "toAddresses", s.subject,
              s.body_text AS "text", s.body_html AS "html",
-             s.reply_to_message_id AS "replyToMessageId", '[]'::jsonb AS attachments
+             s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", '[]'::jsonb AS attachments
       FROM scheduled_sends s
       WHERE s.id = ${id} AND s.user_id = ${userId} AND s.status = 'pending'
       FOR UPDATE
@@ -157,7 +158,7 @@ export async function cancelScheduledSend(sql, userId, id) {
       const [row] = await tx`
         SELECT s.id, s.to_addresses AS "toAddresses", s.subject,
                s.body_text AS "text", s.body_html AS "html",
-               s.reply_to_message_id AS "replyToMessageId",
+               s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId",
                COALESCE((
                  SELECT jsonb_agg(jsonb_build_object(
                    'id', COALESCE(a.id, oa.id),
@@ -210,7 +211,7 @@ async function claimDueScheduledSends(sql, limit) {
       WHERE s.id = due.id
       RETURNING s.id, s.user_id, s.to_addresses AS "toAddresses", s.subject,
                 s.body_text AS "text", s.body_html AS "html",
-                s.reply_to_message_id AS "replyToMessageId", s.attempts,
+                s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", s.attempts,
                 COALESCE((
                   SELECT jsonb_agg(jsonb_build_object(
                     'id', COALESCE(a.id, oa.id),
@@ -242,7 +243,7 @@ async function claimDueScheduledSends(sql, limit) {
       WHERE s.id = due.id
       RETURNING s.id, s.user_id, s.to_addresses AS "toAddresses", s.subject,
                 s.body_text AS "text", s.body_html AS "html",
-                s.reply_to_message_id AS "replyToMessageId", s.attempts,
+                s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", s.attempts,
                 '[]'::jsonb AS attachments
     `;
   }
@@ -333,6 +334,7 @@ export async function deliverScheduledSend(sql, row, services) {
         // stable when an expired lease retries with the same idempotency key.
         readReceiptToken: row.id,
         attachments: row.attachments ?? [],
+        followUpAt: row.followUpAt,
       },
       services,
     );
@@ -353,6 +355,10 @@ export async function deliverScheduledSend(sql, row, services) {
       WHERE id = ${row.id}
     `;
     return { status: 'retried', storedMessageUuid: null };
+  }
+
+  if (row.followUpAt && !delivered.messageUuid) {
+    return { status: 'unconfirmed', storedMessageUuid: null };
   }
 
   // Independent of how the bookkeeping below goes: the copy is in Postgres, so

@@ -49,13 +49,13 @@ The scheduled handler runs every 15 minutes. It retries up to three `pending` or
 
 ## Search indexing
 
-A message's search document is kept current by marking and sweeping. Any handler that changes an indexed field — flags, labels, the spam verdict — sets `messages.search_indexed_at` back to NULL in the same statement or transaction, then fires a best-effort sync that stamps it with the current time. A row whose sync never landed keeps its NULL and is repaired later.
+A message's search document is kept current by marking and sweeping. Any handler that changes an indexed field — flags, labels, the spam verdict — sets `messages.search_indexed_at` back to NULL in the same statement or transaction, then fires a best-effort sync that waits for Meilisearch task success (up to 20 seconds). Matching row versions are stamped; superseded writes clear the watermark so an older index write cannot hide drift. Document and task saves schedule indexing after the response using a separate connection. A row whose sync never landed keeps its NULL and is repaired later.
 
 The same 15-minute cron that recovers enrichment also sweeps up to 200 such rows. Its log events are `search_drift_swept` (with `selected`, `indexed` and `failed` counts — check `failed`, not just the presence of the line), `search_drift_sweep_failed`, and `search_drift_sweep_misconfigured`. A non-zero `failed` also raises a handled exception in Sentry under the `search_drift_sweep` operation.
 
 Two workflows back this up: `search-drift-repair.yml` reindexes drifted rows from CI, and `search-reindex.yml` rebuilds an index from scratch. The workflow drains oldest-first while the in-Worker sweep takes newest-first, so recent mail becomes searchable quickly and a large backlog still drains from the tail.
 
-Mail sent through Cookie-Web's `api/send.js` is indexed only by the sweep: that function runs on Vercel and has no Meilisearch client, so its rows are born NULL and wait for the next tick.
+Cookie-Web's `api/send.js` now proxies to `cookie-web-send`, which owns sending and starts background indexing on its own connection. Deploy the updated send Worker before the Web adapter; scheduled and immediate sends share follow-up reminder handling.
 
 AI failures do not block forwarding or storage. Inspect the OpenAI response, rate limits, secret configuration, database connectivity, and migration state.
 
@@ -94,3 +94,7 @@ For storage or delivery failures, inspect Worker logs and Sentry first. If neede
 Use the Cloudflare dashboard or `npx wrangler rollback --config workers/mail-app-ingest/wrangler.jsonc` to restore the last known-good Worker version.
 
 Avoid rolling back database migrations during an incident. The AI schema changes are additive and safe to leave in place while the Worker is reverted.
+
+## Task subtree repair
+
+Coordinate `Cookie-Web/migrations/0065_task_subtree_projects.sql` with the updated tasks Worker. The migration repairs existing descendants into their root's project and adds an index on `parent_id`. The Worker serializes structural changes per owner and moves descendants in the same transaction as the parent. Older handlers can recreate the mismatch, so deploy the Worker promptly with the repair. No production migration is implied by a local test or deployment dry run.

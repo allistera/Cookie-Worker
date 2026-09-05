@@ -9,6 +9,7 @@ import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { syncMessageToMeili, syncMessagesToMeili } from '../../../shared/meiliSync.js';
 import {
   deliverMail,
+  parseFollowUpAt,
   immediateSendIdempotencyKey,
   claimOutboundEmailQuota,
   ownedReplyToMessageId,
@@ -24,6 +25,7 @@ import {
   listScheduledSends,
   parseScheduledFor,
 } from './scheduled.js';
+import { handleFollowUp } from './followUp.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -136,6 +138,7 @@ async function handleSend(sql, userId, request, services) {
     replyToMessageId,
     sendAt,
     requestId,
+    followUpAt,
     attachmentIds: rawAttachmentIds,
   } = body;
   // Optional client-generated id for idempotency; bounded and restricted so
@@ -165,6 +168,16 @@ async function handleSend(sql, userId, request, services) {
         { status: 400 },
       );
     }
+    const parsedFollowUpAt =
+      followUpAt === null || followUpAt === undefined
+        ? null
+        : parseFollowUpAt(followUpAt, scheduledFor);
+    if (followUpAt !== null && followUpAt !== undefined && !parsedFollowUpAt) {
+      return Response.json(
+        { error: 'followUpAt must be an ISO timestamp at least a minute after sendAt' },
+        { status: 400 },
+      );
+    }
     try {
       const owned = await ownedReplyToMessageId(sql, userId, replyTo);
       if (owned.missing) {
@@ -185,6 +198,7 @@ async function handleSend(sql, userId, request, services) {
         replyToMessageId: owned.replyTo ?? null,
         scheduledFor,
         attachments: resolved.attachments,
+        followUpAt: parsedFollowUpAt,
       });
       if (!scheduledSend) {
         return Response.json({ error: 'Too many pending scheduled sends' }, { status: 429 });
@@ -197,6 +211,14 @@ async function handleSend(sql, userId, request, services) {
   }
 
   let attachments;
+  const parsedFollowUpAt =
+    followUpAt === null || followUpAt === undefined ? null : parseFollowUpAt(followUpAt);
+  if (followUpAt !== null && followUpAt !== undefined && !parsedFollowUpAt) {
+    return Response.json(
+      { error: 'followUpAt must be an ISO timestamp at least a minute out' },
+      { status: 400 },
+    );
+  }
   try {
     const owned = await ownedReplyToMessageId(sql, userId, replyTo);
     if (owned.missing) {
@@ -236,6 +258,7 @@ async function handleSend(sql, userId, request, services) {
         text,
         html: bodyHtml,
         replyToMessageId: replyTo,
+        followUpAt: parsedFollowUpAt,
         idempotencyKey: await immediateSendIdempotencyKey(userId, {
           recipients,
           subject,
@@ -253,7 +276,11 @@ async function handleSend(sql, userId, request, services) {
     // seconds, and a Meilisearch outage only leaves search_indexed_at NULL for
     // the background drift sweep to repair.
     if (inserted && messageUuid) services.indexSentMessage(messageUuid);
-    return Response.json({ id: resendId });
+    return Response.json({
+      id: resendId,
+      messageId: messageUuid,
+      followUpScheduled: parsedFollowUpAt ? Boolean(messageUuid) : undefined,
+    });
   } catch (err) {
     console.error('Resend send failed:', err);
     // The quota was claimed but no email was delivered — refund it so a
@@ -326,7 +353,7 @@ const worker = {
     const services = createSendServices(env, ctx);
     const sql = createSql(env.HYPERDRIVE.connectionString);
     try {
-      if (!resource || !['send', 'scheduled', 'flush'].includes(resource)) {
+      if (!resource || !['send', 'scheduled', 'flush', 'follow-up'].includes(resource)) {
         return Response.json({ error: 'Not Found' }, { status: 404 });
       }
 
@@ -364,7 +391,9 @@ const worker = {
 
       let response;
       try {
-        if (resource === 'scheduled') {
+        if (resource === 'follow-up') {
+          response = await handleFollowUp(sql, userId, request);
+        } else if (resource === 'scheduled') {
           response = await handleScheduled(sql, userId, request);
         } else {
           if (request.method !== 'POST') {
