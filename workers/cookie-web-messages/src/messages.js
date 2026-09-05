@@ -60,19 +60,6 @@ export function fetchThreadMessages(sql, threadId, userId) {
 }
 
 /**
- * @param {import('postgres').Sql} sql
- * @param {string} id
- * @param {string} userId
- */
-export function fetchOwnedMessageText(sql, id, userId) {
-  return sql`
-    SELECT m.body_text
-    FROM messages m
-    WHERE m.id = ${id} AND m.user_id = ${userId} AND NOT m.is_deleted
-  `;
-}
-
-/**
  * A message's attachments, ordered by filename. The private Blob URL never
  * leaves the server; the client only learns whether the ownership-checked
  * attachment download endpoint can issue a short-lived URL. messageId
@@ -223,25 +210,6 @@ export async function getMessage(sql, userId, id, deps = {}) {
     calendar_invite,
     attachments: attachments.map(({ blob_url: _blobUrl, ...attachment }) => attachment),
   });
-}
-
-/**
- * GET /messages/thread-body?id=<uuid>
- *
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- * @param {string | null} id
- */
-export async function getThreadBody(sql, userId, id) {
-  if (!id || !UUID_RE.test(id)) {
-    return Response.json({ error: 'A valid message id is required' }, { status: 400 });
-  }
-
-  const [message] = await fetchOwnedMessageText(sql, id, userId);
-  if (!message) {
-    return Response.json({ error: 'Message not found' }, { status: 404 });
-  }
-  return Response.json({ body_text: message.body_text ?? '' });
 }
 
 /**

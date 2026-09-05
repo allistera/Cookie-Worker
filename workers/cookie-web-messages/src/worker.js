@@ -7,7 +7,7 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import { getContacts } from './contacts.js';
-import { getAttachment, getMessage, getThreadBody, patchMessage, postMessage } from './messages.js';
+import { getAttachment, getMessage, patchMessage, postMessage } from './messages.js';
 import { attemptAiUnsubscribe } from './aiUnsubscribe.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { sendEmail } from './resend.js';
@@ -62,12 +62,14 @@ function reindexMessage(env, ctx, messageId) {
 }
 
 /**
- * Routes GET/POST/PATCH /messages, /messages/attachment, /messages/thread-body,
- * and /messages/contacts — the same resources Cookie-Web's api/messages.js
- * and api/_lib/contacts.js served, previously reached only via
- * api/messages.js?resource=(attachment|thread-body|contacts) to stay under
- * Vercel Hobby's 12-function cap. This Worker has no such limit, so each is
- * its own clean path.
+ * Routes GET/POST/PATCH /messages, /messages/attachment and
+ * /messages/contacts — the same resources Cookie-Web's api/messages.js and
+ * api/_lib/contacts.js served, previously reached only via
+ * api/messages.js?resource=(attachment|contacts) to stay under Vercel
+ * Hobby's 12-function cap. This Worker has no such limit, so each is its own
+ * clean path. (The former /messages/thread-body text-only route went away
+ * with the reader's threaded view, which expands conversation messages
+ * through GET /messages?id= like any other message.)
  *
  * @param {URL} url
  * @param {Request} request
@@ -82,7 +84,7 @@ async function route(url, request, sql, userId, env, ctx) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
   const sub = segments[1];
-  if (sub && !['attachment', 'thread-body', 'contacts'].includes(sub)) {
+  if (sub && !['attachment', 'contacts'].includes(sub)) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
 
@@ -115,15 +117,6 @@ async function route(url, request, sql, userId, env, ctx) {
       getDownloadUrl,
       token: env.BLOB_READ_WRITE_TOKEN,
     });
-  }
-
-  if (sub === 'thread-body') {
-    if (request.method !== 'GET')
-      return Response.json(
-        { error: 'Method not allowed' },
-        { status: 405, headers: { Allow: 'GET' } },
-      );
-    return getThreadBody(sql, userId, url.searchParams.get('id'));
   }
 
   if (request.method === 'GET') {

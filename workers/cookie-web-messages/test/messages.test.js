@@ -4,7 +4,6 @@ import {
   fetchThreadMessages,
   getAttachment,
   getMessage,
-  getThreadBody,
   patchMessage,
   postMessage,
   recipientAddress,
@@ -492,20 +491,6 @@ describe('getMessage', () => {
     const response = await getMessage(sql, USER_ID, 'not-a-uuid');
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
-  });
-});
-
-describe('getThreadBody', () => {
-  test('returns one owned thread message body on demand', async () => {
-    const sql = createMockSql([[{ body_text: 'Earlier complete body' }]]);
-    const response = await getThreadBody(sql, USER_ID, MESSAGE_ID);
-    expect(await response.json()).toEqual({ body_text: 'Earlier complete body' });
-  });
-
-  test('404s when the message is not found', async () => {
-    const sql = createMockSql([[]]);
-    const response = await getThreadBody(sql, USER_ID, MESSAGE_ID);
-    expect(response.status).toBe(404);
   });
 });
 
