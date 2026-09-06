@@ -59,8 +59,8 @@ export async function generatePriorityReply(message, apiKey, model) {
 }
 
 /**
- * Recheck after generation: a user may have replied, started a draft, or
- * dismissed the email while OpenAI was running. All lookups keep ownership.
+ * Preflight eligibility before spending tokens. The insert repeats these
+ * predicates to catch replies, drafts, or decisions made during generation.
  * @param {import('postgres').Sql | import('postgres').TransactionSql} sql @param {string} id
  */
 async function eligibleMessage(sql, id) {
@@ -146,18 +146,33 @@ export async function draftPriorityReply(
     return await sql.begin(async (tx) => {
       // Same lock as ordinary draft creation, serializing duplicate and cap checks.
       await tx`SELECT pg_advisory_xact_lock(hashtext(${message.user_id}::text)::bigint)`;
-      const eligible = await eligibleMessage(tx, id);
-      if (!eligible) {
-        await finish(tx, 'skipped');
-        return 'skipped';
-      }
+      // Message edits and sends do not take the draft lock. Repeat the
+      // preflight predicates in this INSERT's snapshot, with the lease/cap.
       const [draft] = await tx`
         INSERT INTO drafts (user_id, to_addresses, subject, body_text, reply_to_message_id, is_ai_generated)
         SELECT ${message.user_id}, ${message.from_address}, ${subject}, ${text.trim()}, ${id}::uuid, true
-        WHERE (SELECT count(*) FROM drafts WHERE user_id = ${message.user_id}) < 200
-          AND EXISTS (SELECT 1 FROM message_ai WHERE message_id = ${id}
-            AND reply_draft_status = 'generating' AND reply_draft_attempts = ${message.reply_draft_attempts})
-        RETURNING id
+        FROM messages m JOIN message_ai ai ON ai.message_id = m.id
+        WHERE m.id = ${id} AND m.user_id = ${message.user_id}
+          AND NOT m.is_sent AND NOT m.is_deleted AND NOT m.is_archived
+          AND ai.status = 'completed' AND ai.priority = 'high' AND ai.spam_verdict = 'inbox'
+          AND ai.reply_draft_status = 'generating' AND ai.reply_draft_attempts = ${message.reply_draft_attempts}
+          AND NOT EXISTS (
+            SELECT 1 FROM messages newer
+            WHERE newer.user_id = m.user_id AND newer.thread_id = m.thread_id
+              AND newer.id <> m.id AND NOT newer.is_deleted
+              AND (newer.created_at, newer.id) > (m.created_at, m.id)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM drafts d JOIN messages target ON target.id = d.reply_to_message_id
+            WHERE d.user_id = m.user_id AND target.thread_id = m.thread_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM scheduled_sends s JOIN messages target ON target.id = s.reply_to_message_id
+            WHERE s.user_id = m.user_id AND target.thread_id = m.thread_id
+              AND s.status IN ('pending', 'sending', 'sent')
+          )
+          AND (SELECT count(*) FROM drafts WHERE user_id = ${message.user_id}) < 200
+        RETURNING drafts.id
       `;
       const status = draft ? 'completed' : 'skipped';
       await finish(tx, status);

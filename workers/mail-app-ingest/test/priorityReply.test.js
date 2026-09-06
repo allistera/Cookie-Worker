@@ -67,6 +67,30 @@ describe('priority reply drafts', () => {
     expect(sql.calls[0].text).toContain('reply_draft_attempts < 3');
   });
 
+  test('checks current message and thread eligibility in the same statement that saves the draft', async () => {
+    const sql = database();
+    await draftPriorityReply(sql, MESSAGE, 'test-key', 'test-model', async () => 'Reply');
+    const insert = sql.calls.find((call) => call.text.includes('INSERT INTO drafts'));
+    for (const condition of [
+      'NOT m.is_sent',
+      'NOT m.is_deleted',
+      'NOT m.is_archived',
+      "ai.status = 'completed'",
+      "ai.priority = 'high'",
+      "ai.spam_verdict = 'inbox'",
+      'newer.user_id = m.user_id',
+      'newer.thread_id = m.thread_id',
+      'd.user_id = m.user_id',
+      'target.thread_id = m.thread_id',
+      's.user_id = m.user_id',
+      "s.status IN ('pending', 'sending', 'sent')",
+    ])
+      expect(insert.text).toContain(condition);
+    expect(insert.values).toContain(MESSAGE);
+    expect(insert.values).toContain(USER);
+    expect(insert.text).toContain('reply_draft_attempts');
+  });
+
   test('stands down when a manual draft, sent reply, or changed classification wins the race', async () => {
     const sql = database({ eligible: false });
     expect(
