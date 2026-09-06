@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../src/news-sources.js', async (importOriginal) => ({
   ...(await importOriginal()),
   fetchTopRepos: vi.fn(),
   fetchTopLaunches: vi.fn(),
   fetchUkHeadlines: vi.fn(),
+  fetchWestLothianHeadlines: vi.fn(),
 }));
 
 import {
@@ -12,9 +13,19 @@ import {
   buildNews,
   rankForInterests,
   GITHUB_PICKS,
+  HEADLINE_PICKS,
   MAX_PICKS_PER_SOURCE,
 } from '../src/news.js';
-import { fetchTopLaunches, fetchTopRepos, fetchUkHeadlines } from '../src/news-sources.js';
+import {
+  fetchTopLaunches,
+  fetchTopRepos,
+  fetchUkHeadlines,
+  fetchWestLothianHeadlines,
+} from '../src/news-sources.js';
+
+beforeEach(() => {
+  vi.mocked(fetchWestLothianHeadlines).mockResolvedValue([]);
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -188,13 +199,45 @@ describe('buildNews', () => {
       { title: 'Widget', url: 'https://ph/w', description: 'w', meta: '▲ 3' },
     ]);
     vi.mocked(fetchUkHeadlines).mockResolvedValue([
-      { title: 'Storm', url: 'https://bbc/1', description: 's', meta: '10:00' },
+      { title: 'Storm', url: 'https://bbc/1', description: 's', meta: 'BBC News · 10:00' },
     ]);
 
     const { sections } = await buildNews(options);
 
     expect(sections.map((s) => s.title)).toEqual(['GitHub', 'Product Hunt', 'UK headlines']);
     expect(sections[2].items[0].title).toBe('Storm');
+  });
+
+  test('reserves three local places and fills a ten-story headline list from BBC', async () => {
+    vi.mocked(fetchTopRepos).mockResolvedValue([]);
+    vi.mocked(fetchTopLaunches).mockResolvedValue([]);
+    vi.mocked(fetchWestLothianHeadlines).mockResolvedValue(
+      Array.from({ length: 3 }, (_, index) => ({
+        title: `Local ${index}`,
+        url: `https://edinburghlive/${index}`,
+        description: 'local',
+        meta: 'Edinburgh Live · 10:00',
+      })),
+    );
+    vi.mocked(fetchUkHeadlines).mockResolvedValue(
+      Array.from({ length: HEADLINE_PICKS }, (_, index) => ({
+        title: `UK ${index}`,
+        url: `https://bbc/${index}`,
+        description: 'national',
+        meta: 'BBC News · 11:00',
+      })),
+    );
+
+    const { sections } = await buildNews(options);
+    const headlines = sections.find((section) => section.title === 'UK headlines');
+
+    expect(headlines.items).toHaveLength(HEADLINE_PICKS);
+    expect(headlines.items.slice(0, 3).map((item) => item.title)).toEqual([
+      'Local 0',
+      'Local 1',
+      'Local 2',
+    ]);
+    expect(headlines.items.at(-1).title).toBe('UK 6');
   });
 
   // One source being down or unconfigured must not cost the others.
@@ -226,8 +269,8 @@ describe('buildNews', () => {
     vi.mocked(fetchTopRepos).mockResolvedValue(CANDIDATES);
     vi.mocked(fetchTopLaunches).mockResolvedValue([]);
     vi.mocked(fetchUkHeadlines).mockResolvedValue([
-      { title: 'Storm', url: 'https://bbc/1', description: 's', meta: '10:00' },
-      { title: 'Budget', url: 'https://bbc/2', description: 'b', meta: '11:00' },
+      { title: 'Storm', url: 'https://bbc/1', description: 's', meta: 'BBC News · 10:00' },
+      { title: 'Budget', url: 'https://bbc/2', description: 'b', meta: 'BBC News · 11:00' },
     ]);
 
     const { sections } = await buildNews({ ...options, interests: ['Rust'] });

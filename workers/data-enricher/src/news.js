@@ -2,6 +2,7 @@ import {
   fetchTopLaunches,
   fetchTopRepos,
   fetchUkHeadlines,
+  fetchWestLothianHeadlines,
   previousUkDayWindow,
 } from './news-sources.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
@@ -12,6 +13,8 @@ export const NEWS_PROMPT_VERSION = 'daily-news-v1';
 export const NEWS_KIND = 'daily_news';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const MAX_PICKS_PER_SOURCE = 5;
+export const HEADLINE_PICKS = 10;
+export const LOCAL_HEADLINE_PICKS = 3;
 // GitHub carries more of the round-up than the other sources, and its
 // candidate pool is already 20 repos (fetchTopRepos), so it ranks a longer
 // list. Everything else stays at MAX_PICKS_PER_SOURCE.
@@ -168,10 +171,19 @@ export async function buildNews({ interests, apiKey, model, githubToken, product
       : []),
     {
       emoji: '📰',
+      title: 'West Lothian',
+      label: '',
+      personalise: false,
+      headline: true,
+      fetch: () => fetchWestLothianHeadlines(LOCAL_HEADLINE_PICKS),
+    },
+    {
+      emoji: '📰',
       title: 'UK headlines',
       label: '',
       personalise: false,
-      fetch: () => fetchUkHeadlines(),
+      headline: true,
+      fetch: () => fetchUkHeadlines(HEADLINE_PICKS),
     },
   ];
 
@@ -186,6 +198,7 @@ export async function buildNews({ interests, apiKey, model, githubToken, product
   );
 
   const sections = [];
+  const headlines = [];
   for (const [index, result] of settled.entries()) {
     if (result.status === 'rejected') {
       console.log(
@@ -200,7 +213,20 @@ export async function buildNews({ interests, apiKey, model, githubToken, product
       );
       continue;
     }
-    if (result.value.items.length > 0) sections.push(result.value);
+    if (sources[index].headline) {
+      headlines.push(...result.value.items);
+    } else if (result.value.items.length > 0) {
+      sections.push(result.value);
+    }
+  }
+  if (headlines.length > 0) {
+    sections.push({
+      emoji: '📰',
+      title: 'UK headlines',
+      // West Lothian is deliberately first in `sources`, reserving up to three
+      // local places before BBC fills the remainder of the ten-story list.
+      items: headlines.slice(0, HEADLINE_PICKS),
+    });
   }
   return { sections };
 }

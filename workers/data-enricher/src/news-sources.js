@@ -7,7 +7,9 @@ import { fetchWithTimeout, readTextCapped } from '../../../shared/fetch.js';
 export const GITHUB_SEARCH_URL = 'https://api.github.com/search/repositories';
 export const PRODUCT_HUNT_URL = 'https://api.producthunt.com/v2/api/graphql';
 export const BBC_UK_FEED_URL = 'https://feeds.bbci.co.uk/news/uk/rss.xml';
-// BBC's UK feed is ~30KB; 5MB means something is very wrong upstream.
+export const WEST_LOTHIAN_FEED_URL =
+  'https://www.edinburghlive.co.uk/all-about/west-lothian?service=rss';
+// The feeds are currently well under 100KB; 5MB means something is very wrong upstream.
 const MAX_FEED_BYTES = 5 * 1024 * 1024;
 export const USER_AGENT = 'cookie-data-enricher';
 
@@ -195,23 +197,15 @@ export function parseRssItems(xml) {
     .filter((item) => item.title && item.url);
 }
 
-/**
- * UK headlines from the last `hours`, most recent first. Deliberately not
- * personalised: filtering "what happened" through "what you like" is how you
- * miss the thing you needed to know.
- *
- * @param {number} [count]
- * @param {number} [hours]
- * @param {Date} [now]
- */
-export async function fetchUkHeadlines(count = 8, hours = 24, now = new Date()) {
+/** @param {string} url @param {string} source @param {number} count @param {number} hours @param {Date} now */
+async function fetchRecentHeadlines(url, source, count, hours, now) {
   const xml = await fetchWithTimeout(
-    BBC_UK_FEED_URL,
+    url,
     {
       headers: { 'User-Agent': USER_AGENT },
     },
     async (response) => {
-      if (!response.ok) throw new Error(`BBC responded ${response.status}`);
+      if (!response.ok) throw new Error(`${new URL(url).host} responded ${response.status}`);
       // The only fully-buffered read of a body we don't control — cap it.
       return readTextCapped(response, MAX_FEED_BYTES);
     },
@@ -235,10 +229,35 @@ export async function fetchUkHeadlines(count = 8, hours = 24, now = new Date()) 
       title: item.title,
       url: item.url,
       description: item.description,
-      meta: new Intl.DateTimeFormat('en-GB', {
+      meta: `${source} · ${new Intl.DateTimeFormat('en-GB', {
         timeZone: 'Europe/London',
         hour: '2-digit',
         minute: '2-digit',
-      }).format(new Date(item.published)),
+      }).format(new Date(item.published))}`,
     }));
+}
+
+/**
+ * UK headlines from the last `hours`, most recent first. Deliberately not
+ * personalised: filtering "what happened" through "what you like" is how you
+ * miss the thing you needed to know.
+ *
+ * @param {number} [count]
+ * @param {number} [hours]
+ * @param {Date} [now]
+ */
+export async function fetchUkHeadlines(count = 8, hours = 24, now = new Date()) {
+  return fetchRecentHeadlines(BBC_UK_FEED_URL, 'BBC News', count, hours, now);
+}
+
+/**
+ * West Lothian reporting from Edinburgh Live. Local publishing is less frequent
+ * than the national feed, so use a three-day window while keeping a small quota.
+ *
+ * @param {number} [count]
+ * @param {number} [hours]
+ * @param {Date} [now]
+ */
+export async function fetchWestLothianHeadlines(count = 3, hours = 72, now = new Date()) {
+  return fetchRecentHeadlines(WEST_LOTHIAN_FEED_URL, 'Edinburgh Live', count, hours, now);
 }

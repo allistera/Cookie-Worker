@@ -3,6 +3,7 @@ import {
   fetchTopLaunches,
   fetchTopRepos,
   fetchUkHeadlines,
+  fetchWestLothianHeadlines,
   parseRssItems,
   previousUkDayWindow,
 } from '../src/news-sources.js';
@@ -194,7 +195,7 @@ describe('fetchUkHeadlines', () => {
     expect(headlines[0].title).toBe('Storm warning');
     expect(headlines[0].url).toBe('https://bbc.co.uk/news/9');
     // Rendered in UK time: 09:00 GMT is 10:00 during BST.
-    expect(headlines[0].meta).toBe('10:00');
+    expect(headlines[0].meta).toBe('BBC News · 10:00');
   });
 
   test('drops stories older than the window', async () => {
@@ -208,5 +209,34 @@ describe('fetchUkHeadlines', () => {
     );
 
     await expect(fetchUkHeadlines(8, 24, new Date('2026-07-15T12:00:00Z'))).resolves.toEqual([]);
+  });
+});
+
+describe('fetchWestLothianHeadlines', () => {
+  test('reads the Edinburgh Live topic feed with a local source label', async () => {
+    const now = new Date('2026-07-15T12:00:00Z');
+    const mock = stubFetch(null, {
+      text: `<rss><channel><item>
+        <title>Bathgate road reopens</title>
+        <link>https://www.edinburghlive.co.uk/news/bathgate-road-reopens</link>
+        <description>Work is complete</description>
+        <pubDate>Mon, 13 Jul 2026 09:00:00 GMT</pubDate>
+      </item></channel></rss>`,
+    });
+
+    const headlines = await fetchWestLothianHeadlines(3, 72, now);
+
+    expect(headlines).toEqual([
+      {
+        title: 'Bathgate road reopens',
+        url: 'https://www.edinburghlive.co.uk/news/bathgate-road-reopens',
+        description: 'Work is complete',
+        meta: 'Edinburgh Live · 10:00',
+      },
+    ]);
+    const [requestedUrl] = /** @type {[string, any]} */ (
+      /** @type {unknown} */ (mock.mock.calls[0])
+    );
+    expect(requestedUrl).toBe('https://www.edinburghlive.co.uk/all-about/west-lothian?service=rss');
   });
 });
