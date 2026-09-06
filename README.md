@@ -129,6 +129,7 @@ Transient forwarding errors are re-thrown so the sending server can retry. Perma
 - Applies user-defined conditions rules (subject/body/from/to matching) synchronously inside the storage transaction, before AI enrichment runs. Prompt-defined AI rules (`label_rules.kind = 'ai'`) are judged by the enrichment classifier in the same call that auto-tags by label description, and apply their label or mark the message done above the shared 0.7 confidence bar.
 - Auto-tags enabled user labels from a strict structured response.
 - Automatically saves an editable reply draft after an inbound email is classified as high priority and inbox-safe. It uses the existing `OPENAI_API_KEY`; the draft is never sent by ingestion. Existing drafts, newer thread messages, scheduled replies, deleted/archived mail, and no-reply senders are skipped.
+- Classification attempts (including provider retries) and automatic reply generation share a Postgres-backed budget of 200 model requests per mailbox owner per 24-hour fixed window. Exhaustion defers AI work without rejecting mail or consuming a reply-generation attempt; recovery uses the same budget. Provider or database failures never grant extra budget.
 - Recovers priority reply drafts on the 15-minute cron, three messages per tick and at most three attempts per message. Unanswered priority mail from the last 30 days is included. Completed/skipped state survives sending or discarding the draft, so retries cannot recreate it.
 - Moves only spam scored at least `0.98` into the Spam folder. A verdict the user recorded from the reader (`message_ai.provider = 'user'`) is never overwritten.
 - Indexes the message into Meilisearch, which generates its own vector.
@@ -273,3 +274,16 @@ POST/PATCH `/task-items` accepts `dueTime` as 24-hour `HH:MM`, its IANA
 the due date also clears its time and zone. `OPENAI_API_KEY` is synchronized to
 this Worker by the deploy workflow; without it the interpretation endpoint
 returns a message directing the client to Advanced entry.
+
+## Review-fix rollout
+
+Apply Cookie-Web migration `0070_scheduled_send_requests.sql` before deploying
+`cookie-web-send`. The optional `requestId` on a scheduled send now returns the
+original row for an identical retry and HTTP 409 for different content under the
+same id. Keep the restored `0066`–`0069` migration files in fresh-database setup;
+already-recorded migrations must be skipped.
+
+Deploy the updated `cookie-web-drafts` Worker before Web. `GET /drafts?view=summary`
+returns preview text and attachment counts for the list; `GET /drafts/:id` loads
+the full body and attachments when opened. Plain `GET /drafts` preserves the full
+response for existing clients.

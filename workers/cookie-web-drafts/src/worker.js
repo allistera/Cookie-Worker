@@ -44,7 +44,9 @@ async function route(url, request, sql, userId) {
   const id = segments[1] ?? null;
 
   if (request.method === 'GET') {
-    return id ? getDraft(sql, userId, id) : listDrafts(sql, userId);
+    return id
+      ? getDraft(sql, userId, id)
+      : listDrafts(sql, userId, url.searchParams.get('view') === 'summary');
   }
   if (request.method === 'DELETE') {
     if (!id) {

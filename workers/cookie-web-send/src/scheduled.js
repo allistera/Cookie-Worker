@@ -58,24 +58,74 @@ export function parseScheduledFor(sendAt) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: string, attachments?: any[], followUpAt?: string | null}} send
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: string, attachments?: any[], followUpAt?: string | null, requestId?: string | null}} send
  */
 export async function createScheduledSend(
   sql,
   userId,
-  { recipients, subject, text, html, replyToMessageId, scheduledFor, attachments = [], followUpAt },
+  {
+    recipients,
+    subject,
+    text,
+    html,
+    replyToMessageId,
+    scheduledFor,
+    attachments = [],
+    followUpAt,
+    requestId = null,
+  },
 ) {
+  const requestHash = requestId
+    ? [
+        ...new Uint8Array(
+          await crypto.subtle.digest(
+            'SHA-256',
+            new TextEncoder().encode(
+              JSON.stringify({
+                recipients,
+                subject,
+                text,
+                html: html ?? null,
+                replyToMessageId,
+                scheduledFor,
+                attachmentIds: attachments.map((attachment) => attachment.id),
+                followUpAt: followUpAt ?? null,
+              }),
+            ),
+          ),
+        ),
+      ]
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('')
+    : null;
   // The count-then-insert cap is not safe under READ COMMITTED on its own:
   // two concurrent transactions can both snapshot count = MAX - 1 and both
   // insert. A per-user transaction-scoped advisory lock serializes schedule
   // attempts so the cap actually holds.
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtext(${userId}::text)::bigint)`;
+    if (requestId) {
+      const [existing] = await tx`
+        SELECT id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor",
+          follow_up_at AS "followUpAt", request_hash AS "requestHash"
+        FROM scheduled_sends WHERE user_id = ${userId} AND request_id = ${requestId}
+      `;
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          throw Object.assign(
+            new Error('Request id already used for a different scheduled email'),
+            { code: 'IDEMPOTENCY_CONFLICT' },
+          );
+        }
+        delete existing.requestHash;
+        return existing;
+      }
+    }
     const [row] = await tx`
       INSERT INTO scheduled_sends
-        (user_id, to_addresses, subject, body_text, body_html, reply_to_message_id, scheduled_for, follow_up_at)
+        (user_id, to_addresses, subject, body_text, body_html, reply_to_message_id, scheduled_for, follow_up_at, request_id, request_hash)
       SELECT ${userId}, ${recipients.join(', ')}, ${subject}, ${text}, ${html ?? null},
-             ${replyToMessageId}::uuid, ${scheduledFor}::timestamptz, ${followUpAt ?? null}::timestamptz
+             ${replyToMessageId}::uuid, ${scheduledFor}::timestamptz, ${followUpAt ?? null}::timestamptz, ${requestId}, ${requestHash}
       WHERE (
         SELECT count(*) FROM scheduled_sends s
         WHERE s.user_id = ${userId} AND s.status = 'pending'

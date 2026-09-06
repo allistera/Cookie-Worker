@@ -39,13 +39,16 @@ afterEach(() => {
 });
 
 /**
- * @param {{outcome?: 'inserted' | 'duplicate', messageUuid?: string | null}} [result]
+ * @param {{outcome?: 'inserted' | 'duplicate', messageUuid?: string | null, quotaAllowed?: boolean}} [result]
  * @returns {any}
  */
 function sqlReturning(result = { outcome: 'inserted', messageUuid: 'message-1' }) {
   /** @type {any} */
   const sql = vi.fn(async (strings) => {
     const text = strings.join('?');
+    if (text.includes('LEFT JOIN message_ai')) return [{ status: 'pending', user_id: 'u' }];
+    if (text.includes('INSERT INTO api_rate_limits'))
+      return [{ allowed: result.quotaAllowed !== false }];
     if (text.includes('SELECT') && text.includes('FROM users')) {
       return [{ user_id: 'u', is_duplicate: result.outcome === 'duplicate', thread_id: null }];
     }
@@ -136,6 +139,23 @@ describe('email handler', () => {
       outcome: 'inserted',
     });
     expect(sql.end).toHaveBeenCalled();
+  });
+
+  test('stores and forwards mail when the AI budget is exhausted', async () => {
+    const sql = sqlReturning({ quotaAllowed: false });
+    postgres.mockReturnValue(sql);
+    const message = fakeMessage(simpleFixture);
+    const pending = [];
+    await worker.email(
+      message,
+      env({ OPENAI_API_KEY: 'key' }),
+      /** @type {any} */ ({ waitUntil: (promise) => pending.push(promise) }),
+    );
+    await Promise.all(pending);
+    expect(message.forward).toHaveBeenCalledExactlyOnceWith('forward@example.com');
+    expect(message.setReject).not.toHaveBeenCalled();
+    expect(mockedFetch()).not.toHaveBeenCalled();
+    expect(messageFromLog('stored')).toMatchObject({ outcome: 'inserted' });
   });
 
   test('saves a priority reply after classification while only forwarding the original email', async () => {
@@ -383,6 +403,7 @@ describe('email handler', () => {
     const slow = new Promise((resolve) => setTimeout(() => resolve([]), 6000));
     /** @type {any} */
     const sql = vi.fn(async (strings) => {
+      if (strings.join('?').includes('INSERT INTO api_rate_limits')) return [{ allowed: true }];
       if (strings.join('?').includes('SELECT'))
         return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
       if (strings.join('?').includes('RETURNING')) return [{ id: 'message-1' }];
@@ -412,6 +433,7 @@ describe('email handler', () => {
     });
     /** @type {any} */
     const sql = vi.fn(async (strings) => {
+      if (strings.join('?').includes('INSERT INTO api_rate_limits')) return [{ allowed: true }];
       if (strings.join('?').includes('SELECT'))
         return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
       if (strings.join('?').includes('RETURNING')) return [{ id: 'message-1' }];

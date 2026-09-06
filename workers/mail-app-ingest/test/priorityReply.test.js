@@ -1,3 +1,8 @@
+import { claimInboundAiRequest, InboundAiQuotaExceeded } from '../src/inboundAiQuota.js';
+vi.mock('../src/inboundAiQuota.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  claimInboundAiRequest: vi.fn(async () => undefined),
+}));
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { draftPriorityReply, generatePriorityReply } from '../src/priorityReply.js';
 
@@ -158,4 +163,19 @@ describe('priority reply drafts', () => {
     expect(requests[0].input[0].content).toContain('never invent');
     expect(JSON.parse(requests[0].input[1].content).body).toHaveLength(12000);
   });
+});
+
+test('defers reply generation and returns the unused attempt when the owner budget is exhausted', async () => {
+  const sql = database();
+  const generate = vi.fn();
+  vi.mocked(claimInboundAiRequest).mockRejectedValueOnce(new InboundAiQuotaExceeded());
+  expect(await draftPriorityReply(sql, MESSAGE, 'key', 'model', generate)).toBe('deferred');
+  expect(claimInboundAiRequest).toHaveBeenCalledWith(sql, USER);
+  expect(generate).not.toHaveBeenCalled();
+  const release = sql.calls.find((call) =>
+    call.text.includes('reply_draft_attempts = reply_draft_attempts - 1'),
+  );
+  expect(release.text).toContain("reply_draft_status = 'pending'");
+  expect(release.values).toEqual([MESSAGE, candidate.reply_draft_attempts]);
+  expect(sql.calls.some((call) => call.text.includes('INSERT INTO drafts'))).toBe(false);
 });

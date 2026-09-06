@@ -1,3 +1,4 @@
+import { claimInboundAiRequest, InboundAiQuotaExceeded } from './inboundAiQuota.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { outputText } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
@@ -186,7 +187,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       ORDER BY r.created_at
     `,
     sql`
-      SELECT ai.status, ai.spam_verdict, ai.provider
+      SELECT ai.status, ai.spam_verdict, ai.provider, m.user_id
       FROM messages m
       LEFT JOIN message_ai ai ON ai.message_id = m.id
       WHERE m.id = ${messageUuid}
@@ -220,9 +221,10 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
   }
 
   try {
-    const classification = await withAiRetry(() =>
-      classifyEmail(record, labels, apiKey, model, aiRules),
-    );
+    const classification = await withAiRetry(async () => {
+      await claimInboundAiRequest(sql, state.user_id);
+      return classifyEmail(record, labels, apiKey, model, aiRules);
+    });
     const allowed = new Map(labels.map((label) => [label.id, label]));
     const selected = classification.labels.filter(
       (label) => allowed.has(label.id) && label.confidence >= MATCH_THRESHOLD,
@@ -360,6 +362,9 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
 
     return { verdict, selectedLabels, matchedRules };
   } catch (error) {
+    if (error instanceof InboundAiQuotaExceeded) {
+      return { verdict, selectedLabels, matchedRules, deferred: true };
+    }
     // Same guard as the success path: a user's verdict is complete and must
     // not be flipped to 'failed', or the recovery sweep would retry it on
     // every tick for nothing.

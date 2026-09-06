@@ -1,3 +1,4 @@
+import { claimInboundAiRequest, InboundAiQuotaExceeded } from './inboundAiQuota.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { outputText } from '../../../shared/openai.js';
 import { AI_MODEL, RESPONSES_URL } from './enrich.js';
@@ -134,6 +135,20 @@ export async function draftPriorityReply(
     if (!(await eligibleMessage(sql, id))) {
       await finish(sql, 'skipped');
       return 'skipped';
+    }
+    try {
+      await claimInboundAiRequest(sql, message.user_id);
+    } catch (error) {
+      if (!(error instanceof InboundAiQuotaExceeded)) throw error;
+      // No model attempt was made. Release only our lease and leave the
+      // retry allowance intact so the next budget window can recover it.
+      await sql`
+        UPDATE message_ai SET reply_draft_status = 'pending',
+          reply_draft_attempts = reply_draft_attempts - 1, reply_draft_updated_at = now()
+        WHERE message_id = ${id} AND reply_draft_status = 'generating'
+          AND reply_draft_attempts = ${message.reply_draft_attempts}
+      `;
+      return 'deferred';
     }
     const text = await generate(message, apiKey, model);
     if (typeof text !== 'string' || !text.trim() || text.length > 10000)

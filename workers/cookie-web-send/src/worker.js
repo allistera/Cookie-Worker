@@ -199,12 +199,18 @@ async function handleSend(sql, userId, request, services) {
         scheduledFor,
         attachments: resolved.attachments,
         followUpAt: parsedFollowUpAt,
+        requestId: clientRequestId,
       });
       if (!scheduledSend) {
         return Response.json({ error: 'Too many pending scheduled sends' }, { status: 429 });
       }
       return Response.json({ scheduledSend }, { status: 201 });
     } catch (err) {
+      if (/** @type {{code?: string}} */ (err).code === 'IDEMPOTENCY_CONFLICT')
+        return Response.json(
+          { error: 'Request id already used for a different scheduled email' },
+          { status: 409 },
+        );
       console.error('POST /send (schedule) failed:', err);
       return Response.json({ error: 'Failed to schedule email' }, { status: 500 });
     }

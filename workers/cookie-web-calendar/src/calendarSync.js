@@ -176,8 +176,9 @@ const toTimeKeyLocal = (date) => `${pad2(date.getHours())}:${pad2(date.getMinute
 /**
  * @param {Date} date
  * @param {string | undefined} timeZone
+ * @param {Map<string, Intl.DateTimeFormat>} formatters
  */
-function timedOccurrenceKeys(date, timeZone) {
+function timedOccurrenceKeys(date, timeZone, formatters) {
   if (!timeZone) {
     return { date: toDateKeyLocal(date), time: toTimeKeyLocal(date) };
   }
@@ -186,15 +187,20 @@ function timedOccurrenceKeys(date, timeZone) {
   }
 
   try {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    }).formatToParts(date);
+    let formatter = formatters.get(timeZone);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      });
+      formatters.set(timeZone, formatter);
+    }
+    const parts = formatter.formatToParts(date);
     const value = (/** @type {string} */ type) => parts.find((part) => part.type === type)?.value;
     return {
       date: `${value('year')}-${value('month')}-${value('day')}`,
@@ -246,8 +252,9 @@ function rruleOccurrences(rrule, windowStart, windowEnd, max) {
  * @param {any} event
  * @param {Date} windowStart
  * @param {Date} windowEnd
+ * @param {Map<string, Intl.DateTimeFormat>} formatters
  */
-function timedOccurrences(event, windowStart, windowEnd) {
+function timedOccurrences(event, windowStart, windowEnd, formatters) {
   const starts = event.rrule
     ? rruleOccurrences(event.rrule, windowStart, windowEnd, MAX_OCCURRENCES_PER_EVENT)
     : event.start >= windowStart && event.start <= windowEnd
@@ -260,7 +267,7 @@ function timedOccurrences(event, windowStart, windowEnd) {
   );
   const durationMinutes = Math.round(durationMs / 60_000);
   return starts.map((/** @type {Date} */ start) => {
-    const keys = timedOccurrenceKeys(new Date(start), event.start.tz);
+    const keys = timedOccurrenceKeys(new Date(start), event.start.tz, formatters);
     return {
       date: keys.date,
       time: keys.time,
@@ -316,11 +323,12 @@ export function allDayOccurrences(event, windowStart, windowEnd) {
  * @param {any} event
  * @param {Date} windowStart
  * @param {Date} windowEnd
+ * @param {Map<string, Intl.DateTimeFormat>} formatters
  */
-function eventOccurrences(event, windowStart, windowEnd) {
+function eventOccurrences(event, windowStart, windowEnd, formatters) {
   return event.datetype === 'date'
     ? allDayOccurrences(event, windowStart, windowEnd)
-    : timedOccurrences(event, windowStart, windowEnd);
+    : timedOccurrences(event, windowStart, windowEnd, formatters);
 }
 
 /**
@@ -330,6 +338,7 @@ function eventOccurrences(event, windowStart, windowEnd) {
  */
 function parseEvents(icsText, windowStart, windowEnd) {
   const parsed = ical.parseICS(icsText);
+  const formatters = new Map();
   const rows = [];
   for (const value of /** @type {any[]} */ (Object.values(parsed))) {
     if (value.type !== 'VEVENT' || !value.start) continue;
@@ -342,7 +351,7 @@ function parseEvents(icsText, windowStart, windowEnd) {
       : null;
     const location = value.location ? String(value.location).slice(0, MAX_LOCATION) : null;
 
-    for (const occurrence of eventOccurrences(value, windowStart, windowEnd)) {
+    for (const occurrence of eventOccurrences(value, windowStart, windowEnd, formatters)) {
       if (!TIME_RE.test(occurrence.time)) continue;
       rows.push({
         title,

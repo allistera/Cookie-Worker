@@ -143,8 +143,20 @@ async function replaceDraftAttachments(sql, userId, draftId, attachmentIds) {
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
+ * @param {boolean} [summary]
  */
-export async function listDrafts(sql, userId) {
+export async function listDrafts(sql, userId, summary = false) {
+  if (summary) {
+    const drafts = await sql`
+      SELECT d.id, left(d.to_addresses, 512) AS "to", d.subject,
+        left(d.body_text, 141) AS preview, d.reply_to_message_id AS "replyToMessageId",
+        d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated", true AS "isSummary",
+        (SELECT count(*)::int FROM draft_attachments da WHERE da.draft_id = d.id) AS "attachmentCount"
+      FROM drafts d WHERE d.user_id = ${userId}
+      ORDER BY d.updated_at DESC LIMIT ${MAX_DRAFTS_PER_USER}
+    `;
+    return Response.json({ drafts });
+  }
   const drafts = await sql`
     SELECT
       d.id, d.to_addresses AS "to", d.subject, d.body_text AS "text",

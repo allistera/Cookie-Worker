@@ -1,3 +1,8 @@
+import { claimInboundAiRequest, InboundAiQuotaExceeded } from '../src/inboundAiQuota.js';
+vi.mock('../src/inboundAiQuota.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  claimInboundAiRequest: vi.fn(async () => undefined),
+}));
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   AI_FETCH_TIMEOUT_MS,
@@ -373,6 +378,7 @@ describe('AI enrichment', () => {
 
     expect(result).toMatchObject({ verdict: 'inbox' });
     expect(responsesCalls).toBe(2);
+    expect(claimInboundAiRequest).toHaveBeenCalledTimes(2);
     expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(false);
   });
 
@@ -418,4 +424,21 @@ describe('AI enrichment', () => {
     expect(mockedFetch()).not.toHaveBeenCalled();
     expect(sql.transactions).toHaveLength(0);
   });
+});
+
+test('defers classification without provider calls or failure state when the owner budget is exhausted', async () => {
+  const sql = createMockSql({ enrichmentStateRows: [{ status: 'pending', user_id: 'owner-1' }] });
+  vi.mocked(claimInboundAiRequest).mockRejectedValueOnce(new InboundAiQuotaExceeded());
+  vi.stubGlobal('fetch', vi.fn());
+  const result = await enrichMessage(
+    sql,
+    { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+    'message-1',
+    'key',
+  );
+  expect(result.deferred).toBe(true);
+  expect(claimInboundAiRequest).toHaveBeenCalledWith(sql, 'owner-1');
+  expect(fetch).not.toHaveBeenCalled();
+  expect(sql.transactions).toHaveLength(0);
+  expect(sql.queries.some((call) => call.text.includes("'enrichment_failed'"))).toBe(false);
 });

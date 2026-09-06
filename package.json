@@ -17,7 +17,6 @@
     "deploy": "node scripts/workers.mjs deploy"
   },
   "dependencies": {
-    "@cfworker/json-schema": "^4.1.1",
     "@sentry/cloudflare": "^10.73.0",
     "@vercel/blob": "^2.8.0",
     "jose": "^6.2.10",
