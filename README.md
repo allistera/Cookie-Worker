@@ -128,6 +128,8 @@ Transient forwarding errors are re-thrown so the sending server can retry. Perma
 - Creates durable pending AI state inside the storage transaction.
 - Applies user-defined conditions rules (subject/body/from/to matching) synchronously inside the storage transaction, before AI enrichment runs. Prompt-defined AI rules (`label_rules.kind = 'ai'`) are judged by the enrichment classifier in the same call that auto-tags by label description, and apply their label or mark the message done above the shared 0.7 confidence bar.
 - Auto-tags enabled user labels from a strict structured response.
+- Automatically saves an editable reply draft after an inbound email is classified as high priority and inbox-safe. It uses the existing `OPENAI_API_KEY`; the draft is never sent by ingestion. Existing drafts, newer thread messages, scheduled replies, deleted/archived mail, and no-reply senders are skipped.
+- Recovers priority reply drafts on the 15-minute cron, three messages per tick and at most three attempts per message. Unanswered priority mail from the last 30 days is included. Completed/skipped state survives sending or discarding the draft, so retries cannot recreate it.
 - Moves only spam scored at least `0.98` into the Spam folder. A verdict the user recorded from the reader (`message_ai.provider = 'user'`) is never overwritten.
 - Indexes the message into Meilisearch, which generates its own vector.
 - Retries stale pending or failed AI work every 15 minutes in batches of three.
@@ -135,6 +137,12 @@ Transient forwarding errors are re-thrown so the sending server can retry. Perma
 - Reports sanitised failures to Sentry without email or model content.
 
 The shared schema and migrations live in the [Cookie-Web repository](https://github.com/allistera/Cookie-Web/tree/main/migrations).
+
+Automatic priority replies require Cookie-Web migration `0069_priority_reply_drafts.sql`
+before deploying `mail-app-ingest` and `cookie-web-drafts`. The latter exposes
+`isAiGenerated` on saved drafts so the web reader can display them inline.
+Draft generation has its own status and retry lease in `message_ai`, independent
+of classification. A failed draft does not reclassify the email or affect delivery.
 
 ## Requirements
 

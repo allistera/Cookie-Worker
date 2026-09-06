@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
+import { draftPriorityReply, recoverPriorityReplies } from './priorityReply.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
 import { sweepSearchDrift } from './searchDriftSweep.js';
@@ -246,6 +247,7 @@ const worker = {
    */
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil(recoverPendingEnrichment(env));
+    ctx.waitUntil(recoverPriorityReplyDrafts(env));
     ctx.waitUntil(sweepSearchDrift(env, { createSql }));
     ctx.waitUntil(purgeExpiredSpam(env, { createSql }));
   },
@@ -265,6 +267,7 @@ async function runAiEnrichment(env, record, messageUuid, late) {
   try {
     await enrichMessage(sql, record, messageUuid, env.OPENAI_API_KEY, env.AI_MODEL || AI_MODEL);
     await syncMessageToMeili(sql, env, messageUuid);
+    await draftPriorityReply(sql, messageUuid, env.OPENAI_API_KEY, env.AI_MODEL || AI_MODEL);
   } catch (err) {
     console.log(
       JSON.stringify({
@@ -389,6 +392,29 @@ export async function recoverPendingEnrichment(env) {
     ),
   );
   console.log(JSON.stringify({ event: 'ai_recovery_complete', attempted: rows.length }));
+}
+
+/** @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env */
+export async function recoverPriorityReplyDrafts(env) {
+  if (!env.OPENAI_API_KEY) return;
+  let sql;
+  try {
+    sql = createSql(env.HYPERDRIVE.connectionString);
+    await recoverPriorityReplies(
+      sql,
+      env.OWNER_EMAIL,
+      env.OPENAI_API_KEY,
+      env.AI_MODEL || AI_MODEL,
+    );
+  } catch {
+    captureHandledException(
+      'priority_reply_recovery',
+      new Error('Priority reply recovery failed'),
+      [],
+    );
+  } finally {
+    await endSql(sql);
+  }
 }
 
 export default Sentry.withSentry(createSentryOptions, worker);

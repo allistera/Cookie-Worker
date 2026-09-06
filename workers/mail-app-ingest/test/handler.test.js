@@ -138,6 +138,73 @@ describe('email handler', () => {
     expect(sql.end).toHaveBeenCalled();
   });
 
+  test('saves a priority reply after classification while only forwarding the original email', async () => {
+    const sql = sqlReturning();
+    const original = sql.getMockImplementation();
+    const savedDrafts = [];
+    sql.mockImplementation(async (strings, ...values) => {
+      const text = strings.join('?');
+      if (
+        text.includes('RETURNING m.id') ||
+        text.includes('SELECT m.id, m.user_id, m.from_address')
+      )
+        return [
+          {
+            id: 'message-1',
+            user_id: 'u',
+            from_address: 'alice@example.com',
+            subject: 'Hello there',
+            body_text: 'Can you review the plan?',
+            reply_draft_attempts: 1,
+          },
+        ];
+      if (text.includes('INSERT INTO drafts')) {
+        savedDrafts.push(values);
+        return [{ id: 'draft-1' }];
+      }
+      return original(strings, ...values);
+    });
+    sql.begin = async (callback) => callback(sql);
+    postgres.mockReturnValue(sql);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url, init) => {
+        const body = JSON.parse(init.body);
+        return Response.json({
+          output_text: JSON.stringify(
+            body.text.format.name === 'priority_reply'
+              ? { text: 'Thanks for the plan. Which section needs attention first?' }
+              : {
+                  labels: [],
+                  rules: [],
+                  spam_verdict: 'inbox',
+                  spam_score: 0,
+                  spam_reason: 'legitimate',
+                  priority: 'high',
+                },
+          ),
+        });
+      }),
+    );
+    const pending = [];
+    const message = fakeMessage(simpleFixture);
+    await worker.email(
+      message,
+      env({ OPENAI_API_KEY: 'key' }),
+      /** @type {any} */ ({
+        waitUntil: (promise) => pending.push(promise),
+      }),
+    );
+    await Promise.all(pending);
+    expect(savedDrafts).toHaveLength(1);
+    expect(savedDrafts[0]).toContain('Thanks for the plan. Which section needs attention first?');
+    expect(savedDrafts[0]).toContain('alice@example.com');
+    expect(message.forward).toHaveBeenCalledExactlyOnceWith('forward@example.com');
+    expect(
+      mockedFetch().mock.calls.every(([url]) => url === 'https://api.openai.com/v1/responses'),
+    ).toBe(true);
+  });
+
   test('configures private Sentry error monitoring for email invocations', () => {
     const options = createSentryOptions(
       env({
@@ -508,9 +575,9 @@ describe('scheduled recovery', () => {
     postgres.mockReturnValue(sql);
     const context = ctx();
     await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
-    // Three independent jobs share this cron: enrichment recovery, the
-    // search-drift sweep and the spam purge. None may be able to fail another.
-    expect(context.waitUntil).toHaveBeenCalledTimes(3);
+    // Recovery of classification and reply drafts, search drift, and spam
+    // retention run independently, so one failure cannot stop another.
+    expect(context.waitUntil).toHaveBeenCalledTimes(4);
     await vi.waitFor(() => expect(sql.end).toHaveBeenCalled());
     const recoveryQuery = sql.mock.calls
       .map((call) => call[0].join('?'))

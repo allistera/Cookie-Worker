@@ -149,7 +149,7 @@ export async function listDrafts(sql, userId) {
     SELECT
       d.id, d.to_addresses AS "to", d.subject, d.body_text AS "text",
       d.body_html AS "html", d.reply_to_message_id AS "replyToMessageId",
-      d.follow_up_at AS "followUpAt", d.updated_at AS "updatedAt",
+      d.follow_up_at AS "followUpAt", d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated",
       COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
           'id', COALESCE(a.id, oa.id),
@@ -185,7 +185,7 @@ export async function getDraft(sql, userId, id) {
     SELECT
       d.id, d.to_addresses AS "to", d.subject, d.body_text AS "text",
       d.body_html AS "html", d.reply_to_message_id AS "replyToMessageId",
-      d.follow_up_at AS "followUpAt", d.updated_at AS "updatedAt",
+      d.follow_up_at AS "followUpAt", d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated",
       COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
           'id', COALESCE(a.id, oa.id),
