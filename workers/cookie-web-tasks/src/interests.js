@@ -3,7 +3,7 @@
 
 // Personalisation topics for AI Today's news section. Unlike the signature and
 // snippets, these cannot live in localStorage: the data-enricher Worker reads
-// them at 05:00 UTC with no browser running. They go in users.prefs, the jsonb
+// them on its schedule with no browser running. They go in users.prefs, the jsonb
 // column declared for settings-modal preferences.
 export const MAX_INTERESTS = 20;
 export const MAX_INTEREST_LENGTH = 60;

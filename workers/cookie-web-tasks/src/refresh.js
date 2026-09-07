@@ -45,7 +45,7 @@ export async function triggerDigestRebuild(enricher, token) {
 }
 
 // POST /tasks/refresh — rebuild AI Today's triage now instead of waiting for
-// the Worker's nightly cron. Returns 200 once it has been written, so the
+// the Worker's next configured slot. Returns 200 once it has been written, so the
 // caller can re-read /tasks and see the new priority groups.
 /**
  * @param {import('postgres').Sql} sql

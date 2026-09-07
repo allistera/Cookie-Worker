@@ -7,6 +7,7 @@ import { hybridSearch } from '../../../shared/meili.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { getDailyNoteSeed, putDailyNoteSeed } from './dailyNoteSeed.js';
 import { createDocument, deleteDocument, getDocuments, updateDocument } from './documents.js';
+import { getEnrichmentSettings, putEnrichmentSettings } from './enrichmentSettings.js';
 import { postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
@@ -41,6 +42,7 @@ export function createSql(databaseUrl) {
 
 /**
  * Routes GET/POST /tasks, POST /tasks/refresh, GET/PUT /tasks/interests,
+ * GET/PUT /tasks/enrichment-settings,
  * POST /task-items/reorder, POST /task-items/interpret,
  * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, and
  * GET/POST/PATCH/DELETE /documents — the resources Cookie-Web's api/tasks.js
@@ -142,7 +144,12 @@ async function route(url, request, sql, userId, env, email) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
   const sub = segments[1];
-  if (sub && !['refresh', 'interests', 'daily-note-seed', 'image-upload'].includes(sub)) {
+  if (
+    sub &&
+    !['refresh', 'interests', 'enrichment-settings', 'daily-note-seed', 'image-upload'].includes(
+      sub,
+    )
+  ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
 
@@ -160,6 +167,32 @@ async function route(url, request, sql, userId, env, email) {
       return Response.json({ error: 'Refresh is limited to the mailbox owner' }, { status: 403 });
     }
     return postRefresh(sql, userId, env.ENRICHER, env.ENRICHER_TRIGGER_TOKEN);
+  }
+
+  if (sub === 'enrichment-settings') {
+    if (request.method !== 'GET' && request.method !== 'PUT') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, PUT' } },
+      );
+    }
+    const ownerEmail = String(env.OWNER_EMAIL ?? '').toLowerCase();
+    if (!ownerEmail || !email || email.toLowerCase() !== ownerEmail) {
+      return Response.json(
+        { error: 'AI Today settings are limited to the mailbox owner' },
+        { status: 403 },
+      );
+    }
+    if (request.method === 'GET') return getEnrichmentSettings(sql, userId);
+    let body;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) return errorResponse;
+      throw error;
+    }
+    return putEnrichmentSettings(sql, userId, body);
   }
 
   if (sub === 'image-upload') {

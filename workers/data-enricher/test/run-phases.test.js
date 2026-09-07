@@ -31,13 +31,24 @@ vi.mock('../src/news.js', () => ({
 }));
 vi.mock('../src/store.js', () => ({
   lookupUserId: vi.fn(async () => 'user-1'),
+  fetchEnrichmentSettings: vi.fn(async () => ({
+    model: 'gpt-5-nano',
+    schedule: {
+      enabled: true,
+      days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+      startHour: 9,
+      endHour: 19,
+      intervalHours: 1,
+      timezone: 'Europe/London',
+    },
+  })),
   storeEmailAnalysis: vi.fn(async () => undefined),
   storeDigest: vi.fn(async () => 'digest-1'),
   storeNews: vi.fn(async () => 'news-1'),
   fetchInterests: vi.fn(async () => []),
 }));
 
-import worker from '../src/worker.js';
+import worker, { runScheduledEnrichment } from '../src/worker.js';
 import { fetchImportantMessages } from '../src/analyze.js';
 import { buildDigest } from '../src/digest.js';
 import { buildNews } from '../src/news.js';
@@ -82,6 +93,7 @@ describe('POST /run phase routing', () => {
     expect(fetchImportantMessages).toHaveBeenCalled();
     expect(storeDigest).toHaveBeenCalled();
     expect(storeNews).toHaveBeenCalled();
+    expect(buildDigest).toHaveBeenCalledWith(expect.anything(), 'key', 'gpt-5-nano');
   });
 
   // The refresh button must not re-analyse ten emails.
@@ -122,5 +134,23 @@ describe('POST /run phase routing', () => {
     expect(response.status).toBe(500);
     // The body must not leak the underlying error.
     await expect(response.json()).resolves.toEqual({ status: 'failed' });
+  });
+});
+
+describe('scheduled enrichment', () => {
+  test('runs at an enabled UK-local hour', async () => {
+    await expect(
+      runScheduledEnrichment(env, new Date('2026-07-06T08:00:00Z')),
+    ).resolves.toBeUndefined();
+    expect(storeDigest).toHaveBeenCalled();
+  });
+
+  test('does no AI work outside the saved schedule', async () => {
+    await expect(runScheduledEnrichment(env, new Date('2026-07-06T07:00:00Z'))).resolves.toEqual({
+      status: 'skipped',
+    });
+    expect(buildDigest).not.toHaveBeenCalled();
+    expect(buildNews).not.toHaveBeenCalled();
+    expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 });

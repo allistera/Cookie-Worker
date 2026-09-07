@@ -53,8 +53,8 @@ function ukMidnight(isoDate) {
 
 /**
  * Yesterday's Europe/London calendar day as { after, before } UTC bounds — the
- * window every source covers, matching daily-news. The cron runs at 05:00 UTC,
- * so "yesterday" is the last complete day.
+ * window every source covers, matching daily-news. Yesterday is always a
+ * complete Europe/London calendar day regardless of which configured slot runs.
  *
  * @param {Date} [now]
  */

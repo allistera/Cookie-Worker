@@ -1,12 +1,14 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
+import { isEnrichmentDue } from '../../../shared/enrichmentSettings.js';
 import { analyzeEmail, fetchImportantMessages } from './analyze.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
 import { buildNews } from './news.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
 import {
   fetchInterests,
+  fetchEnrichmentSettings,
   lookupUserId,
   storeEmailAnalysis,
   storeDigest,
@@ -154,16 +156,22 @@ async function buildDailyNews(sql, env, userId) {
  * @param {Env & {OPENAI_API_KEY?: string}} env
  * @param {Array<(sql: import('postgres').Sql, env: any, userId: string) => Promise<void>>} phases
  */
-async function runPhases(env, phases) {
+async function runPhases(env, phases, options = {}) {
   const sql = createSql(env.HYPERDRIVE.connectionString);
   /** @type {Error[]} */
   const failures = [];
   try {
     const userId = await lookupUserId(sql, env.OWNER_EMAIL);
+    const settings = await fetchEnrichmentSettings(sql, userId, env.AI_MODEL);
+    if (options.scheduledAt && !isEnrichmentDue(settings, options.scheduledAt)) {
+      console.log(JSON.stringify({ event: 'scheduled_run_skipped' }));
+      return { status: 'skipped' };
+    }
+    const runtimeEnv = { ...env, AI_MODEL: settings.model };
     // The phases are independent; one failing must not starve the others.
     for (const phase of phases) {
       try {
-        await phase(sql, env, userId);
+        await phase(sql, runtimeEnv, userId);
       } catch (error) {
         failures.push(/** @type {Error} */ (error));
         console.log(
@@ -184,12 +192,19 @@ async function runPhases(env, phases) {
 }
 
 /**
- * The nightly run: everything.
+ * The complete run: everything.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runEnrichment(env) {
   return runPhases(env, [analyzeImportantEmails, buildDailyTriage, buildDailyNews]);
+}
+
+/** @param {Env & {OPENAI_API_KEY?: string}} env @param {Date} scheduledAt */
+export async function runScheduledEnrichment(env, scheduledAt) {
+  return runPhases(env, [analyzeImportantEmails, buildDailyTriage, buildDailyNews], {
+    scheduledAt,
+  });
 }
 
 /**
@@ -205,7 +220,7 @@ export async function runDigestOnly(env) {
 
 /**
  * Both of AI Today's cards, for its refresh control: inbox triage and the
- * news. A handful of model calls rather than the nightly run's dozen, so the
+ * news. A handful of model calls rather than the complete run's dozen, so the
  * caller can await it.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
@@ -216,13 +231,13 @@ export async function runTodayRefresh(env) {
 
 const worker = {
   /**
-   * @param {ScheduledController} _controller
+   * @param {ScheduledController} controller
    * @param {Env & {OPENAI_API_KEY?: string}} env
    * @param {ExecutionContext} _ctx
    */
-  async scheduled(_controller, env, _ctx) {
+  async scheduled(controller, env, _ctx) {
     tagTrigger('scheduled');
-    await runEnrichment(env);
+    await runScheduledEnrichment(env, new Date(controller.scheduledTime));
   },
 
   /**

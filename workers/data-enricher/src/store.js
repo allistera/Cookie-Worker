@@ -1,5 +1,6 @@
 import { DIGEST_KIND, DIGEST_PROMPT_VERSION, TRIAGE_POLICY_SOURCE } from './digest.js';
 import { NEWS_KIND, NEWS_PROMPT_VERSION } from './news.js';
+import { normalizeEnrichmentSettings } from '../../../shared/enrichmentSettings.js';
 
 /** @typedef {import('postgres').Sql | import('postgres').TransactionSql} SqlClient */
 
@@ -140,6 +141,20 @@ export async function fetchInterests(sql, userId) {
   `;
   const interests = rows[0]?.interests;
   return Array.isArray(interests) ? interests.filter((i) => typeof i === 'string') : [];
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} [fallbackModel]
+ */
+export async function fetchEnrichmentSettings(sql, userId, fallbackModel) {
+  const rows = await sql`
+    SELECT prefs -> 'enrichmentSettings' AS enrichment_settings
+    FROM users
+    WHERE id = ${userId}
+  `;
+  return normalizeEnrichmentSettings(rows[0]?.enrichment_settings, fallbackModel);
 }
 
 /**

@@ -23,6 +23,17 @@ vi.mock('../src/digest.js', () => ({
 vi.mock('../src/news.js', () => ({ buildNews: vi.fn() }));
 vi.mock('../src/store.js', () => ({
   lookupUserId: vi.fn(async () => 'user-1'),
+  fetchEnrichmentSettings: vi.fn(async () => ({
+    model: 'gpt-5-nano',
+    schedule: {
+      enabled: true,
+      days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+      startHour: 9,
+      endHour: 19,
+      intervalHours: 1,
+      timezone: 'Europe/London',
+    },
+  })),
   storeEmailAnalysis: vi.fn(),
   storeDigest: vi.fn(),
   storeNews: vi.fn(),

@@ -190,6 +190,55 @@ describe('routing — /tasks/interests', () => {
   });
 });
 
+describe('routing — /tasks/enrichment-settings', () => {
+  test('GET returns owner settings with defaults when none are stored', async () => {
+    mockQuery.mockResolvedValueOnce([{ enrichment_settings: null }]);
+    const response = await worker.fetch(request('/tasks/enrichment-settings'), env, ctx);
+    expect(response.status).toBe(200);
+    expect((await response.json()).enrichmentSettings.model).toBe('gpt-5-nano');
+  });
+
+  test('PUT saves validated owner settings', async () => {
+    const enrichmentSettings = {
+      model: 'gpt-5-nano',
+      schedule: {
+        enabled: true,
+        days: ['mon'],
+        startHour: 9,
+        endHour: 19,
+        intervalHours: 1,
+        timezone: 'Europe/London',
+      },
+    };
+    mockQuery.mockResolvedValueOnce([{ enrichment_settings: enrichmentSettings }]);
+    const response = await worker.fetch(
+      request('/tasks/enrichment-settings', {
+        method: 'PUT',
+        body: JSON.stringify({ enrichmentSettings }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+  });
+
+  test('rejects a non-owner before reading or writing settings', async () => {
+    verifyAccessToken.mockResolvedValue({ userId: 'user-2', email: 'guest@example.com' });
+    const response = await worker.fetch(request('/tasks/enrichment-settings'), env, ctx);
+    expect(response.status).toBe(403);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('rejects unsupported methods', async () => {
+    const response = await worker.fetch(
+      request('/tasks/enrichment-settings', { method: 'POST' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(405);
+  });
+});
+
 describe('routing — /tasks/daily-note-seed', () => {
   test('GET /tasks/daily-note-seed dispatches to getDailyNoteSeed', async () => {
     const response = await worker.fetch(request('/tasks/daily-note-seed'), env, ctx);
