@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   fetchMessageAttachments,
+  fetchOwnedMessageBody,
   fetchThreadMessages,
   getAttachment,
   getMessage,
@@ -451,6 +452,18 @@ describe('recipientAddress', () => {
 });
 
 describe('getMessage', () => {
+  test('returns only a thread summary tied to the newest live message', () => {
+    const sql = createMockSql();
+
+    fetchOwnedMessageBody(sql, MESSAGE_ID, USER_ID);
+
+    expect(sql.calls[0].text).toContain('t.ai_summary_message_id = latest.id');
+    expect(sql.calls[0].text).toContain('THEN t.ai_summary ELSE NULL END AS thread_summary');
+    expect(sql.calls[0].text).toContain('latest.id AS thread_latest_message_id');
+    expect(sql.calls[0].text).toContain('NOT newest.is_deleted');
+    expect(sql.calls[0].text).not.toContain('ai.summary');
+  });
+
   test('adds a normalized calendar invite without exposing the private Blob URL', async () => {
     const ics = `BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:booking\nDTSTART:20260902T150000Z\nDTEND:20260902T153000Z\nSUMMARY:Whitburn Recycling Centre\nEND:VEVENT\nEND:VCALENDAR\n`;
     const readBlob = vi.fn().mockResolvedValue({
@@ -498,6 +511,8 @@ describe('getMessage', () => {
           id: MESSAGE_ID,
           thread_id: 'thread-1',
           thread_muted: true,
+          thread_summary: 'The revised plan is ready for approval.',
+          thread_latest_message_id: MESSAGE_ID,
           body_html: '<p>Hi</p>',
           body_text: 'Hi',
           headers: [],
@@ -530,6 +545,8 @@ describe('getMessage', () => {
     expect(body.thread).toHaveLength(2);
     expect(body.thread_id).toBe('thread-1');
     expect(body.thread_muted).toBe(true);
+    expect(body.thread_summary).toBe('The revised plan is ready for approval.');
+    expect(body.thread_latest_message_id).toBe(MESSAGE_ID);
     expect(body.headers).toBeUndefined();
     expect(body.attachments).toEqual([
       {

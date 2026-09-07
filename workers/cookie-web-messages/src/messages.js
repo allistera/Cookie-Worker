@@ -20,8 +20,8 @@ const UNSUBSCRIBE_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
  * GET /messages?id=<uuid> — the full body of a single message owned by the
  * authenticated user, fetched on demand when the reader opens (body_html is
  * deliberately excluded from the /messages list payload as it can be large
- * and untrusted). The saved AI summary is returned alongside the body so the
- * reader can restore it without inflating every inbox-list response.
+ * and untrusted). A thread summary is returned only when it includes the
+ * newest live message, so the reader never restores stale generated text.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} id
@@ -29,11 +29,21 @@ const UNSUBSCRIBE_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
  */
 export function fetchOwnedMessageBody(sql, id, userId) {
   return sql`
-    SELECT m.id, m.thread_id, m.body_html, m.body_text, m.headers, ai.summary,
+    SELECT m.id, m.thread_id, m.body_html, m.body_text, m.headers,
+           CASE WHEN t.ai_summary_message_id = latest.id
+                THEN t.ai_summary ELSE NULL END AS thread_summary,
+           latest.id AS thread_latest_message_id,
            t.is_muted AS thread_muted
     FROM messages m
     JOIN threads t ON t.id = m.thread_id AND t.user_id = m.user_id
-    LEFT JOIN message_ai ai ON ai.message_id = m.id
+    LEFT JOIN LATERAL (
+      SELECT newest.id
+      FROM messages newest
+      WHERE newest.thread_id = m.thread_id AND newest.user_id = m.user_id
+        AND NOT newest.is_deleted
+      ORDER BY newest.sent_at DESC, newest.id DESC
+      LIMIT 1
+    ) latest ON true
     WHERE m.id = ${id} AND m.user_id = ${userId} AND NOT m.is_deleted
   `;
 }

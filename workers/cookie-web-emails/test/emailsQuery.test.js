@@ -32,15 +32,18 @@ describe('fetchEmails', () => {
       'cursor page',
       { sentAt: '2026-07-13T12:00:00.000Z', id: '11111111-1111-1111-1111-111111111111' },
     ],
-  ])('groups joined AI fields for the %s query', (_name, cursor) => {
+  ])('groups joined AI and live thread-summary fields for the %s query', (_name, cursor) => {
     const capture = captureQuery();
 
     fetchEmails(capture.sql, USER_ID, 50, cursor, 'inbox');
 
     expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority');
     expect(capture.query()).toContain('ai.priority,');
-    expect(capture.query()).toContain('ai.summary');
+    expect(capture.query()).toContain('t.ai_summary');
+    expect(capture.query()).toContain('t.ai_summary_message_id');
+    expect(capture.query()).toContain('ORDER BY newest.sent_at DESC, newest.id DESC');
     expect(capture.query()).toContain('AS has_ai_summary');
+    expect(capture.query()).toContain('JOIN threads t ON t.id = m.thread_id');
     expect(capture.query()).toContain('m.scheduled_for');
     expect(capture.query()).toContain('m.follow_up_at');
     expect(capture.query()).toContain('m.scheduled_for IS NULL OR m.scheduled_for <= now()');
@@ -62,6 +65,7 @@ describe('fetchEmails', () => {
     fetchEmails(capture.sql, USER_ID, 50, null, 'inbox');
 
     expect(capture.query()).not.toContain('body_text');
+    expect(capture.query()).not.toContain('ai.summary');
   });
 
   test.each([

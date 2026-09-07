@@ -53,7 +53,17 @@ export function fetchSearchEmails(sql, userId, ids) {
            m.subject, m.snippet,
            m.sent_at, m.is_unread, m.is_starred,
            m.is_sent, m.is_archived, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
-           BOOL_OR(NULLIF(BTRIM(ai.summary), '') IS NOT NULL) AS has_ai_summary,
+           BOOL_OR(
+             NULLIF(BTRIM(t.ai_summary), '') IS NOT NULL
+             AND t.ai_summary_message_id = (
+               SELECT newest.id
+               FROM messages newest
+               WHERE newest.thread_id = t.id AND newest.user_id = t.user_id
+                 AND NOT newest.is_deleted
+               ORDER BY newest.sent_at DESC, newest.id DESC
+               LIMIT 1
+             )
+           ) AS has_ai_summary,
            (m.body_html IS NOT NULL) AS has_html,
            EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
            COALESCE(
@@ -63,6 +73,7 @@ export function fetchSearchEmails(sql, userId, ids) {
              '[]'
            ) AS labels
     FROM messages m
+    JOIN threads t ON t.id = m.thread_id AND t.user_id = m.user_id
     LEFT JOIN message_ai ai ON ai.message_id = m.id
     LEFT JOIN message_labels ml ON ml.message_id = m.id
     LEFT JOIN labels l ON l.id = ml.label_id
