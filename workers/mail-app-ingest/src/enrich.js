@@ -2,10 +2,12 @@ import { claimInboundAiRequest, InboundAiQuotaExceeded } from './inboundAiQuota.
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { outputText } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
+import { AUTO_ARCHIVE_THRESHOLD, autoArchiveRules } from '../../../shared/autoArchive.js';
+import { applyAutoArchive } from './autoArchive.js';
 
 export const AI_FETCH_TIMEOUT_MS = 60_000;
 export const AI_MODEL = 'gpt-5.6-luna';
-export const PROMPT_VERSION = 'email-enrichment-v3';
+export const PROMPT_VERSION = 'email-enrichment-v4';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const SPAM_THRESHOLD = 0.98;
 export const REVIEW_THRESHOLD = 0.8;
@@ -91,7 +93,7 @@ const ENRICHMENT_SCHEMA = {
 export const MATCH_THRESHOLD = 0.7;
 
 /**
- * @typedef {{id: string, prompt: string, action: string, label_id: string | null}} AiRule
+ * @typedef {{id: string, prompt: string, action: string, label_id: string | null, autoArchiveCategory?: string}} AiRule
  */
 
 /**
@@ -122,7 +124,7 @@ export async function classifyEmail(record, labels, apiKey, model = AI_MODEL, ru
               'The application may also supply rules: each is a plain-language description, written by the mailbox owner, of the mail it should catch. Return a rule id only when the email clearly matches that description. ' +
               'Mark spam only for unsolicited, deceptive, or abusive mail; legitimate newsletters and receipts are inbox mail. ' +
               'Set priority to high only when the owner should read or act on it soon: a person writing to them directly, a question or request awaiting their reply, a deadline, an appointment, money owed or due, or an account problem. ' +
-              'Newsletters, promotions, receipts, automated notifications and social updates are low. Everything else is normal. Return only the schema.',
+              'Newsletters, promotions, unsolicited commercial cold pitches, receipts, automated notifications and social updates are low. Personalisation in a sales pitch alone does not make it high priority. Everything else is normal. Return only the schema.',
           },
           {
             role: 'user',
@@ -187,8 +189,10 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       ORDER BY r.created_at
     `,
     sql`
-      SELECT ai.status, ai.spam_verdict, ai.provider, m.user_id
+      SELECT ai.status, ai.spam_verdict, ai.provider, m.user_id, m.created_at,
+             u.prefs -> 'autoArchive' AS auto_archive
       FROM messages m
+      JOIN users u ON u.id = m.user_id
       LEFT JOIN message_ai ai ON ai.message_id = m.id
       WHERE m.id = ${messageUuid}
     `,
@@ -208,6 +212,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       label_id: rule.label_id ? String(rule.label_id) : null,
     }));
   const state = stateRows[0] ?? {};
+  aiRules.push(...autoArchiveRules(state.auto_archive, state.created_at));
   let verdict = state.spam_verdict || 'inbox';
   let selectedLabels = 0;
   let matchedRules = 0;
@@ -231,7 +236,15 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
     );
     const rulesById = new Map(aiRules.map((rule) => [rule.id, rule]));
     const matched = classification.rules
-      .filter((match) => rulesById.has(match.id) && match.confidence >= MATCH_THRESHOLD)
+      .filter((match) => {
+        const rule = rulesById.get(match.id);
+        return (
+          rule &&
+          Number.isFinite(match.confidence) &&
+          match.confidence <= 1 &&
+          match.confidence >= (rule.autoArchiveCategory ? AUTO_ARCHIVE_THRESHOLD : MATCH_THRESHOLD)
+        );
+      })
       .map((match) => ({
         .../** @type {AiRule} */ (rulesById.get(match.id)),
         confidence: match.confidence,
@@ -283,6 +296,12 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       // except their labels are source = 'ai' (they came from the model and
       // are rebuilt with the other AI labels) and carry the rule as provenance.
       for (const rule of matched) {
+        if (rule.autoArchiveCategory) {
+          if (verdict === 'inbox' && classification.priority === 'low') {
+            await applyAutoArchive(tx, state.user_id, messageUuid, rule.autoArchiveCategory);
+          }
+          continue;
+        }
         if (rule.action === 'mark_done') {
           await tx`
             UPDATE messages

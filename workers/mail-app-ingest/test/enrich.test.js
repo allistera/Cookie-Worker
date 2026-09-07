@@ -31,6 +31,80 @@ function mockedFetch() {
 }
 
 describe('AI enrichment', () => {
+  test.each([
+    [0.99, 'low', 'inbox', true],
+    [0.94, 'low', 'inbox', false],
+    [0.99, 'high', 'inbox', false],
+    [0.99, 'normal', 'inbox', false],
+    [0.99, 'low', 'spam', false],
+    [1.5, 'low', 'inbox', false],
+  ])(
+    'auto archive requires confident low-priority inbox mail (%s %s %s)',
+    async (confidence, priority, spam, expected) => {
+      const settings = { marketing: { enabled: true, since: '2026-09-07T10:00:00Z' } };
+      const sql = createMockSql({
+        enrichmentStateRows: [
+          { user_id: 'user-1', auto_archive: settings, created_at: '2026-09-08T10:00:00Z' },
+        ],
+        lookupRows: [{ settings }],
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: true,
+          json: async () => ({
+            output_text: JSON.stringify(
+              responseResult({
+                priority,
+                spam_verdict: spam,
+                spam_score: spam === 'spam' ? 0.99 : 0.01,
+                rules: [{ id: 'auto-archive:marketing', confidence }],
+              }),
+            ),
+          }),
+        })),
+      );
+      await enrichMessage(sql, { bodyText: 'Sale', messageId: '<auto>' }, 'message-1', 'key');
+      const request = JSON.parse(mockedFetch().mock.calls[0][1].body);
+      const offered = JSON.parse(request.input[1].content).rules;
+      expect(offered).toHaveLength(1);
+      expect(offered[0].description).toContain('security alerts');
+      const archive = sql.transactions[0].find((q) => q.text.includes('SET is_archived = true'));
+      expect(Boolean(archive)).toBe(expected);
+    },
+  );
+
+  test('disabled categories and pre-existing mail cannot match invented auto archive rule ids', async () => {
+    const sql = createMockSql({
+      enrichmentStateRows: [
+        {
+          user_id: 'user-1',
+          created_at: '2026-09-06T00:00:00Z',
+          auto_archive: { marketing: { enabled: true, since: '2026-09-07T00:00:00Z' } },
+        },
+      ],
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(
+            responseResult({
+              priority: 'low',
+              rules: [
+                { id: 'auto-archive:marketing', confidence: 1 },
+                { id: 'auto-archive:socialNoise', confidence: 1 },
+              ],
+            }),
+          ),
+        }),
+      })),
+    );
+    await enrichMessage(sql, { bodyText: 'Sale' }, 'message-1', 'key');
+    expect(sql.transactions[0].some((q) => q.text.includes('SET is_archived = true'))).toBe(false);
+  });
+
   beforeEach(() => {
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
@@ -54,6 +128,7 @@ describe('AI enrichment', () => {
     expect(request.text.format).toMatchObject({ type: 'json_schema', strict: true });
     expect(request.input[0].content).toContain('untrusted data');
     expect(request.input[0].content).toContain('Set priority to high only when');
+    expect(request.input[0].content).toContain('unsolicited commercial cold pitches');
     // Summaries are user-requested through Cookie-Web's reader; enrichment
     // must not ask the model for one.
     expect(request.text.format.schema.properties).not.toHaveProperty('summary');

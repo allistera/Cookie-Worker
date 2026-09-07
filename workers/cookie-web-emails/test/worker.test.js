@@ -81,6 +81,31 @@ describe('auth', () => {
 });
 
 describe('routing', () => {
+  test('GET /emails/auto-archive returns opt-in defaults for the authenticated user', async () => {
+    const response = await worker.fetch(request('/emails/auto-archive'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      autoArchive: { marketing: false, coldPitches: false, socialNoise: false },
+    });
+    expect(mockQuery.mock.calls[0]).toContain('user-1');
+  });
+
+  test('PUT /emails/auto-archive validates the body and methods are restricted', async () => {
+    const invalid = await worker.fetch(
+      request('/emails/auto-archive', { method: 'PUT', body: '{}' }),
+      env,
+      ctx,
+    );
+    expect(invalid.status).toBe(400);
+    const method = await worker.fetch(
+      request('/emails/auto-archive', { method: 'POST', body: '{}' }),
+      env,
+      ctx,
+    );
+    expect(method.status).toBe(405);
+    expect(method.headers.get('Allow')).toBe('GET, PUT');
+  });
+
   test('GET /emails dispatches to the list handler', async () => {
     const response = await worker.fetch(request('/emails'), env, ctx);
     expect(response.status).toBe(200);

@@ -5,6 +5,7 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { handleList, handleState } from './emails.js';
 import { getSpamRetention, putSpamRetention } from './spamRetention.js';
+import { getAutoArchive, putAutoArchive } from './autoArchive.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 /** @param {string} databaseUrl */
@@ -34,11 +35,16 @@ async function route(url, request, sql, userId) {
   const sub = segments.length === 2 ? segments[1] : null;
   const isState = sub === 'state';
   const isSpamRetention = sub === 'spam-retention';
-  if (segments[0] !== 'emails' || (segments.length > 1 && !isState && !isSpamRetention)) {
+  const isAutoArchive = sub === 'auto-archive';
+  if (
+    segments[0] !== 'emails' ||
+    (segments.length > 1 && !isState && !isSpamRetention && !isAutoArchive)
+  ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
-  if (isSpamRetention) {
-    if (request.method === 'GET') return getSpamRetention(sql, userId);
+  if (isSpamRetention || isAutoArchive) {
+    if (request.method === 'GET')
+      return isAutoArchive ? getAutoArchive(sql, userId) : getSpamRetention(sql, userId);
     if (request.method !== 'PUT') {
       return Response.json(
         { error: 'Method not allowed' },
@@ -53,7 +59,7 @@ async function route(url, request, sql, userId) {
       if (errorResponse) return errorResponse;
       throw error;
     }
-    return putSpamRetention(sql, userId, body);
+    return isAutoArchive ? putAutoArchive(sql, userId, body) : putSpamRetention(sql, userId, body);
   }
   if (request.method !== 'GET') {
     return Response.json(

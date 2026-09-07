@@ -275,6 +275,24 @@ the due date also clears its time and zone. `OPENAI_API_KEY` is synchronized to
 this Worker by the deploy workflow; without it the interpretation endpoint
 returns a message directing the client to Advanced entry.
 
+## Configurable auto archive
+
+Deploy `cookie-web-emails` and `mail-app-ingest` before Cookie-Web's Auto Archive
+settings UI. No migration or new secret is required: `users.prefs.autoArchive`
+stores independent `marketing`, `coldPitches` and `socialNoise` entries, each with
+an `enabled` boolean and server-generated `since` timestamp. GET/PUT
+`/emails/auto-archive` exposes the three booleans and preserves unrelated preferences.
+
+Enabled categories are included as built-in rules in the existing classification
+call. Only inbox verdicts with low priority and confidence at least 0.95 qualify.
+Prompts exclude direct/personal messages, receipts, transactional mail and security
+alerts. Messages created before the category's activation are ineligible, including
+delayed AI retries; disabling and re-enabling starts a new activation window.
+Settings are rechecked when filing, and read, starred, scheduled, sent or deleted
+messages are protected. Matches move to Done and are marked read. Queued browser
+alerts are removed, but an alert already delivered before asynchronous AI processing
+cannot be recalled. No historical backfill is run.
+
 ## Review-fix rollout
 
 Apply Cookie-Web migration `0070_scheduled_send_requests.sql` before deploying
