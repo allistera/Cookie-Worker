@@ -90,6 +90,7 @@ describe('auth and configuration', () => {
     ['/compose', 'AI compose is not configured'],
     ['/summarize', 'AI summarization is not configured'],
     ['/document', 'AI documents are not configured'],
+    ['/rule-draft', 'AI rule generation is not configured'],
   ])('%s answers 503 with its own wording when no OpenAI key is set', async (path, error) => {
     const response = await worker.fetch(
       request(path, { body: '{}' }),
@@ -118,6 +119,7 @@ describe('rate limiting', () => {
     ['/compose', 'Too many compose requests, slow down'],
     ['/summarize', 'Too many summary requests, slow down'],
     ['/document', 'Too many document requests, slow down'],
+    ['/rule-draft', 'Too many rule generation requests, slow down'],
   ])('%s answers 429 with its own wording when the quota is exhausted', async (path, error) => {
     allowRequest.mockResolvedValue(false);
     const response = await worker.fetch(request(path, { body: '{}' }), env, ctx);
@@ -134,6 +136,25 @@ describe('rate limiting', () => {
 });
 
 describe('routing', () => {
+  test('POST /rule-draft uses authentication, quota and handler validation', async () => {
+    const response = await worker.fetch(request('/rule-draft', { body: '{}' }), env, ctx);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'instruction is required (max 1000 chars)' });
+    expect(verifyAccessToken).toHaveBeenCalledOnce();
+    expect(allowRequest).toHaveBeenCalledWith(expect.anything(), 'user-1', 'ai', {
+      limit: 10,
+      windowMs: 60_000,
+    });
+  });
+
+  test('rejects unauthenticated rule generation before quota or data access', async () => {
+    verifyAccessToken.mockRejectedValue(new Error('invalid token'));
+    const response = await worker.fetch(request('/rule-draft', { body: '{}' }), env, ctx);
+    expect(response.status).toBe(401);
+    expect(allowRequest).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   test('POST /compose dispatches to the compose handler (reaches its validation)', async () => {
     const response = await worker.fetch(request('/compose', { body: '{}' }), env, ctx);
     // No instruction: proof the request reached handleCompose, not a 404/405.

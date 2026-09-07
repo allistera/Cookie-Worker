@@ -21,6 +21,17 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | [`data-enricher`](workers/data-enricher)                       | Scheduled (05:00 UTC daily), manual | Stores AI task analyses of important emails, three-tier inbox triage, and a personalised news round-up (GitHub, Product Hunt, BBC UK, and Edinburgh Live's West Lothian feed). Feeds Cookie-Web's AI Today page.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | [`scheduled-send-flusher`](workers/scheduled-send-flusher)     | Scheduled (every 5 minutes)         | Calls Cookie-Web's `POST /api/send?resource=flush` so "Send Later" mail actually goes out once due; owns no mail-sending logic itself.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
+`cookie-web-ai` also provides authenticated `POST /rule-draft` with
+`{ "instruction": "Tag receipts as Finance" }` (1–1000 characters). It returns an
+unsaved `{ draft, model }` using the existing compose model and shared AI quota.
+Only the owner's user-label IDs/names are supplied to the model. Generated fields,
+matcher limits and label ownership are checked before returning the draft; an
+unknown tag remains unselected for user review. Unsupported requests return 422;
+invalid model output or upstream failures return 502. No rule or email writes
+occur here: the frontend saves the reviewed draft through `POST /labels/rules`
+only when **Create Rule** is clicked. Deploy `cookie-web-ai` before the updated
+frontend; no migration or new secret is needed.
+
 The `data-enricher` triage policy adapts Eric Porres's MIT-licensed [Email Triage Skill](https://github.com/ericporres/email-triage-plugin): **Reply Needed** and **Review** messages are shown individually, while **Noise** is summarized by category and omitted from AI Inbox rows. Cookie applies the policy to its own Postgres mailbox through the OpenAI Responses API; it does not embed the Claude plugin or depend on Gmail MCP at runtime.
 
 ## Repository structure

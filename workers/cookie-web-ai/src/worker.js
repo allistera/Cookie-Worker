@@ -7,6 +7,7 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { RATE_LIMIT } from './openai.js';
 import { handleCompose } from './compose.js';
 import { handleDocument } from './document.js';
+import { handleRuleDraft } from './ruleDraft.js';
 import { handleSummarize } from './summarize.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
@@ -27,6 +28,12 @@ export function createSql(databaseUrl) {
 // same OPENAI_API_KEY, and the same 'ai' rate-limit scope, so here they are
 // two routes on one Worker. Per-route wording matches the originals exactly.
 const ROUTES = {
+  'rule-draft': {
+    handler: handleRuleDraft,
+    notConfigured: 'AI rule generation is not configured',
+    unavailable: 'AI rule generation is temporarily unavailable',
+    tooMany: 'Too many rule generation requests, slow down',
+  },
   compose: {
     handler: handleCompose,
     notConfigured: 'AI compose is not configured',
