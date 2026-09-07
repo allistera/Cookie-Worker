@@ -167,6 +167,8 @@ describe('query shapes', () => {
     expect(claim.text).toContain('event.claimed_until < now()');
     expect(claim.text).toContain('event.user_id = ?');
     expect(claim.text).toContain('NOT message.is_deleted');
+    expect(claim.text).toContain('AND NOT EXISTS');
+    expect(claim.text).toContain('t.id = message.thread_id AND t.user_id = ? AND t.is_muted');
     expect(claim.text).toContain("COALESCE(ai.spam_verdict, 'inbox') <> 'spam'");
     expect(claim.text).toContain('RETURNING event.event_id, event.claim_token');
     expect(claim.values).toContain(USER_ID);

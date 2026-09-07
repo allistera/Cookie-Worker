@@ -29,8 +29,10 @@ const UNSUBSCRIBE_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
  */
 export function fetchOwnedMessageBody(sql, id, userId) {
   return sql`
-    SELECT m.id, m.thread_id, m.body_html, m.body_text, m.headers, ai.summary
+    SELECT m.id, m.thread_id, m.body_html, m.body_text, m.headers, ai.summary,
+           t.is_muted AS thread_muted
     FROM messages m
+    JOIN threads t ON t.id = m.thread_id AND t.user_id = m.user_id
     LEFT JOIN message_ai ai ON ai.message_id = m.id
     WHERE m.id = ${id} AND m.user_id = ${userId} AND NOT m.is_deleted
   `;
@@ -205,6 +207,7 @@ export async function getMessage(sql, userId, id, deps = {}) {
   const calendar_invite = await extractCalendarInvite(attachments, deps.readBlob);
   return Response.json({
     ...rest,
+    thread_id,
     unsubscribe: parseListUnsubscribe(headers),
     thread,
     calendar_invite,
@@ -472,7 +475,8 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
 }
 
 /**
- * POST /messages — { id, action: 'unsubscribe' | 'add_label' | 'remove_label' }.
+ * POST /messages — unsubscribe, label edits, or mute_thread/unmute_thread.
+ * Muting applies to the owned message's entire conversation and clears queued alerts.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -484,6 +488,31 @@ export async function postMessage(sql, userId, body, deps) {
   const id = UUID_RE.test(body?.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'A valid id is required' }, { status: 400 });
+  }
+
+  if (action === 'mute_thread' || action === 'unmute_thread') {
+    const muted = action === 'mute_thread';
+    const thread = await sql.begin(async (tx) => {
+      const [changed] = await tx`
+        UPDATE threads t SET is_muted = ${muted}
+        FROM messages m
+        WHERE m.id = ${id} AND m.user_id = ${userId} AND NOT m.is_deleted
+          AND t.id = m.thread_id AND t.user_id = ${userId}
+        RETURNING t.id, t.is_muted
+      `;
+      if (changed && muted) {
+        // Discard queued alerts so unmuting never replays muted replies.
+        await tx`
+          DELETE FROM browser_notification_events event
+          USING messages m
+          WHERE event.message_id = m.id AND m.thread_id = ${changed.id}
+            AND event.user_id = ${userId} AND m.user_id = ${userId}
+        `;
+      }
+      return changed;
+    });
+    if (!thread) return Response.json({ error: 'Message not found' }, { status: 404 });
+    return Response.json({ thread });
   }
 
   if (action === 'add_label' || action === 'remove_label') {

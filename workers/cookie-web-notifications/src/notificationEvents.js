@@ -21,6 +21,10 @@ export function claimNotificationEvent(sql, userId, eventId) {
       AND event.message_id = message.id
       AND event.user_id = ${userId}
       AND message.user_id = ${userId}
+      AND NOT EXISTS (
+        SELECT 1 FROM threads t
+        WHERE t.id = message.thread_id AND t.user_id = ${userId} AND t.is_muted
+      )
       AND (event.claimed_until IS NULL OR event.claimed_until < now())
       AND message.is_unread
       AND NOT message.is_sent

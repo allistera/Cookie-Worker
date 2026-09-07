@@ -33,6 +33,65 @@ function unsubscribeDeps(overrides = {}) {
   };
 }
 
+describe('postMessage — thread muting', () => {
+  test.each([true, false])('persists muted=%s on the owned conversation', async (muted) => {
+    const thread = { id: LABEL_ID, is_muted: muted };
+    const sql = createMockSql([[thread], []]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      {
+        id: MESSAGE_ID,
+        action: muted ? 'mute_thread' : 'unmute_thread',
+      },
+      unsubscribeDeps(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ thread });
+    expect(sql.begin).toHaveBeenCalledTimes(1);
+    expect(sql.calls[0].text).toContain('UPDATE threads t');
+    expect(sql.calls[0].text).toContain('NOT m.is_deleted');
+    expect(sql.calls[0].text).toContain('t.user_id = ?');
+    expect(sql.calls[0].values).toEqual([muted, MESSAGE_ID, USER_ID, USER_ID]);
+    expect(sql.calls).toHaveLength(muted ? 2 : 1);
+    if (muted) {
+      expect(sql.calls[1].text).toContain('DELETE FROM browser_notification_events');
+      expect(sql.calls[1].values).toEqual([LABEL_ID, USER_ID, USER_ID]);
+    }
+  });
+
+  test('does not change or purge another user’s thread', async () => {
+    const sql = createMockSql([[]]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      {
+        id: MESSAGE_ID,
+        action: 'mute_thread',
+      },
+      unsubscribeDeps(),
+    );
+    expect(response.status).toBe(404);
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  test('rejects an invalid message id before touching the database', async () => {
+    const sql = createMockSql();
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      {
+        id: 'invalid',
+        action: 'mute_thread',
+      },
+      unsubscribeDeps(),
+    );
+    expect(response.status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
+  });
+});
+
 describe('postMessage — label actions', () => {
   test('applies a label and returns the message label set', async () => {
     const sql = createMockSql([
@@ -438,6 +497,7 @@ describe('getMessage', () => {
         {
           id: MESSAGE_ID,
           thread_id: 'thread-1',
+          thread_muted: true,
           body_html: '<p>Hi</p>',
           body_text: 'Hi',
           headers: [],
@@ -468,6 +528,8 @@ describe('getMessage', () => {
     expect(response.status).toBe(200);
     expect(body.body_html).toBe('<p>Hi</p>');
     expect(body.thread).toHaveLength(2);
+    expect(body.thread_id).toBe('thread-1');
+    expect(body.thread_muted).toBe(true);
     expect(body.headers).toBeUndefined();
     expect(body.attachments).toEqual([
       {
