@@ -122,6 +122,7 @@ describe('email handler', () => {
             spam_score: 0.01,
             spam_reason: 'legitimate',
             priority: 'normal',
+            category_id: null,
           }),
         }),
       })),
@@ -201,6 +202,7 @@ describe('email handler', () => {
                   spam_score: 0,
                   spam_reason: 'legitimate',
                   priority: 'high',
+                  category_id: null,
                 },
           ),
         });

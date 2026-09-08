@@ -17,7 +17,7 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], aiRuleRows?: unknown[], labelRows?: unknown[], enrichmentStateRows?: unknown[], lockedAiRows?: unknown[]}} [options]
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], aiRuleRows?: unknown[], labelRows?: unknown[], categoryRows?: unknown[], enrichmentStateRows?: unknown[], lockedAiRows?: unknown[]}} [options]
  * @returns {any}
  */
 export function createMockSql(options = {}) {
@@ -63,6 +63,9 @@ export function createMockSql(options = {}) {
       }
       if (query.text.includes("l.kind = 'user'")) {
         return Promise.resolve(options.labelRows ?? []);
+      }
+      if (query.text.includes('FROM email_categories')) {
+        return Promise.resolve(options.categoryRows ?? []);
       }
       if (query.text.includes('FROM label_rules')) {
         return Promise.resolve(

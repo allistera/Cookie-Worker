@@ -21,6 +21,7 @@ function responseResult(overrides = {}) {
     spam_score: 0.01,
     spam_reason: 'legitimate',
     priority: 'normal',
+    category_id: null,
     ...overrides,
   };
 }
@@ -129,11 +130,89 @@ describe('AI enrichment', () => {
     expect(request.input[0].content).toContain('untrusted data');
     expect(request.input[0].content).toContain('Set priority to high only when');
     expect(request.input[0].content).toContain('unsolicited commercial cold pitches');
+    expect(request.input[0].content).toContain('Choose exactly one supplied category id');
+    expect(request.text.format.schema.properties.category_id).toEqual({ type: 'null' });
+    expect(request.text.format.schema.required).toContain('category_id');
     // Summaries are user-requested through Cookie-Web's reader; enrichment
     // must not ask the model for one.
     expect(request.text.format.schema.properties).not.toHaveProperty('summary');
     expect(request.text.format.schema.required).not.toContain('summary');
     expect(timeout).toHaveBeenCalledWith(expect.any(Function), AI_FETCH_TIMEOUT_MS);
+  });
+
+  test('includes category descriptions and assigns exactly one allowed category', async () => {
+    const personalId = '11111111-1111-1111-1111-111111111111';
+    const projectsId = '22222222-2222-2222-2222-222222222222';
+    const categories = [
+      { id: personalId, name: 'Personal', description: 'Friends, family and household mail' },
+      { id: projectsId, name: 'Projects', description: 'Mail about active work projects' },
+    ];
+    const sql = createMockSql({ categoryRows: categories });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(responseResult({ category_id: projectsId })),
+        }),
+      })),
+    );
+
+    await enrichMessage(
+      sql,
+      {
+        messageId: '<id>',
+        fromAddress: 'colleague@example.com',
+        subject: 'Project update',
+        bodyText: 'The launch work is ready for review.',
+      },
+      'message-1',
+      'key',
+    );
+
+    const request = JSON.parse(mockedFetch().mock.calls[0][1].body);
+    const input = JSON.parse(request.input[1].content);
+    expect(input.categories).toEqual(categories);
+    expect(request.text.format.schema.properties.category_id).toEqual({
+      type: 'string',
+      enum: [personalId, projectsId],
+    });
+
+    const assignment = sql.transactions[0].find((query) =>
+      query.text.includes('SET category_id ='),
+    );
+    expect(assignment).toBeDefined();
+    expect(assignment.values).toEqual([projectsId, 'message-1']);
+    expect(assignment.text).toContain('category_id IS NULL');
+  });
+
+  test('ignores a category id that was not supplied by the application', async () => {
+    const categoryId = '11111111-1111-1111-1111-111111111111';
+    const sql = createMockSql({
+      categoryRows: [{ id: categoryId, name: 'Personal', description: null }],
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(
+            responseResult({ category_id: '22222222-2222-2222-2222-222222222222' }),
+          ),
+        }),
+      })),
+    );
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    expect(sql.transactions[0].some((query) => query.text.includes('SET category_id ='))).toBe(
+      false,
+    );
   });
 
   test('never writes message_ai.summary during enrichment', async () => {
