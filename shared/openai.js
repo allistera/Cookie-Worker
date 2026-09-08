@@ -15,3 +15,21 @@ export function outputText(body) {
   }
   return '';
 }
+
+/**
+ * Parses the JSON payload of a Responses API result, surfacing incomplete or
+ * empty outputs as descriptive errors instead of opaque SyntaxErrors.
+ *
+ * @param {any} body
+ * @returns {any}
+ */
+export function parseOutputJson(body) {
+  if (body?.status === 'incomplete') {
+    throw new Error(
+      `OpenAI response incomplete (${body?.incomplete_details?.reason || 'unknown'})`,
+    );
+  }
+  const text = outputText(body);
+  if (!text.trim()) throw new Error('OpenAI response contained no output text');
+  return JSON.parse(text);
+}

@@ -33,8 +33,27 @@ describe('analyzeEmail', () => {
     expect(init.headers.Authorization).toBe('Bearer key');
     const body = JSON.parse(init.body);
     expect(body.model).toBe('gpt-5.6-luna');
+    expect(body.max_output_tokens).toBe(1500);
     expect(body.text.format.type).toBe('json_schema');
     expect(JSON.stringify(body.input)).toContain('VAT deadline');
+  });
+
+  test('surfaces incomplete output instead of parsing truncated JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          output_text: '{"summary":"tru',
+        }),
+      })),
+    );
+
+    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).rejects.toThrow(
+      /incomplete \(max_output_tokens\)/,
+    );
   });
 
   test('throws on a non-OK response', async () => {

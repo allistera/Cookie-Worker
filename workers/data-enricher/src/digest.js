@@ -1,5 +1,5 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { outputText } from '../../../shared/openai.js';
+import { parseOutputJson } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 
 // The stored kind and exported DIGEST_* names are retained for compatibility
@@ -281,7 +281,7 @@ async function requestTriage(messages, apiKey, model) {
     },
     async (response) => {
       if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
-      return JSON.parse(outputText(await response.json()));
+      return parseOutputJson(await response.json());
     },
   );
 }
