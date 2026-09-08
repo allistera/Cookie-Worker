@@ -1,5 +1,5 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { outputText } from '../../../shared/openai.js';
+import { parseOutputJson } from '../../../shared/openai.js';
 
 export const ANALYSIS_PROMPT_VERSION = 'email-task-analysis-v1';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -77,7 +77,7 @@ export async function analyzeEmail(message, apiKey, model) {
       },
       body: JSON.stringify({
         model,
-        max_output_tokens: 600,
+        max_output_tokens: 1500,
         input: [
           {
             role: 'system',
@@ -109,7 +109,7 @@ export async function analyzeEmail(message, apiKey, model) {
     },
     async (response) => {
       if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
-      return JSON.parse(outputText(await response.json()));
+      return parseOutputJson(await response.json());
     },
   );
 }

@@ -6,7 +6,7 @@ import {
   previousUkDayWindow,
 } from './news-sources.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { outputText } from '../../../shared/openai.js';
+import { parseOutputJson } from '../../../shared/openai.js';
 import { redact } from './sentry.js';
 
 export const NEWS_PROMPT_VERSION = 'daily-news-v1';
@@ -130,7 +130,7 @@ export async function rankForInterests(
     },
     async (response) => {
       if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
-      return applyRanking(JSON.parse(outputText(await response.json())), candidates, limit);
+      return applyRanking(parseOutputJson(await response.json()), candidates, limit);
     },
   );
 }

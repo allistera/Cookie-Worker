@@ -1,6 +1,6 @@
 import { claimInboundAiRequest, InboundAiQuotaExceeded } from './inboundAiQuota.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { outputText } from '../../../shared/openai.js';
+import { parseOutputJson } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { AUTO_ARCHIVE_THRESHOLD, autoArchiveRules } from '../../../shared/autoArchive.js';
 import { applyAutoArchive } from './autoArchive.js';
@@ -151,7 +151,7 @@ export async function classifyEmail(record, labels, apiKey, model = AI_MODEL, ru
     },
     async (response) => {
       if (!response.ok) throw new ResponsesApiError(response.status);
-      const result = JSON.parse(outputText(await response.json()));
+      const result = parseOutputJson(await response.json());
       if (!Array.isArray(result.labels) || typeof result.spam_score !== 'number') {
         throw new Error('OpenAI Responses API returned invalid enrichment');
       }
