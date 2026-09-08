@@ -46,6 +46,8 @@ describe('fetchEmails', () => {
     expect(capture.query()).toContain('JOIN threads t ON t.id = m.thread_id');
     expect(capture.query()).toContain('m.scheduled_for');
     expect(capture.query()).toContain('m.follow_up_at');
+    expect(capture.query()).toContain('LEFT JOIN email_categories c');
+    expect(capture.query()).toContain('AS category');
     expect(capture.query()).toContain('m.scheduled_for IS NULL OR m.scheduled_for <= now()');
   });
 
@@ -78,7 +80,9 @@ describe('fetchEmails', () => {
 
     expect(capture.query()).toContain('m.scheduled_for > now()');
     expect(capture.query()).not.toContain("? = 'snoozed'");
-    expect(capture.query()).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority');
+    expect(capture.query()).toContain(
+      'GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, c.id',
+    );
   });
 
   test.each([

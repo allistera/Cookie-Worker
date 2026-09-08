@@ -19,6 +19,7 @@ const USER_ID = '99999999-9999-4999-8999-999999999999';
 const MESSAGE_ID = '11111111-1111-1111-1111-111111111111';
 const LABEL_ID = '22222222-2222-2222-2222-222222222222';
 const ATTACHMENT_ID = '33333333-3333-3333-3333-333333333333';
+const CATEGORY_ID = '44444444-4444-4444-8444-444444444444';
 
 /**
  * @param {Partial<import('../src/messages.js').UnsubscribeDeps &
@@ -186,6 +187,77 @@ describe('postMessage — label actions', () => {
     const response = await postMessage(sql, USER_ID, { action: 'unsubscribe' }, unsubscribeDeps());
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
+  });
+});
+
+describe('postMessage — category action', () => {
+  test('sets or replaces the single category and returns it', async () => {
+    const category = { id: CATEGORY_ID, name: 'Projects', color: '#3b82f6' };
+    const sql = createMockSql([[{ id: MESSAGE_ID }], [category]]);
+    const onMessageChanged = vi.fn();
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'set_category', category_id: CATEGORY_ID },
+      unsubscribeDeps({ onMessageChanged }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ category });
+    expect(sql.calls[0].text).toContain('SET category_id =');
+    expect(sql.calls[0].text).toContain('email_categories');
+    expect(sql.calls[0].text).toContain('m.category_id IS DISTINCT FROM');
+    expect(sql.calls.map((call) => call.text).join('\n')).not.toContain('search_indexed_at');
+    expect(onMessageChanged).not.toHaveBeenCalled();
+  });
+
+  test('clears the current category', async () => {
+    const sql = createMockSql([[{ id: MESSAGE_ID }], []]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'set_category', category_id: null },
+      unsubscribeDeps(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ category: null });
+    expect(sql.calls[0].text).toContain('SET category_id = NULL');
+  });
+
+  test('treats assigning the existing category as an idempotent success', async () => {
+    const category = { id: CATEGORY_ID, name: 'Projects', color: '#3b82f6' };
+    const sql = createMockSql([[], [{ message: true, category: true }], [category]]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'set_category', category_id: CATEGORY_ID },
+      unsubscribeDeps(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ category });
+  });
+
+  test('rejects a malformed category id', async () => {
+    const sql = createMockSql();
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'set_category', category_id: 'invalid' },
+      unsubscribeDeps(),
+    );
+    expect(response.status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  test('does not attach another user’s category', async () => {
+    const sql = createMockSql([[], [{ message: true, category: false }]]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'set_category', category_id: CATEGORY_ID },
+      unsubscribeDeps(),
+    );
+    expect(response.status).toBe(404);
+    expect((await response.json()).error).toBe('Category not found');
   });
 });
 

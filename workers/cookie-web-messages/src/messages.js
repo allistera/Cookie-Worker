@@ -330,6 +330,82 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
 }
 
 /**
+ * Replace or clear the one Category attached to an owned message. Categories
+ * are deliberately not part of the Meilisearch document, so this updates the
+ * message row (which also emits the normal Realtime inbox ping) without
+ * scheduling an unnecessary search reindex.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} messageId
+ * @param {any} rawCategoryId
+ */
+async function setMessageCategory(sql, userId, messageId, rawCategoryId) {
+  const clearing = rawCategoryId === null;
+  const categoryId = UUID_RE.test(rawCategoryId) ? String(rawCategoryId) : null;
+  if (!clearing && !categoryId) {
+    return Response.json({ error: 'category_id must be a valid UUID or null' }, { status: 400 });
+  }
+
+  const changed = categoryId
+    ? await sql`
+        UPDATE messages m
+        SET category_id = ${categoryId}
+        WHERE m.id = ${messageId} AND m.user_id = ${userId} AND NOT m.is_deleted
+          AND m.category_id IS DISTINCT FROM ${categoryId}
+          AND EXISTS (
+            SELECT 1 FROM email_categories c
+            WHERE c.id = ${categoryId} AND c.user_id = ${userId}
+          )
+        RETURNING m.id
+      `
+    : await sql`
+        UPDATE messages m
+        SET category_id = NULL
+        WHERE m.id = ${messageId} AND m.user_id = ${userId} AND NOT m.is_deleted
+          AND m.category_id IS NOT NULL
+        RETURNING m.id
+      `;
+
+  if (changed.length === 0) {
+    const [owns] = categoryId
+      ? await sql`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM messages m
+              WHERE m.id = ${messageId} AND m.user_id = ${userId} AND NOT m.is_deleted
+            ) AS message,
+            EXISTS (
+              SELECT 1 FROM email_categories c
+              WHERE c.id = ${categoryId} AND c.user_id = ${userId}
+            ) AS category
+        `
+      : await sql`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM messages m
+              WHERE m.id = ${messageId} AND m.user_id = ${userId} AND NOT m.is_deleted
+            ) AS message,
+            true AS category
+        `;
+    if (!owns?.message) {
+      return Response.json({ error: 'Message not found' }, { status: 404 });
+    }
+    if (!owns?.category) {
+      return Response.json({ error: 'Category not found' }, { status: 404 });
+    }
+  }
+
+  const [category] = await sql`
+    SELECT c.id, c.name, c.color
+    FROM messages m
+    JOIN email_categories c ON c.id = m.category_id AND c.user_id = m.user_id
+    WHERE m.id = ${messageId} AND m.user_id = ${userId} AND NOT m.is_deleted
+  `;
+  return Response.json({ category: category ?? null });
+}
+
+/**
  * @typedef {{
  *   requestPublicHttps: (url: string, options: {method?: string, headers?: Record<string,string>, body?: string, timeoutMs?: number}) => Promise<{status: number}>,
  *   resendApiKey: string | undefined,
@@ -485,7 +561,7 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
 }
 
 /**
- * POST /messages — unsubscribe, label edits, or mute_thread/unmute_thread.
+ * POST /messages — unsubscribe, label/category edits, or mute_thread/unmute_thread.
  * Muting applies to the owned message's entire conversation and clears queued alerts.
  *
  * @param {import('postgres').Sql} sql
@@ -527,6 +603,10 @@ export async function postMessage(sql, userId, body, deps) {
 
   if (action === 'add_label' || action === 'remove_label') {
     return mutateMessageLabel(sql, userId, id, action, body.label_id, deps);
+  }
+
+  if (action === 'set_category') {
+    return setMessageCategory(sql, userId, id, body.category_id);
   }
 
   if (action !== 'unsubscribe') {

@@ -20,13 +20,15 @@ describe('fetchSearchEmails', () => {
     expect(query).toContain('AS has_ai_summary');
     expect(query).toContain('JOIN threads t ON t.id = m.thread_id');
     expect(query).toContain('LEFT JOIN message_ai ai ON ai.message_id = m.id');
-    expect(query).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict');
+    expect(query).toContain('GROUP BY m.id, ai.spam_score, ai.spam_verdict, c.id');
     expect(query).toContain('NOT m.is_deleted');
     expect(query).toContain('m.is_sent');
     expect(query).toContain('m.follow_up_at');
     expect(query).toContain('AS has_html');
     expect(query).toContain('AS has_attachments');
     expect(query).toContain("'kind', l.kind");
+    expect(query).toContain('LEFT JOIN email_categories c');
+    expect(query).toContain('AS category');
     expect(query).not.toContain('body_text');
     expect(query).not.toContain('ai.summary');
   });

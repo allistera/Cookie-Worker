@@ -71,16 +71,20 @@ export function fetchSearchEmails(sql, userId, ids) {
                       ORDER BY l.name)
                FILTER (WHERE l.id IS NOT NULL),
              '[]'
-           ) AS labels
+           ) AS labels,
+           CASE WHEN c.id IS NULL THEN NULL
+                ELSE json_build_object('id', c.id, 'name', c.name, 'color', c.color)
+           END AS category
     FROM messages m
     JOIN threads t ON t.id = m.thread_id AND t.user_id = m.user_id
     LEFT JOIN message_ai ai ON ai.message_id = m.id
+    LEFT JOIN email_categories c ON c.id = m.category_id AND c.user_id = m.user_id
     LEFT JOIN message_labels ml ON ml.message_id = m.id
     LEFT JOIN labels l ON l.id = ml.label_id
     WHERE m.user_id = ${userId}
       AND NOT m.is_deleted
       AND m.id = ANY(${ids}::uuid[])
-    GROUP BY m.id, ai.spam_score, ai.spam_verdict
+    GROUP BY m.id, ai.spam_score, ai.spam_verdict, c.id
   `;
 }
 

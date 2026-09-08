@@ -109,6 +109,24 @@ describe('routing', () => {
     expect(await response.json()).toEqual({ rules: [] });
   });
 
+  test('GET /categories dispatches to listCategories', async () => {
+    const response = await worker.fetch(request('/categories'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ categories: [] });
+  });
+
+  test('POST /categories dispatches to createCategory', async () => {
+    const response = await worker.fetch(
+      request('/categories', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Projects', color: '#2F6BE0' }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(409);
+  });
+
   test('POST /labels dispatches to createLabel (reaches its validation)', async () => {
     const response = await worker.fetch(
       request('/labels', {
