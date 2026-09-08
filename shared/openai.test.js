@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { parseOutputJson } from './openai.js';
+import { OpenAIOutputError, parseOutputJson } from './openai.js';
 
 describe('parseOutputJson', () => {
   test('parses top-level output_text', () => {
@@ -15,15 +15,24 @@ describe('parseOutputJson', () => {
   });
 
   test('throws a descriptive error for incomplete output', () => {
-    expect(() =>
+    const parse = () =>
       parseOutputJson({
         status: 'incomplete',
         incomplete_details: { reason: 'max_output_tokens' },
-      }),
-    ).toThrow('OpenAI response incomplete (max_output_tokens)');
+      });
+
+    expect(parse).toThrow(OpenAIOutputError);
+    expect(parse).toThrow('OpenAI response incomplete (max_output_tokens)');
   });
 
   test('throws a descriptive error when there is no output text', () => {
-    expect(() => parseOutputJson({})).toThrow('OpenAI response contained no output text');
+    expect(() => parseOutputJson({})).toThrow(OpenAIOutputError);
+  });
+
+  test('wraps invalid JSON as a retryable output error', () => {
+    expect(() => parseOutputJson({ output_text: '{"ok":' })).toThrow(OpenAIOutputError);
+    expect(() => parseOutputJson({ output_text: '{"ok":' })).toThrow(
+      'OpenAI response contained invalid JSON',
+    );
   });
 });

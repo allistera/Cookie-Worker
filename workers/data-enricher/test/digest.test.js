@@ -4,6 +4,7 @@ import {
   fetchDigestMessages,
   pruneDigest,
   repairDigest,
+  DIGEST_MAX_OUTPUT_TOKENS,
   DIGEST_PROMPT_VERSION,
   TRIAGE_POLICY_SOURCE,
   UNCLASSIFIED_NOTE,
@@ -107,6 +108,7 @@ describe('buildDigest email triage', () => {
     expect(init.headers.Authorization).toBe('Bearer key');
     const body = JSON.parse(init.body);
     expect(body.model).toBe('gpt-5.6-luna');
+    expect(body.max_output_tokens).toBe(DIGEST_MAX_OUTPUT_TOKENS);
     expect(body.text.format).toMatchObject({ type: 'json_schema', name: 'email_triage' });
     expect(body.input[0].content).toContain('Reply Needed, Review, and Noise');
     expect(body.input[1].content).toContain('home@example.com');
@@ -167,6 +169,46 @@ describe('buildDigest email triage', () => {
         },
       ],
       noise: { count: 1, categories: [{ category: 'promotional', count: 1 }] },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries once after incomplete model output', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ output_text: JSON.stringify(TRIAGE) }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-5-nano')).resolves.toMatchObject({
+      overview: TRIAGE.overview,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries once after an aborted model request', async () => {
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(abortError)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ output_text: JSON.stringify(TRIAGE) }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-5-nano')).resolves.toMatchObject({
+      overview: TRIAGE.overview,
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

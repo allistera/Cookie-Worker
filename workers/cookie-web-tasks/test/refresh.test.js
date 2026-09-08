@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EnricherNotConfiguredError, postRefresh, triggerDigestRebuild } from '../src/refresh.js';
+import {
+  EnricherNotConfiguredError,
+  postRefresh,
+  TIMEOUT_MS,
+  triggerDigestRebuild,
+} from '../src/refresh.js';
 import { createMockSql } from './helpers.js';
 
 // A service-binding Fetcher stub; the token is unchanged.
@@ -18,12 +23,16 @@ afterEach(() => {
 
 describe('triggerDigestRebuild', () => {
   it('asks the Worker for both AI Today cards, with the bearer secret', async () => {
+    const signal = new AbortController().signal;
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(signal);
     await triggerDigestRebuild(ENRICHER, TOKEN);
 
     const [url, init] = enricherFetch.mock.calls[0];
     expect(url.toString()).toBe('https://data-enricher/run?phase=today');
     expect(init.method).toBe('POST');
     expect(init.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(timeoutSpy).toHaveBeenCalledWith(TIMEOUT_MS);
+    expect(init.signal).toBe(signal);
   });
 
   it('throws a typed error when the trigger is not configured', async () => {

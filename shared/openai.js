@@ -16,6 +16,15 @@ export function outputText(body) {
   return '';
 }
 
+/** A Responses API result that cannot be consumed as complete JSON output. */
+export class OpenAIOutputError extends Error {
+  /** @param {string} message @param {{cause?: unknown}} [options] */
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'OpenAIOutputError';
+  }
+}
+
 /**
  * Parses the JSON payload of a Responses API result, surfacing incomplete or
  * empty outputs as descriptive errors instead of opaque SyntaxErrors.
@@ -25,11 +34,15 @@ export function outputText(body) {
  */
 export function parseOutputJson(body) {
   if (body?.status === 'incomplete') {
-    throw new Error(
+    throw new OpenAIOutputError(
       `OpenAI response incomplete (${body?.incomplete_details?.reason || 'unknown'})`,
     );
   }
   const text = outputText(body);
-  if (!text.trim()) throw new Error('OpenAI response contained no output text');
-  return JSON.parse(text);
+  if (!text.trim()) throw new OpenAIOutputError('OpenAI response contained no output text');
+  try {
+    return JSON.parse(text);
+  } catch (cause) {
+    throw new OpenAIOutputError('OpenAI response contained invalid JSON', { cause });
+  }
 }

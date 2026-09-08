@@ -1,5 +1,5 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { parseOutputJson } from '../../../shared/openai.js';
+import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 
 // The stored kind and exported DIGEST_* names are retained for compatibility
@@ -13,6 +13,8 @@ export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const DIGEST_MESSAGE_LIMIT = 50;
 export const DIGEST_TEXT_CAP = 400;
 export const DIGEST_MAX_TOPICS = 2;
+export const DIGEST_MAX_OUTPUT_TOKENS = 8000;
+export const DIGEST_TIMEOUT_MS = 25_000;
 
 const NOISE_CATEGORIES = ['marketing', 'social', 'automated', 'promotional', 'other'];
 export const UNCLASSIFIED_NOTE = 'Triage did not classify this message; shown for review.';
@@ -240,7 +242,7 @@ async function requestTriage(messages, apiKey, model) {
       },
       body: JSON.stringify({
         model,
-        max_output_tokens: 2000,
+        max_output_tokens: DIGEST_MAX_OUTPUT_TOKENS,
         input: [
           {
             role: 'system',
@@ -283,6 +285,16 @@ async function requestTriage(messages, apiKey, model) {
       if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
       return parseOutputJson(await response.json());
     },
+    DIGEST_TIMEOUT_MS,
+  );
+}
+
+/** @param {unknown} error */
+function isRetryableTriageError(error) {
+  return (
+    error instanceof TriageCoverageError ||
+    error instanceof OpenAIOutputError ||
+    (error instanceof Error && error.name === 'AbortError')
   );
 }
 
@@ -308,7 +320,7 @@ export async function buildDigest(messages, apiKey, model) {
       {
         attempts: 2,
         baseDelayMs: 500,
-        isRetryable: (error) => error instanceof TriageCoverageError,
+        isRetryable: isRetryableTriageError,
       },
     );
   } catch (error) {
