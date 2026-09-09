@@ -1,9 +1,12 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { parseOutputJson } from '../../../shared/openai.js';
+import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
 
 export const ANALYSIS_PROMPT_VERSION = 'email-task-analysis-v1';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const ANALYSIS_INPUT_CAP = 12_000;
+export const ANALYSIS_MAX_OUTPUT_TOKENS = 4000;
+export const ANALYSIS_TIMEOUT_MS = 25_000;
 
 const ANALYSIS_SCHEMA = {
   type: 'object',
@@ -59,14 +62,12 @@ export async function fetchImportantMessages(sql, userId) {
 }
 
 /**
- * Extract a short summary and any actionable tasks from one important email.
- *
  * @param {{id: string, from_address: string, subject: string | null, body_text: string | null}} message
  * @param {string} apiKey
  * @param {string} model
  * @returns {Promise<{summary: string, tasks: Array<{content: string, due_date: string | null}>}>}
  */
-export async function analyzeEmail(message, apiKey, model) {
+async function requestAnalysis(message, apiKey, model) {
   return fetchWithTimeout(
     RESPONSES_URL,
     {
@@ -77,7 +78,7 @@ export async function analyzeEmail(message, apiKey, model) {
       },
       body: JSON.stringify({
         model,
-        max_output_tokens: 1500,
+        max_output_tokens: ANALYSIS_MAX_OUTPUT_TOKENS,
         input: [
           {
             role: 'system',
@@ -111,5 +112,29 @@ export async function analyzeEmail(message, apiKey, model) {
       if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
       return parseOutputJson(await response.json());
     },
+    ANALYSIS_TIMEOUT_MS,
   );
+}
+
+/** @param {unknown} error */
+function isRetryableAnalysisError(error) {
+  return (
+    error instanceof OpenAIOutputError || (error instanceof Error && error.name === 'AbortError')
+  );
+}
+
+/**
+ * Extract a short summary and any actionable tasks from one important email.
+ *
+ * @param {{id: string, from_address: string, subject: string | null, body_text: string | null}} message
+ * @param {string} apiKey
+ * @param {string} model
+ * @returns {Promise<{summary: string, tasks: Array<{content: string, due_date: string | null}>}>}
+ */
+export async function analyzeEmail(message, apiKey, model) {
+  return retryWithBackoff(() => requestAnalysis(message, apiKey, model), {
+    attempts: 2,
+    baseDelayMs: 500,
+    isRetryable: isRetryableAnalysisError,
+  });
 }
