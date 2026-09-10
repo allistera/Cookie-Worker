@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { analyzeEmail, fetchImportantMessages, ANALYSIS_PROMPT_VERSION } from '../src/analyze.js';
+import { ANALYSIS_PROMPT_VERSION, analyzeEmail, fetchImportantMessages } from '../src/analyze.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -56,14 +56,35 @@ describe('analyzeEmail', () => {
     );
   });
 
-  test('throws on a non-OK response', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ ok: false, status: 429, text: async () => 'rate limited' })),
-    );
+  test('retries once after an aborted model request', async () => {
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(abortError)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify({ summary: 's', tasks: [] }),
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5-nano')).resolves.toEqual({
+      summary: 's',
+      tasks: [],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not retry a non-OK response', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+
     await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).rejects.toThrow(
-      'OpenAI request failed (429)',
+      'OpenAI request failed (500)',
     );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   test('exposes a prompt version for provenance', () => {

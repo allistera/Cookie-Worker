@@ -14,7 +14,7 @@ export const DIGEST_MESSAGE_LIMIT = 50;
 export const DIGEST_TEXT_CAP = 400;
 export const DIGEST_MAX_TOPICS = 2;
 export const DIGEST_MAX_OUTPUT_TOKENS = 8000;
-export const DIGEST_TIMEOUT_MS = 25_000;
+export const DIGEST_TIMEOUT_MS = 60_000;
 
 const NOISE_CATEGORIES = ['marketing', 'social', 'automated', 'promotional', 'other'];
 export const UNCLASSIFIED_NOTE = 'Triage did not classify this message; shown for review.';
