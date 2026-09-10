@@ -12,7 +12,7 @@ export const RATE_LIMIT = { limit: 4, windowMs: 60_000 };
 
 // The data-enricher may make two bounded 60-second triage attempts before its
 // news request, so keep the service-binding deadline outside that retry budget.
-export const TIMEOUT_MS = 150_000;
+export const TIMEOUT_MS = 180_000;
 
 export class EnricherNotConfiguredError extends Error {
   constructor() {
