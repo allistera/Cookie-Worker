@@ -41,6 +41,18 @@ Send a message from an external account to the configured Cloudflare Email Routi
 
 Check Sentry for errors tagged with the Worker environment and processing stage.
 
+## Search relevance
+
+Ordinary mail searches include archived (Done) mail and exclude deleted mail;
+explicit `in:` operators retain their folder-specific filters. The messages
+index uses `sent_at:desc` only after textual ranking rules, one typo from six
+characters and two from twelve, with no typo tolerance on addresses or numbers.
+Text queries apply a 0.5 ranking-score floor; filter-only queries do not.
+These settings are defined in `shared/meili/messages.js`. For ranking-only
+changes, PATCH only `rankingRules` and `typoTolerance` on the existing index,
+wait for the settings task to succeed, and read the settings back. No document
+upload or embedder change is required; preserve unrelated index settings.
+
 ## AI enrichment and recovery
 
 Daily news ranking has an 8,000-token output budget (including reasoning) and a

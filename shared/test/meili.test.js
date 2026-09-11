@@ -84,6 +84,8 @@ describe('configureIndex', () => {
     expect(call.index).toBe('messages');
     expect(call.method).toBe('updateSettings');
     expect(call.args.searchableAttributes).toEqual(MESSAGES_INDEX.searchable);
+    expect(call.args.rankingRules.at(-1)).toBe('sent_at:desc');
+    expect(call.args.typoTolerance.minWordSizeForTypos).toEqual({ oneTypo: 6, twoTypos: 12 });
     expect(call.args.embedders.default.source).toBe('openAi');
   });
 
@@ -99,6 +101,18 @@ describe('configureIndex', () => {
 });
 
 describe('hybridSearch', () => {
+  it('filters weak text matches without excluding filter-only results', async () => {
+    const { client, calls } = createMockMeili({ search: { hits: [] } });
+    await hybridSearch(
+      ENV,
+      MESSAGES_INDEX,
+      { userId: USER_ID, text: 'invoice', limit: 20 },
+      client,
+    );
+    await hybridSearch(ENV, MESSAGES_INDEX, { userId: USER_ID, text: '', limit: 20 }, client);
+    expect(calls[0].args.params.rankingScoreThreshold).toBe(0.5);
+    expect(calls[1].args.params.rankingScoreThreshold).toBeUndefined();
+  });
   it('always filters by user_id', async () => {
     const { client, calls } = createMockMeili({ search: { hits: [{ id: 'a' }] } });
 
@@ -229,8 +243,8 @@ describe('meiliMessageFilter', () => {
     vi.useRealTimers();
   });
 
-  it('excludes deleted and archived messages by default (no in: filter)', () => {
-    expect(meiliMessageFilter({})).toBe('is_deleted = false AND is_archived = false');
+  it('includes archived messages but excludes deleted messages by default (no in: filter)', () => {
+    expect(meiliMessageFilter({})).toBe('is_deleted = false');
   });
 
   it('matches from: and to: exactly', () => {
@@ -318,7 +332,7 @@ describe('meiliMessageFilter', () => {
   // rejects it — but defensively) falls back to the same default as no
   // filter at all, never to something more permissive.
   it('falls back to the default exclusion for an unrecognized folder', () => {
-    expect(meiliMessageFilter({ in: 'bogus' })).toBe('is_deleted = false AND is_archived = false');
+    expect(meiliMessageFilter({ in: 'bogus' })).toBe('is_deleted = false');
   });
 
   it('escapes a single quote and a backslash in from/to/tag values', () => {
@@ -328,6 +342,24 @@ describe('meiliMessageFilter', () => {
 });
 
 describe('federatedSearch', () => {
+  it('applies the mail relevance floor only to text searches in the mail index', async () => {
+    const { client, calls } = createMockMultiSearch();
+    await federatedSearch(
+      ENV,
+      [
+        { descriptor: MESSAGES_INDEX, q: 'invoice' },
+        { descriptor: MESSAGES_INDEX, q: '' },
+        { descriptor: DOCUMENTS_INDEX, q: 'invoice' },
+      ],
+      { userId: USER_ID, limit: 20 },
+      client,
+    );
+    expect(calls[0].queries.map((q) => q.rankingScoreThreshold)).toEqual([
+      0.5,
+      undefined,
+      undefined,
+    ]);
+  });
   it('injects the escaped user_id filter into every query', async () => {
     const { client, calls } = createMockMultiSearch();
 
