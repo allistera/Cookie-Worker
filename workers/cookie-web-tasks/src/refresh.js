@@ -11,8 +11,9 @@ import { allowRequest } from './rateLimit.js';
 export const RATE_LIMIT = { limit: 4, windowMs: 60_000 };
 
 // The data-enricher may make two bounded 25-second triage attempts before its
-// news request, so keep the service-binding deadline outside that retry budget.
-export const TIMEOUT_MS = 70_000;
+// news source fetch (15 seconds) and ranking (60 seconds). Allow that complete
+// budget plus database overhead before cancelling the service-binding request.
+export const TIMEOUT_MS = 135_000;
 
 export class EnricherNotConfiguredError extends Error {
   constructor() {

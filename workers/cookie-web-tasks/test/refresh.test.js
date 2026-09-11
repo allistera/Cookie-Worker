@@ -32,6 +32,7 @@ describe('triggerDigestRebuild', () => {
     expect(init.method).toBe('POST');
     expect(init.headers.Authorization).toBe(`Bearer ${TOKEN}`);
     expect(timeoutSpy).toHaveBeenCalledWith(TIMEOUT_MS);
+    expect(TIMEOUT_MS).toBeGreaterThan(2 * 25_000 + 15_000 + 60_000);
     expect(init.signal).toBe(signal);
   });
 
