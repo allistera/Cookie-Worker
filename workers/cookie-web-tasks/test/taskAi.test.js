@@ -5,11 +5,14 @@ const { allowRequestMock } = vi.hoisted(() => ({ allowRequestMock: vi.fn() }));
 vi.mock('../src/rateLimit.js', () => ({ allowRequest: allowRequestMock }));
 
 import {
+  createAiTask,
+  normalizeTaskPlan,
   extractTaskTokens,
   generateTaskDraft,
   interpretTask,
   normalizeTaskDraft,
 } from '../src/taskAi.js';
+import { createTaskTree } from '../src/taskItems.js';
 import { createMockSql } from './helpers.js';
 
 const USER_ID = '99999999-9999-9999-9999-999999999999';
@@ -205,5 +208,98 @@ describe('POST /task-items/interpret', () => {
 
     expect(response.status).toBe(502);
     expect((await response.json()).error).not.toContain('private provider detail');
+  });
+});
+
+describe('AI task plans', () => {
+  it('validates and trims the whole plan, allowing simple tasks without subtasks', () => {
+    expect(normalizeTaskPlan({ content: ' Buy milk ', description: '', subtasks: [] })).toEqual({
+      content: 'Buy milk',
+      description: null,
+      subtasks: [],
+    });
+    for (const subtasks of [
+      null,
+      Array(9).fill({ content: 'Step', description: '' }),
+      [{ content: '', description: '' }],
+    ]) {
+      expect(() =>
+        normalizeTaskPlan({ content: 'Plan trip', description: '', subtasks }),
+      ).toThrow();
+    }
+  });
+
+  it('generates a structured plan with meaningful subtasks', async () => {
+    const value = {
+      content: 'Plan a day trip to London',
+      description: 'Arrange travel and an itinerary.',
+      subtasks: [{ content: 'Choose a date', description: 'Check availability.' }],
+    };
+    const fetchMock = vi.fn(async () => Response.json({ output_text: JSON.stringify(value) }));
+    expect(
+      await generateTaskDraft(
+        { text: 'Plan day trip to london', now: '2026-09-11', timeZone: 'UTC', expand: true },
+        'test-key',
+        fetchMock,
+      ),
+    ).toEqual(value);
+    const request = JSON.parse(/** @type {any} */ (fetchMock.mock.calls[0])[1].body);
+    expect(request.text.format.schema.required).toContain('subtasks');
+    expect(request.text.format.schema.properties.subtasks.maxItems).toBe(8);
+  });
+
+  it('saves parent and children in one locked transaction with owned parent links', async () => {
+    const parent = { id: PROJECT_ID, kind: 'task', projectId: null, content: 'Plan trip' };
+    const child = { id: USER_ID, parentId: PROJECT_ID, content: 'Choose date' };
+    const sql = createMockSql([[parent], [parent], [child]]);
+    const response = await createTaskTree(
+      sql,
+      USER_ID,
+      {
+        content: 'Plan trip',
+        description: 'Arrange travel',
+        subtasks: [{ content: 'Choose date', description: '' }],
+      },
+      {},
+    );
+    expect(response.status).toBe(201);
+    expect(sql.begin).toHaveBeenCalledTimes(1);
+    expect(sql.controlCalls).toHaveLength(1);
+    expect(sql.calls[1].values).toEqual([PROJECT_ID, USER_ID]);
+    await expect(response.json()).resolves.toEqual({ item: parent, subtasks: [child] });
+  });
+
+  it('throws inside the transaction when a child cannot be saved', async () => {
+    const sql = createMockSql([[{ id: PROJECT_ID }], []]);
+    await expect(
+      createTaskTree(sql, USER_ID, { content: 'Plan trip', subtasks: [{ content: 'Step' }] }, {}),
+    ).rejects.toThrow('Could not save generated task');
+    expect(sql.begin).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses invalid input and rate-limited generation before any task writes', async () => {
+    const sql = createMockSql([]);
+    expect(
+      (
+        await createAiTask(
+          sql,
+          USER_ID,
+          { text: ' ', timeZone: 'UTC' },
+          { OPENAI_API_KEY: 'test-key' },
+        )
+      ).status,
+    ).toBe(400);
+    allowRequestMock.mockResolvedValue(false);
+    expect(
+      (
+        await createAiTask(
+          sql,
+          USER_ID,
+          { text: 'Plan trip', timeZone: 'UTC' },
+          { OPENAI_API_KEY: 'test-key' },
+        )
+      ).status,
+    ).toBe(429);
+    expect(sql.begin).not.toHaveBeenCalled();
   });
 });

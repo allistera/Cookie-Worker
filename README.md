@@ -316,3 +316,13 @@ Deploy the updated `cookie-web-drafts` Worker before Web. `GET /drafts?view=summ
 returns preview text and attachment counts for the list; `GET /drafts/:id` loads
 the full body and attachments when opened. Plain `GET /drafts` preserves the full
 response for existing clients.
+
+### AI Task plans
+
+`POST /task-items/generate` accepts `{ text, timeZone }` (up to 1000 characters).
+It uses the existing authenticated AI quota and `OPENAI_API_KEY` to generate a
+title, description, and zero to eight useful subtasks. The parent and children
+are saved together in one transaction in Inbox; the response is
+`{ item, subtasks }` with status 201. Search indexing follows the commit.
+Generation failures do not save tasks. The existing `/task-items/interpret`
+quick-add parser remains available for explicit scheduling and shortcuts.

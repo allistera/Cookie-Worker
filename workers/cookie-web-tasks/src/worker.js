@@ -21,7 +21,7 @@ import {
   reorderTaskItems,
   updateTaskItem,
 } from './taskItems.js';
-import { interpretTask } from './taskAi.js';
+import { createAiTask, interpretTask } from './taskAi.js';
 import { getTasks, postTasks } from './tasks.js';
 
 // Vercel's body cap is 4.5 MB; keep that for document payloads, but use a much
@@ -63,11 +63,12 @@ async function route(url, request, sql, userId, env, email) {
 
   if (segments[0] === 'task-items') {
     const reorder = segments.length === 2 && segments[1] === 'reorder';
+    const generate = segments.length === 2 && segments[1] === 'generate';
     const interpret = segments.length === 2 && segments[1] === 'interpret';
-    if (segments.length > 1 && !reorder && !interpret) {
+    if (segments.length > 1 && !reorder && !interpret && !generate) {
       return Response.json({ error: 'Not Found' }, { status: 404 });
     }
-    if ((reorder || interpret) && request.method !== 'POST') {
+    if ((reorder || interpret || generate) && request.method !== 'POST') {
       return Response.json(
         { error: 'Method not allowed' },
         { status: 405, headers: { Allow: 'POST' } },
@@ -88,6 +89,7 @@ async function route(url, request, sql, userId, env, email) {
       if (errorResponse) return errorResponse;
       throw error;
     }
+    if (generate) return createAiTask(sql, userId, body, env);
     if (interpret) return interpretTask(sql, userId, body, env);
     if (reorder) return reorderTaskItems(sql, userId, body);
     if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
