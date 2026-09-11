@@ -19,6 +19,9 @@ export const LOCAL_HEADLINE_PICKS = 3;
 // candidate pool is already 20 repos (fetchTopRepos), so it ranks a longer
 // list. Everything else stays at MAX_PICKS_PER_SOURCE.
 export const GITHUB_PICKS = 10;
+// Reasoning tokens share this budget with the final structured output.
+export const NEWS_MAX_OUTPUT_TOKENS = 8000;
+export const NEWS_TIMEOUT_MS = 60_000;
 
 const RANKING_SCHEMA = {
   type: 'object',
@@ -95,7 +98,7 @@ export async function rankForInterests(
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
-        max_output_tokens: 1200,
+        max_output_tokens: NEWS_MAX_OUTPUT_TOKENS,
         input: [
           {
             role: 'system',
@@ -132,6 +135,7 @@ export async function rankForInterests(
       if (!response.ok) throw new Error(`OpenAI request failed (${response.status})`);
       return applyRanking(parseOutputJson(await response.json()), candidates, limit);
     },
+    NEWS_TIMEOUT_MS,
   );
 }
 
@@ -140,7 +144,8 @@ export async function rankForInterests(
  * reader's interests, plus straight UK headlines.
  *
  * Each source is independent — one being unavailable or unconfigured must not
- * cost the others, so a failure drops that section and keeps the rest.
+ * cost the others. Fetch failures drop the section; ranking failures retain
+ * the source's popular items, clearly marked as not personalised.
  *
  * @param {{interests: string[], apiKey: string, model: string, githubToken?: string, productHuntToken?: string, env?: import('./sentry.js').EnricherEnv}} options
  */
@@ -190,9 +195,32 @@ export async function buildNews({ interests, apiKey, model, githubToken, product
   const settled = await Promise.allSettled(
     sources.map(async (source) => {
       const candidates = await source.fetch();
-      const items = source.personalise
-        ? await rankForInterests(candidates, interests, source.label, apiKey, model, source.limit)
-        : candidates.map((c) => ({ ...c, note: '' }));
+      let items = candidates.map((c) => ({ ...c, note: '' }));
+      if (source.personalise) {
+        try {
+          items = await rankForInterests(
+            candidates,
+            interests,
+            source.label,
+            apiKey,
+            model,
+            source.limit,
+          );
+        } catch (error) {
+          console.log(
+            JSON.stringify({
+              event: 'news_ranking_failed',
+              source: source.title,
+              // Never log provider error text without the production redactor.
+              error: env ? redact(error, env) : 'News ranking failed',
+            }),
+          );
+          items = candidates.slice(0, source.limit ?? MAX_PICKS_PER_SOURCE).map((candidate) => ({
+            ...candidate,
+            note: 'Popular item — personalisation unavailable.',
+          }));
+        }
+      }
       return { emoji: source.emoji, title: source.title, items };
     }),
   );

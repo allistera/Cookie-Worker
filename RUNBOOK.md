@@ -43,6 +43,13 @@ Check Sentry for errors tagged with the Worker environment and processing stage.
 
 ## AI enrichment and recovery
 
+Daily news ranking has an 8,000-token output budget (including reasoning) and a
+60-second deadline. If ranking fails, GitHub and Product Hunt keep their fetched
+popular items with a "personalisation unavailable" note, capped at 10 and 5 items
+respectively. Check `news_ranking_failed` in data-enricher logs for the source and
+sanitised error. A successful ranking with no matches remains empty; a source
+fetch failure still logs `news_source_failed` and omits only that source.
+
 After forwarding succeeds, the Worker starts best-effort enrichment with a fresh database client. Enrichment is AI classification only; search indexing is a separate best-effort write to Meilisearch.
 
 The scheduled handler runs every 15 minutes. It retries up to three `pending` or `failed` rows older than two minutes.
