@@ -46,6 +46,7 @@ vi.mock('../src/store.js', () => ({
   storeDigest: vi.fn(async () => 'digest-1'),
   storeNews: vi.fn(async () => 'news-1'),
   fetchInterests: vi.fn(async () => []),
+  fetchGithubPersonalisation: vi.fn(async () => false),
 }));
 
 import worker, { runScheduledEnrichment } from '../src/worker.js';

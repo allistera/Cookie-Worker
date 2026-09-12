@@ -147,9 +147,17 @@ export async function rankForInterests(
  * cost the others. Fetch failures drop the section; ranking failures retain
  * the source's popular items, clearly marked as not personalised.
  *
- * @param {{interests: string[], apiKey: string, model: string, githubToken?: string, productHuntToken?: string, env?: import('./sentry.js').EnricherEnv}} options
+ * @param {{interests: string[], personaliseGithub?: boolean, apiKey: string, model: string, githubToken?: string, productHuntToken?: string, env?: import('./sentry.js').EnricherEnv}} options
  */
-export async function buildNews({ interests, apiKey, model, githubToken, productHuntToken, env }) {
+export async function buildNews({
+  interests,
+  personaliseGithub = false,
+  apiKey,
+  model,
+  githubToken,
+  productHuntToken,
+  env,
+}) {
   const window = previousUkDayWindow();
 
   const sources = [
@@ -157,7 +165,7 @@ export async function buildNews({ interests, apiKey, model, githubToken, product
       emoji: '💻',
       title: 'GitHub',
       label: 'new GitHub repositories',
-      personalise: true,
+      personalise: personaliseGithub,
       limit: GITHUB_PICKS,
       fetch: () => fetchTopRepos(window, githubToken),
     },

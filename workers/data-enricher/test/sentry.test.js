@@ -38,6 +38,7 @@ vi.mock('../src/store.js', () => ({
   storeDigest: vi.fn(),
   storeNews: vi.fn(),
   fetchInterests: vi.fn(async () => []),
+  fetchGithubPersonalisation: vi.fn(async () => false),
 }));
 
 /** @type {any} */

@@ -8,6 +8,7 @@ import { buildNews } from './news.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
 import {
   fetchInterests,
+  fetchGithubPersonalisation,
   fetchEnrichmentSettings,
   lookupUserId,
   storeEmailAnalysis,
@@ -132,6 +133,7 @@ async function buildDailyNews(sql, env, userId) {
   const interests = await fetchInterests(sql, userId);
   const news = await buildNews({
     interests,
+    personaliseGithub: await fetchGithubPersonalisation(sql, userId),
     apiKey,
     model: env.AI_MODEL,
     // Not GITHUB_TOKEN: Actions reserves secret names with that prefix, so it

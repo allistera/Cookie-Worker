@@ -71,13 +71,16 @@ describe('getInterests', () => {
     const sql = createMockSql([[{ interests: ['Vue', 'Postgres'] }]]);
     const response = await getInterests(sql, USER_ID);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ interests: ['Vue', 'Postgres'] });
+    expect(await response.json()).toEqual({
+      interests: ['Vue', 'Postgres'],
+      personaliseGithub: false,
+    });
   });
 
   it('defaults to an empty list', async () => {
     const sql = createMockSql([[]]);
     const response = await getInterests(sql, USER_ID);
-    expect(await response.json()).toEqual({ interests: [] });
+    expect(await response.json()).toEqual({ interests: [], personaliseGithub: false });
   });
 });
 
@@ -86,7 +89,24 @@ describe('putInterests', () => {
     const sql = createMockSql([[{ interests: ['Vue'] }]]);
     const response = await putInterests(sql, USER_ID, { interests: [' Vue ', 'vue'] });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ interests: ['Vue'] });
+    expect(await response.json()).toEqual({ interests: ['Vue'], personaliseGithub: false });
+  });
+
+  it('persists an explicit opt-in alongside topics and returns it', async () => {
+    const sql = createMockSql([[{ interests: ['Rust'], personalise_github: true }]]);
+    const response = await putInterests(sql, USER_ID, {
+      interests: ['Rust'],
+      personaliseGithub: true,
+    });
+    expect(await response.json()).toEqual({ interests: ['Rust'], personaliseGithub: true });
+    expect(sql.json).toHaveBeenCalledWith({ interests: ['Rust'], personaliseGithub: true });
+  });
+
+  it('rejects invalid personalisation flags', async () => {
+    const sql = createMockSql();
+    const response = await putInterests(sql, USER_ID, { interests: [], personaliseGithub: 'true' });
+    expect(response.status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
   });
 
   it('rejects a malformed payload without touching the database', async () => {

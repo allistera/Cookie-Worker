@@ -326,3 +326,5 @@ are saved together in one transaction in Inbox; the response is
 `{ item, subtasks }` with status 201. Search indexing follows the commit.
 Generation failures do not save tasks. The existing `/task-items/interpret`
 quick-add parser remains available for explicit scheduling and shortcuts.
+
+GitHub news defaults to all fetched daily top repositories in source order. The `users.prefs.personaliseGithub` boolean opts into interest-based ranking and selection; absent or false disables it without changing Product Hunt interests. Cookie-Web edits it through GET/PUT `/tasks/interests`, and the next Today refresh or scheduled run applies it.

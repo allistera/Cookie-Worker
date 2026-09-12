@@ -11,14 +11,15 @@ export const MAX_INTEREST_LENGTH = 60;
 /** @param {import('postgres').Sql} sql @param {string} userId */
 export function fetchInterests(sql, userId) {
   return sql`
-    SELECT coalesce(u.prefs -> 'interests', '[]'::jsonb) AS interests
+    SELECT coalesce(u.prefs -> 'interests', '[]'::jsonb) AS interests,
+      (coalesce(prefs -> 'personaliseGithub', 'false'::jsonb) = 'true'::jsonb) AS personalise_github
     FROM users u
     WHERE u.id = ${userId}
   `;
 }
 
-/** @param {import('postgres').Sql} sql @param {string} userId @param {string[]} interests */
-export function saveInterests(sql, userId, interests) {
+/** @param {import('postgres').Sql} sql @param {string} userId @param {string[]} interests @param {boolean | undefined} [personaliseGithub] */
+export function saveInterests(sql, userId, interests, personaliseGithub) {
   // sql.json (not a manually JSON.stringify'd string cast with ::jsonb) is
   // required here: postgres.js sends a pre-stringified string parameter as
   // jsonb text that Postgres parses back into a jsonb *string scalar*, not an
@@ -26,9 +27,10 @@ export function saveInterests(sql, userId, interests) {
   // key merge and silently drops every previous save.
   return sql`
     UPDATE users
-    SET prefs = coalesce(prefs, '{}'::jsonb) || ${sql.json({ interests })}
+    SET prefs = coalesce(prefs, '{}'::jsonb) || ${sql.json({ interests, ...(personaliseGithub === undefined ? {} : { personaliseGithub }) })}
     WHERE id = ${userId}
-    RETURNING coalesce(prefs -> 'interests', '[]'::jsonb) AS interests
+    RETURNING coalesce(prefs -> 'interests', '[]'::jsonb) AS interests,
+      (coalesce(prefs -> 'personaliseGithub', 'false'::jsonb) = 'true'::jsonb) AS personalise_github
   `;
 }
 
@@ -58,18 +60,27 @@ export function normalizeInterests(input) {
 /** @param {import('postgres').Sql} sql @param {string} userId */
 export async function getInterests(sql, userId) {
   const [row] = await fetchInterests(sql, userId);
-  return Response.json({ interests: row?.interests ?? [] });
+  return Response.json({
+    interests: row?.interests ?? [],
+    personaliseGithub: row?.personalise_github === true,
+  });
 }
 
 // PUT /tasks/interests — an empty list is valid and means "don't personalise".
 /** @param {import('postgres').Sql} sql @param {string} userId @param {any} body */
 export async function putInterests(sql, userId, body) {
+  if (body?.personaliseGithub !== undefined && typeof body.personaliseGithub !== 'boolean') {
+    return Response.json({ error: 'personaliseGithub must be a boolean' }, { status: 400 });
+  }
   const interests = normalizeInterests(body?.interests);
   if (!interests) {
     return Response.json({ error: 'interests must be an array of strings' }, { status: 400 });
   }
 
-  const [row] = await saveInterests(sql, userId, interests);
+  const [row] = await saveInterests(sql, userId, interests, body?.personaliseGithub);
   if (!row) return Response.json({ error: 'User not found' }, { status: 404 });
-  return Response.json({ interests: row.interests });
+  return Response.json({
+    interests: row.interests,
+    personaliseGithub: row.personalise_github === true,
+  });
 }

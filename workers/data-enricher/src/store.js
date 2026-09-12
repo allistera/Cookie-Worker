@@ -214,3 +214,12 @@ export async function storeDigest(sql, userId, digest, model) {
     policy_source: TRIAGE_POLICY_SOURCE,
   });
 }
+
+/** @param {import('postgres').Sql} sql @param {string} userId */
+export async function fetchGithubPersonalisation(sql, userId) {
+  const rows = await sql`
+    SELECT (coalesce(prefs -> 'personaliseGithub', 'false'::jsonb) = 'true'::jsonb) AS enabled
+    FROM users WHERE id = ${userId}
+  `;
+  return rows[0]?.enabled === true;
+}

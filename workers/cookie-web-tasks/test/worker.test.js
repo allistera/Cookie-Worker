@@ -170,7 +170,7 @@ describe('routing — /tasks/interests', () => {
   test('GET /tasks/interests dispatches to getInterests', async () => {
     const response = await worker.fetch(request('/tasks/interests'), env, ctx);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ interests: [] });
+    expect(await response.json()).toEqual({ interests: [], personaliseGithub: false });
   });
 
   test('PUT /tasks/interests dispatches to putInterests', async () => {
@@ -181,7 +181,7 @@ describe('routing — /tasks/interests', () => {
       ctx,
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ interests: ['Vue'] });
+    expect(await response.json()).toEqual({ interests: ['Vue'], personaliseGithub: false });
   });
 
   test('POST on /tasks/interests returns 405', async () => {

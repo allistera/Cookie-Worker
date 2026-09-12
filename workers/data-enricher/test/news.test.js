@@ -191,12 +191,26 @@ describe('rankForInterests', () => {
 
 describe('buildNews', () => {
   const options = {
+    personaliseGithub: true,
     interests: [],
     apiKey: 'key',
     model: 'gpt-5.6-luna',
     githubToken: 'gh',
     productHuntToken: 'ph',
   };
+
+  test('keeps every GitHub candidate without ranking by default, even with interests', async () => {
+    const candidates = Array.from({ length: 15 }, (_, i) => ({
+      ...CANDIDATES[0],
+      url: `https://github.com/acme/${i}`,
+    }));
+    vi.mocked(fetchTopRepos).mockResolvedValue(candidates);
+    vi.mocked(fetchUkHeadlines).mockResolvedValue([]);
+    const { sections } = await buildNews({ interests: ['Rust'], apiKey: 'key', model: 'model' });
+    expect(sections.find((section) => section.title === 'GitHub').items).toEqual(
+      candidates.map((item) => ({ ...item, note: '' })),
+    );
+  });
 
   test.each(['incomplete', 'http', 'timeout'])(
     'keeps capped source items when ranking fails: %s',
