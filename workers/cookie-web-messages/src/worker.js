@@ -176,18 +176,25 @@ const worker = {
     let sql = createSql(env.HYPERDRIVE.connectionString);
     try {
       // The socket to Hyperdrive drops under a query now and then (Sentry
-      // COOKIE-WEB-M, COOKIE-WEB-R: "Network connection lost", once every
-      // week or two, always mid-read). Every GET here is idempotent, so it
-      // gets one more go on a fresh connection before the person sees a
-      // failure — the caller lookup included, which otherwise turned a
-      // dropped socket into a 401. A write does not: its body is spent, and
-      // it may have landed.
+      // COOKIE-WEB-M, -R, -17 ("Network connection lost"), and -Z ("write
+      // CONNECTION_CLOSED ...hyperdrive.local:5432")). Reads and PATCH
+      // /messages are idempotent, so they get one more go on a fresh
+      // connection (the PATCH body is replayed from a clone taken up front).
+      // POST is not retried since it sends mail and may have landed.
+      const retryable = request.method === 'GET' || request.method === 'PATCH';
+      const replay = request.method === 'PATCH' ? /** @type {Request} */ (request.clone()) : null;
       const response = await retryWithBackoff(
         async (attempt) => {
           if (attempt > 1) {
             ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
             sql = createSql(env.HYPERDRIVE.connectionString);
-            console.log(JSON.stringify({ event: 'read_retried', path: url.pathname }));
+            console.log(
+              JSON.stringify({
+                event: 'request_retried',
+                path: url.pathname,
+                method: request.method,
+              }),
+            );
           }
           let userId;
           try {
@@ -196,10 +203,10 @@ const worker = {
             if (isTransientDbError(error)) throw error;
             return authFailureResponse(error);
           }
-          return route(url, request, sql, userId, env, ctx);
+          return route(url, attempt > 1 && replay ? replay : request, sql, userId, env, ctx);
         },
         {
-          attempts: request.method === 'GET' ? 2 : 1,
+          attempts: retryable ? 2 : 1,
           baseDelayMs: 100,
           isRetryable: isTransientDbError,
         },

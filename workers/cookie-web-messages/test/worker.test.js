@@ -213,8 +213,8 @@ describe('cleanup and error reporting', () => {
   });
 
   // The socket to Hyperdrive drops under a query now and then (Sentry
-  // COOKIE-WEB-M and -R). A read is idempotent, so it gets one more go on a
-  // fresh connection; a write does not.
+  // COOKIE-WEB-M, -R, -17, and -Z). Reads and PATCH /messages are idempotent,
+  // so they get one more go on a fresh connection; POST sends mail and does not.
   describe('a dropped connection', () => {
     const dropped = () => new Error('Network connection lost.');
 
@@ -236,13 +236,41 @@ describe('cleanup and error reporting', () => {
       expect(captureHandledException).toHaveBeenCalledOnce();
     });
 
-    test('does not retry a write', async () => {
-      mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([]);
+    test('retries a PATCH once, replaying its body', async () => {
+      mockQuery
+        .mockRejectedValueOnce(dropped())
+        .mockResolvedValue([{ id: MESSAGE_ID, is_starred: true }]);
+      const patchCtx = /** @type {any} */ ({ waitUntil: vi.fn() });
       const response = await worker.fetch(
         request('/messages', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: MESSAGE_ID, is_starred: true }),
+        }),
+        env,
+        patchCtx,
+      );
+      expect(response.status).toBe(200);
+      // The retry opens a fresh request client, then the successful PATCH
+      // schedules its own client for search reindexing.
+      expect(createClient).toHaveBeenCalledTimes(3);
+      expect(captureHandledException).not.toHaveBeenCalled();
+      expect((await response.json()).message.is_starred).toBe(true);
+    });
+
+    test('does not retry a POST', async () => {
+      mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([]);
+      const response = await worker.fetch(
+        request('/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: MESSAGE_ID,
+            action: 'unsubscribe',
+            to: 'a@b.c',
+            subject: 's',
+            body: 'b',
+          }),
         }),
         env,
         ctx,
