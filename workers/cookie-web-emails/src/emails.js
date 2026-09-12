@@ -38,9 +38,13 @@ export function folderPredicate(sql, folder, labelName) {
         AND tagged_l.name = ${labelName}
     )`;
   }
+  // New mail becomes visible only after classification commits, so the first
+  // realtime list includes its final priority and category. Sent reminders
+  // do not pass through inbound classification.
   return sql`NOT m.is_archived AND (
     (
       NOT m.is_sent
+      AND ai.status = 'completed'
       AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
       AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())
     )
@@ -143,7 +147,8 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
 export function fetchUnreadCount(sql, userId) {
   return sql`
     SELECT count(m.id) FILTER (
-             WHERE COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+             WHERE ai.status = 'completed'
+               AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
            )::int AS unread
     FROM messages m
     LEFT JOIN message_ai ai ON ai.message_id = m.id

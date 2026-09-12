@@ -181,6 +181,8 @@ describe('fetchUnreadCount', () => {
     // messages_unread_idx is a partial index ON messages (user_id) WHERE
     // is_unread — this predicate shape matches it directly.
     expect(query).toContain('WHERE m.user_id = ? AND m.is_unread');
-    expect(query).toMatch(/FILTER \(\s*WHERE COALESCE\(ai\.spam_verdict, 'inbox'\) <> 'spam'\s*\)/);
+    expect(query).toMatch(
+      /FILTER \(\s*WHERE ai\.status = 'completed'\s*AND COALESCE\(ai\.spam_verdict, 'inbox'\) <> 'spam'\s*\)/,
+    );
   });
 });

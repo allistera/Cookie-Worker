@@ -51,6 +51,16 @@ describe('fetchEmails', () => {
     expect(capture.query()).toContain('m.scheduled_for IS NULL OR m.scheduled_for <= now()');
   });
 
+  test('waits for completed classification in both inbox rows and unread counts', () => {
+    const capture = captureQuery();
+    fetchEmails(capture.sql, USER_ID, 50, null, 'inbox');
+    expect(capture.query()).toContain("ai.status = 'completed'");
+    fetchUnreadCount(capture.sql, USER_ID);
+    expect(capture.query()).toContain("ai.status = 'completed'");
+    fetchEmails(capture.sql, USER_ID, 50, null, 'sent');
+    expect(capture.query()).not.toContain("ai.status = 'completed'");
+  });
+
   test('normalizes double-encoded recipients to a jsonb object, like the contacts view does', () => {
     const capture = captureQuery();
 
@@ -162,7 +172,7 @@ describe('fetchUnreadCount', () => {
     fetchUnreadCount(capture.sql, USER_ID);
 
     expect(capture.query()).toMatch(
-      /count\(m\.id\) FILTER \(\s*WHERE COALESCE\(ai\.spam_verdict, 'inbox'\) <> 'spam'\s*\)/,
+      /count\(m\.id\) FILTER \(\s*WHERE ai\.status = 'completed'\s*AND COALESCE\(ai\.spam_verdict, 'inbox'\) <> 'spam'\s*\)/,
     );
     expect(capture.query()).toContain('WHERE m.user_id = ? AND m.is_unread');
     const whereOnwards = capture.query().slice(capture.query().indexOf('WHERE m.user_id'));
