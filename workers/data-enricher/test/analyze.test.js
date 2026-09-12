@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { ANALYSIS_PROMPT_VERSION, analyzeEmail, fetchImportantMessages } from '../src/analyze.js';
+import {
+  analyzeEmail,
+  fetchImportantMessages,
+  ANALYSIS_MAX_OUTPUT_TOKENS,
+  ANALYSIS_PROMPT_VERSION,
+} from '../src/analyze.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -14,6 +19,7 @@ const MESSAGE = {
 
 describe('analyzeEmail', () => {
   test('requests a structured analysis and parses it', async () => {
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     const analysis = {
       summary: 'Accountant needs receipts by Friday.',
       tasks: [{ content: 'Send receipts', due_date: '2026-07-24' }],
@@ -33,56 +39,80 @@ describe('analyzeEmail', () => {
     expect(init.headers.Authorization).toBe('Bearer key');
     const body = JSON.parse(init.body);
     expect(body.model).toBe('gpt-5.6-luna');
-    expect(body.max_output_tokens).toBe(1500);
+    expect(body.max_output_tokens).toBe(ANALYSIS_MAX_OUTPUT_TOKENS);
     expect(body.text.format.type).toBe('json_schema');
     expect(JSON.stringify(body.input)).toContain('VAT deadline');
+    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 60_000);
   });
 
   test('surfaces incomplete output instead of parsing truncated JSON', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        output_text: '{"summary":"tru',
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).rejects.toThrow(
+      /incomplete \(max_output_tokens\)/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries an incomplete response once and returns the completed analysis', async () => {
+    const analysis = {
+      summary: 'Accountant needs receipts by Friday.',
+      tasks: [{ content: 'Send receipts', due_date: '2026-07-24' }],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           status: 'incomplete',
           incomplete_details: { reason: 'max_output_tokens' },
           output_text: '{"summary":"tru',
         }),
-      })),
-    );
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ output_text: JSON.stringify(analysis) }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
 
-    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).rejects.toThrow(
-      /incomplete \(max_output_tokens\)/,
-    );
+    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).resolves.toEqual(analysis);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  test('retries once after an aborted model request', async () => {
-    const abortError = new Error('The operation was aborted');
-    abortError.name = 'AbortError';
+  test('retries an aborted request once and returns the analysis', async () => {
+    const analysis = {
+      summary: 'Accountant needs receipts by Friday.',
+      tasks: [{ content: 'Send receipts', due_date: '2026-07-24' }],
+    };
+    const abortError = Object.assign(new Error('The operation was aborted'), {
+      name: 'AbortError',
+    });
     const fetchMock = vi
       .fn()
       .mockRejectedValueOnce(abortError)
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({
-          output_text: JSON.stringify({ summary: 's', tasks: [] }),
-        }),
+        json: async () => ({ output_text: JSON.stringify(analysis) }),
       });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5-nano')).resolves.toEqual({
-      summary: 's',
-      tasks: [],
-    });
+    await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).resolves.toEqual(analysis);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  test('does not retry a non-OK response', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: false, status: 500 }));
+  test.each([429, 500])('does not retry an HTTP %s response', async (status) => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status }));
     vi.stubGlobal('fetch', fetchMock);
-
     await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).rejects.toThrow(
-      'OpenAI request failed (500)',
+      `OpenAI request failed (${status})`,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

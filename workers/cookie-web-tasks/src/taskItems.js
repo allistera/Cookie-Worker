@@ -693,3 +693,27 @@ export async function updateTaskItem(sql, userId, body, env) {
     return updateTaskItemUnlocked(/** @type {any} */ (tx), userId, body, env);
   });
 }
+
+/** Save the generated parent and children together, then index the committed tree.
+ * @param {import('postgres').Sql} sql @param {string} userId @param {any} draft @param {any} env
+ */
+export async function createTaskTree(sql, userId, draft, env) {
+  const result = await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
+    const create = async (body) => {
+      const response = await createTaskItemUnlocked(/** @type {any} */ (tx), userId, body);
+      if (!response.ok) throw new Error('Could not save generated task');
+      return (await response.json()).item;
+    };
+    const item = await create({ content: draft.content, description: draft.description });
+    const subtasks = [];
+    for (const child of draft.subtasks) {
+      subtasks.push(
+        await create({ content: child.content, description: child.description, parentId: item.id }),
+      );
+    }
+    return { item, subtasks };
+  });
+  await syncTaskItemToMeili(sql, env, result.item.id);
+  return Response.json(result, { status: 201 });
+}

@@ -32,10 +32,14 @@ export const MESSAGES_INDEX = {
     'scheduled_for',
   ],
   sortable: ['sent_at'],
-  // Carried over from configureMeiliIndex's updateRankingRules call. These
-  // happen to be Meilisearch's own defaults, but we set them explicitly so a
-  // future default change upstream does not silently alter ranking here.
-  rankingRules: ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness'],
+  // Recency breaks ties only after all textual relevance rules.
+  rankingRules: ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness', 'sent_at:desc'],
+  typoTolerance: {
+    minWordSizeForTypos: { oneTypo: 6, twoTypos: 12 },
+    disableOnAttributes: ['from_address', 'to_address'],
+    disableOnNumbers: true,
+  },
+  rankingScoreThreshold: 0.5,
   semanticRatio: 0.5,
   // Subject and body only: the same text the app embedded itself. Addresses
   // and labels stay searchable but out of the vector, so a label never

@@ -145,15 +145,15 @@ describe('message search engine', () => {
     expect(query.filter).toContain('is_archived = false');
   });
 
-  // No in: filter at all excludes Done mail too — not just trashed mail.
-  it('excludes archived (Done) mail when there is no in: filter', async () => {
+  it('includes archived mail but excludes deleted mail without an in: filter', async () => {
     const search = mockSearch(async () => []);
     const sql = createMockSql([[]]);
 
     await handleSearch(sql, USER_ID, url('?q=roof'), ENV, deps({ hybridSearch: search }));
 
     const query = search.mock.calls[0][2];
-    expect(query.filter).toContain('is_archived = false');
+    expect(query.filter).not.toContain('is_archived');
+    expect(query.filter).toContain('is_deleted = false');
   });
 
   it('in:all does not exclude archived mail (only trashed mail)', async () => {

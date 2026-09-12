@@ -15,6 +15,8 @@ import {
   GITHUB_PICKS,
   HEADLINE_PICKS,
   MAX_PICKS_PER_SOURCE,
+  NEWS_MAX_OUTPUT_TOKENS,
+  NEWS_TIMEOUT_MS,
 } from '../src/news.js';
 import {
   fetchTopLaunches,
@@ -30,6 +32,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 const CANDIDATES = [
@@ -163,6 +166,8 @@ describe('rankForInterests', () => {
     const body = JSON.parse(init.body);
     expect(JSON.stringify(body.input)).toContain('Rust');
     expect(body.text.format.type).toBe('json_schema');
+    expect(body.max_output_tokens).toBe(NEWS_MAX_OUTPUT_TOKENS);
+    expect(body.max_output_tokens).toBe(8000);
   });
 
   // Nothing to rank against, so spending a model call would be pointless.
@@ -192,6 +197,64 @@ describe('buildNews', () => {
     githubToken: 'gh',
     productHuntToken: 'ph',
   };
+
+  test.each(['incomplete', 'http', 'timeout'])(
+    'keeps capped source items when ranking fails: %s',
+    async (failure) => {
+      vi.useFakeTimers();
+      const candidates = Array.from({ length: 15 }, (_, index) => ({
+        ...CANDIDATES[0],
+        url: `https://github.com/acme/${index}`,
+      }));
+      vi.mocked(fetchTopRepos).mockResolvedValue(candidates);
+      vi.mocked(fetchTopLaunches).mockResolvedValue(candidates);
+      vi.mocked(fetchUkHeadlines).mockResolvedValue([]);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url, init) => {
+          if (failure === 'timeout') {
+            return new Promise((_resolve, reject) => {
+              init.signal.addEventListener('abort', () =>
+                reject(new DOMException('Aborted', 'AbortError')),
+              );
+            });
+          }
+          return {
+            ok: failure !== 'http',
+            status: 503,
+            json: async () => ({
+              status: 'incomplete',
+              incomplete_details: { reason: 'max_output_tokens' },
+            }),
+          };
+        }),
+      );
+      const pending = buildNews({ ...options, interests: ['Rust'] });
+      await vi.advanceTimersByTimeAsync(NEWS_TIMEOUT_MS);
+      const { sections } = await pending;
+      expect(sections.map((s) => s.title)).toEqual(['GitHub', 'Product Hunt']);
+      expect(sections[0].items).toHaveLength(GITHUB_PICKS);
+      expect(sections[1].items).toHaveLength(MAX_PICKS_PER_SOURCE);
+      for (const section of sections) {
+        expect(section.items.map((item) => item.url)).toEqual(
+          candidates.slice(0, section.items.length).map((item) => item.url),
+        );
+        expect(
+          section.items.every(
+            (item) => item.note === 'Popular item — personalisation unavailable.',
+          ),
+        ).toBe(true);
+      }
+    },
+  );
+
+  test('does not replace a successful ranking with no matches by popular items', async () => {
+    stubRanking([]);
+    vi.mocked(fetchTopRepos).mockResolvedValue(CANDIDATES);
+    vi.mocked(fetchTopLaunches).mockResolvedValue(CANDIDATES);
+    vi.mocked(fetchUkHeadlines).mockResolvedValue([]);
+    expect((await buildNews({ ...options, interests: ['Rust'] })).sections).toEqual([]);
+  });
 
   test('builds a section per source', async () => {
     vi.mocked(fetchTopRepos).mockResolvedValue([CANDIDATES[0]]);

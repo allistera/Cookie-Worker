@@ -28,7 +28,7 @@ export function meiliAvailable(env) {
 //   trash    is_deleted = true (not a value queryParse.js's FOLDERS produces
 //            today, but included so this stays correct if that changes —
 //            see meiliMessageFilter's own comment)
-//   (none)   NOT deleted AND NOT archived
+//   (none)   NOT deleted (search includes Done)
 //
 // is_spam stands in for spam_verdict = 'spam' (computed at index time from
 // message_ai, false when there is no ai row — same as folderClause's
@@ -65,7 +65,7 @@ function folderFilterParts(folder) {
     ];
   }
   if (folder === 'trash') return ['is_deleted = true'];
-  return ['is_deleted = false', 'is_archived = false'];
+  return ['is_deleted = false'];
 }
 
 /**
@@ -157,6 +157,7 @@ export async function configureIndex(env, descriptor, client) {
       filterableAttributes: descriptor.filterable,
       sortableAttributes: descriptor.sortable,
       ...(descriptor.rankingRules ? { rankingRules: descriptor.rankingRules } : {}),
+      ...(descriptor.typoTolerance ? { typoTolerance: descriptor.typoTolerance } : {}),
       embedders: {
         default: { ...descriptor.embedder, apiKey: env.OPENAI_API_KEY },
       },
@@ -219,6 +220,9 @@ export async function hybridSearch(env, descriptor, query, client) {
     limit: query.limit,
     filter: filters.join(' AND '),
     attributesToRetrieve: ['id'],
+    ...(query.text && descriptor.rankingScoreThreshold !== undefined
+      ? { rankingScoreThreshold: descriptor.rankingScoreThreshold }
+      : {}),
     ...(query.sort ? { sort: query.sort } : {}),
     hybrid: {
       embedder: 'default',
@@ -277,6 +281,9 @@ export async function federatedSearch(env, units, options, client) {
       q: unit.q ?? '',
       filter: filters.join(' AND '),
       attributesToRetrieve: ['id'],
+      ...(unit.q && unit.descriptor.rankingScoreThreshold !== undefined
+        ? { rankingScoreThreshold: unit.descriptor.rankingScoreThreshold }
+        : {}),
       ...(unit.sort ? { sort: unit.sort } : {}),
       ...(unit.semantic === false
         ? {}
