@@ -10,10 +10,10 @@ import { allowRequest } from './rateLimit.js';
 // could manage.
 export const RATE_LIMIT = { limit: 4, windowMs: 60_000 };
 
-// The data-enricher may make two bounded 25-second triage attempts before its
+// The data-enricher may make two bounded 60-second triage attempts before its
 // news source fetch (15 seconds) and ranking (60 seconds). Allow that complete
-// budget plus database overhead before cancelling the service-binding request.
-export const TIMEOUT_MS = 135_000;
+// budget plus retry backoff and database overhead before cancelling the request.
+export const TIMEOUT_MS = 210_000;
 
 export class EnricherNotConfiguredError extends Error {
   constructor() {

@@ -6,7 +6,7 @@ export const ANALYSIS_PROMPT_VERSION = 'email-task-analysis-v1';
 export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const ANALYSIS_INPUT_CAP = 12_000;
 export const ANALYSIS_MAX_OUTPUT_TOKENS = 4000;
-export const ANALYSIS_TIMEOUT_MS = 25_000;
+export const ANALYSIS_TIMEOUT_MS = 60_000;
 
 const ANALYSIS_SCHEMA = {
   type: 'object',

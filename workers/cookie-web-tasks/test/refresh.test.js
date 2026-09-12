@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FETCH_TIMEOUT_MS } from '../../../shared/fetch.js';
+import { DIGEST_TIMEOUT_MS } from '../../data-enricher/src/digest.js';
+import { NEWS_TIMEOUT_MS } from '../../data-enricher/src/news.js';
 import {
   EnricherNotConfiguredError,
   postRefresh,
@@ -32,7 +35,9 @@ describe('triggerDigestRebuild', () => {
     expect(init.method).toBe('POST');
     expect(init.headers.Authorization).toBe(`Bearer ${TOKEN}`);
     expect(timeoutSpy).toHaveBeenCalledWith(TIMEOUT_MS);
-    expect(TIMEOUT_MS).toBeGreaterThan(2 * 25_000 + 15_000 + 60_000);
+    expect(TIMEOUT_MS).toBeGreaterThan(
+      2 * DIGEST_TIMEOUT_MS + 500 + FETCH_TIMEOUT_MS + NEWS_TIMEOUT_MS,
+    );
     expect(init.signal).toBe(signal);
   });
 

@@ -19,6 +19,7 @@ const MESSAGE = {
 
 describe('analyzeEmail', () => {
   test('requests a structured analysis and parses it', async () => {
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     const analysis = {
       summary: 'Accountant needs receipts by Friday.',
       tasks: [{ content: 'Send receipts', due_date: '2026-07-24' }],
@@ -41,6 +42,7 @@ describe('analyzeEmail', () => {
     expect(body.max_output_tokens).toBe(ANALYSIS_MAX_OUTPUT_TOKENS);
     expect(body.text.format.type).toBe('json_schema');
     expect(JSON.stringify(body.input)).toContain('VAT deadline');
+    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 60_000);
   });
 
   test('surfaces incomplete output instead of parsing truncated JSON', async () => {
@@ -106,11 +108,11 @@ describe('analyzeEmail', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  test('throws on a non-OK response', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: false, status: 429 }));
+  test.each([429, 500])('does not retry an HTTP %s response', async (status) => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status }));
     vi.stubGlobal('fetch', fetchMock);
     await expect(analyzeEmail(MESSAGE, 'key', 'gpt-5.6-luna')).rejects.toThrow(
-      'OpenAI request failed (429)',
+      `OpenAI request failed (${status})`,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

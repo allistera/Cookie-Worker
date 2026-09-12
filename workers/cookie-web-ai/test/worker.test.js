@@ -104,11 +104,15 @@ describe('auth and configuration', () => {
 
 describe('rate limiting', () => {
   test('claims the shared ai scope before dispatching', async () => {
-    await worker.fetch(
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      Response.json({ output_text: JSON.stringify({ subject: 'Draft', text: 'Hello' }) }),
+    );
+    const response = await worker.fetch(
       request('/compose', { body: JSON.stringify({ instruction: 'x' }) }),
       env,
       ctx,
     );
+    expect(response.status).toBe(200);
     expect(allowRequest).toHaveBeenCalledWith(expect.anything(), 'user-1', 'ai', {
       limit: 10,
       windowMs: 60_000,
