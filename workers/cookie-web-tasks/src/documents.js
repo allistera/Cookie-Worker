@@ -1,3 +1,4 @@
+import { getDocumentMetadata, getDocumentPage } from './documentPages.js';
 // Ported from Cookie-Web's api/_lib/documents.js. Behaviorally identical
 // (same queries, same validation, same response shapes/status codes) —
 // only the (req, res) mutation style becomes returning a Response, and
@@ -160,6 +161,8 @@ function fetchOwnedFolder(sql, userId, id) {
  * @param {DocumentsDeps} deps
  */
 export async function getDocuments(sql, userId, url, deps) {
+  if (url.searchParams.get('view') === 'meta') return getDocumentMetadata(sql, userId, url);
+  if (url.searchParams.get('view') === 'page') return getDocumentPage(sql, userId, url);
   const q = (url.searchParams.get('q') || '').trim();
   if (q) return searchDocuments(sql, userId, url, q, deps);
 

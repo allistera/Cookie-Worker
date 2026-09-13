@@ -1,3 +1,4 @@
+import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { get, getDownloadUrl, issueSignedToken, presignUrl } from '@vercel/blob';
 import postgres from 'postgres';
@@ -7,7 +8,13 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import { getContacts } from './contacts.js';
-import { getAttachment, getMessage, patchMessage, postMessage } from './messages.js';
+import {
+  getAttachment,
+  getCalendarInvite,
+  getMessage,
+  patchMessage,
+  postMessage,
+} from './messages.js';
 import { attemptAiUnsubscribe } from './aiUnsubscribe.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { sendEmail } from './resend.js';
@@ -84,7 +91,7 @@ async function route(url, request, sql, userId, env, ctx) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
   const sub = segments[1];
-  if (sub && !['attachment', 'contacts'].includes(sub)) {
+  if (sub && !['attachment', 'contacts', 'calendar-invite'].includes(sub)) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
 
@@ -119,8 +126,20 @@ async function route(url, request, sql, userId, env, ctx) {
     });
   }
 
+  if (sub === 'calendar-invite') {
+    if (request.method !== 'GET')
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET' } },
+      );
+    return getCalendarInvite(sql, userId, url.searchParams.get('id'), {
+      readBlob: (blobUrl) => get(blobUrl, { access: 'private', token: env.BLOB_READ_WRITE_TOKEN }),
+    });
+  }
+
   if (request.method === 'GET') {
     return getMessage(sql, userId, url.searchParams.get('id'), {
+      deferCalendar: url.searchParams.get('calendar') === 'deferred',
       readBlob: (/** @type {string} */ blobUrl) =>
         get(blobUrl, { access: 'private', token: env.BLOB_READ_WRITE_TOKEN }),
     });
@@ -229,4 +248,7 @@ const worker = {
   },
 };
 
-export default Sentry.withSentry(createSentryOptions, worker);
+export default Sentry.withSentry(
+  createSentryOptions,
+  withRequestMetrics(worker, 'cookie-web-messages'),
+);

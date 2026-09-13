@@ -116,7 +116,8 @@ describe('fetchEmails', () => {
 
     fetchEmails(capture.sql, USER_ID, 50, null, 'inbox');
 
-    expect(capture.query()).toContain('NOT m.is_archived AND (');
+    expect(capture.query()).toContain('WITH page AS MATERIALIZED');
+    expect(capture.query()).toContain('UNION ALL');
     expect(capture.query()).toContain('NOT m.is_sent');
     expect(capture.query()).not.toContain("? = 'inbox'");
   });

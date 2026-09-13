@@ -1,3 +1,4 @@
+import { createTimings } from '../../../shared/performance.js';
 // Ported from Cookie-Web's api/messages.js. Behaviorally identical (same
 // queries, same validation, same response shapes/status codes) — only the
 // (req, res) mutation style becomes returning a Response, and external
@@ -6,7 +7,7 @@
 // stays a plain, testable function.
 
 import { allowRequest } from '../../../shared/rate-limit.js';
-import { extractCalendarInvite } from './calendarInvite.js';
+import { extractCalendarInvite, isCalendarAttachment } from './calendarInvite.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 
@@ -93,6 +94,7 @@ export function fetchMessageAttachments(sql, messageId) {
 /**
  * @typedef {{
  *   readBlob?: (url: string) => Promise<{stream: ReadableStream<Uint8Array> | null} | null>,
+ *   deferCalendar?: boolean,
  * }} CalendarInviteDeps
  */
 
@@ -203,7 +205,8 @@ export async function getMessage(sql, userId, id, deps = {}) {
     return Response.json({ error: 'A valid message id is required' }, { status: 400 });
   }
 
-  const rows = await fetchOwnedMessageBody(sql, id, userId);
+  const timing = createTimings();
+  const rows = await timing.run('body', () => fetchOwnedMessageBody(sql, id, userId));
   if (rows.length === 0) {
     return Response.json({ error: 'Message not found' }, { status: 404 });
   }
@@ -211,18 +214,47 @@ export async function getMessage(sql, userId, id, deps = {}) {
   // the parsed, safe unsubscribe summary.
   const { headers, thread_id, ...rest } = rows[0];
   const [thread, attachments] = await Promise.all([
-    thread_id ? fetchThreadMessages(sql, thread_id, userId) : [],
-    fetchMessageAttachments(sql, id),
+    thread_id ? timing.run('thread', () => fetchThreadMessages(sql, thread_id, userId)) : [],
+    timing.run('attachments', () => fetchMessageAttachments(sql, id)),
   ]);
-  const calendar_invite = await extractCalendarInvite(attachments, deps.readBlob);
-  return Response.json({
-    ...rest,
-    thread_id,
-    unsubscribe: parseListUnsubscribe(headers),
-    thread,
-    calendar_invite,
-    attachments: attachments.map(({ blob_url: _blobUrl, ...attachment }) => attachment),
-  });
+  const calendar_invite = deps.deferCalendar
+    ? null
+    : await timing.run('invite', () => extractCalendarInvite(attachments, deps.readBlob));
+  return timing.response(
+    Response.json({
+      ...rest,
+      thread_id,
+      unsubscribe: parseListUnsubscribe(headers),
+      thread,
+      calendar_invite,
+      ...(deps.deferCalendar
+        ? { calendar_invite_pending: attachments.some(isCalendarAttachment) }
+        : {}),
+      attachments: attachments.map(({ blob_url: _blobUrl, ...attachment }) => attachment),
+    }),
+  );
+}
+
+/**
+ * Invitation metadata is optional reader enrichment. Check ownership before
+ * touching attachments; this endpoint never loads the message's large body.
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string | null} id
+ * @param {CalendarInviteDeps} [deps]
+ */
+export async function getCalendarInvite(sql, userId, id, deps = {}) {
+  if (!id || !UUID_RE.test(id))
+    return Response.json({ error: 'A valid message id is required' }, { status: 400 });
+  const [owned] =
+    await sql`SELECT id FROM messages WHERE id = ${id} AND user_id = ${userId} AND NOT is_deleted`;
+  if (!owned) return Response.json({ error: 'Message not found' }, { status: 404 });
+  const timing = createTimings();
+  const attachments = await timing.run('attachments', () => fetchMessageAttachments(sql, id));
+  const calendar_invite = await timing.run('invite', () =>
+    extractCalendarInvite(attachments, deps.readBlob),
+  );
+  return timing.response(Response.json({ calendar_invite }));
 }
 
 /**

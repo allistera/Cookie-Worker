@@ -1,3 +1,4 @@
+import { getTaskPage, getTaskDetail } from './taskPages.js';
 // Cookie-owned tasks. Distinct from `tasks`, which holds the overnight
 // enricher's gathered email action items and is not a place a person writes
 // to. The two never share a row.
@@ -86,6 +87,8 @@ function fetchOwnedProject(sql, userId, id) {
  * @param {URL} url
  */
 export async function getTaskItems(sql, userId, url) {
+  if (url.searchParams.get('view') === 'page') return getTaskPage(sql, userId, url);
+  if (url.searchParams.get('view') === 'detail') return getTaskDetail(sql, userId, url);
   const project = url.searchParams.get('project') ?? 'inbox';
   const inbox = project === 'inbox';
   const today = project === 'today';
@@ -618,6 +621,29 @@ export async function reorderTaskItems(sql, userId, body) {
   const view = body?.view ?? null;
   if (view !== null && view !== 'today') {
     return Response.json({ error: 'view must be "today" or absent' }, { status: 400 });
+  }
+
+  if (view === 'today' && body.paged === true) {
+    // Keep the slots of this page; numbering a subset from one would collide
+    // with earlier pages. Previously unordered rows follow the owner's
+    // existing Today positions, leaving other pages untouched.
+    const owned = await sql`
+      SELECT id, COALESCE(today_position,
+        (SELECT COALESCE(max(today_position), 0) FROM task_items WHERE user_id = ${userId})
+        + row_number() OVER (ORDER BY today_position NULLS LAST, position, created_at, id)) AS position
+      FROM task_items WHERE user_id = ${userId} AND id = ANY(${ids}::uuid[])
+    `;
+    const current = new Map(owned.map((row) => [String(row.id), row]));
+    const ordered = ids.filter((id) => current.has(id));
+    if (!ordered.length) return Response.json({ items: [] });
+    const slots = dealtPositions(ordered.map((id) => current.get(id)));
+    const items = await sql`
+      UPDATE task_items t SET today_position = placed.position, updated_at = now()
+      FROM unnest(${ordered}::uuid[], ${slots}::float8[]) AS placed(id, position)
+      WHERE t.id = placed.id AND t.user_id = ${userId}
+      RETURNING t.id, t.today_position AS "todayPosition"
+    `;
+    return Response.json({ items });
   }
 
   if (view === 'today') {

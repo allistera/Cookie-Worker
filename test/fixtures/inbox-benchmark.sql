@@ -1,0 +1,26 @@
+CREATE TABLE threads (id uuid PRIMARY KEY, user_id uuid NOT NULL, ai_summary text, ai_summary_message_id uuid);
+CREATE TABLE messages (id uuid PRIMARY KEY, user_id uuid NOT NULL, thread_id uuid NOT NULL, from_name text, from_address text, recipients jsonb DEFAULT '{}', subject text, snippet text, body_html text, sent_at timestamptz NOT NULL, is_unread boolean DEFAULT true, is_starred boolean DEFAULT false, is_sent boolean DEFAULT false, is_archived boolean DEFAULT false, is_deleted boolean DEFAULT false, scheduled_for timestamptz, follow_up_at timestamptz, category_id uuid);
+CREATE TABLE message_ai (message_id uuid PRIMARY KEY, spam_verdict text, spam_score real, priority text, status text);
+CREATE TABLE email_categories (id uuid PRIMARY KEY, user_id uuid, name text, color text);
+CREATE TABLE labels (id uuid PRIMARY KEY, user_id uuid, name text, color text, kind text);
+CREATE TABLE message_labels (message_id uuid, label_id uuid, PRIMARY KEY(message_id,label_id));
+CREATE TABLE attachments (id uuid PRIMARY KEY, message_id uuid);
+CREATE INDEX attachments_message_idx ON attachments(message_id);
+CREATE INDEX messages_thread_idx ON messages(thread_id, sent_at);
+CREATE INDEX messages_user_sent_idx ON messages(user_id,sent_at DESC);
+CREATE INDEX messages_inbox_list_idx ON messages(user_id,sent_at DESC,id DESC) WHERE NOT is_deleted AND NOT is_archived AND NOT is_sent;
+CREATE INDEX messages_done_list_idx ON messages(user_id,sent_at DESC,id DESC) WHERE NOT is_deleted AND is_archived;
+CREATE INDEX messages_sent_list_idx ON messages(user_id,sent_at DESC,id DESC) WHERE NOT is_deleted AND NOT is_archived AND is_sent;
+CREATE INDEX messages_follow_up_due_idx ON messages(user_id,follow_up_at,sent_at DESC) WHERE is_sent AND follow_up_at IS NOT NULL AND NOT is_deleted;
+INSERT INTO threads SELECT md5('thread-' || i)::uuid,'11111111-1111-4111-8111-111111111111',NULL,NULL FROM generate_series(0,33334) i;
+INSERT INTO messages(id,user_id,thread_id,from_name,from_address,subject,snippet,sent_at,is_sent,is_archived,is_deleted,is_starred,scheduled_for,follow_up_at)
+SELECT md5('message-'||i)::uuid,'11111111-1111-4111-8111-111111111111',md5('thread-'||((i-1)/3))::uuid,'Sender','sender@example.com','Message '||i,'Preview', now()- i*interval '1 minute', i%5=0,i%7=0,i%19=0,i%11=0,CASE WHEN i%13=0 THEN now()+interval '1 day' END,CASE WHEN i%5=0 THEN now()-i*interval '2 seconds' END FROM generate_series(1,100000) i;
+INSERT INTO message_ai SELECT id,CASE WHEN row_number() OVER ()%17=0 THEN 'spam' ELSE 'inbox' END,0,'normal','completed' FROM messages;
+INSERT INTO labels VALUES ('22222222-2222-4222-8222-222222222222','11111111-1111-4111-8111-111111111111','Work','#fff','user');
+INSERT INTO message_labels SELECT id,'22222222-2222-4222-8222-222222222222' FROM messages;
+ANALYZE threads;
+ANALYZE messages;
+ANALYZE message_ai;
+ANALYZE message_labels;
+ANALYZE labels;
+ANALYZE attachments;

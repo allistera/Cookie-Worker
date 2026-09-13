@@ -252,6 +252,23 @@ function parseCalendarText(ics) {
   return earliest;
 }
 
+/** @param {CalendarAttachment} attachment */
+export function isCalendarAttachment(attachment) {
+  const filename = String(attachment?.filename ?? '').toLowerCase();
+  const contentType = String(attachment?.content_type ?? '')
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase();
+  const size = normalizeAttachmentSize(attachment?.size_bytes);
+  return (
+    (contentType === 'text/calendar' || filename.endsWith('.ics')) &&
+    attachment?.downloadable === true &&
+    Boolean(attachment?.blob_url) &&
+    size !== null &&
+    size <= MAX_CALENDAR_ATTACHMENT_BYTES
+  );
+}
+
 /**
  * @param {CalendarAttachment[]} attachments
  * @param {(url: string) => Promise<BlobReadResult | null>} [readBlob]
@@ -264,25 +281,10 @@ export async function extractCalendarInvite(attachments, readBlob) {
   let earliest = null;
   let earliestStart = Infinity;
   for (const attachment of attachments ?? []) {
-    const filename = String(attachment?.filename ?? '').toLowerCase();
-    const contentType = String(attachment?.content_type ?? '')
-      .split(';', 1)[0]
-      .trim()
-      .toLowerCase();
-    const isCalendar = contentType === 'text/calendar' || filename.endsWith('.ics');
-    const size = normalizeAttachmentSize(attachment?.size_bytes);
-    if (
-      !isCalendar ||
-      attachment?.downloadable !== true ||
-      !attachment?.blob_url ||
-      size === null ||
-      size > MAX_CALENDAR_ATTACHMENT_BYTES
-    ) {
-      continue;
-    }
+    if (!isCalendarAttachment(attachment)) continue;
 
     try {
-      const blob = await readBlob(attachment.blob_url);
+      const blob = await readBlob(/** @type {string} */ (attachment.blob_url));
       if (!blob?.stream) continue;
       const text = await readCalendarStream(blob.stream);
       if (text === null) continue;

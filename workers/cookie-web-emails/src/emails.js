@@ -1,3 +1,4 @@
+import { createTimings } from '../../../shared/performance.js';
 // Ported from Cookie-Web's api/emails.js. Behaviorally identical (same
 // queries, same validation, same response shapes/status codes) — only the
 // (req, res) mutation style becomes returning a Response, and the
@@ -24,6 +25,7 @@ export function folderPredicate(sql, folder, labelName) {
   }
   if (folder === 'snoozed') {
     return sql`NOT m.is_archived AND NOT m.is_sent
+    AND ai.status = 'completed'
       AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
       AND m.scheduled_for > now()`;
   }
@@ -38,30 +40,23 @@ export function folderPredicate(sql, folder, labelName) {
         AND tagged_l.name = ${labelName}
     )`;
   }
-  // New mail becomes visible only after classification commits, so the first
-  // realtime list includes its final priority and category. Sent reminders
-  // do not pass through inbound classification.
-  return sql`NOT m.is_archived AND (
-    (
-      NOT m.is_sent
-      AND ai.status = 'completed'
-      AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
-      AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())
-    )
-    OR (
-      m.is_sent
-      AND m.follow_up_at <= now()
-      AND NOT EXISTS (
-        SELECT 1
-        FROM messages reply
-        WHERE reply.user_id = m.user_id
-          AND reply.thread_id = m.thread_id
-          AND NOT reply.is_sent
-          AND NOT reply.is_deleted
-          AND reply.sent_at > m.sent_at
-      )
-    )
-  )`;
+  return sql`(${receivedInboxPredicate(sql)}) OR (${followUpPredicate(sql)})`;
+}
+
+function receivedInboxPredicate(sql) {
+  return sql`NOT m.is_archived AND NOT m.is_sent
+    AND ai.status = 'completed'
+    AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+    AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())`;
+}
+
+function followUpPredicate(sql) {
+  return sql`NOT m.is_archived AND m.is_sent AND m.follow_up_at <= now()
+    AND NOT EXISTS (
+      SELECT 1 FROM messages reply
+      WHERE reply.user_id = m.user_id AND reply.thread_id = m.thread_id
+        AND NOT reply.is_sent AND NOT reply.is_deleted AND reply.sent_at > m.sent_at
+    )`;
 }
 
 function sortExpression(sql, folder) {
@@ -88,12 +83,35 @@ function sortExpression(sql, folder) {
  */
 export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') {
   const sortAt = sortExpression(sql, folder);
+  // Limit each disjoint inbox branch in its native index order, before
+  // aggregating labels and looking up summary metadata. Each branch needs
+  // at most one page to produce the globally newest page.
+  const candidatePage = (order, predicate) => sql`
+    SELECT m.id, ${order} AS sort_at
+    FROM messages m
+    JOIN threads t ON t.id = m.thread_id AND t.user_id = m.user_id
+    LEFT JOIN message_ai ai ON ai.message_id = m.id
+    WHERE m.user_id = ${userId} AND NOT m.is_deleted AND (${predicate})
+      ${cursor ? sql`AND (${order}, m.id) < (${cursor.sentAt}::text::timestamptz, ${cursor.id}::uuid)` : sql``}
+    ORDER BY ${order} DESC, m.id DESC
+    LIMIT ${limit + 1}
+  `;
+  const candidates =
+    folder === 'inbox'
+      ? sql`SELECT id, sort_at FROM (
+        (${candidatePage(sql`m.sent_at`, receivedInboxPredicate(sql))})
+        UNION ALL
+        (${candidatePage(sql`m.follow_up_at`, followUpPredicate(sql))})
+      ) candidates ORDER BY sort_at DESC, id DESC LIMIT ${limit + 1}`
+      : candidatePage(sortAt, folderPredicate(sql, folder, labelName));
   return sql`
+    WITH page AS MATERIALIZED (${candidates})
     SELECT m.id, m.from_name, m.from_address,
            CASE WHEN jsonb_typeof(m.recipients) = 'string'
                 THEN (m.recipients #>> '{}')::jsonb
                 ELSE m.recipients END AS recipients,
            m.subject, m.snippet, ${sortAt} AS sort_at,
+           to_char((${sortAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS sort_cursor,
            m.sent_at, m.is_unread, m.is_starred,
            m.is_sent, m.is_archived, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
            ai.priority,
@@ -119,16 +137,13 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
            CASE WHEN c.id IS NULL THEN NULL
                 ELSE json_build_object('id', c.id, 'name', c.name, 'color', c.color)
            END AS category
-    FROM messages m
+    FROM page JOIN messages m ON m.id = page.id
     JOIN threads t ON t.id = m.thread_id AND t.user_id = m.user_id
     LEFT JOIN message_ai ai ON ai.message_id = m.id
     LEFT JOIN email_categories c ON c.id = m.category_id AND c.user_id = m.user_id
     LEFT JOIN message_labels ml ON ml.message_id = m.id
     LEFT JOIN labels l ON l.id = ml.label_id
     WHERE m.user_id = ${userId}
-      AND NOT m.is_deleted
-      AND (${folderPredicate(sql, folder, labelName)})
-      ${cursor ? sql`AND (${sortAt}, m.id) < (${cursor.sentAt}::timestamptz, ${cursor.id}::uuid)` : sql``}
     GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, c.id
     ORDER BY ${sortAt} DESC, m.id DESC
     LIMIT ${limit + 1}
@@ -266,14 +281,15 @@ export async function handleList(sql, userId, url) {
     cursor = { sentAt: match[1], id: match[2] };
   }
 
+  const timing = createTimings();
   try {
     // The unread and spam counts only matter on a list's first page; the
     // client ignores them on cursor pages, so skip the aggregates there.
     const [rows, [userRow], [spamRow], [snoozedRow]] = await Promise.all([
-      fetchEmails(sql, userId, limit, cursor, folder, labelName),
-      cursor ? [] : fetchUnreadCount(sql, userId),
-      cursor ? [] : fetchSpamCount(sql, userId),
-      cursor ? [] : fetchSnoozedCount(sql, userId),
+      timing.run('list', () => fetchEmails(sql, userId, limit, cursor, folder, labelName)),
+      cursor ? [] : timing.run('unread', () => fetchUnreadCount(sql, userId)),
+      cursor ? [] : timing.run('spam', () => fetchSpamCount(sql, userId)),
+      cursor ? [] : timing.run('snoozed', () => fetchSnoozedCount(sql, userId)),
     ]);
     const hasMore = rows.length > limit;
     const emails = hasMore ? rows.slice(0, limit) : rows;
@@ -281,14 +297,15 @@ export async function handleList(sql, userId, url) {
     const publicEmails = emails.map((row) => {
       const email = { ...row };
       delete email.sort_at;
+      delete email.sort_cursor;
       return email;
     });
     /** @type {Record<string, unknown>} */
     const payload = {
       emails: publicEmails,
-      // toISOString keeps millisecond precision; Date's default toString
-      // truncates to seconds, which can skip same-second rows on page breaks.
-      nextCursor: hasMore ? `${last.sort_at.toISOString()}|${last.id}` : null,
+      // Preserve PostgreSQL microseconds through both the JSON cursor and
+      // text-typed SQL binding; postgres.js Date serialization truncates them.
+      nextCursor: hasMore ? `${last.sort_cursor ?? last.sort_at.toISOString()}|${last.id}` : null,
       readReceiptsAvailable: folder === 'sent',
     };
     if (!cursor) {
@@ -297,7 +314,7 @@ export async function handleList(sql, userId, url) {
       payload.snoozedCount = snoozedRow?.snoozed ?? 0;
       payload.userId = userId;
     }
-    return Response.json(payload);
+    return timing.response(Response.json(payload));
   } catch (err) {
     console.error('GET /emails failed:', err);
     return Response.json({ error: 'Failed to load emails' }, { status: 500 });

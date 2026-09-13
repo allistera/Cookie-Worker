@@ -5,6 +5,7 @@ import {
   fetchThreadMessages,
   getAttachment,
   getMessage,
+  getCalendarInvite,
   patchMessage,
   postMessage,
   recipientAddress,
@@ -1084,5 +1085,39 @@ describe('getAttachment on a dropped connection', () => {
     await expect(
       getAttachment(sql, 'user-1', '11111111-1111-1111-1111-111111111111', blob),
     ).rejects.toThrow('Network connection lost');
+  });
+});
+
+describe('deferred calendar enrichment', () => {
+  test('returns the body without downloading the invite', async () => {
+    const readBlob = vi.fn(() => new Promise(() => {}));
+    const sql = createMockSql([
+      [{ id: MESSAGE_ID, thread_id: null, body_html: '<p>Ready</p>', headers: [] }],
+      [
+        {
+          filename: 'invite.ics',
+          content_type: 'text/calendar',
+          size_bytes: 100,
+          downloadable: true,
+          blob_url: 'https://private.invalid/invite.ics',
+        },
+      ],
+    ]);
+    const body = await (
+      await getMessage(sql, USER_ID, MESSAGE_ID, { readBlob, deferCalendar: true })
+    ).json();
+    expect(body.body_html).toBe('<p>Ready</p>');
+    expect(body.calendar_invite_pending).toBe(true);
+    expect(readBlob).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain('private.invalid');
+  });
+
+  test('checks ownership before touching invitation attachments', async () => {
+    const sql = createMockSql([[]]);
+    const readBlob = vi.fn();
+    expect((await getCalendarInvite(sql, USER_ID, MESSAGE_ID, { readBlob })).status).toBe(404);
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].values).toEqual([MESSAGE_ID, USER_ID]);
+    expect(readBlob).not.toHaveBeenCalled();
   });
 });

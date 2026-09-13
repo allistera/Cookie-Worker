@@ -39,12 +39,28 @@ export async function readJsonBody(
     throw new BodyTooLargeError(`Request body exceeds ${maxBytes} bytes`);
   }
 
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > maxBytes) {
-    throw new BodyTooLargeError(`Request body exceeds ${maxBytes} bytes`);
+  const reader = request.body?.getReader();
+  const decoder = new TextDecoder();
+  let size = 0;
+  let raw = '';
+  if (reader) {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) {
+          // Cancellation must not hold up the 413 response if the source stalls.
+          void reader.cancel().catch(() => undefined);
+          throw new BodyTooLargeError(`Request body exceeds ${maxBytes} bytes`);
+        }
+        raw += decoder.decode(value, { stream: true });
+      }
+      raw += decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
   }
-
-  const raw = new TextDecoder().decode(bytes);
   if (!raw) return {};
 
   try {

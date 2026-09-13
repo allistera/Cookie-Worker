@@ -1,0 +1,22 @@
+CREATE TABLE users (id uuid PRIMARY KEY);
+CREATE TABLE threads (id uuid PRIMARY KEY, user_id uuid NOT NULL, ai_summary text, ai_summary_message_id uuid);
+CREATE TABLE messages (id uuid PRIMARY KEY, user_id uuid NOT NULL, thread_id uuid NOT NULL, from_name text, from_address text, recipients jsonb DEFAULT '{}', subject text, snippet text, body_html text, sent_at timestamptz NOT NULL, is_unread boolean DEFAULT true, is_starred boolean DEFAULT false, is_sent boolean DEFAULT false, is_archived boolean DEFAULT false, is_deleted boolean DEFAULT false, scheduled_for timestamptz, follow_up_at timestamptz, category_id uuid);
+CREATE TABLE message_ai (message_id uuid PRIMARY KEY, spam_verdict text, spam_score real, priority text, status text);
+CREATE TABLE email_categories (id uuid PRIMARY KEY, user_id uuid, name text, color text);
+CREATE TABLE labels (id uuid PRIMARY KEY, user_id uuid, name text, color text, kind text);
+CREATE TABLE message_labels (message_id uuid, label_id uuid, PRIMARY KEY(message_id,label_id));
+CREATE TABLE attachments (id uuid PRIMARY KEY, message_id uuid);
+CREATE TABLE document_folders (id uuid PRIMARY KEY, user_id uuid, parent_id uuid, title text, emoji text, created_at timestamptz DEFAULT now());
+CREATE TABLE documents (id uuid PRIMARY KEY, user_id uuid, folder_id uuid, title text, emoji text, starred boolean DEFAULT false, tags text[] DEFAULT '{}', blocks jsonb DEFAULT '[]', created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now());
+CREATE TABLE task_items (id uuid PRIMARY KEY, user_id uuid, project_id uuid, parent_id uuid, kind text DEFAULT 'task', content text, description text, recurrence text, due_time time, time_zone text, labels text[] DEFAULT '{}', due_date date, priority integer DEFAULT 4, position double precision NOT NULL, updated_at timestamptz DEFAULT now(), today_position double precision, completed_at timestamptz, created_at timestamptz DEFAULT now());
+INSERT INTO users VALUES ('11111111-1111-4111-8111-111111111111'), ('22222222-2222-4222-8222-222222222222');
+INSERT INTO threads SELECT md5('thread-'||i)::uuid, '11111111-1111-4111-8111-111111111111',NULL,NULL FROM generate_series(1,205) i;
+INSERT INTO messages(id,user_id,thread_id,sent_at,subject) SELECT md5('mail-'||i)::uuid,'11111111-1111-4111-8111-111111111111',md5('thread-'||i)::uuid,'2026-01-01 12:00:00.123456Z','Mail '||i FROM generate_series(1,205) i;
+INSERT INTO document_folders(id,user_id,title) VALUES ('33333333-3333-4333-8333-333333333333','11111111-1111-4111-8111-111111111111','Work');
+INSERT INTO documents(id,user_id,title,updated_at,starred,tags) SELECT md5('doc-'||i)::uuid, '11111111-1111-4111-8111-111111111111','Doc '||i,'2026-01-01 12:00:00.123456Z',true,ARRAY['work'] FROM generate_series(1,205) i;
+INSERT INTO documents(id,user_id,title,folder_id,tags) VALUES ('44444444-4444-4444-8444-444444444444','11111111-1111-4111-8111-111111111111','Folder document','33333333-3333-4333-8333-333333333333', ARRAY['folder']);
+INSERT INTO documents(id,user_id,title) VALUES ('55555555-5555-4555-8555-555555555555','22222222-2222-4222-8222-222222222222','Other user');
+INSERT INTO task_items(id,user_id,content,description,position,due_date,created_at) SELECT md5('task-'||i)::uuid,'11111111-1111-4111-8111-111111111111','Task '||i,repeat('description',100),1,'2026-01-01','2026-01-01 12:00:00.123456Z' FROM generate_series(1,205) i;
+INSERT INTO task_items(id,user_id,parent_id,content,position) SELECT md5('subtask-'||i)::uuid,'11111111-1111-4111-8111-111111111111',md5('task-1')::uuid,'Child '||i,i FROM generate_series(1,205) i;
+
+INSERT INTO message_ai(message_id, status) SELECT id, 'completed' FROM messages;

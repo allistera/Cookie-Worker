@@ -1,3 +1,4 @@
+import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
@@ -117,4 +118,7 @@ const worker = {
   },
 };
 
-export default Sentry.withSentry(createSentryOptions, worker);
+export default Sentry.withSentry(
+  createSentryOptions,
+  withRequestMetrics(worker, 'cookie-web-emails'),
+);
