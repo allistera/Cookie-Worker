@@ -1,6 +1,6 @@
 # Performance changes and rollout
 
-Implemented across the Cookie-Web, Cookie-Worker and Cookie-iOS sibling checkouts. No production deployment or migration has been performed.
+Implemented across Cookie-Web, Cookie-Worker and Cookie-iOS. Migrations 0074 and 0075 were applied successfully on September 13, 2026; schema-dependent Workers are deployed before the updated frontend.
 
 ## Changes
 
@@ -15,13 +15,12 @@ Implemented across the Cookie-Web, Cookie-Worker and Cookie-iOS sibling checkout
 
 ## Validation
 
-- Web: full 1,134-test unit run passed; the additional snapshot-preservation test passed separately. Focused document/sidebar checks passed after the final navigation changes.
-- Workers: all 1,518 unit tests passed. Additional focused message tests passed after adding stage timings. Type checks and lint/format checks pass.
-- Chromium: 97 of 101 scenarios passed on the broad run. All four failures passed targeted reruns after correcting test assumptions about immediate summary display, activating deferred sheets, and narrowing the task-description locator; the Done scenario passed unchanged. A new offscreen-save scenario also passed. This covers 102 distinct scenarios, including targeted reruns.
-- PostgreSQL 18: disposable local-schema integration checks pass for both migrations, same-microsecond cursors across 205 rows, ownership isolation, document deletion revalidation, global metadata, task descriptions, subtask pages and partial Today reordering.
-- Native tests were added for date parsing and paged document trees. Xcode/iOS builds and physical-device profiling require macOS and have not been run here.
+- Web: lint, formatting, the production build and all 1,150 unit tests passed. All 122 production-build Chromium scenarios passed with one worker, including editor readiness, offscreen snapshot preservation, plain-table persistence without spreadsheet requests and AI creation during navigation.
+- Workers: all 1,544 unit tests, lint/formatting, every generated-type check, complete type checking and all dry runs passed. The shared stream reader tests cover early cancellation and UTF-8 across chunk boundaries.
+- PostgreSQL 18: disposable local-schema integration checks pass for both migrations, completed/missing/pending/failed classification, microsecond cursors, ownership, document deletion revalidation, global metadata, full task details and bounded pages.
+- Native: SwiftLint 0.65.1 reported zero violations; the macOS CI build and native tests passed for Cookie-iOS PR 2 before merge.
 
-Measured local changes: the static startup graph falls from 528,626 to approximately 425,300 bytes (about 20%); the inbox graph falls from 602,478 to approximately 502,700 bytes (about 17%). The reproducible 100,000-message benchmark returns equivalent payloads across seven folders and three pages. Five-run median inbox query execution was 1,844.5 ms before and 3.55 ms after. These are synthetic query measurements, excluding API authentication, counts and network latency; they are not production latency claims.
+The entry dependency graph is about 425 kB, down from the earlier 529 kB baseline. Plain tables avoid loading the full spreadsheet runtime altogether; existing workbook and formula documents retain it. These are payload/lookup improvements, not production latency claims. The synthetic query comparison is recorded below.
 
 ## Deployment order
 
