@@ -90,6 +90,7 @@ describe('auth and configuration', () => {
     ['/compose', 'AI compose is not configured'],
     ['/summarize', 'AI summarization is not configured'],
     ['/document', 'AI documents are not configured'],
+    ['/document-chat', 'Document AI chat is not configured'],
     ['/rule-draft', 'AI rule generation is not configured'],
   ])('%s answers 503 with its own wording when no OpenAI key is set', async (path, error) => {
     const response = await worker.fetch(
@@ -206,4 +207,32 @@ describe('cleanup', () => {
     await worker.fetch(request('/compose', { body: '{}' }), env, ctx);
     expect(sqlEnd).toHaveBeenCalledOnce();
   });
+});
+
+test('document chat is authenticated, rate-limited and accepts drafts above 64 KiB', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+    Response.json({
+      status: 'completed',
+      output_text: JSON.stringify({ reply: 'Answer', proposal: null }),
+    }),
+  );
+  mockQuery.mockResolvedValueOnce([{ id: '11111111-1111-4111-8111-111111111111' }]);
+  const response = await worker.fetch(
+    request('/document-chat', {
+      body: JSON.stringify({
+        instruction: 'Review',
+        document: {
+          id: '11111111-1111-4111-8111-111111111111',
+          title: 'Long draft',
+          blocks: [{ type: 'paragraph', data: { text: 'x'.repeat(70000) } }],
+        },
+      }),
+    }),
+    env,
+    ctx,
+  );
+  expect(response.status).toBe(200);
+  expect(verifyAccessToken).toHaveBeenCalled();
+  expect(allowRequest).toHaveBeenCalledWith(expect.anything(), 'user-1', 'ai', expect.anything());
+  expect(response.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION);
 });

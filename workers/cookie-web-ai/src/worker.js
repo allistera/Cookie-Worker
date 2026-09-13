@@ -7,6 +7,7 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { RATE_LIMIT } from './openai.js';
 import { handleCompose } from './compose.js';
 import { handleDocument } from './document.js';
+import { handleDocumentChat, MAX_CHAT_BODY_BYTES } from './documentChat.js';
 import { handleRuleDraft } from './ruleDraft.js';
 import { handleSummarize } from './summarize.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -28,6 +29,12 @@ export function createSql(databaseUrl) {
 // same OPENAI_API_KEY, and the same 'ai' rate-limit scope, so here they are
 // two routes on one Worker. Per-route wording matches the originals exactly.
 const ROUTES = {
+  'document-chat': {
+    handler: handleDocumentChat,
+    notConfigured: 'Document AI chat is not configured',
+    unavailable: 'Document AI chat is temporarily unavailable',
+    tooMany: 'Too many document AI requests, slow down',
+  },
   'rule-draft': {
     handler: handleRuleDraft,
     notConfigured: 'AI rule generation is not configured',
@@ -94,7 +101,10 @@ async function route(url, request, sql, userId, env) {
 
   let body;
   try {
-    body = await readJsonBody(request);
+    body = await readJsonBody(
+      request,
+      url.pathname === '/document-chat' ? { maxBytes: MAX_CHAT_BODY_BYTES } : {},
+    );
   } catch (error) {
     const errorResponse = bodyErrorResponse(/** @type {Error} */ (error));
     if (errorResponse) return errorResponse;

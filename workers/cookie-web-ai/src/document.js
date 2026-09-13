@@ -81,9 +81,10 @@ function listItem(style, text, checked) {
  * paragraph). Pure and exported for tests.
  *
  * @param {string} markdown
+ * @param {number} [maxBlocks]
  * @returns {any[]}
  */
-export function markdownToBlocks(markdown) {
+export function markdownToBlocks(markdown, maxBlocks = MAX_BLOCKS) {
   /** @type {any[]} */
   const blocks = [];
   /** @type {string[]} */
@@ -171,7 +172,7 @@ export function markdownToBlocks(markdown) {
   }
   flushParagraph();
   flushList();
-  return blocks.slice(0, MAX_BLOCKS);
+  return blocks.slice(0, maxBlocks);
 }
 
 /**

@@ -321,3 +321,11 @@ quick-add parser remains available for explicit scheduling and shortcuts.
 GitHub news defaults to all fetched daily top repositories in source order. The `users.prefs.personaliseGithub` boolean opts into interest-based ranking and selection; absent or false disables it without changing Product Hunt interests. Cookie-Web edits it through GET/PUT `/tasks/interests`, and the next Today refresh or scheduled run applies it.
 
 New inbound emails are included in the inbox and unread badge only once `message_ai.status` is `completed`. Classification commits a message update that triggers the existing realtime refresh; pending or failed enrichment stays hidden until recovery succeeds. Sent-mail follow-up reminders remain eligible without inbound classification.
+
+### Document AI chat
+
+`POST /document-chat` on `cookie-web-ai` accepts `{ instruction, document, history }`, with `document` either null or the current `{ id, title, blocks }` snapshot. Auth0 authentication, document ownership, CORS and the shared AI quota apply. The default model is `gpt-5.6-sol` with medium reasoning; `OPENAI_DOCUMENT_CHAT_MODEL` overrides it independently of other AI features ([model documentation](https://developers.openai.com/api/docs/models/gpt-5.6-sol)).
+
+Responses contain a conversational reply and optionally a reviewable title/block proposal. The Worker never writes documents: Cookie-Web applies accepted proposals through normal autosave, refuses stale suggestions, and preserves existing non-text blocks exactly. Model content is escaped before conversion into Editor.js text blocks. Requests include the editor's live draft and the last 12 chat messages; linked attachments and image pixels are not fetched. Requests use `store: false` at OpenAI.
+
+The route accepts bodies up to 1 MiB; each full draft is limited to 250,000 characters and 500 blocks, instructions to 8,000 characters, and history entries to 16,000 characters. Oversized drafts are rejected rather than truncated. OpenAI has a 90-second deadline and 16,000 output-token limit; incomplete responses are rejected without applying changes.

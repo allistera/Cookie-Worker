@@ -17,6 +17,7 @@ const SERVICE = 'cookie-web-ai';
  *   OPENAI_COMPOSE_MODEL?: string,
  *   OPENAI_SUMMARY_MODEL?: string,
  *   OPENAI_DOCUMENT_MODEL?: string,
+ *   OPENAI_DOCUMENT_CHAT_MODEL?: string,
  * }} AiEnv
  */
 

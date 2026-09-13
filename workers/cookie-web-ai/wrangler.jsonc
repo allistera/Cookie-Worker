@@ -23,5 +23,6 @@
     // OPENAI_COMPOSE_MODEL / OPENAI_SUMMARY_MODEL / OPENAI_DOCUMENT_MODEL are
     // optional overrides for the defaults in src/openai.js — set here or in
     // the dashboard if needed.
+    // OPENAI_DOCUMENT_CHAT_MODEL separately overrides gpt-5.6-sol for /document-chat.
   },
 }

@@ -7,3 +7,6 @@ OPENAI_API_KEY=""
 
 # Optional locally; required in production to send sanitized errors to Sentry.
 SENTRY_DSN=""
+
+# Document chat uses a separate model from new-document generation.
+OPENAI_DOCUMENT_CHAT_MODEL=gpt-5.6-sol
