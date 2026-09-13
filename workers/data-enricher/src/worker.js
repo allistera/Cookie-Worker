@@ -2,19 +2,9 @@ import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { isEnrichmentDue } from '../../../shared/enrichmentSettings.js';
-import { analyzeEmail, fetchImportantMessages } from './analyze.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
-import { buildNews } from './news.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
-import {
-  fetchInterests,
-  fetchGithubPersonalisation,
-  fetchEnrichmentSettings,
-  lookupUserId,
-  storeEmailAnalysis,
-  storeDigest,
-  storeNews,
-} from './store.js';
+import { fetchEnrichmentSettings, lookupUserId, storeDigest } from './store.js';
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
@@ -26,68 +16,6 @@ export function createSql(databaseUrl) {
     idle_timeout: 20,
     connect_timeout: 10,
   });
-}
-
-/** @param {string} content */
-function fingerprint(content) {
-  let hash = 5381;
-  for (let i = 0; i < content.length; i++) {
-    hash = ((hash << 5) + hash + content.charCodeAt(i)) >>> 0;
-  }
-  return hash.toString(36);
-}
-
-const ANALYZE_CONCURRENCY = 3;
-
-/**
- * @param {import('postgres').Sql} sql
- * @param {Env & {OPENAI_API_KEY?: string}} env
- * @param {string} userId
- */
-async function analyzeImportantEmails(sql, env, userId) {
-  const apiKey = env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
-  const messages = await fetchImportantMessages(sql, userId);
-  let extracted = 0;
-  // Small pool instead of a serial loop: each message is an independent
-  // classify+embed pair and its own per-message store transaction, so three
-  // in flight cuts the worst-case wall time (~15s per LLM call) without
-  // approaching the subrequest budget.
-  let nextIndex = 0;
-  const workers = Array.from(
-    { length: Math.min(ANALYZE_CONCURRENCY, messages.length) },
-    async () => {
-      while (nextIndex < messages.length) {
-        const message = messages[nextIndex];
-        nextIndex += 1;
-        const analysis = await analyzeEmail(message, apiKey, env.AI_MODEL);
-        const tasks = analysis.tasks.map((task) => ({
-          source: /** @type {'email'} */ ('email'),
-          externalId: `${message.id}:${fingerprint(task.content)}`,
-          content: task.content,
-          dueDate: task.due_date ?? null,
-          messageId: message.id,
-          raw: task,
-        }));
-        await storeEmailAnalysis(
-          sql,
-          userId,
-          {
-            messageId: message.id,
-            summary: analysis.summary,
-            model: env.AI_MODEL,
-            raw: { ...analysis, prompt_version: 'email-task-analysis-v1' },
-          },
-          tasks,
-        );
-        extracted += tasks.length;
-      }
-    },
-  );
-  await Promise.all(workers);
-  console.log(
-    JSON.stringify({ event: 'emails_analyzed', messages: messages.length, tasks: extracted }),
-  );
 }
 
 /**
@@ -113,43 +41,6 @@ async function buildDailyTriage(sql, env, userId) {
       messages: messages.length,
       visible: triage.topics.reduce((total, topic) => total + topic.items.length, 0),
       noise: triage.noise.count,
-    }),
-  );
-}
-
-/**
- * The day's personalised news for AI Today: GitHub and Product Hunt ranked
- * against the reader's stored interests, plus straight UK headlines. Stored
- * whole, so a day where every source fails replaces it with an empty set
- * rather than leaving yesterday's news looking current.
- *
- * @param {import('postgres').Sql} sql
- * @param {Env & {OPENAI_API_KEY?: string, GITHUB_API_TOKEN?: string, PRODUCT_HUNT_TOKEN?: string}} env
- * @param {string} userId
- */
-async function buildDailyNews(sql, env, userId) {
-  const apiKey = env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
-  const interests = await fetchInterests(sql, userId);
-  const news = await buildNews({
-    interests,
-    personaliseGithub: await fetchGithubPersonalisation(sql, userId),
-    apiKey,
-    model: env.AI_MODEL,
-    // Not GITHUB_TOKEN: Actions reserves secret names with that prefix, so it
-    // could never be synced as a Worker secret. Optional either way — it only
-    // raises the search rate limit, and we make one request a day.
-    githubToken: env.GITHUB_API_TOKEN,
-    productHuntToken: env.PRODUCT_HUNT_TOKEN,
-    env,
-  });
-  await storeNews(sql, userId, news, env.AI_MODEL);
-  console.log(
-    JSON.stringify({
-      event: 'news_built',
-      interests: interests.length,
-      sections: news.sections.length,
-      items: news.sections.reduce((total, section) => total + section.items.length, 0),
     }),
   );
 }
@@ -194,25 +85,24 @@ async function runPhases(env, phases, options = {}) {
 }
 
 /**
- * The complete run: everything.
+ * All entry points run inbox triage only. News generation and per-email task
+ * extraction are retired from this worker.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runEnrichment(env) {
-  return runPhases(env, [analyzeImportantEmails, buildDailyTriage, buildDailyNews]);
+  return runPhases(env, [buildDailyTriage]);
 }
 
 /** @param {Env & {OPENAI_API_KEY?: string}} env @param {Date} scheduledAt */
 export async function runScheduledEnrichment(env, scheduledAt) {
-  return runPhases(env, [analyzeImportantEmails, buildDailyTriage, buildDailyNews], {
+  return runPhases(env, [buildDailyTriage], {
     scheduledAt,
   });
 }
 
 /**
- * Just the inbox triage. Kept separate from the full run because that one also
- * analyses up to ten emails one at a time — far too slow and too expensive to
- * sit behind a button.
+ * Legacy digest entry point; retained for deployed callers.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
@@ -221,14 +111,12 @@ export async function runDigestOnly(env) {
 }
 
 /**
- * Both of AI Today's cards, for its refresh control: inbox triage and the
- * news. A handful of model calls rather than the complete run's dozen, so the
- * caller can await it.
+ * AI Today refresh rebuilds inbox triage only. Stored news is left untouched.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runTodayRefresh(env) {
-  return runPhases(env, [buildDailyTriage, buildDailyNews]);
+  return runPhases(env, [buildDailyTriage]);
 }
 
 const worker = {
@@ -244,10 +132,8 @@ const worker = {
 
   /**
    * Manual trigger: POST /run with `Authorization: Bearer <HTTP_TRIGGER_TOKEN>`.
-   * `?phase=today` rebuilds both AI Today cards, which is what Cookie-Web's
-   * refresh control calls; `?phase=digest` rebuilds only inbox triage (the
-   * legacy phase name remains part of the deployed API); no
-   * phase runs everything, as the cron does.
+   * All accepted phases run inbox triage only. The today/digest aliases and
+   * response phase names remain compatible with deployed callers.
    *
    * @param {Request} request
    * @param {Env & {OPENAI_API_KEY?: string, HTTP_TRIGGER_TOKEN?: string}} env

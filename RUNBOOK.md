@@ -55,12 +55,14 @@ upload or embedder change is required; preserve unrelated index settings.
 
 ## AI enrichment and recovery
 
-Daily news ranking has an 8,000-token output budget (including reasoning) and a
-60-second deadline. If ranking fails, GitHub and Product Hunt keep their fetched
-popular items with a "personalisation unavailable" note, capped at 10 and 5 items
-respectively. Check `news_ranking_failed` in data-enricher logs for the source and
-sanitised error. A successful ranking with no matches remains empty; a source
-fetch failure still logs `news_source_failed` and omits only that source.
+`data-enricher` now runs inbox triage only. Its hourly cron is gated by the
+owner's saved Europe/London schedule. Authenticated `POST /run` and the existing
+`?phase=today` / `?phase=digest` aliases rebuild triage immediately. Check
+`triage_built`, `scheduled_run_skipped`, and `phase_failed` when diagnosing runs.
+No news fetching/ranking or per-email task extraction runs; existing stored
+news and extracted tasks remain readable. News-source credentials are unused.
+
+The separate `mail-app-ingest` classification and recovery flow is unchanged:
 
 After forwarding succeeds, the Worker starts best-effort enrichment with a fresh database client. Enrichment is AI classification only; search indexing is a separate best-effort write to Meilisearch.
 

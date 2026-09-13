@@ -86,14 +86,15 @@ afterEach(() => {
 });
 
 describe('POST /run phase routing', () => {
-  test('runs every phase when no phase is given', async () => {
+  test('runs only inbox triage when no phase is given', async () => {
     const response = await run();
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: 'ok', phase: 'all' });
-    expect(fetchImportantMessages).toHaveBeenCalled();
+    expect(fetchImportantMessages).not.toHaveBeenCalled();
     expect(storeDigest).toHaveBeenCalled();
-    expect(storeNews).toHaveBeenCalled();
+    expect(storeNews).not.toHaveBeenCalled();
+    expect(buildNews).not.toHaveBeenCalled();
     expect(buildDigest).toHaveBeenCalledWith(expect.anything(), 'key', 'gpt-5-nano');
   });
 
@@ -109,19 +110,20 @@ describe('POST /run phase routing', () => {
     expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 
-  // AI Today's refresh rebuilds both of its cards in one trigger.
-  test('runs inbox triage and news for ?phase=today', async () => {
+  // AI Today refresh must not fetch or generate news.
+  test('runs only inbox triage for ?phase=today', async () => {
     const response = await run('?phase=today');
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: 'ok', phase: 'today' });
     expect(storeDigest).toHaveBeenCalled();
-    expect(storeNews).toHaveBeenCalled();
+    expect(storeNews).not.toHaveBeenCalled();
+    expect(buildNews).not.toHaveBeenCalled();
     expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 
   test('rejects an unknown phase without running anything', async () => {
-    const response = await run('?phase=everything');
+    const response = await run('?phase=news');
 
     expect(response.status).toBe(400);
     expect(storeDigest).not.toHaveBeenCalled();
@@ -144,6 +146,9 @@ describe('scheduled enrichment', () => {
       runScheduledEnrichment(env, new Date('2026-07-06T08:00:00Z')),
     ).resolves.toBeUndefined();
     expect(storeDigest).toHaveBeenCalled();
+    expect(buildNews).not.toHaveBeenCalled();
+    expect(storeNews).not.toHaveBeenCalled();
+    expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 
   test('does no AI work outside the saved schedule', async () => {
