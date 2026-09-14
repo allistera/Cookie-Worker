@@ -8,6 +8,7 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import { getContacts } from './contacts.js';
+import { getContactInsights, patchContactInsights } from './contactInsights.js';
 import {
   getAttachment,
   getCalendarInvite,
@@ -91,7 +92,7 @@ async function route(url, request, sql, userId, env, ctx) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
   const sub = segments[1];
-  if (sub && !['attachment', 'contacts', 'calendar-invite'].includes(sub)) {
+  if (sub && !['attachment', 'contacts', 'contact-insights', 'calendar-invite'].includes(sub)) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
 
@@ -102,6 +103,13 @@ async function route(url, request, sql, userId, env, ctx) {
         { status: 405, headers: { Allow: 'GET' } },
       );
     return getContacts(sql, userId);
+  }
+
+  if (sub === 'contact-insights' && !['GET', 'PATCH'].includes(request.method)) {
+    return Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET, PATCH' } },
+    );
   }
 
   if (request.method !== 'GET' && request.method !== 'PATCH' && request.method !== 'POST') {
@@ -137,6 +145,10 @@ async function route(url, request, sql, userId, env, ctx) {
     });
   }
 
+  if (sub === 'contact-insights' && request.method === 'GET') {
+    return getContactInsights(sql, userId, url);
+  }
+
   if (request.method === 'GET') {
     return getMessage(sql, userId, url.searchParams.get('id'), {
       deferCalendar: url.searchParams.get('calendar') === 'deferred',
@@ -155,6 +167,10 @@ async function route(url, request, sql, userId, env, ctx) {
   }
 
   const onMessageChanged = (/** @type {string} */ messageId) => reindexMessage(env, ctx, messageId);
+
+  if (sub === 'contact-insights') {
+    return patchContactInsights(sql, userId, body);
+  }
 
   if (request.method === 'POST') {
     return postMessage(sql, userId, body, {

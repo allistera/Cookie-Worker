@@ -138,6 +138,34 @@ describe('routing', () => {
     expect(await response.json()).toEqual({ contacts: [] });
   });
 
+  test('GET /messages/contact-insights dispatches to contact insights', async () => {
+    mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const response = await worker.fetch(
+      request('/messages/contact-insights?address=alex%40example.com'),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).contact.address).toBe('alex@example.com');
+  });
+
+  test('PATCH /messages/contact-insights saves private notes', async () => {
+    mockQuery.mockResolvedValueOnce([
+      { company: null, role: null, linkedin_url: null, notes: 'Private note' },
+    ]);
+    const response = await worker.fetch(
+      request('/messages/contact-insights', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: 'alex@example.com', notes: 'Private note' }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).contact.notes).toBe('Private note');
+  });
+
   test('POST /messages dispatches to postMessage', async () => {
     const response = await worker.fetch(
       request('/messages', {
@@ -182,6 +210,15 @@ describe('routing', () => {
   test('POST on /messages/contacts returns 405', async () => {
     const response = await worker.fetch(
       request('/messages/contacts', { method: 'POST' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(405);
+  });
+
+  test('POST on /messages/contact-insights returns 405', async () => {
+    const response = await worker.fetch(
+      request('/messages/contact-insights', { method: 'POST' }),
       env,
       ctx,
     );
