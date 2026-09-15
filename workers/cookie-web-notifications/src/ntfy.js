@@ -2,6 +2,7 @@ export const DEFAULT_BASE_URL = 'https://ntfy.allisterantosik.com';
 const TOPIC_RE = /^[A-Za-z0-9_-]{8,128}$/;
 const COOKIE_ORIGIN = 'https://mail.infinitywave.online';
 const MAX_RETRY_DELAY_MS = 5000;
+const MAX_BODY_BYTES = 3500;
 
 export class NtfyPublishError extends Error {
   /** @param {number} status @param {number | null} retryAfterSeconds */
@@ -29,8 +30,26 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+/** @param {string} text */
+function truncateBody(text) {
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).length <= MAX_BODY_BYTES) return text;
+
+  let truncated = '';
+  let bytes = 0;
+  const suffix = '…';
+  const suffixBytes = encoder.encode(suffix).length;
+  for (const character of text) {
+    const characterBytes = encoder.encode(character).length;
+    if (bytes + characterBytes + suffixBytes > MAX_BODY_BYTES) break;
+    truncated += character;
+    bytes += characterBytes;
+  }
+  return `${truncated}${suffix}`;
+}
+
 /**
- * @param {{topic: string, messageId: string, sender?: string | null, subject?: string | null, title?: string | null}} notification
+ * @param {{topic: string, messageId: string, subject?: string | null, bodyText?: string | null, title?: string | null}} notification
  * @param {{baseUrl?: string, fetchImpl?: typeof fetch, maxAttempts?: number, sleepImpl?: (milliseconds: number) => Promise<void>}} [options]
  */
 export async function publishNtfy(notification, options = {}) {
@@ -43,19 +62,21 @@ export async function publishNtfy(notification, options = {}) {
     typeof options.maxAttempts === 'number' && Number.isInteger(options.maxAttempts)
       ? Math.max(1, options.maxAttempts)
       : 3;
-  const sender = String(notification.sender || 'Unknown sender').trim() || 'Unknown sender';
   const subject = String(notification.subject || '(No subject)').trim() || '(No subject)';
+  const plainText =
+    String(notification.bodyText || '').trim() || 'No plain-text content available.';
+  const body = truncateBody(plainText);
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/${notification.topic}`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'X-Title': notification.title || `New email from ${sender}`,
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Title': notification.title || subject,
         'X-Click': `${COOKIE_ORIGIN}/inbox?open=${encodeURIComponent(notification.messageId)}`,
         'X-Tags': 'email',
         'X-Priority': 'default',
       },
-      body: JSON.stringify({ topic: notification.topic, message: subject }),
+      body,
     });
     if (response.ok) return;
 
@@ -162,8 +183,8 @@ export async function sendNtfyTest(sql, userId, options = {}) {
     {
       topic: subscription.topic,
       messageId: 'test-notification',
-      sender: 'Cookie',
       subject: 'Your ntfy notifications are working.',
+      bodyText: 'Your ntfy notifications are working.',
       title: 'Cookie notification test',
     },
     options,
@@ -184,7 +205,7 @@ export async function deliverPendingNtfy(sql, options = {}) {
   const rows = await sql`
     WITH pending AS (
       SELECT event.event_id, event.message_id, subscription.topic,
-             message.from_name, message.from_address, message.subject
+             message.subject, message.body_text
       FROM ntfy_notification_events event
       JOIN ntfy_subscriptions subscription ON subscription.user_id = event.user_id
       JOIN messages message ON message.id = event.message_id
@@ -207,7 +228,7 @@ export async function deliverPendingNtfy(sql, options = {}) {
     FROM pending
     WHERE event.event_id = pending.event_id
     RETURNING pending.event_id, pending.message_id, pending.topic,
-              pending.from_name, pending.from_address, pending.subject
+              pending.subject, pending.body_text
   `;
   let delivered = 0;
   for (const row of rows) {
@@ -216,8 +237,8 @@ export async function deliverPendingNtfy(sql, options = {}) {
         {
           topic: row.topic,
           messageId: row.message_id,
-          sender: row.from_name || row.from_address,
           subject: row.subject,
+          bodyText: row.body_text,
         },
         options,
       );

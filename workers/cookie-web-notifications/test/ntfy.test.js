@@ -8,15 +8,15 @@ import {
 } from '../src/ntfy.js';
 
 describe('ntfy delivery', () => {
-  test('publishes a privacy-safe notification with a Cookie deep link', async () => {
+  test('publishes the subject as the title and plain-text email as the body', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
 
     await publishNtfy(
       {
         topic: 'cookie-random-topic',
         messageId: '11111111-1111-1111-1111-111111111111',
-        sender: 'NHS',
         subject: 'Your winter vaccine appointment reminder',
+        bodyText: 'Please book your appointment before Friday.',
       },
       { baseUrl: 'https://ntfy.sh', fetchImpl },
     );
@@ -28,16 +28,44 @@ describe('ntfy delivery', () => {
     const [, request] = fetchImpl.mock.calls[0];
     expect(request.headers).toEqual(
       expect.objectContaining({
-        'Content-Type': 'application/json',
-        'X-Title': 'New email from NHS',
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Title': 'Your winter vaccine appointment reminder',
         'X-Click':
           'https://mail.infinitywave.online/inbox?open=11111111-1111-1111-1111-111111111111',
       }),
     );
-    expect(JSON.parse(request.body)).toEqual({
-      topic: 'cookie-random-topic',
-      message: 'Your winter vaccine appointment reminder',
-    });
+    expect(request.body).toBe('Please book your appointment before Friday.');
+  });
+
+  test('uses readable fallbacks when the subject and plain-text body are empty', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+
+    await publishNtfy(
+      { topic: 'cookie-topic', messageId: 'message-1', subject: '  ', bodyText: '  ' },
+      { fetchImpl },
+    );
+
+    const [, request] = fetchImpl.mock.calls[0];
+    expect(request.headers['X-Title']).toBe('(No subject)');
+    expect(request.body).toBe('No plain-text content available.');
+  });
+
+  test('truncates long plain-text bodies to fit within the ntfy message limit', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+
+    await publishNtfy(
+      {
+        topic: 'cookie-topic',
+        messageId: 'message-1',
+        subject: 'Subject',
+        bodyText: 'a'.repeat(4000),
+      },
+      { fetchImpl },
+    );
+
+    const [, request] = fetchImpl.mock.calls[0];
+    expect(new TextEncoder().encode(request.body)).toHaveLength(3500);
+    expect(request.body.endsWith('…')).toBe(true);
   });
 
   test('honours Retry-After and retries a rate-limited publish', async () => {
@@ -140,8 +168,8 @@ describe('ntfy delivery', () => {
             event_id: 'event-1',
             message_id: 'message-1',
             topic: 'cookie-topic',
-            from_name: 'NHS',
             subject: 'Appointment reminder',
+            body_text: 'Please confirm by Friday.',
           },
         ])
         .mockResolvedValueOnce([])
@@ -153,6 +181,9 @@ describe('ntfy delivery', () => {
     ).resolves.toEqual({ attempted: 1, delivered: 1, failed: 0 });
     expect(sql).toHaveBeenCalledTimes(2);
     expect(sql.mock.calls[1][0].join(' ')).toContain('published_at = now()');
+    const [, request] = fetchImpl.mock.calls[0];
+    expect(request.headers['X-Title']).toBe('Appointment reminder');
+    expect(request.body).toBe('Please confirm by Friday.');
   });
 
   test('updates queued events only from the rows selected by the pending CTE', async () => {
@@ -164,6 +195,7 @@ describe('ntfy delivery', () => {
     expect(query).toContain('FROM pending');
     expect(query).not.toContain('FROM pending JOIN');
     expect(query).toContain('RETURNING pending.event_id, pending.message_id, pending.topic');
+    expect(query).toContain('pending.body_text');
   });
 });
 
@@ -217,10 +249,8 @@ describe('ntfy subscription', () => {
     const [url, request] = fetchImpl.mock.calls[0];
     expect(url).toBe('https://ntfy.sh/cookie-user-topic');
     expect(request.headers['X-Title']).toBe('Cookie notification test');
-    expect(JSON.parse(request.body)).toEqual({
-      topic: 'cookie-user-topic',
-      message: 'Your ntfy notifications are working.',
-    });
+    expect(request.headers['Content-Type']).toBe('text/plain; charset=utf-8');
+    expect(request.body).toBe('Your ntfy notifications are working.');
   });
 
   test('does not publish a test when the user has no enabled subscription', async () => {
