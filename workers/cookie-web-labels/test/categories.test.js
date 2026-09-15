@@ -17,6 +17,7 @@ describe('listCategories', () => {
       name: 'Projects',
       color: '#2F6BE0',
       description: 'Active work',
+      notifications_enabled: true,
       message_count: 3,
     };
     const sql = createMockSql([[category]]);
@@ -30,7 +31,15 @@ describe('listCategories', () => {
 describe('createCategory', () => {
   test('creates a category with normalized fields', async () => {
     const sql = createMockSql([
-      [{ id: CATEGORY_ID, name: 'Projects', color: '#2F6BE0', description: null }],
+      [
+        {
+          id: CATEGORY_ID,
+          name: 'Projects',
+          color: '#2F6BE0',
+          description: null,
+          notifications_enabled: true,
+        },
+      ],
     ]);
     const response = await createCategory(sql, USER_ID, {
       name: '  Projects  ',
@@ -39,8 +48,9 @@ describe('createCategory', () => {
     });
     expect(response.status).toBe(201);
     expect(await response.json()).toMatchObject({
-      category: { name: 'Projects', description: null },
+      category: { name: 'Projects', description: null, notifications_enabled: true },
     });
+    expect(sql.calls[0].text).toContain('notifications_enabled');
   });
 
   test.each([
@@ -78,10 +88,32 @@ describe('updateCategory', () => {
     expect(sql.calls[0].text).toContain('c.user_id =');
   });
 
+  test('updates the notification preference with a boolean value', async () => {
+    const category = {
+      id: CATEGORY_ID,
+      name: 'Clients',
+      color: '#2F6BE0',
+      description: null,
+      notifications_enabled: false,
+    };
+    const sql = createMockSql([[category]]);
+
+    const response = await updateCategory(sql, USER_ID, {
+      id: CATEGORY_ID,
+      notifications_enabled: false,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ category });
+    expect(sql.calls[0].text).toContain('notifications_enabled');
+    expect(sql.calls[0].values).toContain(false);
+  });
+
   test.each([
     [{ id: CATEGORY_ID }],
     [{ id: 'invalid', name: 'Clients' }],
     [{ id: CATEGORY_ID, color: 'red' }],
+    [{ id: CATEGORY_ID, notifications_enabled: 'false' }],
   ])('rejects invalid edits: %o', async (body) => {
     const sql = createMockSql();
     const response = await updateCategory(sql, USER_ID, body);

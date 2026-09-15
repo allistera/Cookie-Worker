@@ -9,7 +9,7 @@ const MAX_DESCRIPTION = 200;
  */
 export async function listCategories(sql, userId) {
   const categories = await sql`
-    SELECT c.id, c.name, c.color, c.description,
+    SELECT c.id, c.name, c.color, c.description, c.notifications_enabled,
            count(m.id)::int AS message_count
     FROM email_categories c
     LEFT JOIN messages m ON m.category_id = c.id AND NOT m.is_deleted
@@ -42,7 +42,7 @@ export async function createCategory(sql, userId, body) {
     INSERT INTO email_categories (user_id, name, color, description)
     VALUES (${userId}, ${name}, ${color}, ${description})
     ON CONFLICT (user_id, name) DO NOTHING
-    RETURNING id, name, color, description, 0 AS message_count
+    RETURNING id, name, color, description, notifications_enabled, 0 AS message_count
   `;
   if (!category) {
     return Response.json({ error: 'A category with that name already exists' }, { status: 409 });
@@ -60,16 +60,19 @@ export async function updateCategory(sql, userId, body) {
   const hasName = Object.hasOwn(body ?? {}, 'name');
   const hasColor = Object.hasOwn(body ?? {}, 'color');
   const hasDescription = Object.hasOwn(body ?? {}, 'description');
+  const hasNotificationsEnabled = Object.hasOwn(body ?? {}, 'notifications_enabled');
   const name = String(body?.name ?? '').trim();
   const color = String(body?.color ?? '').trim();
   const description = String(body?.description ?? '').trim() || null;
+  const notificationsEnabled = body?.notifications_enabled;
 
   if (
     !id ||
-    (!hasName && !hasColor && !hasDescription) ||
+    (!hasName && !hasColor && !hasDescription && !hasNotificationsEnabled) ||
     (hasName && (!name || name.length > MAX_NAME)) ||
     (hasColor && !COLOR_RE.test(color)) ||
-    (hasDescription && description && description.length > MAX_DESCRIPTION)
+    (hasDescription && description && description.length > MAX_DESCRIPTION) ||
+    (hasNotificationsEnabled && typeof notificationsEnabled !== 'boolean')
   ) {
     return Response.json({ error: 'id and a valid category update are required' }, { status: 400 });
   }
@@ -80,9 +83,11 @@ export async function updateCategory(sql, userId, body) {
       UPDATE email_categories c
       SET name = COALESCE(${hasName ? name : null}, c.name),
           color = CASE WHEN ${hasColor} THEN ${color} ELSE c.color END,
-          description = CASE WHEN ${hasDescription} THEN ${description} ELSE c.description END
+          description = CASE WHEN ${hasDescription} THEN ${description} ELSE c.description END,
+          notifications_enabled = CASE WHEN ${hasNotificationsEnabled}
+            THEN ${notificationsEnabled === true} ELSE c.notifications_enabled END
       WHERE c.id = ${id} AND c.user_id = ${userId}
-      RETURNING c.id, c.name, c.color, c.description
+      RETURNING c.id, c.name, c.color, c.description, c.notifications_enabled
     `;
   } catch (error) {
     if (hasName && /** @type {{code?: string}} */ (error)?.code === '23505') {

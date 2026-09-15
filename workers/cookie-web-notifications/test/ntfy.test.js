@@ -196,6 +196,11 @@ describe('ntfy delivery', () => {
     expect(query).not.toContain('FROM pending JOIN');
     expect(query).toContain('RETURNING pending.event_id, pending.message_id, pending.topic');
     expect(query).toContain('pending.body_text');
+    expect(query).toContain("ai.status IS DISTINCT FROM 'pending'");
+    expect(query).toContain("ai.updated_at <= now() - interval '5 minutes'");
+    expect(query).toContain('LEFT JOIN email_categories category');
+    expect(query).toContain('message.id = event.message_id AND message.user_id = event.user_id');
+    expect(query).toContain('(message.category_id IS NULL OR category.notifications_enabled)');
   });
 });
 

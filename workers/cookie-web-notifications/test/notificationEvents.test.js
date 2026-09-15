@@ -116,6 +116,19 @@ describe('claim', () => {
 
     expect(response.status).toBe(204);
   });
+
+  test('425s while category enrichment is still pending', async () => {
+    sql = createMockSql([[], [{ claimed_until: null, enrichment_pending: true }]]);
+
+    const response = await handleNotificationEvent(sql, USER_ID, {
+      action: 'claim',
+      eventId: EVENT_ID,
+    });
+
+    expect(response.status).toBe(425);
+    expect(response.headers.get('Retry-After')).toBe('5');
+    expect(response.headers.get('Access-Control-Expose-Headers')).toBe('Retry-After');
+  });
 });
 
 describe('ack', () => {
@@ -170,6 +183,10 @@ describe('query shapes', () => {
     expect(claim.text).toContain('AND NOT EXISTS');
     expect(claim.text).toContain('t.id = message.thread_id AND t.user_id = ? AND t.is_muted');
     expect(claim.text).toContain("COALESCE(ai.spam_verdict, 'inbox') <> 'spam'");
+    expect(claim.text).toContain("ai.status IS DISTINCT FROM 'pending'");
+    expect(claim.text).toContain("ai.updated_at <= now() - interval '5 minutes'");
+    expect(claim.text).toContain('LEFT JOIN email_categories category');
+    expect(claim.text).toContain('(message.category_id IS NULL OR category.notifications_enabled)');
     expect(claim.text).toContain('RETURNING event.event_id, event.claim_token');
     expect(claim.values).toContain(USER_ID);
   });

@@ -17,6 +17,8 @@ export function claimNotificationEvent(sql, userId, eventId) {
         claimed_until = now() + interval '30 seconds'
     FROM messages message
     LEFT JOIN message_ai ai ON ai.message_id = message.id
+    LEFT JOIN email_categories category
+      ON category.id = message.category_id AND category.user_id = message.user_id
     WHERE event.event_id = ${eventId}
       AND event.message_id = message.id
       AND event.user_id = ${userId}
@@ -32,6 +34,9 @@ export function claimNotificationEvent(sql, userId, eventId) {
       AND NOT message.is_deleted
       AND (message.scheduled_for IS NULL OR message.scheduled_for <= now())
       AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+      AND (ai.status IS DISTINCT FROM 'pending'
+        OR ai.updated_at <= now() - interval '5 minutes')
+      AND (message.category_id IS NULL OR category.notifications_enabled)
     RETURNING event.event_id, event.claim_token, event.claimed_until,
               message.id AS message_id, message.from_name,
               message.from_address, message.subject
@@ -45,8 +50,12 @@ export function claimNotificationEvent(sql, userId, eventId) {
  */
 export function findNotificationEventLease(sql, userId, eventId) {
   return sql`
-    SELECT event.claimed_until
+    SELECT event.claimed_until,
+           (ai.status = 'pending' AND ai.updated_at > now() - interval '5 minutes')
+             AS enrichment_pending
     FROM browser_notification_events event
+    JOIN messages message ON message.id = event.message_id AND message.user_id = event.user_id
+    LEFT JOIN message_ai ai ON ai.message_id = message.id
     WHERE event.event_id = ${eventId}
       AND event.user_id = ${userId}
   `;
@@ -111,6 +120,16 @@ export async function handleNotificationEvent(sql, userId, body) {
         { error: 'Notification event is already claimed' },
         {
           'Retry-After': '30',
+          'Access-Control-Expose-Headers': 'Retry-After',
+        },
+      );
+    }
+    if (event?.enrichment_pending) {
+      return json(
+        425,
+        { error: 'Message categorisation is still pending' },
+        {
+          'Retry-After': '5',
           'Access-Control-Expose-Headers': 'Retry-After',
         },
       );

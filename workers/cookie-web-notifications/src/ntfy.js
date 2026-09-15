@@ -208,8 +208,11 @@ export async function deliverPendingNtfy(sql, options = {}) {
              message.subject, message.body_text
       FROM ntfy_notification_events event
       JOIN ntfy_subscriptions subscription ON subscription.user_id = event.user_id
-      JOIN messages message ON message.id = event.message_id
+      JOIN messages message
+        ON message.id = event.message_id AND message.user_id = event.user_id
       LEFT JOIN message_ai ai ON ai.message_id = message.id
+      LEFT JOIN email_categories category
+        ON category.id = message.category_id AND category.user_id = message.user_id
       WHERE event.published_at IS NULL
         AND event.attempts < 5
         AND subscription.enabled
@@ -219,6 +222,9 @@ export async function deliverPendingNtfy(sql, options = {}) {
         AND NOT message.is_deleted
         AND (message.scheduled_for IS NULL OR message.scheduled_for <= now())
         AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+        AND (ai.status IS DISTINCT FROM 'pending'
+          OR ai.updated_at <= now() - interval '5 minutes')
+        AND (message.category_id IS NULL OR category.notifications_enabled)
       ORDER BY event.created_at
       LIMIT ${limit}
       FOR UPDATE OF event SKIP LOCKED
