@@ -8,6 +8,7 @@
   "routes": [{ "pattern": "notifications-api.infinitywave.online", "custom_domain": true }],
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
+  "triggers": { "crons": ["*/1 * * * *"] },
   "upload_source_maps": true,
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
@@ -20,5 +21,6 @@
     // Cookie-Web's production origin, for the CORS allowlist.
     "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
     "SENTRY_ENVIRONMENT": "production",
+    "NTFY_BASE_URL": "https://ntfy.sh",
   },
 }

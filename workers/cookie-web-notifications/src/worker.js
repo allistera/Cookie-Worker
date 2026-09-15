@@ -5,6 +5,12 @@ import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { handleNotificationEvent } from './notificationEvents.js';
+import {
+  createNtfySubscription,
+  deliverPendingNtfy,
+  disableNtfySubscription,
+  getNtfySubscription,
+} from './ntfy.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 /** @param {string} databaseUrl */
@@ -29,6 +35,26 @@ export function createSql(databaseUrl) {
  * @param {string} userId
  */
 async function route(url, request, sql, userId) {
+  if (url.pathname === '/ntfy') {
+    if (request.method === 'GET') {
+      return Response.json((await getNtfySubscription(sql, userId)) || { enabled: false }, {
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+    if (request.method === 'POST') {
+      return Response.json(await createNtfySubscription(sql, userId), {
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+    if (request.method === 'DELETE') {
+      await disableNtfySubscription(sql, userId);
+      return new Response(null, { status: 204 });
+    }
+    return Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET, POST, DELETE' } },
+    );
+  }
   if (url.pathname !== '/notification-event') {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
@@ -94,6 +120,16 @@ const worker = {
     } finally {
       ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
     }
+  },
+
+  /** @param {ScheduledController} _controller @param {any} env @param {ExecutionContext} ctx */
+  async scheduled(_controller, env, ctx) {
+    const sql = createSql(env.HYPERDRIVE.connectionString);
+    ctx.waitUntil(
+      deliverPendingNtfy(sql, { baseUrl: env.NTFY_BASE_URL || 'https://ntfy.sh' }).finally(() =>
+        sql.end({ timeout: 2 }).catch(() => undefined),
+      ),
+    );
   },
 };
 

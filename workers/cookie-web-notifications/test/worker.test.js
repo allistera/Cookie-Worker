@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 // so the database itself is stubbed here rather than exercised. mockQuery is
 // reset in beforeEach and can be overridden per test (e.g. to make a
 // handler's query throw, for the error-reporting tests below).
-const mockQuery = vi.fn(/** @param {any[]} _args */ (..._args) => Promise.resolve([]));
+const mockQuery = vi.fn(
+  /** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])),
+);
 const sqlEnd = vi.fn(async () => undefined);
 vi.mock('postgres', () => ({
   default: () => {
@@ -107,6 +109,41 @@ describe('auth', () => {
 });
 
 describe('routing', () => {
+  test('GET /ntfy returns the authenticated user subscription', async () => {
+    mockQuery.mockResolvedValueOnce([{ topic: 'cookie-topic', enabled: true }]);
+    const response = await worker.fetch(request('/ntfy'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      topic: 'cookie-topic',
+      subscribeUrl: 'https://ntfy.sh/cookie-topic',
+      enabled: true,
+    });
+  });
+
+  test('POST /ntfy creates a subscription without exposing another user', async () => {
+    mockQuery
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ topic: 'cookie-generated-topic', enabled: true }]);
+    const response = await worker.fetch(
+      request('/ntfy', { method: 'POST', body: JSON.stringify({}) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      topic: 'cookie-generated-topic',
+      subscribeUrl: 'https://ntfy.sh/cookie-generated-topic',
+      enabled: true,
+    });
+  });
+
+  test('DELETE /ntfy disables the authenticated user subscription', async () => {
+    const response = await worker.fetch(request('/ntfy', { method: 'DELETE' }), env, ctx);
+    expect(response.status).toBe(204);
+    expect(mockQuery).toHaveBeenCalledOnce();
+    expect(mockQuery.mock.calls[0][0].join(' ')).toContain('UPDATE ntfy_subscriptions');
+  });
+
   test('POST /notification-event dispatches to the handler (reaches its validation)', async () => {
     const response = await worker.fetch(
       request('/notification-event', {
