@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 // Routing/CORS/auth wiring is what this file tests — the business logic
 // (notificationEvents.js) already has its own unit tests against a mock sql,
@@ -56,6 +56,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   verifyAccessToken.mockResolvedValue({ userId: 'user-1' });
   mockQuery.mockReset().mockResolvedValue([]);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('CORS preflight', () => {
@@ -142,6 +146,25 @@ describe('routing', () => {
     expect(response.status).toBe(204);
     expect(mockQuery).toHaveBeenCalledOnce();
     expect(mockQuery.mock.calls[0][0].join(' ')).toContain('UPDATE ntfy_subscriptions');
+  });
+
+  test('POST /ntfy/test sends a test notification for the authenticated user', async () => {
+    mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
+    const ntfyFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', ntfyFetch);
+
+    const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ sent: true });
+    expect(ntfyFetch).toHaveBeenCalledOnce();
+  });
+
+  test('POST /ntfy/test reports when notifications are not enabled', async () => {
+    const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'ntfy notifications are not enabled' });
   });
 
   test('POST /notification-event dispatches to the handler (reaches its validation)', async () => {

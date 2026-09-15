@@ -3,7 +3,7 @@ const TOPIC_RE = /^[A-Za-z0-9_-]{8,128}$/;
 const COOKIE_ORIGIN = 'https://mail.infinitywave.online';
 
 /**
- * @param {{topic: string, messageId: string, sender?: string | null, subject?: string | null}} notification
+ * @param {{topic: string, messageId: string, sender?: string | null, subject?: string | null, title?: string | null}} notification
  * @param {{baseUrl?: string, fetchImpl?: typeof fetch}} [options]
  */
 export async function publishNtfy(notification, options = {}) {
@@ -17,7 +17,7 @@ export async function publishNtfy(notification, options = {}) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Title': `New email from ${sender}`,
+      'X-Title': notification.title || `New email from ${sender}`,
       'X-Click': `${COOKIE_ORIGIN}/inbox?open=${encodeURIComponent(notification.messageId)}`,
       'X-Tags': 'email',
       'X-Priority': 'default',
@@ -99,6 +99,35 @@ export function disableNtfySubscription(sql, userId) {
     USING disabled
     WHERE event.user_id = disabled.user_id AND event.published_at IS NULL
   `;
+}
+
+/**
+ * Publishes immediately so the user can verify their ntfy subscription
+ * without creating a fake email or notification queue record.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{baseUrl?: string, fetchImpl?: typeof fetch}} [options]
+ */
+export async function sendNtfyTest(sql, userId, options = {}) {
+  const [subscription] = await sql`
+    SELECT topic
+    FROM ntfy_subscriptions
+    WHERE user_id = ${userId} AND enabled
+  `;
+  if (!subscription) throw new Error('ntfy subscription is not enabled');
+
+  await publishNtfy(
+    {
+      topic: subscription.topic,
+      messageId: 'test-notification',
+      sender: 'Cookie',
+      subject: 'Your ntfy notifications are working.',
+      title: 'Cookie notification test',
+    },
+    options,
+  );
+  return { sent: true };
 }
 
 /**

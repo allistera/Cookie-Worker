@@ -1,5 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
-import { createNtfySubscription, deliverPendingNtfy, publishNtfy } from '../src/ntfy.js';
+import {
+  createNtfySubscription,
+  deliverPendingNtfy,
+  publishNtfy,
+  sendNtfyTest,
+} from '../src/ntfy.js';
 
 describe('ntfy delivery', () => {
   test('publishes a privacy-safe notification with a Cookie deep link', async () => {
@@ -86,5 +91,35 @@ describe('ntfy subscription', () => {
       subscribeUrl: 'https://ntfy.sh/cookie-generated-topic',
       enabled: true,
     });
+  });
+
+  test('sends a clearly labelled test notification to the enabled user topic', async () => {
+    const sql = /** @type {any} */ (
+      vi.fn().mockResolvedValueOnce([{ topic: 'cookie-user-topic' }])
+    );
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+
+    await expect(
+      sendNtfyTest(sql, 'user-1', { baseUrl: 'https://ntfy.sh', fetchImpl }),
+    ).resolves.toEqual({ sent: true });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [url, request] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://ntfy.sh/cookie-user-topic');
+    expect(request.headers['X-Title']).toBe('Cookie notification test');
+    expect(JSON.parse(request.body)).toEqual({
+      topic: 'cookie-user-topic',
+      message: 'Your ntfy notifications are working.',
+    });
+  });
+
+  test('does not publish a test when the user has no enabled subscription', async () => {
+    const sql = /** @type {any} */ (vi.fn().mockResolvedValueOnce([]));
+    const fetchImpl = vi.fn();
+
+    await expect(sendNtfyTest(sql, 'user-1', { fetchImpl })).rejects.toThrow(
+      'ntfy subscription is not enabled',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

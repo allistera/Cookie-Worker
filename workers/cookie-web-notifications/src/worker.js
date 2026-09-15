@@ -10,6 +10,7 @@ import {
   deliverPendingNtfy,
   disableNtfySubscription,
   getNtfySubscription,
+  sendNtfyTest,
 } from './ntfy.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
@@ -34,7 +35,25 @@ export function createSql(databaseUrl) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  */
-async function route(url, request, sql, userId) {
+async function route(url, request, sql, userId, ntfyBaseUrl) {
+  if (url.pathname === '/ntfy/test') {
+    if (request.method !== 'POST') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'POST' } },
+      );
+    }
+    try {
+      return Response.json(
+        await sendNtfyTest(sql, userId, { baseUrl: ntfyBaseUrl || 'https://ntfy.sh' }),
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message === 'ntfy subscription is not enabled') {
+        return Response.json({ error: 'ntfy notifications are not enabled' }, { status: 409 });
+      }
+      throw error;
+    }
+  }
   if (url.pathname === '/ntfy') {
     if (request.method === 'GET') {
       return Response.json((await getNtfySubscription(sql, userId)) || { enabled: false }, {
@@ -104,7 +123,7 @@ const worker = {
         );
       }
 
-      const response = await route(url, request, sql, userId);
+      const response = await route(url, request, sql, userId, env.NTFY_BASE_URL);
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(
