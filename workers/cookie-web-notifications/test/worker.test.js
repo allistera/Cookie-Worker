@@ -39,6 +39,7 @@ const env = /** @type {any} */ ({
   AUTH0_DOMAIN: 'tenant.example.auth0.com',
   AUTH0_AUDIENCE: 'https://cookie-web/api',
   ALLOWED_ORIGIN: PRODUCTION,
+  NTFY_BASE_URL: 'https://ntfy.allisterantosik.com',
 });
 const ctx = /** @type {any} */ ({ waitUntil: (promise) => promise });
 
@@ -119,7 +120,7 @@ describe('routing', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       topic: 'cookie-topic',
-      subscribeUrl: 'https://ntfy.sh/cookie-topic',
+      subscribeUrl: 'https://ntfy.allisterantosik.com/cookie-topic',
       enabled: true,
     });
   });
@@ -136,7 +137,7 @@ describe('routing', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       topic: 'cookie-generated-topic',
-      subscribeUrl: 'https://ntfy.sh/cookie-generated-topic',
+      subscribeUrl: 'https://ntfy.allisterantosik.com/cookie-generated-topic',
       enabled: true,
     });
   });
@@ -160,11 +161,76 @@ describe('routing', () => {
     expect(ntfyFetch).toHaveBeenCalledOnce();
   });
 
+  test('POST /ntfy/test never falls back to the public ntfy service', async () => {
+    mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
+    const ntfyFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', ntfyFetch);
+
+    await worker.fetch(
+      request('/ntfy/test', { method: 'POST' }),
+      { ...env, NTFY_BASE_URL: '' },
+      ctx,
+    );
+
+    expect(ntfyFetch).toHaveBeenCalledWith(
+      'https://ntfy.allisterantosik.com/cookie-user-topic',
+      expect.any(Object),
+    );
+  });
+
   test('POST /ntfy/test reports when notifications are not enabled', async () => {
     const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: 'ntfy notifications are not enabled' });
+  });
+
+  test('POST /ntfy/test reports exhausted upstream rate limiting as retryable', async () => {
+    mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
+    const ntfyFetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+      );
+    vi.stubGlobal('fetch', ntfyFetch);
+
+    const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('Retry-After')).toBe('0');
+    expect(await response.json()).toEqual({
+      error: 'ntfy_rate_limited',
+      retryAfterSeconds: 0,
+    });
+    expect(ntfyFetch).toHaveBeenCalledTimes(3);
+  });
+
+  test('POST /ntfy/test reports an exhausted upstream outage as retryable', async () => {
+    mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response('unavailable', { status: 503, headers: { 'Retry-After': '0' } }),
+        ),
+    );
+
+    const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('Retry-After')).toBe('0');
+    expect(await response.json()).toEqual({ error: 'ntfy_unavailable' });
+  });
+
+  test('POST /ntfy/test reports a non-retryable provider rejection as a bad gateway', async () => {
+    mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('rejected', { status: 400 })));
+
+    const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: 'ntfy_rejected' });
   });
 
   test('POST /notification-event dispatches to the handler (reaches its validation)', async () => {

@@ -7,9 +7,11 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { handleNotificationEvent } from './notificationEvents.js';
 import {
   createNtfySubscription,
+  DEFAULT_BASE_URL,
   deliverPendingNtfy,
   disableNtfySubscription,
   getNtfySubscription,
+  NtfyPublishError,
   sendNtfyTest,
 } from './ntfy.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -45,23 +47,42 @@ async function route(url, request, sql, userId, ntfyBaseUrl) {
     }
     try {
       return Response.json(
-        await sendNtfyTest(sql, userId, { baseUrl: ntfyBaseUrl || 'https://ntfy.sh' }),
+        await sendNtfyTest(sql, userId, { baseUrl: ntfyBaseUrl || DEFAULT_BASE_URL }),
       );
     } catch (error) {
       if (error instanceof Error && error.message === 'ntfy subscription is not enabled') {
         return Response.json({ error: 'ntfy notifications are not enabled' }, { status: 409 });
+      }
+      if (error instanceof NtfyPublishError) {
+        const rateLimited = error.status === 429;
+        const unavailable = error.status >= 500;
+        const headers =
+          (rateLimited || unavailable) && error.retryAfterSeconds !== null
+            ? { 'Retry-After': String(error.retryAfterSeconds) }
+            : undefined;
+        return Response.json(
+          rateLimited
+            ? { error: 'ntfy_rate_limited', retryAfterSeconds: error.retryAfterSeconds }
+            : { error: unavailable ? 'ntfy_unavailable' : 'ntfy_rejected' },
+          { status: rateLimited || unavailable ? 503 : 502, headers },
+        );
       }
       throw error;
     }
   }
   if (url.pathname === '/ntfy') {
     if (request.method === 'GET') {
-      return Response.json((await getNtfySubscription(sql, userId)) || { enabled: false }, {
-        headers: { 'Cache-Control': 'no-store' },
-      });
+      return Response.json(
+        (await getNtfySubscription(sql, userId, { baseUrl: ntfyBaseUrl })) || {
+          enabled: false,
+        },
+        {
+          headers: { 'Cache-Control': 'no-store' },
+        },
+      );
     }
     if (request.method === 'POST') {
-      return Response.json(await createNtfySubscription(sql, userId), {
+      return Response.json(await createNtfySubscription(sql, userId, { baseUrl: ntfyBaseUrl }), {
         headers: { 'Cache-Control': 'no-store' },
       });
     }
@@ -145,7 +166,7 @@ const worker = {
   async scheduled(_controller, env, ctx) {
     const sql = createSql(env.HYPERDRIVE.connectionString);
     ctx.waitUntil(
-      deliverPendingNtfy(sql, { baseUrl: env.NTFY_BASE_URL || 'https://ntfy.sh' }).finally(() =>
+      deliverPendingNtfy(sql, { baseUrl: env.NTFY_BASE_URL || DEFAULT_BASE_URL }).finally(() =>
         sql.end({ timeout: 2 }).catch(() => undefined),
       ),
     );
