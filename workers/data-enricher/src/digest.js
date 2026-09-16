@@ -1,3 +1,4 @@
+import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
@@ -13,7 +14,8 @@ export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const DIGEST_MESSAGE_LIMIT = 50;
 export const DIGEST_TEXT_CAP = 400;
 export const DIGEST_MAX_TOPICS = 2;
-export const DIGEST_MAX_OUTPUT_TOKENS = 8000;
+export const DIGEST_MAX_OUTPUT_TOKENS = 16000;
+export const DIGEST_REASONING_EFFORT = 'low';
 export const DIGEST_TIMEOUT_MS = 60_000;
 
 const NOISE_CATEGORIES = ['marketing', 'social', 'automated', 'promotional', 'other'];
@@ -243,6 +245,7 @@ async function requestTriage(messages, apiKey, model) {
       body: JSON.stringify({
         model,
         max_output_tokens: DIGEST_MAX_OUTPUT_TOKENS,
+        ...(supportsReasoning(model) ? { reasoning: { effort: DIGEST_REASONING_EFFORT } } : {}),
         input: [
           {
             role: 'system',

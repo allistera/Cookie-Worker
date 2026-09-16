@@ -3,6 +3,13 @@ export const ENRICHMENT_MODELS = ['gpt-5-nano', 'gpt-5.6-luna', 'gpt-4.1-nano'];
 export const ENRICHMENT_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 export const ENRICHMENT_INTERVALS = [1, 2, 3, 4, 6, 12];
 
+/** Models that accept the Responses API `reasoning` option. */
+export const REASONING_MODELS = new Set(['gpt-5-nano', 'gpt-5.6-luna']);
+/** @param {string} model */
+export function supportsReasoning(model) {
+  return REASONING_MODELS.has(model);
+}
+
 export const DEFAULT_ENRICHMENT_SETTINGS = Object.freeze({
   model: 'gpt-5-nano',
   schedule: Object.freeze({
