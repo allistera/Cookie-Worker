@@ -5,6 +5,7 @@ import {
   pruneDigest,
   repairDigest,
   DIGEST_MAX_OUTPUT_TOKENS,
+  DIGEST_REASONING_EFFORT,
   DIGEST_PROMPT_VERSION,
   TRIAGE_POLICY_SOURCE,
   UNCLASSIFIED_NOTE,
@@ -109,6 +110,7 @@ describe('buildDigest email triage', () => {
     const body = JSON.parse(init.body);
     expect(body.model).toBe('gpt-5.6-luna');
     expect(body.max_output_tokens).toBe(DIGEST_MAX_OUTPUT_TOKENS);
+    expect(body.reasoning).toEqual({ effort: DIGEST_REASONING_EFFORT });
     expect(body.text.format).toMatchObject({ type: 'json_schema', name: 'email_triage' });
     expect(body.input[0].content).toContain('Reply Needed, Review, and Noise');
     expect(body.input[1].content).toContain('home@example.com');
