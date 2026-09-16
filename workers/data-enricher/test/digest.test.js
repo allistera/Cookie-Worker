@@ -117,6 +117,25 @@ describe('buildDigest email triage', () => {
     expect(body.input[1].content).toContain('msg-1');
   });
 
+  test('omits the reasoning option for models that do not support it', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ output_text: JSON.stringify(TRIAGE) }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-4.1-nano')).resolves.toMatchObject({
+      overview: TRIAGE.overview,
+    });
+
+    const [, init] = /** @type {[string, {headers: Record<string, string>, body: string}]} */ (
+      /** @type {unknown} */ (fetchMock.mock.calls[0])
+    );
+    const body = JSON.parse(init.body);
+    expect(body.reasoning).toBeUndefined();
+    expect(body.max_output_tokens).toBe(DIGEST_MAX_OUTPUT_TOKENS);
+  });
+
   test('throws on a non-OK response', async () => {
     vi.stubGlobal(
       'fetch',

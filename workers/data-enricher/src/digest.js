@@ -1,3 +1,4 @@
+import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
@@ -244,7 +245,7 @@ async function requestTriage(messages, apiKey, model) {
       body: JSON.stringify({
         model,
         max_output_tokens: DIGEST_MAX_OUTPUT_TOKENS,
-        reasoning: { effort: DIGEST_REASONING_EFFORT },
+        ...(supportsReasoning(model) ? { reasoning: { effort: DIGEST_REASONING_EFFORT } } : {}),
         input: [
           {
             role: 'system',
