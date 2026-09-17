@@ -5,9 +5,8 @@
 
 import { allowRequest } from './rateLimit.js';
 
-// A triage rebuild is one model call in the Worker, so it is cheap enough to
-// offer on demand but not free: cap it well below what a held-down button
-// could manage.
+// A triage and news rebuild is bounded but not free: cap it well below what a
+// held-down button could manage.
 export const RATE_LIMIT = { limit: 4, windowMs: 60_000 };
 
 // The data-enricher may make two bounded 60-second triage attempts before its

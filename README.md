@@ -234,9 +234,9 @@ Required repository secrets:
 - `OPENAI_API_KEY`
 - `SENTRY_DSN`
 - `BLOB_READ_WRITE_TOKEN`
-- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=today` (rebuild inbox triage only) and the legacy `?phase=digest` name (inbox triage alone); Cookie-Web's AI Today refresh calls the former through `POST /tasks/refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
+- `HTTP_TRIGGER_TOKEN` — shared manual-trigger secret for `data-enricher`'s and `scheduled-send-flusher`'s own `POST /run` HTTP endpoints. `data-enricher` also accepts `POST /run?phase=today` (rebuild inbox triage and news) and the legacy `?phase=digest` name (inbox triage alone); Cookie-Web's AI Today refresh calls the former through `POST /tasks/refresh`, so its `ENRICHER_TRIGGER_TOKEN` must match this value.
 
-News generation is disabled in `data-enricher`; `PRODUCT_HUNT_TOKEN` and `GITHUB_API_TOKEN` are no longer required. Existing news snapshots and extracted tasks remain stored and readable. All accepted `/run` phases (`today`, `digest`, or omitted) now run only inbox triage.
+News generation is enabled in `data-enricher`. `GITHUB_API_TOKEN` is optional and raises the GitHub search rate limit; Product Hunt similarly drops out when its token is unset. Existing news snapshots and extracted tasks remain stored and readable. `/run?phase=today` and an unqualified `/run` rebuild inbox triage plus news, while the legacy `digest` phase rebuilds triage only.
 
 - `COOKIE_WEB_FLUSH_TOKEN` — bearer secret `scheduled-send-flusher` sends to Cookie-Web; must match Cookie-Web's `SCHEDULED_SEND_FLUSH_TOKEN` env var.
 

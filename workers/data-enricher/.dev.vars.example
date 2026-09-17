@@ -5,5 +5,9 @@
 # Enables the AI analysis of important emails.
 OPENAI_API_KEY=""
 
+# Optional; raises the GitHub search rate limit. This cannot be named
+# GITHUB_TOKEN because GitHub Actions reserves that secret name.
+GITHUB_API_TOKEN=""
+
 # Optional locally; required in production to send sanitized errors to Sentry.
 SENTRY_DSN=""

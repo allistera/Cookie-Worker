@@ -3,8 +3,16 @@ import postgres from 'postgres';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { isEnrichmentDue } from '../../../shared/enrichmentSettings.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
+import { buildNews } from './news.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
-import { fetchEnrichmentSettings, lookupUserId, storeDigest } from './store.js';
+import {
+  fetchEnrichmentSettings,
+  fetchGithubPersonalisation,
+  fetchInterests,
+  lookupUserId,
+  storeDigest,
+  storeNews,
+} from './store.js';
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
@@ -46,9 +54,42 @@ async function buildDailyTriage(sql, env, userId) {
 }
 
 /**
- * @param {Env & {OPENAI_API_KEY?: string}} env
- * @param {Array<(sql: import('postgres').Sql, env: any, userId: string) => Promise<void>>} phases
+ * Generates and stores the daily news round-up (GitHub repos, Product Hunt,
+ * UK headlines). Uses the GitHub token when available to avoid rate limits.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {Env & {OPENAI_API_KEY?: string, GITHUB_API_TOKEN?: string, PRODUCT_HUNT_TOKEN?: string}} env
+ * @param {string} userId
  */
+async function buildNewsPhase(sql, env, userId) {
+  const apiKey = env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.log(JSON.stringify({ event: 'news_skipped', reason: 'OPENAI_API_KEY not configured' }));
+    return;
+  }
+  const settings = await fetchEnrichmentSettings(sql, userId, env.AI_MODEL);
+  const interests = (await fetchInterests(sql, userId)).filter((i) => typeof i === 'string');
+  const personaliseGithub = await fetchGithubPersonalisation(sql, userId);
+  const { sections } = await buildNews({
+    interests,
+    personaliseGithub,
+    apiKey,
+    model: settings.model,
+    // Actions reserves GITHUB_TOKEN, so the durable Worker secret uses a name
+    // that can also be configured through the deployment repository.
+    githubToken: env.GITHUB_API_TOKEN,
+    productHuntToken: env.PRODUCT_HUNT_TOKEN,
+    env,
+  });
+  await storeNews(sql, userId, { sections }, settings.model);
+  console.log(
+    JSON.stringify({
+      event: 'news_built',
+      sections: sections.length,
+    }),
+  );
+}
+
 async function runPhases(env, phases, options = {}) {
   const sql = createSql(env.HYPERDRIVE.connectionString);
   /** @type {Error[]} */
@@ -85,18 +126,17 @@ async function runPhases(env, phases, options = {}) {
 }
 
 /**
- * All entry points run inbox triage only. News generation and per-email task
- * extraction are retired from this worker.
+ * All entry points run inbox triage and news generation.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runEnrichment(env) {
-  return runPhases(env, [buildDailyTriage]);
+  return runPhases(env, [buildDailyTriage, buildNewsPhase]);
 }
 
 /** @param {Env & {OPENAI_API_KEY?: string}} env @param {Date} scheduledAt */
 export async function runScheduledEnrichment(env, scheduledAt) {
-  return runPhases(env, [buildDailyTriage], {
+  return runPhases(env, [buildDailyTriage, buildNewsPhase], {
     scheduledAt,
   });
 }
@@ -111,12 +151,12 @@ export async function runDigestOnly(env) {
 }
 
 /**
- * AI Today refresh rebuilds inbox triage only. Stored news is left untouched.
+ * AI Today refresh rebuilds both cards shown on the page.
  *
  * @param {Env & {OPENAI_API_KEY?: string}} env
  */
 export async function runTodayRefresh(env) {
-  return runPhases(env, [buildDailyTriage]);
+  return runPhases(env, [buildDailyTriage, buildNewsPhase]);
 }
 
 const worker = {
@@ -132,8 +172,9 @@ const worker = {
 
   /**
    * Manual trigger: POST /run with `Authorization: Bearer <HTTP_TRIGGER_TOKEN>`.
-   * All accepted phases run inbox triage only. The today/digest aliases and
-   * response phase names remain compatible with deployed callers.
+   * When no phase is specified, all phases run (inbox triage + news generation).
+   * The today/digest aliases and response phase names remain compatible with
+   * deployed callers.
    *
    * @param {Request} request
    * @param {Env & {OPENAI_API_KEY?: string, HTTP_TRIGGER_TOKEN?: string}} env

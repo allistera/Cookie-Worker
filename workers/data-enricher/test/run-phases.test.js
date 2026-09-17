@@ -86,15 +86,15 @@ afterEach(() => {
 });
 
 describe('POST /run phase routing', () => {
-  test('runs only inbox triage when no phase is given', async () => {
+  test('runs inbox triage and news generation when no phase is given', async () => {
     const response = await run();
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: 'ok', phase: 'all' });
     expect(fetchImportantMessages).not.toHaveBeenCalled();
     expect(storeDigest).toHaveBeenCalled();
-    expect(storeNews).not.toHaveBeenCalled();
-    expect(buildNews).not.toHaveBeenCalled();
+    expect(storeNews).toHaveBeenCalled();
+    expect(buildNews).toHaveBeenCalled();
     expect(buildDigest).toHaveBeenCalledWith(expect.anything(), 'key', 'gpt-5-nano');
   });
 
@@ -110,15 +110,14 @@ describe('POST /run phase routing', () => {
     expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 
-  // AI Today refresh must not fetch or generate news.
-  test('runs only inbox triage for ?phase=today', async () => {
+  test('rebuilds inbox triage and news for ?phase=today', async () => {
     const response = await run('?phase=today');
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: 'ok', phase: 'today' });
     expect(storeDigest).toHaveBeenCalled();
-    expect(storeNews).not.toHaveBeenCalled();
-    expect(buildNews).not.toHaveBeenCalled();
+    expect(storeNews).toHaveBeenCalled();
+    expect(buildNews).toHaveBeenCalled();
     expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 
@@ -146,8 +145,8 @@ describe('scheduled enrichment', () => {
       runScheduledEnrichment(env, new Date('2026-07-06T08:00:00Z')),
     ).resolves.toBeUndefined();
     expect(storeDigest).toHaveBeenCalled();
-    expect(buildNews).not.toHaveBeenCalled();
-    expect(storeNews).not.toHaveBeenCalled();
+    expect(buildNews).toHaveBeenCalled();
+    expect(storeNews).toHaveBeenCalled();
     expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 
