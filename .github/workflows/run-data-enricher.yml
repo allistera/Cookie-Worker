@@ -1,0 +1,42 @@
+name: Run data enricher
+run-name: Run data enricher (${{ inputs.phase }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Enrichment phase to run
+        required: true
+        default: today
+        type: choice
+        options:
+          - today
+          - digest
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-enricher-${{ inputs.phase }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run ${{ inputs.phase }} enrichment
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Trigger data enricher
+        env:
+          HTTP_TRIGGER_TOKEN: ${{ secrets.HTTP_TRIGGER_TOKEN }}
+          PHASE: ${{ inputs.phase }}
+        run: |
+          url="https://data-enricher.cloudflare-581.workers.dev/run"
+          if [ "$PHASE" != "all" ]; then
+            url="$url?phase=$PHASE"
+          fi
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $HTTP_TRIGGER_TOKEN" \
+            "$url"
