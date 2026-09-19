@@ -17,25 +17,25 @@
     "deploy": "node scripts/workers.mjs deploy"
   },
   "dependencies": {
-    "@sentry/cloudflare": "^10.74.0",
+    "@sentry/cloudflare": "^10.75.0",
     "@vercel/blob": "^2.8.0",
     "jose": "^6.2.12",
     "meilisearch": "^0.62.0",
-    "node-ical": "^0.27.1",
+    "node-ical": "^0.27.2",
     "postal-mime": "^3.0.0",
     "postgres": "^3.4.9",
-    "resend": "^6.28.0"
+    "resend": "^6.28.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260911.1",
+    "@cloudflare/workers-types": "^5.20260919.1",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.5.1",
-    "eslint": "^10.10.0",
+    "@types/node": "^26.6.2",
+    "eslint": "^10.11.0",
     "globals": "^17.12.0",
     "jsonc-parser": "^3.3.1",
-    "prettier": "3.9.6",
+    "prettier": "3.9.8",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0",
-    "wrangler": "^4.131.1"
+    "vitest": "^5.0.1",
+    "wrangler": "^4.135.0"
   }
 }
