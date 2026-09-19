@@ -3,16 +3,19 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 // Routing/CORS/auth/rate-limit wiring is what this file tests — the draft
 // logic itself has its own unit tests against a mock sql, so the database is
 // stubbed here rather than exercised.
-const mockQuery = vi.fn(/** @param {any[]} _args */ (..._args) => Promise.resolve([]));
+const mockQuery = vi.fn(
+  /** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])),
+);
 const sqlEnd = vi.fn(async () => undefined);
+const createClient = vi.fn((/** @param {any[]} _args */ ..._args) => {
+  /** @type {any} */
+  const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
+  sql.begin = async (/** @type {(sql: any) => unknown} */ callback) => callback(sql);
+  sql.end = sqlEnd;
+  return sql;
+});
 vi.mock('postgres', () => ({
-  default: () => {
-    /** @type {any} */
-    const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
-    sql.begin = async (/** @type {(sql: any) => unknown} */ callback) => callback(sql);
-    sql.end = sqlEnd;
-    return sql;
-  },
+  default: (/** @type {any[]} */ ...args) => createClient(...args),
 }));
 
 const verifyAccessToken = vi.fn();
@@ -26,9 +29,10 @@ vi.mock('../../../shared/rate-limit.js', () => ({
   allowRequest: (...args) => allowRequest(...args),
 }));
 
+const captureHandledException = vi.fn();
 vi.mock('../src/sentry.js', () => ({
   createSentryOptions: () => ({ enabled: false }),
-  captureHandledException: vi.fn(),
+  captureHandledException: (/** @type {any[]} */ ...args) => captureHandledException(...args),
 }));
 
 const worker = (await import('../src/worker.js')).default;
@@ -62,6 +66,13 @@ beforeEach(() => {
   verifyAccessToken.mockResolvedValue({ userId: 'user-1' });
   allowRequest.mockResolvedValue(true);
   mockQuery.mockReset().mockResolvedValue([]);
+  createClient.mockImplementation(() => {
+    /** @type {any} */
+    const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
+    sql.begin = async (/** @type {(sql: any) => unknown} */ callback) => callback(sql);
+    sql.end = sqlEnd;
+    return sql;
+  });
 });
 
 describe('CORS preflight', () => {
@@ -138,5 +149,59 @@ describe('autosave rate limit', () => {
     const response = await worker.fetch(request('/drafts'), env, ctx);
     expect(response.status).toBe(200);
     expect(allowRequest).not.toHaveBeenCalled();
+  });
+});
+
+// The socket to Hyperdrive drops under a query now and then (Sentry
+// COOKIE-WEB-1A). Reads get one more go on a fresh connection; writes do not.
+describe('a dropped connection', () => {
+  const dropped = () =>
+    Object.assign(new Error('write CONNECTION_CLOSED x.hyperdrive.local:5432'), {
+      code: 'CONNECTION_CLOSED',
+    });
+
+  test('retries a read once on a fresh connection, and nobody hears of it', async () => {
+    mockQuery
+      .mockRejectedValueOnce(dropped())
+      .mockResolvedValue([{ id: DRAFT_ID, to: 'a@b.com', subject: 'Subject' }]);
+    const response = await worker.fetch(request(`/drafts/${DRAFT_ID}`), env, ctx);
+    expect(response.status).toBe(200);
+    expect(createClient).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).not.toHaveBeenCalled();
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test('gives up after the second drop and reports it', async () => {
+    mockQuery.mockRejectedValue(dropped());
+    const response = await worker.fetch(request(`/drafts/${DRAFT_ID}`), env, ctx);
+    expect(response.status).toBe(500);
+    expect(createClient).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).toHaveBeenCalledOnce();
+  });
+
+  test('does not retry a PATCH autosave', async () => {
+    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([]);
+    const response = await worker.fetch(
+      request(`/drafts/${DRAFT_ID}`, autosave({ to: 'a@b.com', text: 'Hi' })),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(500);
+    expect(createClient).toHaveBeenCalledOnce();
+  });
+
+  test('retries the caller lookup too, rather than answering 401', async () => {
+    verifyAccessToken.mockRejectedValueOnce(dropped()).mockResolvedValue({ userId: 'user-1' });
+    mockQuery.mockResolvedValue([{ id: DRAFT_ID, to: 'a@b.com', subject: 'Subject' }]);
+    const response = await worker.fetch(request(`/drafts/${DRAFT_ID}`), env, ctx);
+    expect(response.status).toBe(200);
+    expect(createClient).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not retry a read that failed for another reason', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('syntax error')).mockResolvedValue([]);
+    const response = await worker.fetch(request(`/drafts/${DRAFT_ID}`), env, ctx);
+    expect(response.status).toBe(500);
+    expect(createClient).toHaveBeenCalledOnce();
   });
 });
