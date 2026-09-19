@@ -5,6 +5,8 @@ import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { allowRequest } from '../../../shared/rate-limit.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 import { createDraft, deleteDraft, getDraft, listDrafts, updateDraft } from './drafts.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
@@ -96,21 +98,41 @@ const worker = {
     }
 
     const url = new URL(request.url);
-    const sql = createSql(env.HYPERDRIVE.connectionString);
+    let sql = createSql(env.HYPERDRIVE.connectionString);
     try {
-      let userId;
-      try {
-        ({ userId } = await verifyAccessToken(request, env, sql));
-      } catch (error) {
-        return withCors(
-          authFailureResponse(error),
-          origin,
-          env.ALLOWED_ORIGIN,
-          env.SENTRY_ENVIRONMENT,
-        );
-      }
-
-      const response = await route(url, request, sql, userId);
+      // The socket to Hyperdrive drops under a query now and then (Sentry
+      // COOKIE-WEB-1A). Reads are idempotent, so they get one more go on a
+      // fresh connection. Writes are not retried since PATCH autosave would
+      // double-count its rate-limit counter.
+      const retryable = request.method === 'GET';
+      const response = await retryWithBackoff(
+        async (attempt) => {
+          if (attempt > 1) {
+            ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
+            sql = createSql(env.HYPERDRIVE.connectionString);
+            console.log(
+              JSON.stringify({
+                event: 'request_retried',
+                path: url.pathname,
+                method: request.method,
+              }),
+            );
+          }
+          let userId;
+          try {
+            ({ userId } = await verifyAccessToken(request, env, sql));
+          } catch (error) {
+            if (isTransientDbError(error)) throw error;
+            return authFailureResponse(error);
+          }
+          return route(url, request, sql, userId);
+        },
+        {
+          attempts: retryable ? 2 : 1,
+          baseDelayMs: 100,
+          isRetryable: isTransientDbError,
+        },
+      );
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(
