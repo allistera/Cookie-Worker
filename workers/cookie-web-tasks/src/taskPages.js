@@ -1,4 +1,5 @@
 import { decodeCursor, encodeCursor, validId, validTimestamp } from '../../../shared/pagination.js';
+import { cleanLabelName } from './taskLabels.js';
 
 function columns(sql, full = false) {
   return sql`t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
@@ -13,8 +14,13 @@ function columns(sql, full = false) {
 export async function getTaskPage(sql, userId, url) {
   const project = url.searchParams.get('project') ?? 'inbox';
   const today = project === 'today';
+  // A label view: `label:<name>` filters across every project, ordered the
+  // way a project list is.
+  const isLabel = project.startsWith('label:');
+  const label = isLabel ? cleanLabelName(project.slice('label:'.length)) : null;
+  if (isLabel && !label) return Response.json({ error: 'Invalid label' }, { status: 400 });
   const date = url.searchParams.get('date');
-  if (!['today', 'inbox'].includes(project) && !validId(project))
+  if (!['today', 'inbox'].includes(project) && !isLabel && !validId(project))
     return Response.json({ error: 'Invalid project' }, { status: 400 });
   if (
     today &&
@@ -49,9 +55,11 @@ export async function getTaskPage(sql, userId, url) {
       ${
         today
           ? sql`AND t.due_date <= ${date}::date`
-          : project === 'inbox'
-            ? sql`AND t.project_id IS NULL`
-            : sql`AND t.project_id = ${project}::uuid`
+          : label
+            ? sql`AND t.labels @> ARRAY[${label}]::text[]`
+            : project === 'inbox'
+              ? sql`AND t.project_id IS NULL`
+              : sql`AND t.project_id = ${project}::uuid`
       }
       ${
         cursor

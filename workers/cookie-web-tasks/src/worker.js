@@ -12,12 +12,7 @@ import { getEnrichmentSettings, putEnrichmentSettings } from './enrichmentSettin
 import { postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
-import {
-  createTaskLabel,
-  deleteTaskLabel,
-  getTaskLabels,
-  updateTaskLabel,
-} from './taskLabels.js';
+import { createTaskLabel, deleteTaskLabel, getTaskLabels, updateTaskLabel } from './taskLabels.js';
 import { allowRequest } from './rateLimit.js';
 import { postRefresh } from './refresh.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
