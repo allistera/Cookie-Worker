@@ -12,14 +12,17 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CONTENT_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 10000;
+// A divider's text is a heading on the rule, not a task title.
+const MAX_DIVIDER_TEXT_LENGTH = 120;
 // Todoist-style: 1 is the most urgent, 4 is the default and shows as "no
 // priority". Mirrors the CHECK on task_items.priority (migration 0058).
 const MIN_PRIORITY = 1;
 const MAX_PRIORITY = 4;
 export const DEFAULT_PRIORITY = MAX_PRIORITY;
 // A row is a task, or a divider: a rule dropped between tasks to group them
-// (migration 0064). A divider has no content, date, parent or sub-tasks; it
-// only takes its place in the list's order and moves between projects.
+// (migration 0064). A divider carries at most a short heading; it has no
+// date, parent or sub-tasks, and beyond its text it only takes its place in
+// the list's order and moves between projects.
 const KINDS = ['task', 'divider'];
 
 /**
@@ -288,9 +291,11 @@ async function createDivider(sql, userId, body) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
   }
+  // Optional heading; absent or blank is a plain rule.
+  const content = cleanText(body?.content, MAX_DIVIDER_TEXT_LENGTH) ?? '';
   const [item] = await sql`
     INSERT INTO task_items (user_id, project_id, kind, content)
-    VALUES (${userId}, ${projectId}, 'divider', '')
+    VALUES (${userId}, ${projectId}, 'divider', ${content})
     RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description, recurrence,
               to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", labels,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
@@ -341,8 +346,13 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   const hasTime = Object.hasOwn(body, 'dueTime') || Object.hasOwn(body, 'timeZone');
   const hasLabels = Object.hasOwn(body, 'labels');
 
-  const content = hasContent ? cleanText(body.content, MAX_CONTENT_LENGTH) : null;
-  if (hasContent && !content) {
+  // A divider's content is its optional heading, so blank is allowed there
+  // (it clears the text); a task always needs a title.
+  const isDividerRow = existing.kind === 'divider';
+  const content = hasContent
+    ? cleanText(body.content, isDividerRow ? MAX_DIVIDER_TEXT_LENGTH : MAX_CONTENT_LENGTH)
+    : null;
+  if (hasContent && !content && !isDividerRow) {
     return Response.json({ error: 'Task content is required' }, { status: 400 });
   }
   if (
@@ -361,8 +371,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   }
   if (
     existing.kind === 'divider' &&
-    (hasContent ||
-      hasDescription ||
+    (hasDescription ||
       hasParent ||
       hasDueDate ||
       hasPriority ||
@@ -372,7 +381,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
       hasLabels)
   ) {
     return Response.json(
-      { error: 'A divider can only be moved between projects' },
+      { error: 'A divider can only be moved between projects or given a heading' },
       { status: 400 },
     );
   }
@@ -518,7 +527,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   if (hasLabels) await registerTaskLabels(sql, userId, metadata.labels);
   const [item] = await sql`
     UPDATE task_items t SET
-      content      = COALESCE(${hasContent ? content : null}, t.content),
+      content      = CASE WHEN ${hasContent}::boolean THEN ${content ?? ''} ELSE t.content END,
       description  = CASE WHEN ${hasDescription}::boolean THEN ${description} ELSE t.description END,
       project_id   = CASE WHEN ${hasProject}::boolean THEN ${projectId}::uuid ELSE t.project_id END,
       parent_id    = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE t.parent_id END,

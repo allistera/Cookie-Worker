@@ -840,9 +840,19 @@ describe('dividers', () => {
     expect(response.status).toBe(201);
     expect((await response.json()).item.kind).toBe('divider');
     const insert = sql.calls.find((call) => call.text.includes('INSERT INTO task_items'));
-    expect(insert.text).toContain("'divider', ''");
-    expect(insert.values).toEqual([USER_ID, PROJECT_ID]);
+    expect(insert.text).toContain("'divider', ?");
+    expect(insert.values).toEqual([USER_ID, PROJECT_ID, '']);
     expect(sql.calls.some((call) => call.text.includes('WITH RECURSIVE'))).toBe(false);
+  });
+
+  it('stores a trimmed heading on a new divider', async () => {
+    const sql = createMockSql([[{ ...DIVIDER, projectId: null, content: 'Later' }]]);
+
+    const response = await createTaskItem(sql, USER_ID, { kind: 'divider', content: '  Later ' });
+
+    expect(response.status).toBe(201);
+    const insert = sql.calls.find((call) => call.text.includes('INSERT INTO task_items'));
+    expect(insert.values).toEqual([USER_ID, null, 'Later']);
   });
 
   it('creates an Inbox divider when no project is given', async () => {
@@ -906,8 +916,32 @@ describe('dividers', () => {
     expect(sql.calls.some((call) => call.text.includes('WITH RECURSIVE'))).toBe(false);
   });
 
+  it('gives a divider a heading, and clears it with blank text', async () => {
+    const sql = createMockSql([[DIVIDER], [{ ...DIVIDER, content: 'Later' }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: ' Later ' });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).item.content).toBe('Later');
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items t SET'));
+    expect(update.values).toContain('Later');
+    expect(sql.calls.some((call) => call.text.includes('WITH RECURSIVE'))).toBe(false);
+
+    const clearing = createMockSql([[{ ...DIVIDER, content: 'Later' }], [DIVIDER]]);
+    const cleared = await updateTaskItem(clearing, USER_ID, { id: ITEM_ID, content: '' });
+
+    expect(cleared.status).toBe(200);
+    const clear = clearing.calls.find((call) => call.text.includes('UPDATE task_items t SET'));
+    expect(clear.values).toContain('');
+  });
+
+  it('still requires a title on a task', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, kind: 'task', content: 'Ship it' }]]);
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: '   ' });
+    expect(response.status).toBe(400);
+  });
+
   it.each([
-    [{ content: 'Named' }],
     [{ dueDate: '2026-09-04' }],
     [{ completed: true }],
     [{ priority: 1 }],
