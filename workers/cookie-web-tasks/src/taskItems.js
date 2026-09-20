@@ -64,6 +64,25 @@ function fetchOwnedProject(sql, userId, id) {
 }
 
 /**
+ * Give every label name on a task write a task_labels row (migration 0079)
+ * so a label typed as @name in the add dialog shows up in the sidebar
+ * with the default colour. Runs inside the task write's transaction, after
+ * validation, so a refused write registers nothing.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string[]} names
+ */
+export async function registerTaskLabels(sql, userId, names) {
+  if (!names.length) return;
+  await sql`
+    INSERT INTO task_labels (user_id, name)
+    SELECT ${userId}, unnest(${names}::text[])
+    ON CONFLICT (user_id, name) DO NOTHING
+  `;
+}
+
+/**
  * GET /task-items?project=<uuid|inbox|today>[&date=YYYY-MM-DD][&completed=1]
  *
  * `today` spans every project, so it is a third branch of the same flat query
@@ -235,6 +254,7 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
   }
   const priority = hasPriority ? body.priority : DEFAULT_PRIORITY;
 
+  await registerTaskLabels(sql, userId, metadata.labels);
   const [item] = await sql`
     INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority, recurrence, due_time, time_zone, labels)
     VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority}, ${recurrence}, ${metadata.dueTime}::time, ${metadata.timeZone}, ${metadata.labels}::text[])
@@ -495,6 +515,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   }
   const priority = !hasPriority || clearsPriority ? DEFAULT_PRIORITY : body.priority;
 
+  if (hasLabels) await registerTaskLabels(sql, userId, metadata.labels);
   const [item] = await sql`
     UPDATE task_items t SET
       content      = COALESCE(${hasContent ? content : null}, t.content),

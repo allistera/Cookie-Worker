@@ -112,6 +112,7 @@ describe('POST /task-items', () => {
 
   it('stores a local due time, its time zone, and normalized labels', async () => {
     const sql = createMockSql([
+      [], // label registration
       [
         {
           id: ITEM_ID,
@@ -133,10 +134,20 @@ describe('POST /task-items', () => {
     });
 
     expect(response.status).toBe(201);
-    expect(sql.calls[0].text).toContain('due_time, time_zone, labels');
-    expect(sql.calls[0].values).toEqual(
-      expect.arrayContaining(['15:00', 'Europe/London', ['home']]),
-    );
+    const register = sql.calls.find((call) => call.text.includes('INSERT INTO task_labels'));
+    expect(register.text).toContain('ON CONFLICT (user_id, name) DO NOTHING');
+    expect(register.values).toEqual(expect.arrayContaining([USER_ID, ['home']]));
+    const insert = sql.calls.find((call) => call.text.includes('INSERT INTO task_items'));
+    expect(insert.text).toContain('due_time, time_zone, labels');
+    expect(insert.values).toEqual(expect.arrayContaining(['15:00', 'Europe/London', ['home']]));
+  });
+
+  it('registers no labels when a task is created without any', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, projectId: null, content: 'Ship it' }]]);
+
+    await createTaskItem(sql, USER_ID, { content: 'Ship it' });
+
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO task_labels'))).toBe(false);
   });
 
   it('rejects a due time without a date', async () => {
@@ -286,6 +297,7 @@ describe('PATCH /task-items', () => {
     };
     const sql = createMockSql([
       [existing],
+      [], // label registration
       [[{ ...existing, dueTime: '15:00', timeZone: 'Europe/London', labels: ['home'] }]].flat(),
     ]);
 
@@ -297,10 +309,33 @@ describe('PATCH /task-items', () => {
     });
 
     expect(response.status).toBe(200);
+    const register = sql.calls.find((call) => call.text.includes('INSERT INTO task_labels'));
+    expect(register.values).toEqual(expect.arrayContaining([USER_ID, ['home']]));
     const update = sql.calls.find((call) => call.text.includes('UPDATE task_items t SET'));
     expect(update.text).toContain('due_time');
     expect(update.text).toContain('labels');
     expect(update.values).toEqual(expect.arrayContaining(['15:00', 'Europe/London', ['home']]));
+  });
+
+  it('does not register labels on an update that leaves them alone', async () => {
+    const existing = {
+      id: ITEM_ID,
+      projectId: null,
+      parentId: null,
+      kind: 'task',
+      dueDate: null,
+      dueTime: null,
+      timeZone: null,
+      labels: ['home'],
+      recurrence: null,
+      completedAt: null,
+    };
+    const sql = createMockSql([[existing], [{ ...existing, content: 'Renamed' }]]);
+
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Renamed' });
+
+    expect(response.status).toBe(200);
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO task_labels'))).toBe(false);
   });
 
   it('clears due time and zone when the due date is removed', async () => {
