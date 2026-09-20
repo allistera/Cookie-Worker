@@ -32,6 +32,10 @@ describe('ntfy delivery', () => {
         'X-Title': 'Your winter vaccine appointment reminder',
         'X-Click':
           'https://mail.infinitywave.online/inbox?open=11111111-1111-1111-1111-111111111111',
+        // A button that opens the email in the iOS app; the tap itself keeps
+        // opening the web inbox so desktop ntfy clients still land somewhere.
+        'X-Actions':
+          'view, Open in Cookie app, com.cookie.ios://inbox?open=11111111-1111-1111-1111-111111111111, clear=true',
       }),
     );
     expect(request.body).toBe('Please book your appointment before Friday.');

@@ -1,6 +1,9 @@
 export const DEFAULT_BASE_URL = 'https://ntfy.allisterantosik.com';
 const TOPIC_RE = /^[A-Za-z0-9_-]{8,128}$/;
 const COOKIE_ORIGIN = 'https://mail.infinitywave.online';
+// Cookie-iOS registers this scheme (its bundle id) and opens
+// <scheme>://inbox?open=<message id> on the email — see InboxDeepLink.swift.
+const IOS_APP_SCHEME = 'com.cookie.ios';
 const MAX_RETRY_DELAY_MS = 5000;
 const MAX_BODY_BYTES = 3500;
 
@@ -73,6 +76,9 @@ export async function publishNtfy(notification, options = {}) {
         'Content-Type': 'text/plain; charset=utf-8',
         'X-Title': notification.title || subject,
         'X-Click': `${COOKIE_ORIGIN}/inbox?open=${encodeURIComponent(notification.messageId)}`,
+        // Tapping the notification opens the web inbox (works for every ntfy
+        // client); this button opens the same email in the iOS app instead.
+        'X-Actions': `view, Open in Cookie app, ${IOS_APP_SCHEME}://inbox?open=${encodeURIComponent(notification.messageId)}, clear=true`,
         'X-Tags': 'email',
         'X-Priority': 'default',
       },
