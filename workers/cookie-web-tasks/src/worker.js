@@ -12,6 +12,12 @@ import { getEnrichmentSettings, putEnrichmentSettings } from './enrichmentSettin
 import { postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
+import {
+  createTaskLabel,
+  deleteTaskLabel,
+  getTaskLabels,
+  updateTaskLabel,
+} from './taskLabels.js';
 import { allowRequest } from './rateLimit.js';
 import { postRefresh } from './refresh.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -45,6 +51,7 @@ export function createSql(databaseUrl) {
  * Routes GET/POST /tasks, POST /tasks/refresh, GET/PUT /tasks/interests,
  * GET/PUT /tasks/enrichment-settings,
  * POST /task-items/reorder, POST /task-items/interpret,
+ * GET/POST/PATCH/DELETE /task-labels,
  * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, and
  * GET/POST/PATCH/DELETE /documents — the resources Cookie-Web's api/tasks.js
  * served, previously reached only via
@@ -118,6 +125,28 @@ async function route(url, request, sql, userId, env, email) {
     if (request.method === 'POST') return createProject(sql, userId, body);
     if (request.method === 'PATCH') return updateProject(sql, userId, body);
     return deleteProject(sql, userId, body);
+  }
+
+  if (segments[0] === 'task-labels') {
+    if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
+    if (request.method === 'GET') return getTaskLabels(sql, userId);
+    if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, POST, PATCH, DELETE' } },
+      );
+    }
+    let body;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) return errorResponse;
+      throw error;
+    }
+    if (request.method === 'POST') return createTaskLabel(sql, userId, body);
+    if (request.method === 'PATCH') return updateTaskLabel(sql, userId, body);
+    return deleteTaskLabel(sql, userId, body);
   }
 
   if (segments[0] === 'documents') {

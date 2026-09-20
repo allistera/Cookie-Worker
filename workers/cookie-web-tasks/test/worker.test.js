@@ -343,6 +343,48 @@ describe('routing — /documents', () => {
   });
 });
 
+describe('routing — /task-labels', () => {
+  test('GET lists the caller labels', async () => {
+    mockQuery.mockResolvedValueOnce([{ id: '1', name: 'home', color: '#64748b', taskCount: 0 }]);
+
+    const response = await worker.fetch(request('/task-labels'), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).labels).toHaveLength(1);
+    const listed = mockQuery.mock.calls.find(
+      ([strings]) => Array.isArray(strings) && strings.join('').includes('FROM task_labels'),
+    );
+    expect(listed).toBeDefined();
+  });
+
+  test('POST creates a label from a JSON body', async () => {
+    mockQuery.mockResolvedValueOnce([{ id: '1', name: 'home', color: '#64748b', taskCount: 0 }]);
+
+    const response = await worker.fetch(
+      request('/task-labels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'home' }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(201);
+  });
+
+  test('refuses PUT with the allowed methods', async () => {
+    const response = await worker.fetch(request('/task-labels', { method: 'PUT' }), env, ctx);
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('GET, POST, PATCH, DELETE');
+  });
+
+  test('has no sub-paths', async () => {
+    const response = await worker.fetch(request('/task-labels/abc'), env, ctx);
+    expect(response.status).toBe(404);
+  });
+});
+
 describe('routing — unknown paths', () => {
   test('a completely unknown top-level path returns 404', async () => {
     const response = await worker.fetch(request('/unknown'), env, ctx);
