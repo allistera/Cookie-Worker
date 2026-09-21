@@ -111,6 +111,7 @@ export async function registerTaskLabels(sql, userId, names) {
 export async function getTaskItems(sql, userId, url) {
   if (url.searchParams.get('view') === 'page') return getTaskPage(sql, userId, url);
   if (url.searchParams.get('view') === 'detail') return getTaskDetail(sql, userId, url);
+  if (url.searchParams.get('view') === 'calendar') return getCalendarTaskItems(sql, userId, url);
   const project = url.searchParams.get('project') ?? 'inbox';
   const inbox = project === 'inbox';
   const today = project === 'today';
@@ -161,6 +162,53 @@ export async function getTaskItems(sql, userId, url) {
     ORDER BY CASE WHEN ${today}::boolean THEN t.due_date END ASC NULLS LAST,
              CASE WHEN ${today}::boolean THEN t.today_position END ASC NULLS LAST,
              t.position ASC, t.created_at ASC
+  `;
+  return Response.json({ items });
+}
+
+// The calendar asks for a little more than it shows (padding around the
+// visible weeks), so a hundred days covers a month view comfortably while
+// keeping the read bounded.
+export const MAX_CALENDAR_WINDOW_DAYS = 100;
+
+/**
+ * GET /task-items?view=calendar&from=YYYY-MM-DD&to=YYYY-MM-DD — every open
+ * task, across every project, due inside the window. Cookie Calendar lays
+ * these out on their due date next to the day's events. Dividers have no
+ * date and completed tasks are done, so neither belongs on a calendar.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {URL} url
+ */
+async function getCalendarTaskItems(sql, userId, url) {
+  const from = url.searchParams.get('from');
+  const to = url.searchParams.get('to');
+  if (!isCalendarDate(from) || !isCalendarDate(to)) {
+    return Response.json(
+      { error: 'calendar requires from=YYYY-MM-DD and to=YYYY-MM-DD' },
+      { status: 400 },
+    );
+  }
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+  if (days < 0 || days > MAX_CALENDAR_WINDOW_DAYS) {
+    return Response.json(
+      { error: 'calendar window must run forwards and span at most 100 days' },
+      { status: 400 },
+    );
+  }
+
+  const items = await sql`
+    SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
+           to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate",
+           to_char(t.due_time, 'HH24:MI') AS "dueTime", t.time_zone AS "timeZone",
+           t.priority, t.recurrence
+    FROM task_items t
+    WHERE t.user_id = ${userId}
+      AND t.kind = 'task'
+      AND t.completed_at IS NULL
+      AND t.due_date BETWEEN ${from}::date AND ${to}::date
+    ORDER BY t.due_date ASC, t.due_time ASC NULLS LAST, t.position ASC, t.created_at ASC
   `;
   return Response.json({ items });
 }

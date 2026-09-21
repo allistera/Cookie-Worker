@@ -512,6 +512,62 @@ describe('dueDate is returned as a YYYY-MM-DD string, not a timestamp', () => {
 // rather than a project filter. The date is supplied by the caller: the
 // Worker has no idea what "today" is where the person is standing, and
 // guessing UTC would show the wrong day for most of the world.
+// The calendar shows every open task that is due inside the visible window,
+// across every project, so it is a range read rather than a project list.
+describe('GET /task-items?view=calendar', () => {
+  it('returns open tasks due inside the window across every project', async () => {
+    const rows = [{ id: ITEM_ID, content: 'Renew insurance', dueDate: '2026-09-22' }];
+    const sql = createMockSql([rows]);
+
+    const response = await getTaskItems(
+      sql,
+      USER_ID,
+      url('?view=calendar&from=2026-09-21&to=2026-10-04'),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ items: rows });
+    expect(sql.calls[0].values).toEqual([USER_ID, '2026-09-21', '2026-10-04']);
+    expect(sql.calls[0].text).toContain('t.due_date BETWEEN');
+    expect(sql.calls[0].text).toContain('t.completed_at IS NULL');
+    expect(sql.calls[0].text).toContain("t.kind = 'task'");
+    expect(sql.calls[0].text).toContain(`to_char(t.due_time, 'HH24:MI') AS "dueTime"`);
+  });
+
+  it('rejects a missing or malformed window', async () => {
+    const sql = createMockSql([]);
+
+    for (const query of [
+      '?view=calendar',
+      '?view=calendar&from=2026-09-21',
+      '?view=calendar&from=21/09/2026&to=2026-10-04',
+    ]) {
+      const response = await getTaskItems(sql, USER_ID, url(query));
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: 'calendar requires from=YYYY-MM-DD and to=YYYY-MM-DD',
+      });
+    }
+    expect(sql.calls).toHaveLength(0);
+  });
+
+  it('rejects a window that runs backwards or spans more than 100 days', async () => {
+    const sql = createMockSql([]);
+
+    for (const query of [
+      '?view=calendar&from=2026-10-04&to=2026-09-21',
+      '?view=calendar&from=2026-01-01&to=2026-06-01',
+    ]) {
+      const response = await getTaskItems(sql, USER_ID, url(query));
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: 'calendar window must run forwards and span at most 100 days',
+      });
+    }
+    expect(sql.calls).toHaveLength(0);
+  });
+});
+
 describe('GET /task-items?project=today', () => {
   it('matches tasks due on or before the given date across every project', async () => {
     const sql = createMockSql([[]]);
