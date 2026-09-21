@@ -9,6 +9,7 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { getDailyNoteSeed, putDailyNoteSeed } from './dailyNoteSeed.js';
 import { createDocument, deleteDocument, getDocuments, updateDocument } from './documents.js';
 import { getEnrichmentSettings, putEnrichmentSettings } from './enrichmentSettings.js';
+import { deleteFile, getFile, getFileContent, listFiles, updateFile, uploadFile } from './files.js';
 import { postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
@@ -29,6 +30,7 @@ import { getTasks, postTasks } from './tasks.js';
 // Vercel's body cap is 4.5 MB; keep that for document payloads, but use a much
 // smaller default for the ordinary command endpoints this Worker serves.
 const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
+const FILE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
@@ -142,6 +144,50 @@ async function route(url, request, sql, userId, env, email) {
     if (request.method === 'POST') return createTaskLabel(sql, userId, body);
     if (request.method === 'PATCH') return updateTaskLabel(sql, userId, body);
     return deleteTaskLabel(sql, userId, body);
+  }
+
+  if (segments[0] === 'files') {
+    if (segments.length === 1) {
+      if (request.method === 'GET') return listFiles(sql, userId, url);
+      if (request.method === 'POST') return uploadFile(request, sql, userId, env, { allowRequest });
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, POST' } },
+      );
+    }
+    const id = segments[1];
+    if (!FILE_UUID.test(id) || segments.length > 3) {
+      return Response.json({ error: 'Not Found' }, { status: 404 });
+    }
+    if (segments.length === 3) {
+      if (segments[2] !== 'content') return Response.json({ error: 'Not Found' }, { status: 404 });
+      if (request.method !== 'GET')
+        return Response.json(
+          { error: 'Method not allowed' },
+          { status: 405, headers: { Allow: 'GET' } },
+        );
+      return getFileContent(sql, userId, id, env);
+    }
+    if (request.method === 'GET') return getFile(sql, userId, id);
+    if (request.method === 'DELETE') {
+      return deleteFile(sql, userId, id, env, {
+        report: (operation, error, extra) => captureHandledException(operation, error, env, extra),
+      });
+    }
+    if (request.method !== 'PATCH')
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, PATCH, DELETE' } },
+      );
+    let body;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) return errorResponse;
+      throw error;
+    }
+    return updateFile(sql, userId, id, body);
   }
 
   if (segments[0] === 'documents') {

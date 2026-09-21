@@ -48,6 +48,7 @@ const env = /** @type {any} */ ({
   ENRICHER: { fetch: vi.fn(async () => ({ ok: true, status: 200 })) },
   ENRICHER_TRIGGER_TOKEN: 'trigger-secret',
   OWNER_EMAIL: 'owner@example.com',
+  FILES: { put: vi.fn(async () => ({})), get: vi.fn(), delete: vi.fn(async () => undefined) },
 });
 const ctx = /** @type {any} */ ({
   waitUntil: (/** @type {Promise<unknown>} */ promise) => promise,
@@ -69,6 +70,7 @@ beforeEach(() => {
   verifyAccessToken.mockResolvedValue({ userId: 'user-1', email: 'owner@example.com' });
   mockQuery.mockReset().mockResolvedValue([]);
   put.mockResolvedValue({ url: 'https://blob.example/photo.png' });
+  env.FILES.get.mockReset();
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => ({ ok: true, status: 200 })),
@@ -481,5 +483,71 @@ describe('POST /task-items/interpret', () => {
     const response = await worker.fetch(request('/task-items/interpret'), env, ctx);
     expect(response.status).toBe(405);
     expect(response.headers.get('Allow')).toBe('POST');
+  });
+});
+
+describe('routing — /files', () => {
+  const FILE_ID = '33333333-3333-4333-8333-333333333333';
+
+  test('GET /files dispatches to listFiles', async () => {
+    const response = await worker.fetch(request('/files?folder=root'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ files: [] });
+  });
+
+  test('POST /files uploads through the bucket', async () => {
+    mockQuery.mockResolvedValueOnce([{ id: FILE_ID, name: 'a.txt' }]);
+    const form = new FormData();
+    form.set('file', new File(['hi'], 'a.txt', { type: 'text/plain' }));
+    const response = await worker.fetch(
+      request('/files', { method: 'POST', body: form }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(201);
+    expect(env.FILES.put).toHaveBeenCalled();
+  });
+
+  test('GET /files/:id/content streams the object with CORS headers', async () => {
+    mockQuery.mockResolvedValueOnce([{ name: 'a.txt', mime_type: 'text/plain', object_key: 'k' }]);
+    env.FILES.get.mockResolvedValue({ body: new Blob(['hi']).stream(), size: 2, httpMetadata: {} });
+    const response = await worker.fetch(request(`/files/${FILE_ID}/content`), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('hi');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION);
+  });
+
+  test('PATCH /files/:id renames', async () => {
+    // The dynamic `sql(updates)` SET helper goes through the stub too, ahead
+    // of the UPDATE itself.
+    mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: FILE_ID, name: 'b.txt' }]);
+    const response = await worker.fetch(
+      request(`/files/${FILE_ID}`, { method: 'PATCH', body: JSON.stringify({ name: 'b.txt' }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+  });
+
+  test('DELETE /files/:id removes the row and object', async () => {
+    mockQuery.mockResolvedValueOnce([{ object_key: 'k' }]);
+    const response = await worker.fetch(
+      request(`/files/${FILE_ID}`, { method: 'DELETE' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(204);
+    expect(env.FILES.delete).toHaveBeenCalledWith('k');
+  });
+
+  test('rejects malformed ids and unknown sub-paths', async () => {
+    expect((await worker.fetch(request('/files/nope'), env, ctx)).status).toBe(404);
+    expect((await worker.fetch(request(`/files/${FILE_ID}/other`), env, ctx)).status).toBe(404);
+  });
+
+  test('PUT /files returns 405', async () => {
+    const response = await worker.fetch(request('/files', { method: 'PUT' }), env, ctx);
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('GET, POST');
   });
 });
