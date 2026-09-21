@@ -16,6 +16,7 @@
   // secret is still sent — data-enricher's /run stays token-protected because
   // it is also publicly routable on its own workers.dev URL.
   "services": [{ "binding": "ENRICHER", "service": "data-enricher" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "cookie-files" }],
   "vars": {
     // Auth0 domain/audience are public identifiers, already shipped in
     // Cookie-Web's own client bundle (VITE_AUTH0_DOMAIN/VITE_AUTH0_AUDIENCE)

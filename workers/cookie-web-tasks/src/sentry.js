@@ -17,6 +17,7 @@ const SERVICE = 'cookie-web-tasks';
  *   ENRICHER_TRIGGER_TOKEN?: string,
  *   OWNER_EMAIL?: string,
  *   BLOB_READ_WRITE_TOKEN?: string,
+ *   FILES?: R2Bucket,
  * }} TasksEnv
  */
 
