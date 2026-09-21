@@ -76,6 +76,19 @@ describe('preflightResponse', () => {
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION);
   });
 
+  test('allows the Prefer header Firefox adds when a service worker forwards a request', () => {
+    // Firefox sends "Prefer: safe" on every request when OS parental controls
+    // are on. Outside a service worker it never reaches the CORS check, but a
+    // worker forwarding event.request preflights it, and a preflight that
+    // omits it makes every intercepted body fetch fail with NetworkError.
+    const response = preflightResponse(PRODUCTION, PRODUCTION);
+    const allowed = response.headers
+      .get('Access-Control-Allow-Headers')
+      ?.split(',')
+      .map((h) => h.trim().toLowerCase());
+    expect(allowed).toEqual(expect.arrayContaining(['authorization', 'content-type', 'prefer']));
+  });
+
   test('answers a disallowed origin with 403 and no CORS headers', async () => {
     const response = preflightResponse('https://evil.example.com', PRODUCTION);
     expect(response.status).toBe(403);

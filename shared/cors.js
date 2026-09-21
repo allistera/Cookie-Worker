@@ -3,7 +3,13 @@
 // bearer token) — so responses need real CORS headers, and preflight OPTIONS
 // requests need answering before any auth check runs.
 
-const ALLOWED_HEADERS = 'Authorization, Content-Type';
+// Prefer is not something Cookie-Web sends: Firefox adds "Prefer: safe" to
+// every request when OS parental controls are on, and when Cookie-Web's
+// service worker forwards event.request the header becomes part of the CORS
+// preflight (Access-Control-Request-Headers: authorization,prefer). Without
+// it here Firefox rejects the preflight and every intercepted message-body
+// fetch fails with NetworkError, leaving the reader on the list snippet.
+const ALLOWED_HEADERS = 'Authorization, Content-Type, Prefer';
 const ALLOWED_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
 
 /**
