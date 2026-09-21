@@ -142,7 +142,7 @@ function userExists(sql, userId) {
 // before writing them — a folder id belonging to another user must behave
 // exactly like one that does not exist.
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string} id */
-function fetchOwnedFolder(sql, userId, id) {
+export function fetchOwnedFolder(sql, userId, id) {
   return sql`
     SELECT f.id
     FROM document_folders f
