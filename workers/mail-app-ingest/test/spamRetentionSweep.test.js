@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { captureHandledException } = vi.hoisted(() => ({ captureHandledException: vi.fn() }));
 vi.mock('../src/sentry.js', async (importOriginal) => {
@@ -27,6 +27,34 @@ function createMockSql(results = []) {
 }
 
 describe('purgeExpiredSpam', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // The socket to Hyperdrive dropped under this sweep on the Sep 9 cron
+  // (Sentry COOKIE-WEB-12). The statement is idempotent, so it gets a fresh
+  // client and another go.
+  it('retries a dropped connection on a fresh client', async () => {
+    vi.useFakeTimers();
+    captureHandledException.mockClear();
+    const first = createMockSql();
+    first.mockRejectedValueOnce(new Error('Network connection lost.'));
+    const second = createMockSql([[{ id: ID_1 }]]);
+    const createSql = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const purge = purgeExpiredSpam(ENV, { createSql });
+    await vi.advanceTimersByTimeAsync(1000);
+    await purge;
+
+    expect(createSql).toHaveBeenCalledTimes(2);
+    expect(first.end).toHaveBeenCalledOnce();
+    expect(second.end).toHaveBeenCalledOnce();
+    expect(captureHandledException).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(JSON.stringify({ event: 'spam_purged', deleted: 1 }));
+    log.mockRestore();
+  });
+
   it('soft-deletes spam past its owner’s retention, bounded per tick, and closes its client', async () => {
     const sql = createMockSql([[{ id: ID_1 }]]);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});

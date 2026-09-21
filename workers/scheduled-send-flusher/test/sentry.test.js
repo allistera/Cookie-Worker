@@ -9,7 +9,7 @@ vi.mock('@sentry/cloudflare', () => ({
 /** @type {any} */
 const sentry = await import('@sentry/cloudflare');
 const { createSentryOptions } = await import('../src/sentry.js');
-const worker = (await import('../src/worker.js')).default;
+const { default: worker, FLUSH_RETRY_BASE_DELAY_MS } = await import('../src/worker.js');
 
 const TOKEN = 'test-trigger-token';
 const FLUSH_TOKEN = 'flush-secret';
@@ -40,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('Sentry configuration', () => {
@@ -61,14 +62,16 @@ describe('Sentry configuration', () => {
 
 describe('failure reporting', () => {
   test('reports a failure the HTTP trigger answers with a 500', async () => {
-    sendFetch.mockResolvedValue({ ok: false, status: 502 });
+    // A 401 is not retried, so this stays on real timers; the retry window
+    // itself is covered in worker.test.js.
+    sendFetch.mockResolvedValue({ ok: false, status: 401 });
 
     const response = await run();
 
     expect(response.status).toBe(500);
     expect(sentry.captureException).toHaveBeenCalledOnce();
     expect(sentry.captureException.mock.calls[0][0]).toMatchObject({
-      message: 'Cookie-Web flush responded 502',
+      message: 'Cookie-Web flush responded 401',
     });
     expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
       tags: { service: 'scheduled-send-flusher', operation: 'http_run' },
@@ -91,11 +94,14 @@ describe('failure reporting', () => {
   });
 
   test('lets scheduled failures escape so the wrapper reports them', async () => {
+    vi.useFakeTimers();
     sendFetch.mockResolvedValue({ ok: false, status: 500 });
 
-    await expect(worker.scheduled(/** @type {any} */ ({}), env, ctx)).rejects.toThrow(
-      'Cookie-Web flush responded 500',
-    );
+    const scheduled = worker.scheduled(/** @type {any} */ ({}), env, ctx);
+    const rejection = expect(scheduled).rejects.toThrow('Cookie-Web flush responded 500');
+    await vi.advanceTimersByTimeAsync(3 * FLUSH_RETRY_BASE_DELAY_MS);
+
+    await rejection;
     expect(sentry.captureException).not.toHaveBeenCalled();
   });
 });

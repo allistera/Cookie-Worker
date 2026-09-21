@@ -39,6 +39,11 @@ export function createSentryOptions({ service, env, trigger, beforeSend }) {
       stackFrameVariables: false,
     },
     beforeSend(event, hint) {
+      // A `wrangler dev` session with a DSN in .dev.vars inherits the
+      // deployed SENTRY_ENVIRONMENT, and reported a missing local key as a
+      // production failure (Sentry COOKIE-WEB-1B). Nothing local belongs in
+      // the project at all, whatever the tag says.
+      if (isLocalDevEvent(event)) return null;
       const filtered = beforeSend ? beforeSend(event, hint) : event;
       if (!filtered) return null;
       return {
@@ -55,6 +60,27 @@ export function createSentryOptions({ service, env, trigger, beforeSend }) {
       };
     },
   };
+}
+
+// Wrangler builds every `wrangler dev` bundle under .wrangler/tmp; a deployed
+// Worker's frames never point there.
+const LOCAL_DEV_BUNDLE = /[\\/]\.wrangler[\\/]tmp[\\/]/u;
+
+/**
+ * Whether the event's stack trace comes from a local development bundle.
+ *
+ * @param {import('@sentry/core').ErrorEvent} event
+ */
+export function isLocalDevEvent(event) {
+  return Boolean(
+    event.exception?.values?.some((value) =>
+      value.stacktrace?.frames?.some(
+        (frame) =>
+          LOCAL_DEV_BUNDLE.test(frame.abs_path ?? '') ||
+          LOCAL_DEV_BUNDLE.test(frame.filename ?? ''),
+      ),
+    ),
+  );
 }
 
 /**

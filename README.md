@@ -81,7 +81,7 @@ Every Worker reports uncaught failures to the same Sentry project through `Sentr
 - Request bodies, headers, cookies, query parameters, user identity, AI inputs and outputs, and stack-frame variables are all switched off.
 - Connection strings and API tokens are stripped from messages and stack traces before capture, and from the structured log lines beside them.
 - Sampling is off (`tracesSampleRate: 0`); errors only.
-- Without `SENTRY_DSN` the client stays disabled, so local development and dry runs report nothing.
+- Without `SENTRY_DSN` the client stays disabled, so local development and dry runs report nothing. A `wrangler dev` session that does have a DSN in `.dev.vars` is still kept out: events whose stack frames point at a `.wrangler/tmp` bundle are dropped before they leave the isolate.
 
 Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by the `Deploy` workflow) and `SENTRY_ENVIRONMENT` (variable, set in each `wrangler.jsonc`).
 

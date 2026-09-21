@@ -104,6 +104,31 @@ describe('createSentryOptions', () => {
     expect(beforeSend?.(errorEvent({ transaction: 'expected' }), {})).toBeNull();
     expect(beforeSend?.(errorEvent({ transaction: 'unexpected' }), {})).not.toBeNull();
   });
+
+  // A `wrangler dev` session with a DSN in .dev.vars inherits the deployed
+  // SENTRY_ENVIRONMENT and reported a missing local key as a production
+  // failure (Sentry COOKIE-WEB-1B). Its bundle lives in .wrangler/tmp; a
+  // deployed Worker's never does.
+  test('drops events from a local wrangler dev bundle', () => {
+    const { beforeSend } = createSentryOptions({ service: 'a-worker', env: { SENTRY_DSN: DSN } });
+    const deployed = { filename: 'index.js', abs_path: 'index.js', function: 'scheduled' };
+    const local = {
+      filename: 'index.js',
+      abs_path: '/Users/dev/Cookie-Worker/workers/a-worker/.wrangler/tmp/dev-efpyDJ/index.js',
+      function: 'scheduled',
+    };
+    /** @param {object[]} frames */
+    const failure = (frames) =>
+      errorEvent({
+        exception: { values: [{ type: 'Error', value: 'boom', stacktrace: { frames } }] },
+      });
+
+    expect(beforeSend?.(failure([deployed, local]), {})).toBeNull();
+    expect(beforeSend?.(failure([deployed]), {})).not.toBeNull();
+    expect(
+      beforeSend?.(errorEvent({ exception: { values: [{ value: 'no frames' }] } }), {}),
+    ).not.toBeNull();
+  });
 });
 
 describe('captureHandledException', () => {

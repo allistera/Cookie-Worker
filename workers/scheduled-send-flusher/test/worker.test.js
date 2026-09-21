@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { flushScheduledSends } from '../src/worker.js';
+import { FLUSH_RETRY_BASE_DELAY_MS, flushScheduledSends } from '../src/worker.js';
 
 // The flush call goes over the SEND service binding to cookie-web-send;
 // sendFetch stands in for the bound Worker's fetch.
@@ -86,10 +86,16 @@ describe('flushScheduledSends', () => {
     });
 
     const request = flushScheduledSends(env);
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(FLUSH_RETRY_BASE_DELAY_MS);
 
     await expect(request).resolves.toEqual({ claimed: 1, sent: 1 });
     expect(sendFetch).toHaveBeenCalledTimes(2);
+  });
+
+  // The Sep 9 database outage outlasted three quick attempts (Sentry
+  // COOKIE-WEB-14); the window between attempts is now measured in seconds.
+  test('waits several seconds between attempts', () => {
+    expect(FLUSH_RETRY_BASE_DELAY_MS).toBeGreaterThanOrEqual(5000);
   });
 
   test('throws after persistent server errors', async () => {
@@ -98,7 +104,7 @@ describe('flushScheduledSends', () => {
 
     const request = flushScheduledSends(env);
     const rejection = expect(request).rejects.toThrow('Cookie-Web flush responded 502');
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(3 * FLUSH_RETRY_BASE_DELAY_MS);
 
     await rejection;
     expect(sendFetch).toHaveBeenCalledTimes(3);
@@ -114,7 +120,7 @@ describe('flushScheduledSends', () => {
     });
 
     const request = flushScheduledSends(env);
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(FLUSH_RETRY_BASE_DELAY_MS);
 
     await expect(request).resolves.toEqual({ claimed: 1, sent: 1 });
     expect(sendFetch).toHaveBeenCalledTimes(2);

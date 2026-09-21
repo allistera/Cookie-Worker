@@ -4,6 +4,7 @@ import worker, {
   isStoreTimeout,
   isTransientDbError,
   recoverPendingEnrichment,
+  recoverPriorityReplyDrafts,
   redact,
   withTimeout,
 } from '../src/worker.js';
@@ -502,7 +503,10 @@ describe('email handler', () => {
     });
   });
 
-  test('swallows permanent forward errors once the message is stored', async () => {
+  // Cloudflare refuses to forward mail that failed SPF, DKIM, or DMARC. That
+  // is the sender's doing and the message is still stored and classified, so
+  // it is logged but not reported (Sentry COOKIE-WEB-9).
+  test('logs but does not report a forward refused for an unauthenticated sender', async () => {
     postgres.mockReturnValue(sqlReturning());
     const message = fakeMessage(simpleFixture);
     message.forward.mockRejectedValueOnce(
@@ -512,15 +516,22 @@ describe('email handler', () => {
     expect(messageFromLog('forward_failed_permanent')).toMatchObject({
       event: 'forward_failed_permanent',
     });
+    expect(sentry.captureException).not.toHaveBeenCalled();
   });
 
-  test('swallows permanent forward errors for duplicates', async () => {
+  test('swallows and reports other permanent forward errors for duplicates', async () => {
     postgres.mockReturnValue(sqlReturning({ outcome: 'duplicate', messageUuid: null }));
     const message = fakeMessage(simpleFixture);
     message.forward.mockRejectedValueOnce(new Error('destination address not verified'));
     await worker.email(message, env(), ctx());
     expect(messageFromLog('forward_failed_permanent')).toMatchObject({
       event: 'forward_failed_permanent',
+    });
+    // An unverified destination is a configuration fault worth an alert.
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { operation: 'forward' },
+      extra: { permanent: true },
     });
   });
 
@@ -591,6 +602,7 @@ describe('email handler', () => {
 describe('scheduled recovery', () => {
   beforeEach(() => {
     postgres.mockReset();
+    sentry.captureException.mockReset();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
 
@@ -656,6 +668,43 @@ describe('scheduled recovery', () => {
       tags: { service: 'mail-app-ingest', operation: 'ai_recovery' },
     });
     expect(clients.every((sql) => sql.end.mock.calls.length === 1)).toBe(true);
+  });
+
+  // The socket to Hyperdrive dropped under the recovery query on the Sep 9
+  // cron (Sentry COOKIE-WEB-11), and the generic error it was reported as
+  // said nothing about that.
+  test('retries priority reply recovery on a dropped connection', async () => {
+    vi.useFakeTimers();
+    const firstSql = sqlReturning();
+    firstSql.mockRejectedValueOnce(new Error('Network connection lost.'));
+    const secondSql = sqlReturning();
+    postgres.mockReturnValueOnce(firstSql).mockReturnValueOnce(secondSql);
+
+    const recovery = recoverPriorityReplyDrafts(env({ OPENAI_API_KEY: 'key' }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await recovery;
+
+    expect(postgres).toHaveBeenCalledTimes(2);
+    expect(firstSql.end).toHaveBeenCalledOnce();
+    expect(secondSql.end).toHaveBeenCalledOnce();
+    expect(sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  test('reports what broke priority reply recovery, with secrets removed', async () => {
+    const sql = sqlReturning();
+    sql.mockRejectedValueOnce(new Error('relation "message_ai" does not exist at key'));
+    postgres.mockReturnValue(sql);
+
+    await recoverPriorityReplyDrafts(env({ OPENAI_API_KEY: 'key' }));
+
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    expect(sentry.captureException.mock.calls[0][0]).toMatchObject({
+      message: 'relation "message_ai" does not exist at [redacted]',
+    });
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { service: 'mail-app-ingest', operation: 'priority_reply_recovery' },
+    });
+    expect(sql.end).toHaveBeenCalledOnce();
   });
 });
 

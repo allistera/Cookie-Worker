@@ -8,7 +8,7 @@ import { MimePartLimitError, parseEmail } from './parse.js';
 import { sweepSearchDrift } from './searchDriftSweep.js';
 import { purgeExpiredSpam } from './spamRetentionSweep.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
-import { isTransientDbError } from '../../../shared/transient-db.js';
+import { isTransientDbError, retryWithFreshClient } from '../../../shared/transient-db.js';
 import {
   captureHandledException,
   createSentryOptions,
@@ -203,10 +203,14 @@ const worker = {
           message_id: record?.messageId,
         }),
       );
-      captureHandledException('forward', err, [env.HYPERDRIVE.connectionString], {
-        message_id: record?.messageId,
-        permanent: true,
-      });
+      // A sender that failed authentication is not something Cookie can
+      // fix, and the message is already stored and classified above.
+      if (!isUnauthenticatedSenderError(err)) {
+        captureHandledException('forward', err, [env.HYPERDRIVE.connectionString], {
+          message_id: record?.messageId,
+          permanent: true,
+        });
+      }
     }
 
     if (
@@ -394,35 +398,50 @@ export async function recoverPendingEnrichment(env) {
   console.log(JSON.stringify({ event: 'ai_recovery_complete', attempted: rows.length }));
 }
 
-/** @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env */
+/**
+ * Drafts stamp their own lease (reply_draft_updated_at) before generation, so
+ * re-running the recovery after a dropped connection cannot draft twice.
+ *
+ * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env
+ */
 export async function recoverPriorityReplyDrafts(env) {
-  if (!env.OPENAI_API_KEY) return;
-  let sql;
+  const apiKey = env.OPENAI_API_KEY;
+  if (!apiKey) return;
   try {
-    sql = createSql(env.HYPERDRIVE.connectionString);
-    await recoverPriorityReplies(
-      sql,
-      env.OWNER_EMAIL,
-      env.OPENAI_API_KEY,
-      env.AI_MODEL || AI_MODEL,
+    await retryWithFreshClient(
+      () => createSql(env.HYPERDRIVE.connectionString),
+      (sql) => recoverPriorityReplies(sql, env.OWNER_EMAIL, apiKey, env.AI_MODEL || AI_MODEL),
     );
-  } catch {
-    captureHandledException(
-      'priority_reply_recovery',
-      new Error('Priority reply recovery failed'),
-      [],
-    );
-  } finally {
-    await endSql(sql);
+  } catch (err) {
+    // The real failure, with secrets removed: a generic "recovery failed"
+    // said nothing about the dropped socket behind Sentry COOKIE-WEB-11.
+    captureHandledException('priority_reply_recovery', err, [
+      env.HYPERDRIVE.connectionString,
+      apiKey,
+    ]);
   }
 }
 
 export default Sentry.withSentry(createSentryOptions, worker);
 
+// Cloudflare refuses to forward mail whose sender failed SPF, DKIM, or DMARC.
+const UNAUTHENTICATED_SENDER_ERROR = /non-authenticated emails cannot be forwarded/iu;
+
 const PERMANENT_FORWARD_ERRORS = [
-  /non-authenticated emails cannot be forwarded/iu,
+  UNAUTHENTICATED_SENDER_ERROR,
   /destination address (?:is )?not verified/iu,
 ];
+
+/**
+ * A permanent forward failure that is the sender's doing rather than a fault
+ * in Cookie's configuration: logged, never reported (Sentry COOKIE-WEB-9).
+ *
+ * @param {unknown} err
+ */
+export function isUnauthenticatedSenderError(err) {
+  const text = err instanceof Error ? err.message : String(err);
+  return UNAUTHENTICATED_SENDER_ERROR.test(text);
+}
 
 /**
  * @param {unknown} err

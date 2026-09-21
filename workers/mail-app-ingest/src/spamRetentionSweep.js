@@ -1,3 +1,4 @@
+import { retryWithFreshClient } from '../../../shared/transient-db.js';
 import { captureHandledException } from './sentry.js';
 
 // One tick's worth of deletions. Retention is measured in days, so a tick
@@ -19,7 +20,9 @@ export const DEFAULT_SPAM_RETENTION_DAYS = 30;
  * in the same statement so the drift sweep drops the rows from Meilisearch.
  *
  * Errors are logged and swallowed: this runs under ctx.waitUntil on the
- * ingest cron alongside the other sweeps, and must never fail the tick.
+ * ingest cron alongside the other sweeps, and must never fail the tick. A
+ * dropped Hyperdrive socket (Sentry COOKIE-WEB-12) gets a fresh client and
+ * another go first: rows already deleted are excluded, so a re-run is safe.
  *
  * @param {any} env
  * @param {{createSql?: (url: string) => any}} [deps]
@@ -31,10 +34,10 @@ export async function purgeExpiredSpam(env, deps = {}) {
     return;
   }
 
-  let sql;
   try {
-    sql = makeSql(env.HYPERDRIVE.connectionString);
-    const rows = await sql`
+    const rows = await retryWithFreshClient(
+      () => makeSql(env.HYPERDRIVE.connectionString),
+      (sql) => sql`
       WITH expired AS (
         SELECT m.id
         FROM message_ai ai
@@ -58,7 +61,8 @@ export async function purgeExpiredSpam(env, deps = {}) {
       FROM expired
       WHERE m.id = expired.id
       RETURNING m.id
-    `;
+    `,
+    );
     if (rows.length) {
       console.log(JSON.stringify({ event: 'spam_purged', deleted: rows.length }));
     }
@@ -70,7 +74,5 @@ export async function purgeExpiredSpam(env, deps = {}) {
       }),
     );
     captureHandledException('spam_purge', err, [env.HYPERDRIVE.connectionString]);
-  } finally {
-    await sql?.end({ timeout: 2 }).catch(() => undefined);
   }
 }

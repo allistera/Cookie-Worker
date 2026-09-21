@@ -2,6 +2,8 @@ import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { isEnrichmentDue } from '../../../shared/enrichmentSettings.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
 import { buildNews } from './news.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
@@ -91,12 +93,25 @@ async function buildNewsPhase(sql, env, userId) {
 }
 
 async function runPhases(env, phases, options = {}) {
-  const sql = createSql(env.HYPERDRIVE.connectionString);
+  let sql = createSql(env.HYPERDRIVE.connectionString);
   /** @type {Error[]} */
   const failures = [];
   try {
-    const userId = await lookupUserId(sql, env.OWNER_EMAIL);
-    const settings = await fetchEnrichmentSettings(sql, userId, env.AI_MODEL);
+    // The socket to Hyperdrive drops now and then (Sentry COOKIE-WEB-13). The
+    // two reads that gate a run are idempotent, so they get a fresh client
+    // and another go rather than failing the whole hour.
+    const { userId, settings } = await retryWithBackoff(
+      async (attempt) => {
+        if (attempt > 1) {
+          await sql.end({ timeout: 2 }).catch(() => undefined);
+          sql = createSql(env.HYPERDRIVE.connectionString);
+        }
+        const userId = await lookupUserId(sql, env.OWNER_EMAIL);
+        const settings = await fetchEnrichmentSettings(sql, userId, env.AI_MODEL);
+        return { userId, settings };
+      },
+      { attempts: 3, isRetryable: isTransientDbError },
+    );
     if (options.scheduledAt && !isEnrichmentDue(settings, options.scheduledAt)) {
       console.log(JSON.stringify({ event: 'scheduled_run_skipped' }));
       return { status: 'skipped' };

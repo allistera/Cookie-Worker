@@ -16,6 +16,10 @@ import { retryWithBackoff } from '../../../shared/retry.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
 
 const FLUSH_TIMEOUT_MS = 20_000;
+// The Sep 9 database outage lasted ten seconds or more and outlasted three
+// attempts a second apart (Sentry COOKIE-WEB-14). The cron ticks every five
+// minutes and the flush is idempotent, so waiting longer costs nothing.
+export const FLUSH_RETRY_BASE_DELAY_MS = 5000;
 const MAX_FLUSH_ERROR_BODY_LENGTH = 200;
 
 class FlushHttpError extends Error {
@@ -86,6 +90,7 @@ export async function flushScheduledSends(env) {
 
   const result = await retryWithBackoff(() => fetchFlush(env), {
     attempts: 3,
+    baseDelayMs: FLUSH_RETRY_BASE_DELAY_MS,
     isRetryable: isRetryableFlushError,
   });
   console.log(JSON.stringify({ event: 'scheduled_sends_flushed', ...result }));

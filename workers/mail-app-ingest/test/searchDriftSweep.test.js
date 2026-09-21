@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { captureHandledException } = vi.hoisted(() => ({ captureHandledException: vi.fn() }));
 vi.mock('../src/sentry.js', async (importOriginal) => {
@@ -37,6 +37,33 @@ function createMockSql(results = []) {
 }
 
 describe('sweepSearchDrift', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // The socket to Hyperdrive dropped under this sweep on the Sep 9 cron
+  // (Sentry COOKIE-WEB-10). Reindexing is idempotent, so it gets a fresh
+  // client and another go.
+  it('retries a dropped connection on a fresh client', async () => {
+    vi.useFakeTimers();
+    captureHandledException.mockClear();
+    const first = createMockSql();
+    first.mockRejectedValueOnce(new Error('Network connection lost.'));
+    const second = createMockSql([[{ id: ID_1 }]]);
+    const createSql = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const sync = vi.fn().mockResolvedValue({ indexed: 1, failed: 0 });
+
+    const sweep = sweepSearchDrift(ENV, { createSql, sync });
+    await vi.advanceTimersByTimeAsync(1000);
+    await sweep;
+
+    expect(createSql).toHaveBeenCalledTimes(2);
+    expect(sync).toHaveBeenCalledExactlyOnceWith(second, ENV, [ID_1]);
+    expect(first.end).toHaveBeenCalledOnce();
+    expect(second.end).toHaveBeenCalledOnce();
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
   it('does nothing when Meilisearch is not configured', async () => {
     const createSql = vi.fn();
     const sync = vi.fn();

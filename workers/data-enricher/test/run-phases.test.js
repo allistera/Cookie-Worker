@@ -49,11 +49,11 @@ vi.mock('../src/store.js', () => ({
   fetchGithubPersonalisation: vi.fn(async () => false),
 }));
 
-import worker, { runScheduledEnrichment } from '../src/worker.js';
+import worker, { runDigestOnly, runScheduledEnrichment } from '../src/worker.js';
 import { fetchImportantMessages } from '../src/analyze.js';
 import { buildDigest } from '../src/digest.js';
 import { buildNews } from '../src/news.js';
-import { storeDigest, storeNews } from '../src/store.js';
+import { lookupUserId, storeDigest, storeNews } from '../src/store.js';
 
 const TOKEN = 'test-trigger-token';
 const env = /** @type {any} */ ({
@@ -126,6 +126,25 @@ describe('POST /run phase routing', () => {
 
     expect(response.status).toBe(400);
     expect(storeDigest).not.toHaveBeenCalled();
+  });
+
+  // The socket to Hyperdrive dropped under the owner lookup on the Sep 9
+  // cron and failed the whole run (Sentry COOKIE-WEB-13). The reads that
+  // gate a run are idempotent, so they get a fresh connection and another go.
+  test('retries the gating reads on a dropped Hyperdrive connection', async () => {
+    vi.useFakeTimers();
+    vi.mocked(lookupUserId).mockRejectedValueOnce(
+      Object.assign(new Error('write CONNECTION_CLOSED x.hyperdrive.local:5432'), {
+        code: 'CONNECTION_CLOSED',
+      }),
+    );
+
+    const enrichment = runDigestOnly(env);
+    await vi.advanceTimersByTimeAsync(1000);
+    await enrichment;
+
+    expect(lookupUserId).toHaveBeenCalledTimes(2);
+    expect(storeDigest).toHaveBeenCalled();
   });
 
   test('reports a generic failure when a phase throws', async () => {

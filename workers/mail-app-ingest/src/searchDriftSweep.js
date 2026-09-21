@@ -1,5 +1,6 @@
 import { meiliAvailable } from '../../../shared/meili.js';
 import { syncMessagesToMeili } from '../../../shared/meiliSync.js';
+import { retryWithFreshClient } from '../../../shared/transient-db.js';
 import { captureHandledException } from './sentry.js';
 
 // One tick's worth of repair. The corpus is small (~1.6k messages), so this
@@ -22,7 +23,9 @@ export const SWEEP_LIMIT = 200;
  * search_indexed_at IS NULL` from migration 0055 so the partial index is
  * usable; newest first, because recent mail is what someone is most likely
  * to search for. Errors are logged and swallowed — a failed sweep must never
- * surface as a failed cron.
+ * surface as a failed cron. A dropped Hyperdrive socket (Sentry
+ * COOKIE-WEB-10) gets a fresh client and another go first; reindexing is
+ * idempotent, so a re-run is safe.
  *
  * @param {any} env
  * @param {{createSql?: (url: string) => any, sync?: typeof syncMessagesToMeili}} [deps]
@@ -42,37 +45,42 @@ export async function sweepSearchDrift(env, deps = {}) {
   // createSql throws on a malformed connection string, so it belongs inside
   // the try: this runs under ctx.waitUntil alongside enrichment recovery, and
   // a rejection here would surface as an unhandled rejection on the cron.
-  let sql;
   try {
-    sql = makeSql(env.HYPERDRIVE.connectionString);
-    const rows = await sql`
-      SELECT id
-      FROM messages
-      WHERE search_indexed_at IS NULL
-      ORDER BY created_at DESC
-      LIMIT ${SWEEP_LIMIT}
-    `;
-    if (!rows.length) return;
+    const swept = await retryWithFreshClient(
+      () => makeSql(env.HYPERDRIVE.connectionString),
+      async (sql) => {
+        const rows = await sql`
+          SELECT id
+          FROM messages
+          WHERE search_indexed_at IS NULL
+          ORDER BY created_at DESC
+          LIMIT ${SWEEP_LIMIT}
+        `;
+        if (!rows.length) return null;
 
-    // syncMessagesToMeili swallows its own errors and resolves either way, so
-    // the returned counts — not the absence of a throw — are what say whether
-    // this tick actually repaired anything.
-    const { indexed, failed } = await sync(
-      sql,
-      env,
-      rows.map((row) => String(row.id)),
+        // syncMessagesToMeili swallows its own errors and resolves either
+        // way, so the returned counts — not the absence of a throw — are
+        // what say whether this tick actually repaired anything.
+        const { indexed, failed } = await sync(
+          sql,
+          env,
+          rows.map((row) => String(row.id)),
+        );
+        return { selected: rows.length, indexed, failed };
+      },
     );
-    console.log(
-      JSON.stringify({ event: 'search_drift_swept', selected: rows.length, indexed, failed }),
-    );
+    if (!swept) return;
+
+    const { selected, indexed, failed } = swept;
+    console.log(JSON.stringify({ event: 'search_drift_swept', selected, indexed, failed }));
     if (failed > 0) {
       // The sweep is the last line of defence for rows nothing else can
       // repair. A silent partial failure here is how an index rots unnoticed.
       captureHandledException(
         'search_drift_sweep',
-        new Error(`${failed} of ${rows.length} drifted messages failed to reindex`),
+        new Error(`${failed} of ${selected} drifted messages failed to reindex`),
         [env.HYPERDRIVE.connectionString, env.MEILISEARCH_API_KEY],
-        { selected: rows.length, indexed, failed },
+        { selected, indexed, failed },
       );
     }
   } catch (err) {
@@ -86,7 +94,5 @@ export async function sweepSearchDrift(env, deps = {}) {
       env.HYPERDRIVE.connectionString,
       env.MEILISEARCH_API_KEY,
     ]);
-  } finally {
-    await sql?.end({ timeout: 2 }).catch(() => undefined);
   }
 }
