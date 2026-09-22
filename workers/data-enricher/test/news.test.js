@@ -281,8 +281,8 @@ describe('buildNews', () => {
 
     const { sections } = await buildNews(options);
 
-    expect(sections.map((s) => s.title)).toEqual(['GitHub', 'Product Hunt', 'UK headlines']);
-    expect(sections[2].items[0].title).toBe('Storm');
+    expect(sections.map((s) => s.title)).toEqual(['UK headlines', 'GitHub', 'Product Hunt']);
+    expect(sections[0].items[0].title).toBe('Storm');
   });
 
   test('reserves three local places and fills a ten-story headline list from BBC', async () => {

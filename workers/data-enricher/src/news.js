@@ -140,8 +140,8 @@ export async function rankForInterests(
 }
 
 /**
- * Build the day's personalised news: GitHub and Product Hunt ranked against the
- * reader's interests, plus straight UK headlines.
+ * Build the day's personalised news: straight UK headlines first, then GitHub
+ * and Product Hunt ranked against the reader's interests.
  *
  * Each source is independent — one being unavailable or unconfigured must not
  * cost the others. Fetch failures drop the section; ranking failures retain
@@ -255,8 +255,10 @@ export async function buildNews({
       sections.push(result.value);
     }
   }
+  // Headlines lead the round-up; the personalised sources follow in source
+  // order.
   if (headlines.length > 0) {
-    sections.push({
+    sections.unshift({
       emoji: '📰',
       title: 'UK headlines',
       // West Lothian is deliberately first in `sources`, reserving up to three
