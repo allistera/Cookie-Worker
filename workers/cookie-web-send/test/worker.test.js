@@ -85,6 +85,21 @@ const env = /** @type {any} */ ({
   SCHEDULED_SEND_FLUSH_TOKEN: 'flush-secret',
   BLOB_READ_WRITE_TOKEN: 'blob-token',
 });
+// The Durable Object binding, for the tests that queue a send. Kept off the
+// shared env because one test compares env by value and functions break that.
+const clockArm = vi.fn(
+  async (/** @type {Request} */ _request) => new Response(null, { status: 204 }),
+);
+const clockEnv = /** @type {any} */ ({
+  ...env,
+  SCHEDULED_SEND_CLOCK: {
+    idFromName: () => 'clock-id',
+    get: () => ({
+      fetch: (/** @type {string} */ input, /** @type {RequestInit} */ init) =>
+        clockArm(new Request(input, init)),
+    }),
+  },
+});
 /** @type {Promise<unknown>[]} */
 let waited = [];
 const ctx = /** @type {any} */ ({
@@ -321,6 +336,46 @@ describe('POST /send with sendAt (schedule creation)', () => {
     expect(response.status).toBe(201);
     expect((await response.json()).scheduledSend.id).toBe('sched-1');
     expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  // The Durable Object alarm is what delivers on time; the cron is only the
+  // safety net. Arming rides in waitUntil so the response is not held up.
+  test('arms the scheduled-send clock for the new row after responding', async () => {
+    const sendAt = futureIso();
+    responses = [[], [{ id: 'sched-2', scheduledFor: sendAt }]];
+    clockArm.mockClear();
+
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ sendAt }) }),
+      clockEnv,
+      ctx,
+    );
+    expect(response.status).toBe(201);
+    await Promise.all(waited);
+
+    expect(clockArm).toHaveBeenCalledTimes(1);
+    const armRequest = /** @type {Request} */ (clockArm.mock.calls[0]?.[0]);
+    expect(new URL(armRequest.url).pathname).toBe('/arm');
+    expect(Date.parse((await armRequest.json()).at)).toBe(Date.parse(sendAt));
+  });
+
+  test('a failed arm is logged and never fails the schedule request', async () => {
+    responses = [[], [{ id: 'sched-3', scheduledFor: futureIso() }]];
+    clockArm.mockRejectedValueOnce(new Error('clock unavailable'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ sendAt: futureIso() }) }),
+      clockEnv,
+      ctx,
+    );
+    expect(response.status).toBe(201);
+    await expect(Promise.all(waited)).resolves.toBeDefined();
+
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'scheduled_send_arm_failed', error: 'clock unavailable' }),
+    );
+    log.mockRestore();
   });
 
   test('rejects a sendAt less than a minute out without touching the database', async () => {

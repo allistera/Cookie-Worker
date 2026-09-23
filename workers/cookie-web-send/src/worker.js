@@ -30,6 +30,37 @@ import { handleFollowUp } from './followUp.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Names the single ScheduledSendClock instance (see scheduledSendClock.js).
+const SCHEDULED_SEND_CLOCK_NAME = 'scheduled-sends';
+
+// Asks the clock to fire no later than `scheduledFor`. Best-effort: the
+// flusher cron still delivers anything the alarm misses, so a failure here is
+// logged and never fails the request that queued the send.
+/**
+ * @param {any} env
+ * @param {Date | string | number} scheduledFor
+ */
+async function armScheduledSendClock(env, scheduledFor) {
+  if (!env.SCHEDULED_SEND_CLOCK) return;
+  try {
+    const clock = env.SCHEDULED_SEND_CLOCK.get(
+      env.SCHEDULED_SEND_CLOCK.idFromName(SCHEDULED_SEND_CLOCK_NAME),
+    );
+    const response = await clock.fetch('https://scheduled-send-clock/arm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ at: new Date(scheduledFor).toISOString() }),
+    });
+    if (!response.ok) throw new Error(`clock responded ${response.status}`);
+  } catch (err) {
+    console.log(
+      JSON.stringify({
+        event: 'scheduled_send_arm_failed',
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+}
 // Outbound messages can include HTML bodies; keep Vercel's 4.5 MB cap for
 // send, but use the shared helper for consistent JSON error handling.
 const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
@@ -96,6 +127,10 @@ export function createSendServices(env, ctx) {
     indexSentMessages: (messageUuids) => {
       if (!messageUuids.length) return;
       indexAfterResponse(env, ctx, (sql) => syncMessagesToMeili(sql, env, messageUuids));
+    },
+    // Exact-time delivery for a newly queued send; runs after the response.
+    armScheduledSendClock: (/** @type {string} */ scheduledFor) => {
+      ctx.waitUntil(armScheduledSendClock(env, scheduledFor));
     },
   };
 }
@@ -205,6 +240,7 @@ async function handleSend(sql, userId, request, services) {
       if (!scheduledSend) {
         return Response.json({ error: 'Too many pending scheduled sends' }, { status: 429 });
       }
+      services.armScheduledSendClock?.(scheduledFor);
       return Response.json({ scheduledSend }, { status: 201 });
     } catch (err) {
       if (/** @type {{code?: string}} */ (err).code === 'IDEMPOTENCY_CONFLICT')

@@ -288,6 +288,7 @@ export function parseFollowUpAt(value, after = Date.now()) {
  *   deleteBlob: (url: string) => Promise<unknown>,
  *   indexSentMessage: (messageUuid: string) => void,
  *   indexSentMessages: (messageUuids: string[]) => void,
+ *   armScheduledSendClock?: (scheduledFor: string) => void,
  * }} SendServices
  */
 

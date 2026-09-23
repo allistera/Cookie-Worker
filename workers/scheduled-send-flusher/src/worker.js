@@ -1,11 +1,14 @@
 // Cookie-Web's "Send Later" feature (scheduled_sends table + scheduled_for
 // column) needs something to actually call the mail provider once a
 // scheduled row is due — unlike inbound snooze, whose due rows just become
-// visible again the next time they're queried. This Worker is that clock:
-// on a cron tick it calls cookie-web-send's POST /send/flush over the SEND
-// service binding; that Worker owns every bit of the real logic (claiming
-// due rows, Resend, storing the sent copy, retry/failure bookkeeping). This
-// Worker never touches Postgres or Resend directly. (The Sentry-grouped
+// visible again the next time they're queried. On-time delivery is the
+// ScheduledSendClock Durable Object alarm inside cookie-web-send; this
+// Worker is the safety net behind it: on a cron tick it calls cookie-web-send's
+// POST /send/flush over the SEND service binding, which claims anything due
+// (retries, expired leases, a lost alarm) and runs the housekeeping sweeps.
+// That Worker owns every bit of the real logic (claiming due rows, Resend,
+// storing the sent copy, retry/failure bookkeeping). This Worker never
+// touches Postgres or Resend directly. (The Sentry-grouped
 // "Cookie-Web flush responded <status>" message prefix predates the flush
 // endpoint's own move off Vercel and is kept for issue continuity.)
 
@@ -17,8 +20,8 @@ import { captureHandledException, createSentryOptions, redact, tagTrigger } from
 
 const FLUSH_TIMEOUT_MS = 20_000;
 // The Sep 9 database outage lasted ten seconds or more and outlasted three
-// attempts a second apart (Sentry COOKIE-WEB-14). The cron ticks every five
-// minutes and the flush is idempotent, so waiting longer costs nothing.
+// attempts a second apart (Sentry COOKIE-WEB-14). The cron ticks every
+// fifteen minutes and the flush is idempotent, so waiting longer costs nothing.
 export const FLUSH_RETRY_BASE_DELAY_MS = 5000;
 const MAX_FLUSH_ERROR_BODY_LENGTH = 200;
 

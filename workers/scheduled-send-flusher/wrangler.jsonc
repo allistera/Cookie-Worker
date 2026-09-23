@@ -11,9 +11,11 @@
     "head_sampling_rate": 0.2,
   },
   "triggers": {
-    // Cron Triggers run on UTC. Every 5 minutes bounds how late a "Send
-    // Later" email can go out past its scheduled time.
-    "crons": ["*/5 * * * *"],
+    // Cron Triggers run on UTC. On-time delivery is the ScheduledSendClock
+    // alarm inside cookie-web-send; this tick is the safety net for retries,
+    // expired leases, a lost alarm, and the housekeeping sweeps, so it bounds
+    // how long a failed first attempt waits before its retry.
+    "crons": ["*/15 * * * *"],
   },
   // The flush call goes over a service binding to cookie-web-send: zero-cost,
   // never leaves Cloudflare. The COOKIE_WEB_FLUSH_TOKEN secret still rides

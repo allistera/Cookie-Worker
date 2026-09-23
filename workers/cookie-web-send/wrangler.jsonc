@@ -17,6 +17,12 @@
   // run the isolate near the database rather than near the browser.
   "placement": { "mode": "smart" },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
+  // Exact-time "Send Later" delivery: one alarm per the earliest pending send
+  // (src/scheduledSendClock.js). The flusher cron remains the safety net.
+  "durable_objects": {
+    "bindings": [{ "name": "SCHEDULED_SEND_CLOCK", "class_name": "ScheduledSendClock" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScheduledSendClock"] }],
   "vars": {
     // Auth0 domain/audience are public identifiers, already shipped in
     // Cookie-Web's own client bundle (VITE_AUTH0_DOMAIN/VITE_AUTH0_AUDIENCE)

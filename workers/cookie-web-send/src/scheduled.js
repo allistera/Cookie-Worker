@@ -538,36 +538,48 @@ async function sweepOrphanedUploads(sql, services) {
  * @param {import('postgres').Sql} sql
  * @param {import('./outbound.js').SendServices} services
  */
+// Claims every due row and delivers it. Shared by the flush route (the cron
+// safety net) and the ScheduledSendClock alarm (exact-time delivery); only
+// the route adds the housekeeping sweeps around it.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {import('./outbound.js').SendServices} services
+ */
+export async function flushDueScheduledSends(sql, services) {
+  const claimed = await claimDueScheduledSendsWithRetry(sql, FLUSH_BATCH_SIZE);
+  const attachmentRows = claimed.filter((row) => row.attachments?.length);
+  const ordinaryRows = claimed.filter((row) => !row.attachments?.length);
+  // Attachment payloads are buffered for the provider. Keep those rows
+  // serial so several large forwards cannot exhaust the isolate's memory.
+  const [ordinaryResults, attachmentResults] = await Promise.all([
+    mapWithConcurrency(ordinaryRows, FLUSH_CONCURRENCY, (row) =>
+      deliverScheduledSend(sql, row, services),
+    ),
+    mapWithConcurrency(attachmentRows, ATTACHMENT_FLUSH_CONCURRENCY, (row) =>
+      deliverScheduledSend(sql, row, services),
+    ),
+  ]);
+  const results = [...ordinaryResults, ...attachmentResults];
+  // One sync for the whole batch, not one per delivered row: a full flush
+  // would otherwise fire FLUSH_BATCH_SIZE separate Postgres/Meilisearch
+  // round trips for what is a single addDocuments call.
+  services.indexSentMessages(
+    results.flatMap((result) => (result.storedMessageUuid ? [result.storedMessageUuid] : [])),
+  );
+  return {
+    claimed: claimed.length,
+    sent: results.filter((result) => result.status === 'sent').length,
+    retried: results.filter((result) => result.status === 'retried').length,
+    failed: results.filter((result) => result.status === 'failed').length,
+    unconfirmed: results.filter((result) => result.status === 'unconfirmed').length,
+  };
+}
+
 export async function handleFlush(sql, services) {
   try {
-    const claimed = await claimDueScheduledSendsWithRetry(sql, FLUSH_BATCH_SIZE);
-    const attachmentRows = claimed.filter((row) => row.attachments?.length);
-    const ordinaryRows = claimed.filter((row) => !row.attachments?.length);
-    // Attachment payloads are buffered for the provider. Keep those rows
-    // serial so several large forwards cannot exhaust the isolate's memory.
-    const [ordinaryResults, attachmentResults] = await Promise.all([
-      mapWithConcurrency(ordinaryRows, FLUSH_CONCURRENCY, (row) =>
-        deliverScheduledSend(sql, row, services),
-      ),
-      mapWithConcurrency(attachmentRows, ATTACHMENT_FLUSH_CONCURRENCY, (row) =>
-        deliverScheduledSend(sql, row, services),
-      ),
-    ]);
-    const results = [...ordinaryResults, ...attachmentResults];
+    const summary = await flushDueScheduledSends(sql, services);
     await sweepResolvedState(sql, services);
-    // One sync for the whole batch, not one per delivered row: a full flush
-    // would otherwise fire FLUSH_BATCH_SIZE separate Postgres/Meilisearch
-    // round trips for what is a single addDocuments call.
-    services.indexSentMessages(
-      results.flatMap((result) => (result.storedMessageUuid ? [result.storedMessageUuid] : [])),
-    );
-    return Response.json({
-      claimed: claimed.length,
-      sent: results.filter((result) => result.status === 'sent').length,
-      retried: results.filter((result) => result.status === 'retried').length,
-      failed: results.filter((result) => result.status === 'failed').length,
-      unconfirmed: results.filter((result) => result.status === 'unconfirmed').length,
-    });
+    return Response.json(summary);
   } catch (err) {
     console.error('POST /send/flush failed:', err);
     return Response.json({ error: 'Flush failed' }, { status: 500 });
