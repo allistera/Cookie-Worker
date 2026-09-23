@@ -1,5 +1,42 @@
-import { describe, expect, test } from 'vitest';
-import { OpenAIOutputError, parseOutputJson } from './openai.js';
+import { afterEach, describe, expect, test } from 'vitest';
+import {
+  OPENAI_BASE_URL,
+  OpenAIOutputError,
+  configureOpenAi,
+  openAiUrl,
+  parseOutputJson,
+  responsesUrl,
+} from './openai.js';
+
+describe('configureOpenAi', () => {
+  afterEach(() => {
+    configureOpenAi({});
+  });
+
+  test('calls OpenAI directly until a gateway is configured', () => {
+    expect(responsesUrl()).toBe(`${OPENAI_BASE_URL}/responses`);
+    expect(openAiUrl('chat/completions')).toBe(`${OPENAI_BASE_URL}/chat/completions`);
+  });
+
+  test('routes through the AI Gateway once an account and gateway id are set', () => {
+    configureOpenAi({ CLOUDFLARE_ACCOUNT_ID: 'acct123', AI_GATEWAY_ID: 'cookie' });
+
+    expect(responsesUrl()).toBe(
+      'https://gateway.ai.cloudflare.com/v1/acct123/cookie/openai/responses',
+    );
+    expect(openAiUrl('chat/completions')).toBe(
+      'https://gateway.ai.cloudflare.com/v1/acct123/cookie/openai/chat/completions',
+    );
+  });
+
+  test('keeps calling OpenAI directly when only one of the two ids is set', () => {
+    configureOpenAi({ CLOUDFLARE_ACCOUNT_ID: 'acct123' });
+    expect(responsesUrl()).toBe(`${OPENAI_BASE_URL}/responses`);
+
+    configureOpenAi({ AI_GATEWAY_ID: ' ' });
+    expect(responsesUrl()).toBe(`${OPENAI_BASE_URL}/responses`);
+  });
+});
 
 describe('parseOutputJson', () => {
   test('parses top-level output_text', () => {

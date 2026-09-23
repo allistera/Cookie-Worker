@@ -27,6 +27,7 @@ import {
 import { createAiTask, interpretTask } from './taskAi.js';
 import { getTasks, postTasks } from './tasks.js';
 
+import { configureOpenAi } from '../../../shared/openai.js';
 // Vercel's body cap is 4.5 MB; keep that for document payloads, but use a much
 // smaller default for the ordinary command endpoints this Worker serves.
 const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
@@ -338,6 +339,7 @@ const worker = {
    * @param {ExecutionContext} ctx
    */
   async fetch(request, env, ctx) {
+    configureOpenAi(env);
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {

@@ -17,6 +17,7 @@ import {
 } from './sentry.js';
 import { emailAlreadyStored, storeEmail } from './store.js';
 
+import { configureOpenAi } from '../../../shared/openai.js';
 export { redact } from './sentry.js';
 
 export const STORE_BUDGET_MS = 5000;
@@ -29,6 +30,7 @@ const worker = {
    * @param {ExecutionContext} ctx
    */
   async email(message, env, ctx) {
+    configureOpenAi(env);
     const rawSize = message.rawSize ?? 0;
     if (rawSize > MAX_PARSE_BYTES) {
       console.log(JSON.stringify({ event: 'store_skipped_oversize', raw_size: rawSize }));
@@ -250,6 +252,7 @@ const worker = {
    * @param {ExecutionContext} ctx
    */
   async scheduled(_controller, env, ctx) {
+    configureOpenAi(env);
     ctx.waitUntil(recoverPendingEnrichment(env));
     ctx.waitUntil(sweepSearchDrift(env, { createSql }));
     ctx.waitUntil(purgeExpiredSpam(env, { createSql }));

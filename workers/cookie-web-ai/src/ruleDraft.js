@@ -1,4 +1,4 @@
-import { RESPONSES_URL, DEFAULT_MODEL, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL, outputText } from './openai.js';
 
 const FIELDS = ['subject', 'body', 'from', 'to'];
 const OPERATORS = ['contains', 'equals', 'starts_with', 'ends_with'];
@@ -111,7 +111,7 @@ export async function handleRuleDraft(sql, userId, body, env) {
       SELECT id, name FROM labels WHERE user_id = ${userId} AND kind = 'user'
       ORDER BY name
     `;
-    const response = await fetch(RESPONSES_URL, {
+    const response = await fetch(responsesUrl(), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,

@@ -24,6 +24,7 @@
 import { isSafeUnsubscribeUrl } from './unsubscribe.js';
 import { resolvePublicHttpsUrl } from '../../../shared/safe-https.js';
 
+import { responsesUrl } from '../../../shared/openai.js';
 // End-to-end budget for one attempt. The SPA's own fetch timeout is slightly
 // longer so the server verdict, not a client abort, decides the outcome.
 export const AI_UNSUBSCRIBE_TIMEOUT_MS = 180_000;
@@ -31,7 +32,6 @@ export const AI_UNSUBSCRIBE_TIMEOUT_MS = 180_000;
 // Same OpenAI Responses API surface cookie-web-ai uses (its src/openai.js is
 // another Worker's tree, so the few lines are duplicated here rather than
 // imported across workers).
-const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const DEFAULT_MODEL = 'gpt-5.6-luna';
 
 const FETCH_TIMEOUT_MS = 20_000;
@@ -225,7 +225,7 @@ async function requestOpenAiJson(
   { apiKey, model },
   { system, user, schemaName, schema, deadlineAt },
 ) {
-  const response = await fetch(RESPONSES_URL, {
+  const response = await fetch(responsesUrl(), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

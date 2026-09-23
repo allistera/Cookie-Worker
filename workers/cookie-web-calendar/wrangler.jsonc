@@ -26,6 +26,10 @@
     // Cookie-Web's production origin, for the CORS allowlist.
     "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
     "SENTRY_ENVIRONMENT": "production",
+    // OpenAI calls go through Cloudflare AI Gateway once AI_GATEWAY_ID names
+    // a gateway on this account (shared/openai.js); without it they go
+    // straight to api.openai.com. The account id is a public identifier.
+    "CLOUDFLARE_ACCOUNT_ID": "b581e48529728e578cea1d0b0a2ecab3",
     // OPENAI_CALENDAR_MODEL is an optional override for the default in
     // src/calendarAi.js — set here or in the dashboard if needed.
   },

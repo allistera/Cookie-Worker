@@ -6,12 +6,11 @@ import {
   previousUkDayWindow,
 } from './news-sources.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { parseOutputJson } from '../../../shared/openai.js';
+import { parseOutputJson, responsesUrl } from '../../../shared/openai.js';
 import { redact } from './sentry.js';
 
 export const NEWS_PROMPT_VERSION = 'daily-news-v1';
 export const NEWS_KIND = 'daily_news';
-export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const MAX_PICKS_PER_SOURCE = 5;
 export const HEADLINE_PICKS = 10;
 export const LOCAL_HEADLINE_PICKS = 3;
@@ -92,7 +91,7 @@ export async function rankForInterests(
   }
 
   return fetchWithTimeout(
-    RESPONSES_URL,
+    responsesUrl(),
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },

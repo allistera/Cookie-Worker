@@ -1,6 +1,6 @@
 import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
+import { OpenAIOutputError, parseOutputJson, responsesUrl } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 
 // The stored kind and exported DIGEST_* names are retained for compatibility
@@ -10,7 +10,6 @@ import { retryWithBackoff } from '../../../shared/retry.js';
 export const TRIAGE_POLICY_SOURCE = 'ericporres/email-triage-plugin';
 export const DIGEST_PROMPT_VERSION = 'email-triage-v1';
 export const DIGEST_KIND = 'daily_digest';
-export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const DIGEST_MESSAGE_LIMIT = 50;
 export const DIGEST_TEXT_CAP = 400;
 export const DIGEST_MAX_TOPICS = 2;
@@ -235,7 +234,7 @@ export function repairDigest(digest, messages) {
  */
 async function requestTriage(messages, apiKey, model) {
   return fetchWithTimeout(
-    RESPONSES_URL,
+    responsesUrl(),
     {
       method: 'POST',
       headers: {

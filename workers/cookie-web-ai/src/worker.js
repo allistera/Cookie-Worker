@@ -13,6 +13,7 @@ import { handleRuleDraft } from './ruleDraft.js';
 import { handleSummarize } from './summarize.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
+import { configureOpenAi } from '../../../shared/openai.js';
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
   // No ssl option: Hyperdrive terminates TLS to the origin database itself;
@@ -121,6 +122,7 @@ const worker = {
    * @param {ExecutionContext} ctx
    */
   async fetch(request, env, ctx) {
+    configureOpenAi(env);
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {

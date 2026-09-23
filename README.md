@@ -221,6 +221,10 @@ npm test
 npm run dry-run -- --all
 ```
 
+### AI Gateway
+
+Every OpenAI call (`shared/openai.js` resolves the URL) goes straight to `api.openai.com` unless the Worker's vars carry both `CLOUDFLARE_ACCOUNT_ID` and `AI_GATEWAY_ID`, in which case it is routed through that [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/) for per-request logs, cost tracking, retries and caching. The request and response shapes and the `OPENAI_API_KEY` secret are unchanged. Seven Workers call OpenAI: `cookie-web-ai`, `cookie-web-calendar`, `cookie-web-messages`, `cookie-web-search`, `cookie-web-tasks`, `data-enricher` and `mail-app-ingest`; each calls `configureOpenAi(env)` at its entry point.
+
 ## Deployment
 
 Production deployment is intentionally manual through the GitHub Actions `Deploy` workflow. Keep the default `all` target to validate the repository once and deploy every Worker sequentially, or enter one Worker directory name to publish only that Worker. Individual deployments dry-run the selected Worker again. `mail-app-ingest`, `data-enricher`, and `scheduled-send-flusher` each synchronize their own GitHub secrets during deployment (scoped per Worker in `deploy.yml`), so no Worker receives another Worker's credentials.

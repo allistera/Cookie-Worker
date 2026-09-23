@@ -1,9 +1,8 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
+import { OpenAIOutputError, parseOutputJson, responsesUrl } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 
 export const ANALYSIS_PROMPT_VERSION = 'email-task-analysis-v1';
-export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const ANALYSIS_INPUT_CAP = 12_000;
 export const ANALYSIS_MAX_OUTPUT_TOKENS = 4000;
 export const ANALYSIS_TIMEOUT_MS = 60_000;
@@ -69,7 +68,7 @@ export async function fetchImportantMessages(sql, userId) {
  */
 async function requestAnalysis(message, apiKey, model) {
   return fetchWithTimeout(
-    RESPONSES_URL,
+    responsesUrl(),
     {
       method: 'POST',
       headers: {

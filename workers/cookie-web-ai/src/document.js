@@ -6,7 +6,7 @@
 // numbered, checklist), fenced code and `---` dividers. Anything else
 // becomes a paragraph rather than failing the request.
 
-import { RESPONSES_URL, DEFAULT_MODEL, clean, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL, clean, outputText } from './openai.js';
 
 const MAX_TITLE = 200;
 const MAX_BLOCKS = 200;
@@ -181,7 +181,7 @@ export function markdownToBlocks(markdown, maxBlocks = MAX_BLOCKS) {
  * @param {string} model
  */
 export async function generateDocument(instruction, apiKey, model) {
-  const response = await fetch(RESPONSES_URL, {
+  const response = await fetch(responsesUrl(), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

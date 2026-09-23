@@ -3,7 +3,7 @@
 // (req, res) mutation style becomes returning a Response, and configuration
 // comes from the Worker env instead of process.env.
 
-import { RESPONSES_URL, DEFAULT_MODEL, UUID_RE, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL, UUID_RE, outputText } from './openai.js';
 
 export const MAX_SUMMARY_MESSAGES = 50;
 export const MAX_SUMMARY_BODY_CHARS = 20_000;
@@ -102,7 +102,7 @@ export function buildThreadTranscript(messages) {
  * @param {string} model
  */
 export async function generateThreadSummary(messages, apiKey, model) {
-  const response = await fetch(RESPONSES_URL, {
+  const response = await fetch(responsesUrl(), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

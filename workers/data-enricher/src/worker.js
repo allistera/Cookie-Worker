@@ -16,6 +16,7 @@ import {
   storeNews,
 } from './store.js';
 
+import { configureOpenAi } from '../../../shared/openai.js';
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
   // No ssl option: Hyperdrive terminates TLS to the origin database itself;
@@ -181,6 +182,7 @@ const worker = {
    * @param {ExecutionContext} _ctx
    */
   async scheduled(controller, env, _ctx) {
+    configureOpenAi(env);
     tagTrigger('scheduled');
     await runScheduledEnrichment(env, new Date(controller.scheduledTime));
   },
@@ -196,6 +198,7 @@ const worker = {
    * @param {ExecutionContext} _ctx
    */
   async fetch(request, env, _ctx) {
+    configureOpenAi(env);
     tagTrigger('http');
     const url = new URL(request.url);
     if (url.pathname !== '/run') {

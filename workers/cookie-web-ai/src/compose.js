@@ -3,7 +3,7 @@
 // (req, res) mutation style becomes returning a Response, and configuration
 // comes from the Worker env instead of process.env.
 
-import { RESPONSES_URL, DEFAULT_MODEL, UUID_RE, clean, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL, UUID_RE, clean, outputText } from './openai.js';
 
 const SNIPPET_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -51,7 +51,7 @@ export async function generateDraft(input, apiKey, model, mode = 'draft') {
         required: ['subject', 'text'],
         additionalProperties: false,
       };
-  const response = await fetch(RESPONSES_URL, {
+  const response = await fetch(responsesUrl(), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

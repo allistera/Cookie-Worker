@@ -1,8 +1,8 @@
+import { responsesUrl } from '../../../shared/openai.js';
 // Ported from Cookie-Web's api/_lib/calendar-ai.js. Behaviorally identical —
 // only the model configuration comes from the Worker env instead of
 // process.env (passed by the caller).
 
-const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const DEFAULT_MODEL = 'gpt-5.6-luna';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -88,7 +88,7 @@ export async function generateCalendarEventDraft(
   env = {},
 ) {
   const model = env.OPENAI_CALENDAR_MODEL || env.OPENAI_COMPOSE_MODEL || DEFAULT_MODEL;
-  const response = await fetchImpl(RESPONSES_URL, {
+  const response = await fetchImpl(responsesUrl(), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

@@ -1,4 +1,4 @@
-import { RESPONSES_URL, UUID_RE, outputText } from './openai.js';
+import { responsesUrl, UUID_RE, outputText } from './openai.js';
 import { markdownToBlocks } from './document.js';
 
 export const DOCUMENT_CHAT_MODEL = 'gpt-5.6-sol';
@@ -165,7 +165,7 @@ const schema = {
 
 /** @param {any} context @param {string} apiKey @param {string} model */
 export async function generateDocumentChat(context, apiKey, model) {
-  const response = await fetch(RESPONSES_URL, {
+  const response = await fetch(responsesUrl(), {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(90_000),

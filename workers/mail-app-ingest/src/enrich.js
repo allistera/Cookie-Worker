@@ -1,6 +1,6 @@
 import { claimInboundAiRequest, InboundAiQuotaExceeded } from './inboundAiQuota.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
-import { parseOutputJson } from '../../../shared/openai.js';
+import { parseOutputJson, responsesUrl } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { AUTO_ARCHIVE_THRESHOLD, autoArchiveRules } from '../../../shared/autoArchive.js';
 import { applyAutoArchive } from './autoArchive.js';
@@ -8,7 +8,6 @@ import { applyAutoArchive } from './autoArchive.js';
 export const AI_FETCH_TIMEOUT_MS = 60_000;
 export const AI_MODEL = 'gpt-5.6-luna';
 export const PROMPT_VERSION = 'email-enrichment-v5';
-export const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 export const SPAM_THRESHOLD = 0.98;
 export const REVIEW_THRESHOLD = 0.8;
 export const CLASSIFICATION_INPUT_CAP = 12_000;
@@ -133,7 +132,7 @@ export async function classifyEmail(
   categories = [],
 ) {
   return fetchWithTimeout(
-    RESPONSES_URL,
+    responsesUrl(),
     {
       method: 'POST',
       headers: {

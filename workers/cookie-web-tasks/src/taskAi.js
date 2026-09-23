@@ -3,6 +3,7 @@ import { isTaskTimeZone, normalizeTaskLabels, normalizeTaskMetadata } from './ta
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
 import { allowRequest } from './rateLimit.js';
 
+import { responsesUrl } from '../../../shared/openai.js';
 /** Extract explicit shortcuts before AI so p1, #projects and @labels are exact. @param {string} text */
 export function extractTaskTokens(text) {
   let priority = 4;
@@ -65,7 +66,7 @@ export function normalizeTaskDraft(value, timeZone) {
  * @param {typeof fetch} [fetchImpl]
  */
 export async function generateTaskDraft(input, apiKey, fetchImpl = fetch) {
-  const response = await fetchImpl('https://api.openai.com/v1/responses', {
+  const response = await fetchImpl(responsesUrl(), {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(input.expand ? 45_000 : 15_000),

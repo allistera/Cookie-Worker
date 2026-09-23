@@ -13,6 +13,7 @@ import {
   meiliMessageFilter,
 } from '../../../shared/meili.js';
 
+import { openAiUrl } from '../../../shared/openai.js';
 const DEFAULT_CHAT_MODEL = 'gpt-4o-mini';
 const MAX_QUESTION_CHARS = 500;
 const CONTEXT_MESSAGES = 6;
@@ -56,7 +57,7 @@ function contextEmails(rows) {
  * @param {string} model
  */
 async function chatCompletion(question, rows, apiKey, model) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetch(openAiUrl('chat/completions'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
