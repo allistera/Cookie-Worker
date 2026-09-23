@@ -542,9 +542,10 @@ describe('scheduled recovery', () => {
     postgres.mockReturnValue(sql);
     const context = ctx();
     await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
-    // Recovery of classification, search drift, and spam retention run
-    // independently, so one failure cannot stop another.
-    expect(context.waitUntil).toHaveBeenCalledTimes(3);
+    // Recovery of classification, search drift, spam retention, and the
+    // notification-event purge run independently, so one failure cannot stop
+    // another.
+    expect(context.waitUntil).toHaveBeenCalledTimes(4);
     await vi.waitFor(() => expect(sql.end).toHaveBeenCalled());
     const recoveryQuery = sql.mock.calls
       .map((call) => call[0].join('?'))

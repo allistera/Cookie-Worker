@@ -61,6 +61,58 @@ describe('verifyAccessToken identity binding', () => {
     );
   });
 
+  test('surfaces a dropped connection during the mailbox lookup as the failure cause', async () => {
+    const jwtVerify = vi.fn(async () => ({ payload: { sub: 'auth0|socket-drop' } }));
+    const dropped = Object.assign(new Error('closed'), { code: 'CONNECTION_CLOSED' });
+    const sql = fakeSql(async () => {
+      throw dropped;
+    });
+
+    const failure = await verifyAccessToken(request, env, sql, fakeJoseOverrides(jwtVerify)).then(
+      () => null,
+      (error) => error,
+    );
+
+    expect(failure).toMatchObject({ name: 'AuthFailure', status: 503 });
+    expect(failure.cause).toBe(dropped);
+  });
+
+  test('reuses a recently resolved subject without another mailbox lookup', async () => {
+    const jwtVerify = vi.fn(async () => ({ payload: { sub: 'auth0|cached-subject' } }));
+    const sql = fakeSql(async () => [
+      { id: '22222222-2222-4222-8222-222222222222', email: 'owner@example.com' },
+    ]);
+
+    const first = await verifyAccessToken(request, env, sql, fakeJoseOverrides(jwtVerify));
+    const second = await verifyAccessToken(
+      request,
+      env,
+      fakeSql(async () => []),
+      fakeJoseOverrides(jwtVerify),
+    );
+
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(second).toMatchObject({ userId: first.userId, email: first.email });
+  });
+
+  test('does not cache a failed mailbox lookup', async () => {
+    const jwtVerify = vi.fn(async () => ({ payload: { sub: 'auth0|retry-after-drop' } }));
+    const failing = fakeSql(async () => {
+      throw Object.assign(new Error('closed'), { code: 'CONNECTION_CLOSED' });
+    });
+    await expect(
+      verifyAccessToken(request, env, failing, fakeJoseOverrides(jwtVerify)),
+    ).rejects.toMatchObject({ status: 503 });
+
+    const sql = fakeSql(async () => [
+      { id: '33333333-3333-4333-8333-333333333333', email: 'owner@example.com' },
+    ]);
+    await expect(
+      verifyAccessToken(request, env, sql, fakeJoseOverrides(jwtVerify)),
+    ).resolves.toMatchObject({ userId: '33333333-3333-4333-8333-333333333333' });
+    expect(sql).toHaveBeenCalledTimes(1);
+  });
+
   test('rejects a valid tenant token whose subject is not provisioned', async () => {
     const jwtVerify = vi.fn(async () => ({ payload: { sub: 'auth0|unknown' } }));
     const sql = fakeSql(async () => []);

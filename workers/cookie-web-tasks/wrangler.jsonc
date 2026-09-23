@@ -9,7 +9,10 @@
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
   "upload_source_maps": true,
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "observability": { "enabled": true, "head_sampling_rate": 0.2 },
+  // Every request opens a Hyperdrive connection before any route work, so
+  // run the isolate near the database rather than near the browser.
+  "placement": { "mode": "smart" },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
   // Worker-to-Worker call for POST /tasks/refresh: zero-cost, never leaves
   // Cloudflare, no public URL involved. The matching ENRICHER_TRIGGER_TOKEN

@@ -12,6 +12,10 @@ import { retryWithBackoff } from './retry.js';
 export function isTransientDbError(err) {
   const code = /** @type {{code?: unknown}} */ (err)?.code;
   const message = err instanceof Error ? err.message : String(err);
+  // A wrapper such as AuthFailure('Mailbox lookup failed', {cause}) keeps the
+  // dropped socket underneath it; the retry decision needs to see through.
+  const cause = err instanceof Error ? err.cause : undefined;
+  if (cause !== undefined && cause !== err && isTransientDbError(cause)) return true;
   return (
     code === 'CONNECT_TIMEOUT' ||
     code === 'CONNECTION_CLOSED' ||

@@ -212,6 +212,23 @@ export function fetchSnoozedCount(sql, userId) {
   `;
 }
 
+// How many Send Later messages are still waiting. The sidebar lists the
+// Scheduled folder only while this is non-zero, and it used to learn that
+// from a separate boot-time request to the Vercel /api/send function; it
+// rides with the other folder counts instead. Same predicate as the
+// pending queue in cookie-web-send's scheduled.js.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ */
+export function fetchScheduledCount(sql, userId) {
+  return sql`
+    SELECT count(*)::int AS scheduled
+    FROM scheduled_sends s
+    WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed')
+  `;
+}
+
 /**
  * GET /emails/state — lightweight app bootstrap for routes that need the
  * unread badge and Realtime channel identity but do not render the mailbox
@@ -222,15 +239,17 @@ export function fetchSnoozedCount(sql, userId) {
  */
 export async function handleState(sql, userId) {
   try {
-    const [[userRow], [spamRow], [snoozedRow]] = await Promise.all([
+    const [[userRow], [spamRow], [snoozedRow], [scheduledRow]] = await Promise.all([
       fetchUnreadCount(sql, userId),
       fetchSpamCount(sql, userId),
       fetchSnoozedCount(sql, userId),
+      fetchScheduledCount(sql, userId),
     ]);
     return Response.json({
       unreadCount: userRow?.unread ?? 0,
       spamCount: spamRow?.spam ?? 0,
       snoozedCount: snoozedRow?.snoozed ?? 0,
+      scheduledCount: scheduledRow?.scheduled ?? 0,
       userId,
     });
   } catch (err) {
@@ -285,11 +304,12 @@ export async function handleList(sql, userId, url) {
   try {
     // The unread and spam counts only matter on a list's first page; the
     // client ignores them on cursor pages, so skip the aggregates there.
-    const [rows, [userRow], [spamRow], [snoozedRow]] = await Promise.all([
+    const [rows, [userRow], [spamRow], [snoozedRow], [scheduledRow]] = await Promise.all([
       timing.run('list', () => fetchEmails(sql, userId, limit, cursor, folder, labelName)),
       cursor ? [] : timing.run('unread', () => fetchUnreadCount(sql, userId)),
       cursor ? [] : timing.run('spam', () => fetchSpamCount(sql, userId)),
       cursor ? [] : timing.run('snoozed', () => fetchSnoozedCount(sql, userId)),
+      cursor ? [] : timing.run('scheduled', () => fetchScheduledCount(sql, userId)),
     ]);
     const hasMore = rows.length > limit;
     const emails = hasMore ? rows.slice(0, limit) : rows;
@@ -312,6 +332,7 @@ export async function handleList(sql, userId, url) {
       payload.unreadCount = userRow?.unread ?? 0;
       payload.spamCount = spamRow?.spam ?? 0;
       payload.snoozedCount = snoozedRow?.snoozed ?? 0;
+      payload.scheduledCount = scheduledRow?.scheduled ?? 0;
       payload.userId = userId;
     }
     return timing.response(Response.json(payload));

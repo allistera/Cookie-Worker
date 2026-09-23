@@ -32,6 +32,7 @@ describe('handleList', () => {
       unreadCount: 0,
       spamCount: 0,
       snoozedCount: 0,
+      scheduledCount: 0,
       userId: USER_ID,
     });
   });
@@ -48,6 +49,7 @@ describe('handleList', () => {
     expect(body).not.toHaveProperty('unreadCount');
     expect(body).not.toHaveProperty('spamCount');
     expect(body).not.toHaveProperty('snoozedCount');
+    expect(body).not.toHaveProperty('scheduledCount');
     expect(body).not.toHaveProperty('userId');
   });
 
@@ -109,6 +111,7 @@ describe('handleState', () => {
       unreadCount: 7,
       spamCount: 0,
       snoozedCount: 0,
+      scheduledCount: 0,
       userId: USER_ID,
     });
   });
@@ -124,8 +127,18 @@ describe('handleState', () => {
       unreadCount: 7,
       spamCount: 2,
       snoozedCount: 3,
+      scheduledCount: 0,
       userId: USER_ID,
     });
+  });
+
+  // The Scheduled folder is likewise shown only while Send Later has pending
+  // mail, so its count rides along too instead of costing a separate request.
+  test('reports how many sends are waiting in the Scheduled folder', async () => {
+    const rows = [{ unread: 0, spam: 0, snoozed: 0, scheduled: 4 }];
+    const response = await handleState(stubSql(rows), USER_ID);
+
+    expect(await response.json()).toMatchObject({ scheduledCount: 4 });
   });
 
   test('answers 500 without leaking details when the query fails', async () => {

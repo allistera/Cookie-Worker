@@ -127,6 +127,7 @@ describe('routing', () => {
       unreadCount: 3,
       spamCount: 0,
       snoozedCount: 0,
+      scheduledCount: 0,
       userId: 'user-1',
     });
   });

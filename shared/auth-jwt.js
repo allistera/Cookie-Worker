@@ -17,13 +17,24 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 const MAX_CACHED_JWKS = 4;
 const jwksByIssuer = new Map();
 
+// Verified subject -> provisioned mailbox, per isolate. The users row is one
+// row that changes only when a mailbox is provisioned or removed, yet every
+// SPA request paid a Hyperdrive round trip for it before any route work. A
+// short TTL bounds how long a removed mailbox keeps answering on a warm
+// isolate; the cap bounds memory on a shared one.
+const USER_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CACHED_USERS = 1000;
+/** @type {Map<string, {userId: string, email: string, expiresAt: number}>} */
+const usersBySubject = new Map();
+
 export class AuthFailure extends Error {
   /**
    * @param {string} message
    * @param {401 | 403 | 503} status
+   * @param {{cause?: unknown}} [options]
    */
-  constructor(message, status) {
-    super(message);
+  constructor(message, status, options) {
+    super(message, options);
     this.name = 'AuthFailure';
     this.status = status;
   }
@@ -92,6 +103,11 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
     throw new AuthFailure('Access token has no subject', 401);
   }
 
+  const cached = usersBySubject.get(subject);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { ...payload, sub: subject, userId: cached.userId, email: cached.email };
+  }
+
   let user;
   try {
     [user] = await sql`
@@ -100,12 +116,22 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
       WHERE auth0_sub = ${subject}
       LIMIT 1
     `;
-  } catch {
-    throw new AuthFailure('Mailbox lookup failed', 503);
+  } catch (cause) {
+    throw new AuthFailure('Mailbox lookup failed', 503, { cause });
   }
   if (!user?.id || !user?.email) {
     throw new AuthFailure('Access token subject is not provisioned', 403);
   }
+
+  if (usersBySubject.size >= MAX_CACHED_USERS) {
+    const oldest = usersBySubject.keys().next().value;
+    if (oldest !== undefined) usersBySubject.delete(oldest);
+  }
+  usersBySubject.set(subject, {
+    userId: user.id,
+    email: user.email,
+    expiresAt: Date.now() + USER_CACHE_TTL_MS,
+  });
 
   return { ...payload, sub: subject, userId: user.id, email: user.email };
 }

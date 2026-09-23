@@ -11,6 +11,12 @@ describe('isTransientDbError', () => {
     ['a closed connection', Object.assign(new Error('closed'), { code: 'CONNECTION_CLOSED' })],
     ['a connection failure', Object.assign(new Error('database down'), { code: '08001' })],
     ['a timed-out write', new Error('write timed out')],
+    [
+      'a wrapped transient cause',
+      new Error('Mailbox lookup failed', {
+        cause: Object.assign(new Error('closed'), { code: 'CONNECTION_CLOSED' }),
+      }),
+    ],
   ])('matches %s', (_label, error) => {
     expect(isTransientDbError(error)).toBe(true);
   });

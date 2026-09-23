@@ -10,7 +10,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "triggers": { "crons": ["*/1 * * * *"] },
   "upload_source_maps": true,
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "observability": { "enabled": true, "head_sampling_rate": 0.2 },
+  // Every request opens a Hyperdrive connection before any route work, so
+  // run the isolate near the database rather than near the browser.
+  "placement": { "mode": "smart" },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
   "vars": {
     // Auth0 domain/audience are public identifiers, already shipped in
