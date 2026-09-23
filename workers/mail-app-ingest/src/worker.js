@@ -2,13 +2,12 @@ import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage } from './enrich.js';
-import { draftPriorityReply, recoverPriorityReplies } from './priorityReply.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
 import { sweepSearchDrift } from './searchDriftSweep.js';
 import { purgeExpiredSpam } from './spamRetentionSweep.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
-import { isTransientDbError, retryWithFreshClient } from '../../../shared/transient-db.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 import {
   captureHandledException,
   createSentryOptions,
@@ -251,7 +250,6 @@ const worker = {
    */
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil(recoverPendingEnrichment(env));
-    ctx.waitUntil(recoverPriorityReplyDrafts(env));
     ctx.waitUntil(sweepSearchDrift(env, { createSql }));
     ctx.waitUntil(purgeExpiredSpam(env, { createSql }));
   },
@@ -271,7 +269,6 @@ async function runAiEnrichment(env, record, messageUuid, late) {
   try {
     await enrichMessage(sql, record, messageUuid, env.OPENAI_API_KEY, env.AI_MODEL || AI_MODEL);
     await syncMessageToMeili(sql, env, messageUuid);
-    await draftPriorityReply(sql, messageUuid, env.OPENAI_API_KEY, env.AI_MODEL || AI_MODEL);
   } catch (err) {
     console.log(
       JSON.stringify({
@@ -396,30 +393,6 @@ export async function recoverPendingEnrichment(env) {
     ),
   );
   console.log(JSON.stringify({ event: 'ai_recovery_complete', attempted: rows.length }));
-}
-
-/**
- * Drafts stamp their own lease (reply_draft_updated_at) before generation, so
- * re-running the recovery after a dropped connection cannot draft twice.
- *
- * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env
- */
-export async function recoverPriorityReplyDrafts(env) {
-  const apiKey = env.OPENAI_API_KEY;
-  if (!apiKey) return;
-  try {
-    await retryWithFreshClient(
-      () => createSql(env.HYPERDRIVE.connectionString),
-      (sql) => recoverPriorityReplies(sql, env.OWNER_EMAIL, apiKey, env.AI_MODEL || AI_MODEL),
-    );
-  } catch (err) {
-    // The real failure, with secrets removed: a generic "recovery failed"
-    // said nothing about the dropped socket behind Sentry COOKIE-WEB-11.
-    captureHandledException('priority_reply_recovery', err, [
-      env.HYPERDRIVE.connectionString,
-      apiKey,
-    ]);
-  }
 }
 
 export default Sentry.withSentry(createSentryOptions, worker);

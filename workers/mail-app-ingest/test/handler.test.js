@@ -4,7 +4,6 @@ import worker, {
   isStoreTimeout,
   isTransientDbError,
   recoverPendingEnrichment,
-  recoverPriorityReplyDrafts,
   redact,
   withTimeout,
 } from '../src/worker.js';
@@ -158,74 +157,6 @@ describe('email handler', () => {
     expect(message.setReject).not.toHaveBeenCalled();
     expect(mockedFetch()).not.toHaveBeenCalled();
     expect(messageFromLog('stored')).toMatchObject({ outcome: 'inserted' });
-  });
-
-  test('saves a priority reply after classification while only forwarding the original email', async () => {
-    const sql = sqlReturning();
-    const original = sql.getMockImplementation();
-    const savedDrafts = [];
-    sql.mockImplementation(async (strings, ...values) => {
-      const text = strings.join('?');
-      if (
-        text.includes('RETURNING m.id') ||
-        text.includes('SELECT m.id, m.user_id, m.from_address')
-      )
-        return [
-          {
-            id: 'message-1',
-            user_id: 'u',
-            from_address: 'alice@example.com',
-            subject: 'Hello there',
-            body_text: 'Can you review the plan?',
-            reply_draft_attempts: 1,
-          },
-        ];
-      if (text.includes('INSERT INTO drafts')) {
-        savedDrafts.push(values);
-        return [{ id: 'draft-1' }];
-      }
-      return original(strings, ...values);
-    });
-    sql.begin = async (callback) => callback(sql);
-    postgres.mockReturnValue(sql);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (_url, init) => {
-        const body = JSON.parse(init.body);
-        return Response.json({
-          output_text: JSON.stringify(
-            body.text.format.name === 'priority_reply'
-              ? { text: 'Thanks for the plan. Which section needs attention first?' }
-              : {
-                  labels: [],
-                  rules: [],
-                  spam_verdict: 'inbox',
-                  spam_score: 0,
-                  spam_reason: 'legitimate',
-                  priority: 'high',
-                  category_id: null,
-                },
-          ),
-        });
-      }),
-    );
-    const pending = [];
-    const message = fakeMessage(simpleFixture);
-    await worker.email(
-      message,
-      env({ OPENAI_API_KEY: 'key' }),
-      /** @type {any} */ ({
-        waitUntil: (promise) => pending.push(promise),
-      }),
-    );
-    await Promise.all(pending);
-    expect(savedDrafts).toHaveLength(1);
-    expect(savedDrafts[0]).toContain('Thanks for the plan. Which section needs attention first?');
-    expect(savedDrafts[0]).toContain('alice@example.com');
-    expect(message.forward).toHaveBeenCalledExactlyOnceWith('forward@example.com');
-    expect(
-      mockedFetch().mock.calls.every(([url]) => url === 'https://api.openai.com/v1/responses'),
-    ).toBe(true);
   });
 
   test('configures private Sentry error monitoring for email invocations', () => {
@@ -611,9 +542,9 @@ describe('scheduled recovery', () => {
     postgres.mockReturnValue(sql);
     const context = ctx();
     await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
-    // Recovery of classification and reply drafts, search drift, and spam
-    // retention run independently, so one failure cannot stop another.
-    expect(context.waitUntil).toHaveBeenCalledTimes(4);
+    // Recovery of classification, search drift, and spam retention run
+    // independently, so one failure cannot stop another.
+    expect(context.waitUntil).toHaveBeenCalledTimes(3);
     await vi.waitFor(() => expect(sql.end).toHaveBeenCalled());
     const recoveryQuery = sql.mock.calls
       .map((call) => call[0].join('?'))
@@ -668,43 +599,6 @@ describe('scheduled recovery', () => {
       tags: { service: 'mail-app-ingest', operation: 'ai_recovery' },
     });
     expect(clients.every((sql) => sql.end.mock.calls.length === 1)).toBe(true);
-  });
-
-  // The socket to Hyperdrive dropped under the recovery query on the Sep 9
-  // cron (Sentry COOKIE-WEB-11), and the generic error it was reported as
-  // said nothing about that.
-  test('retries priority reply recovery on a dropped connection', async () => {
-    vi.useFakeTimers();
-    const firstSql = sqlReturning();
-    firstSql.mockRejectedValueOnce(new Error('Network connection lost.'));
-    const secondSql = sqlReturning();
-    postgres.mockReturnValueOnce(firstSql).mockReturnValueOnce(secondSql);
-
-    const recovery = recoverPriorityReplyDrafts(env({ OPENAI_API_KEY: 'key' }));
-    await vi.advanceTimersByTimeAsync(1000);
-    await recovery;
-
-    expect(postgres).toHaveBeenCalledTimes(2);
-    expect(firstSql.end).toHaveBeenCalledOnce();
-    expect(secondSql.end).toHaveBeenCalledOnce();
-    expect(sentry.captureException).not.toHaveBeenCalled();
-  });
-
-  test('reports what broke priority reply recovery, with secrets removed', async () => {
-    const sql = sqlReturning();
-    sql.mockRejectedValueOnce(new Error('relation "message_ai" does not exist at key'));
-    postgres.mockReturnValue(sql);
-
-    await recoverPriorityReplyDrafts(env({ OPENAI_API_KEY: 'key' }));
-
-    expect(sentry.captureException).toHaveBeenCalledOnce();
-    expect(sentry.captureException.mock.calls[0][0]).toMatchObject({
-      message: 'relation "message_ai" does not exist at [redacted]',
-    });
-    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
-      tags: { service: 'mail-app-ingest', operation: 'priority_reply_recovery' },
-    });
-    expect(sql.end).toHaveBeenCalledOnce();
   });
 });
 
