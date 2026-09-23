@@ -113,6 +113,31 @@ describe('verifyAccessToken identity binding', () => {
     expect(sql).toHaveBeenCalledTimes(1);
   });
 
+  // A custom domain changes the issuer but not the signing keys. Listing both
+  // domains accepts tokens minted by either while clients move over, with
+  // the JWKS fetched from the first (the custom domain going forward).
+  test('accepts tokens from every listed domain and reads keys from the first', async () => {
+    const listedEnv = {
+      ...env,
+      AUTH0_DOMAIN: 'auth.example.com, tenant.example.auth0.com',
+    };
+    const jwtVerify = vi.fn(async () => ({ payload: { sub: 'auth0|listed-domains' } }));
+    const sql = fakeSql(async () => [
+      { id: '44444444-4444-4444-8444-444444444444', email: 'owner@example.com' },
+    ]);
+
+    await expect(
+      verifyAccessToken(request, listedEnv, sql, fakeJoseOverrides(jwtVerify)),
+    ).resolves.toMatchObject({ userId: '44444444-4444-4444-8444-444444444444' });
+    expect(jwtVerify).toHaveBeenCalledWith(
+      'signed-token',
+      expect.anything(),
+      expect.objectContaining({
+        issuer: ['https://auth.example.com/', 'https://tenant.example.auth0.com/'],
+      }),
+    );
+  });
+
   test('rejects a valid tenant token whose subject is not provisioned', async () => {
     const jwtVerify = vi.fn(async () => ({ payload: { sub: 'auth0|unknown' } }));
     const sql = fakeSql(async () => []);

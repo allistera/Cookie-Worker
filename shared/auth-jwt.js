@@ -71,7 +71,16 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
     throw new AuthFailure('Missing bearer token', 401);
   }
 
-  const issuer = `https://${domain}/`;
+  // AUTH0_DOMAIN may list several domains, comma-separated: an Auth0 custom
+  // domain changes the token issuer but signs with the tenant's own keys, so
+  // every listed issuer is accepted while clients move over, and the JWKS
+  // comes from the first entry (the domain to keep once the move is done).
+  const domains = String(domain)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const issuers = domains.map((entry) => `https://${entry}/`);
+  const issuer = issuers[0];
   let keySet = overrides.jwks;
   if (!keySet) {
     keySet = jwksByIssuer.get(issuer);
@@ -89,7 +98,7 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
   let payload;
   try {
     ({ payload } = await verifyJwt(token, keySet, {
-      issuer,
+      issuer: issuers.length === 1 ? issuer : issuers,
       audience,
       algorithms: ['RS256'],
       clockTolerance: 5,

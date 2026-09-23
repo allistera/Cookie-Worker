@@ -18,7 +18,10 @@
     // Auth0 domain/audience are public identifiers, already shipped in
     // Cookie-Web's own client bundle (VITE_AUTH0_DOMAIN/VITE_AUTH0_AUDIENCE)
     // — not secrets.
-    "AUTH0_DOMAIN": "dev-ixcl1rgxrlgeqrvs.us.auth0.com",
+    // The custom domain issues tokens now; the tenant domain stays listed
+    // until every signed-in client has re-authenticated against the new one
+    // (see shared/auth-jwt.js). Drop it after that.
+    "AUTH0_DOMAIN": "auth.infinitywave.online,dev-ixcl1rgxrlgeqrvs.us.auth0.com",
     "AUTH0_AUDIENCE": "https://cookie-web/api",
     // Cookie-Web's production origin, for the CORS allowlist.
     "ALLOWED_ORIGIN": "https://mail.infinitywave.online",
