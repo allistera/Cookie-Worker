@@ -2,7 +2,7 @@ export const AUTO_REPLY_PROVIDER_TIMEOUT_MS = 10_000;
 
 /**
  * Resend's SDK does not expose an AbortSignal for send. This small, fixed-origin
- * adapter bounds the owner lock and uses the same delivery credential. Neither
+ * adapter bounds the responder lock and uses the same delivery credential. Neither
  * provider response bodies nor incoming/private content enter logs or errors.
  * @param {Record<string, any>} payload
  * @param {string} idempotencyKey

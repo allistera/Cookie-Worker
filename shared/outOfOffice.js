@@ -3,6 +3,17 @@
 export const OUT_OF_OFFICE_COOLDOWN_DAYS = 4;
 export const OUT_OF_OFFICE_RETRY_HOURS = 23;
 
+/**
+ * Serializes responder dispatch with config and post-ingest suppression changes.
+ * The two-int advisory namespace cannot overlap ingest's one-bigint namespace.
+ * Always acquire this BEFORE any ingest-owner/user/message locks. Ingest itself
+ * must never take it: initial suppression is part of its uncommitted insert.
+ * @param {import('postgres').TransactionSql} tx @param {string} userId
+ */
+export async function lockOutOfOfficeDispatch(tx, userId) {
+  await tx`SELECT pg_advisory_xact_lock(hashtext('cookie.out-of-office'), hashtext(${userId}))`;
+}
+
 /** @param {string} value @param {boolean} [multiline] */
 export function hasUnsafeControls(value, multiline = false) {
   return [...value].some((character) => {

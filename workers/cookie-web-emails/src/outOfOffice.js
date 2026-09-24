@@ -1,4 +1,5 @@
 import {
+  lockOutOfOfficeDispatch,
   outOfOfficeError,
   outOfOfficeSettings,
   outOfOfficeStatus,
@@ -32,8 +33,10 @@ export async function putOutOfOffice(sql, userId, body) {
     if (error) return reply({ error }, 400);
   }
   const outcome = await sql.begin(async (tx) => {
-    // Same ordering as inbound store: owner advisory lock, user row, then
-    // auxiliary rows. Dispatch holds this user lock through the bounded send.
+    // Wait for dispatch before borrowing any lock needed by ingest. Once this
+    // lock is held, the short owner-locked write stays atomic with arrival
+    // snapshots and activation time without holding up inbound provider I/O.
+    await lockOutOfOfficeDispatch(tx, userId);
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
     const [owner] = await tx`SELECT prefs -> 'outOfOffice' AS settings
       FROM users WHERE id = ${userId} FOR UPDATE`;
@@ -72,6 +75,7 @@ async function resolveDelivery(sql, userId, body) {
   )
     return reply({ error: 'Choose a delivery and a verified outcome.' }, 400);
   const changed = await sql.begin(async (tx) => {
+    await lockOutOfOfficeDispatch(tx, userId);
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
     await tx`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
     const [row] = await tx`UPDATE out_of_office_deliveries

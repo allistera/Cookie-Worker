@@ -1,6 +1,7 @@
 import {
   autoReplySuppression,
   hasUnsafeControls,
+  lockOutOfOfficeDispatch,
   normaliseAddress,
   outOfOfficeSettings,
 } from '../../../shared/outOfOffice.js';
@@ -72,8 +73,8 @@ export async function enqueueAutoReplies(sql, from, deadline = Infinity) {
 
 /** @param {any} tx @param {string} userId */
 async function lockOwner(tx, userId) {
-  // Ingest and preference saves take this same lock first. A consistent lock
-  // order (advisory, owner, delivery, sender, quota) avoids cross-path deadlocks.
+  // Only the short claim transaction uses ingest's lock and users FOR UPDATE.
+  // Its caller already holds the responder lock. Neither may span provider I/O.
   await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
   const [owner] = await tx`SELECT id, email, auth0_sub, prefs -> 'outOfOffice' AS settings
     FROM users WHERE id = ${userId} FOR UPDATE`;
@@ -119,6 +120,7 @@ async function currentSuppression(tx, row, owner, from, now) {
  */
 export async function claimAutoReply(sql, candidate, from) {
   return sql.begin(async (tx) => {
+    await lockOutOfOfficeDispatch(tx, candidate.user_id);
     const owner = await lockOwner(tx, candidate.user_id);
     const [row] = await tx`SELECT * FROM out_of_office_deliveries
       WHERE id = ${candidate.id} AND user_id = ${candidate.user_id} FOR UPDATE`;
@@ -175,16 +177,19 @@ export async function claimAutoReply(sql, candidate, from) {
 }
 
 /**
- * The owner lock remains held during a <=10s, abortable provider call. End now
- * waits for this dispatch and, once committed, prevents every later dispatch.
- * It cannot retract an email already accepted by the provider.
+ * Only the responder lock spans the <=10s provider call. A plain users read
+ * avoids conflicting with KEY SHARE foreign-key checks for new inbound rows.
+ * End now takes the responder lock first, so waiting cannot block ingest.
+ * Once committed it prevents later dispatch; it cannot recall underway mail.
  * @param {import('postgres').Sql} sql @param {any} claimed @param {import('./outbound.js').SendServices} services
  * @param {number} [deadline]
  */
 export async function dispatchAutoReply(sql, claimed, services, deadline = Infinity) {
   if (Date.now() >= deadline) return 'deferred';
   return sql.begin(async (tx) => {
-    const owner = await lockOwner(tx, claimed.user_id);
+    await lockOutOfOfficeDispatch(tx, claimed.user_id);
+    const [owner] = await tx`SELECT id, email, auth0_sub, prefs -> 'outOfOffice' AS settings
+      FROM users WHERE id = ${claimed.user_id}`;
     const [row] = await tx`SELECT * FROM out_of_office_deliveries
       WHERE id = ${claimed.id} AND user_id = ${claimed.user_id} FOR UPDATE`;
     if (!row || row.status !== 'sending' || row.claim_token !== claimed.claim_token)
