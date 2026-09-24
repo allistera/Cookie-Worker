@@ -144,6 +144,29 @@ describe('routing', () => {
     });
   });
 
+  test('GET /emails/compose-preferences requires auth and uses the verified user', async () => {
+    mockQuery.mockResolvedValueOnce([{ preferences: null }]);
+    const response = await worker.fetch(request('/emails/compose-preferences'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ revision: 0, signatureHtml: '', snippets: [] });
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(mockQuery.mock.calls[0]).toContain('user-1');
+  });
+
+  test('PUT /emails/compose-preferences rejects an invalid document before querying', async () => {
+    const response = await worker.fetch(
+      request('/emails/compose-preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ revision: 0, signatureHtml: '', snippets: [{ name: 'bad' }] }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   test('PUT /emails/spam-retention stores a new retention', async () => {
     mockQuery.mockResolvedValueOnce([{ days: 60 }]);
     const response = await worker.fetch(

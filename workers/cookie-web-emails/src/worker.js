@@ -7,6 +7,7 @@ import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt
 import { handleList, handleState } from './emails.js';
 import { getSpamRetention, putSpamRetention } from './spamRetention.js';
 import { getAutoArchive, putAutoArchive } from './autoArchive.js';
+import { getComposePreferences, putComposePreferences } from './composePreferences.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 /** @param {string} databaseUrl */
@@ -37,15 +38,20 @@ async function route(url, request, sql, userId) {
   const isState = sub === 'state';
   const isSpamRetention = sub === 'spam-retention';
   const isAutoArchive = sub === 'auto-archive';
+  const isComposePreferences = sub === 'compose-preferences';
   if (
     segments[0] !== 'emails' ||
-    (segments.length > 1 && !isState && !isSpamRetention && !isAutoArchive)
+    (segments.length > 1 && !isState && !isSpamRetention && !isAutoArchive && !isComposePreferences)
   ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
-  if (isSpamRetention || isAutoArchive) {
+  if (isSpamRetention || isAutoArchive || isComposePreferences) {
     if (request.method === 'GET')
-      return isAutoArchive ? getAutoArchive(sql, userId) : getSpamRetention(sql, userId);
+      return isAutoArchive
+        ? getAutoArchive(sql, userId)
+        : isComposePreferences
+          ? getComposePreferences(sql, userId)
+          : getSpamRetention(sql, userId);
     if (request.method !== 'PUT') {
       return Response.json(
         { error: 'Method not allowed' },
@@ -54,13 +60,20 @@ async function route(url, request, sql, userId) {
     }
     let body;
     try {
-      body = await readJsonBody(request);
+      body = await readJsonBody(
+        request,
+        isComposePreferences ? { maxBytes: 512 * 1024 } : undefined,
+      );
     } catch (error) {
       const errorResponse = bodyErrorResponse(error);
       if (errorResponse) return errorResponse;
       throw error;
     }
-    return isAutoArchive ? putAutoArchive(sql, userId, body) : putSpamRetention(sql, userId, body);
+    return isAutoArchive
+      ? putAutoArchive(sql, userId, body)
+      : isComposePreferences
+        ? putComposePreferences(sql, userId, body)
+        : putSpamRetention(sql, userId, body);
   }
   if (request.method !== 'GET') {
     return Response.json(
