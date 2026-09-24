@@ -141,7 +141,7 @@ export function calendarSubscriptionAllowlist(env) {
  * @param {string} url
  * @param {typeof requestPublicHttps} request
  */
-async function fetchIcs(url, request) {
+export async function fetchIcs(url, request) {
   const response = await request(url, {
     timeoutMs: FETCH_TIMEOUT_MS,
     maxResponseBytes: MAX_RESPONSE_BYTES,

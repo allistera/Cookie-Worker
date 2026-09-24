@@ -23,6 +23,7 @@ import {
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 import { configureOpenAi } from '../../../shared/openai.js';
+import { calendarAvailability } from './calendarAvailability.js';
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
   // No ssl option: Hyperdrive terminates TLS to the origin database itself;
@@ -51,8 +52,19 @@ export function createSql(databaseUrl) {
 async function route(url, request, sql, userId, env) {
   const segments = url.pathname.split('/').filter(Boolean);
   const resource = segments.length === 1 ? segments[0] : null;
-  if (resource !== 'calendar-events' && resource !== 'calendars') {
+  if (
+    resource !== 'calendar-events' &&
+    resource !== 'calendars' &&
+    resource !== 'calendar-availability'
+  ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
+  }
+
+  if (resource === 'calendar-availability' && request.method !== 'POST') {
+    return Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    );
   }
 
   if (request.method === 'GET') {
@@ -75,6 +87,8 @@ async function route(url, request, sql, userId, env) {
     if (errorResponse) return errorResponse;
     throw error;
   }
+
+  if (resource === 'calendar-availability') return calendarAvailability(sql, userId, body, env);
 
   if (resource === 'calendar-events') {
     if (request.method === 'POST' && body.action === 'interpret') {

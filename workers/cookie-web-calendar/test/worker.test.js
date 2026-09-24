@@ -77,6 +77,16 @@ describe('CORS preflight', () => {
 });
 
 describe('auth', () => {
+  test('availability is authenticated before reading calendars or feeds', async () => {
+    verifyAccessToken.mockRejectedValue(new Error('invalid token'));
+    const response = await worker.fetch(
+      request('/calendar-availability', { method: 'POST', body: '{}' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(401);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
   test('rejects a request that fails verification, without dispatching to a handler', async () => {
     verifyAccessToken.mockRejectedValue(new Error('invalid token'));
     const response = await worker.fetch(request('/calendar-events'), env, ctx);
@@ -127,6 +137,18 @@ describe('GET /calendars', () => {
 });
 
 describe('POST routing', () => {
+  test('availability has a POST-only validated read route', async () => {
+    const get = await worker.fetch(request('/calendar-availability'), env, ctx);
+    expect(get.status).toBe(405);
+    expect(get.headers.get('Allow')).toBe('POST');
+    const post = await worker.fetch(
+      request('/calendar-availability', { method: 'POST', body: '{}' }),
+      env,
+      ctx,
+    );
+    expect(post.status).toBe(400);
+    expect(allowRequest).not.toHaveBeenCalled();
+  });
   test('action=interpret validates before claiming quota', async () => {
     const response = await worker.fetch(
       request('/calendar-events', {
