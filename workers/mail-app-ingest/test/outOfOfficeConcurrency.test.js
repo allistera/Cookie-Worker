@@ -30,14 +30,21 @@ afterEach(() => {
 });
 
 describe('responder dispatch does not borrow inbound storage locks', () => {
-  test('a displayed-From block between claim and dispatch suppresses a different envelope sender', async () => {
+  test('a displayed-From block prevents dispatch and retains the committed claim for review', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-25T12:00:00Z'));
     const { connect, state } = outOfOfficeConcurrencyDatabase();
     state.messages.get(MESSAGE).from_address = 'author@example.com';
     const claim = await claimAutoReply(connect(), { id: DELIVERY, user_id: OWNER }, FROM);
-    expect(claim).toBeTruthy();
+    expect(claim).toMatchObject({
+      status: 'sending',
+      attempts: 1,
+      first_attempt_at: '2026-10-25T12:00:00.000Z',
+      claim_token: expect.any(String),
+    });
     await putSenders(connect(), OWNER, { action: 'block', address: 'author@example.com' });
+    expect(state.senderDecisions.get(`${OWNER}/author@example.com`)).toBe('blocked');
+    expect(state.messages.get(MESSAGE)).toMatchObject({ auto_reply_suppressed: true });
     const sendAutoReply = vi.fn();
     await dispatchAutoReply(
       connect(),
@@ -46,9 +53,16 @@ describe('responder dispatch does not borrow inbound storage locks', () => {
     );
     expect(sendAutoReply).not.toHaveBeenCalled();
     expect(state.deliveries.get(DELIVERY)).toMatchObject({
-      status: 'suppressed',
+      // The durable claim precedes provider I/O and can survive a crash. Once
+      // claimed, screening must retain conservative uncertainty for review.
+      status: 'uncertain',
       reason: 'screened',
+      claimed_at: null,
+      claim_token: null,
     });
+    expect([...state.senders.values()]).toContainEqual(
+      expect.objectContaining({ user_id: OWNER, delivery_id: DELIVERY, blocked: true }),
+    );
   });
 
   test.each(['stop', 'save', 'resolve', 'claim', 'screen', 'sender-block', 'screening-settings'])(
