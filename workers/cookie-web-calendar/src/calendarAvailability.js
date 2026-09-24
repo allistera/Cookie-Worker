@@ -154,6 +154,21 @@ function prepareFeed(text, zone) {
       inEvent = false;
       line = 'END:VEVENT';
     }
+    if (/^DURATION(?:[;:]|$)/i.test(line)) {
+      // node-ical adds nominal days/weeks as elapsed UTC time and logs raw
+      // malformed values. Validate before parsing, including nested components,
+      // and support only bounded, positive elapsed hour/minute/second values.
+      const duration =
+        /^DURATION(?:;VALUE=DURATION)?:\+?PT(?:(\d{1,10})H)?(?:(\d{1,10})M)?(?:(\d{1,10})S)?$/i.exec(
+          line,
+        );
+      const seconds = duration
+        ? Number(duration[1] || 0) * 3600 + Number(duration[2] || 0) * 60 + Number(duration[3] || 0)
+        : 0;
+      if (seconds <= 0 || seconds * 1000 > MAX_DURATION)
+        throw new Error('Unsupported event duration');
+      return line.toUpperCase();
+    }
     if (!inEvent || stack.at(-1) !== 'VEVENT') return line;
     if (/^(RDATE|EXRULE)[;:]/i.test(line) || /;RANGE=/i.test(line))
       throw new Error('Unsupported recurrence');

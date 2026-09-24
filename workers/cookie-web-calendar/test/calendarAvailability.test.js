@@ -193,6 +193,77 @@ describe('fresh subscription timing', () => {
     ).toEqual([{ start: Date.parse('2026-10-23T21:00Z'), end: Date.parse('2026-10-24T02:00Z') }]);
   });
 
+  it('rejects nominal day and week durations before recurrence can omit an autumn DST busy hour', () => {
+    for (const duration of ['P1D', 'P1W', 'P1DT2H']) {
+      const text = feed(
+        vevent(
+          `DTSTART;TZID=Europe/London:20261024T120000\r\nDURATION:${duration}\r\nRRULE:FREQ=DAILY;COUNT=2`,
+        ),
+      );
+      expect(() => subscriptionBusyIntervals(text, body, window)).toThrow();
+    }
+  });
+
+  it('preserves exact elapsed durations across an autumn DST recurrence', () => {
+    const text = feed(
+      vevent(
+        'DTSTART;TZID=Europe/London:20261024T120000\r\nDURATION:PT24H\r\nRRULE:FREQ=DAILY;COUNT=2',
+      ),
+    );
+    expect(subscriptionBusyIntervals(text, body, window)).toEqual([
+      { start: Date.parse('2026-10-24T11:00:00Z'), end: Date.parse('2026-10-25T11:00:00Z') },
+      { start: Date.parse('2026-10-25T12:00:00Z'), end: Date.parse('2026-10-26T12:00:00Z') },
+    ]);
+  });
+
+  it('preserves positive elapsed hours, minutes, seconds and the VALUE parameter', () => {
+    for (const [property, seconds] of [
+      ['DURATION:PT1H30M45S', 5445],
+      ['DURATION;VALUE=DURATION:+PT90M', 5400],
+      ['DURATION:PT45S', 45],
+    ]) {
+      const start = Date.parse('2026-10-24T12:00:00Z');
+      expect(
+        subscriptionBusyIntervals(
+          feed(vevent(`DTSTART:20261024T120000Z\r\n${property}`)),
+          body,
+          window,
+        ),
+      ).toEqual([{ start, end: start + Number(seconds) * 1000 }]);
+    }
+  });
+
+  it('rejects malformed duration properties before the parser can log private feed content', () => {
+    // Observe the dependency's real logging side effect; do not stub parsing.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const property of [
+        'DURATION:SYNTHETIC_PRIVATE_MARKER',
+        'DURATION;VALUE=DURATION:SYNTHETIC_PRIVATE_MARKER',
+        'DURATION:SYNTHETIC_PRIVATE_\r\n MARKER',
+        'DURATION:PT1MSYNTHETIC_PRIVATE_MARKER',
+        'DURATION;X-SOURCE="https://example.invalid/private":SYNTHETIC_PRIVATE_MARKER',
+        'BEGIN:VALARM\r\nACTION:DISPLAY\r\nDURATION:SYNTHETIC_PRIVATE_MARKER\r\nEND:VALARM',
+        'DURATION:PT',
+        'DURATION:PT0S',
+        'DURATION:-PT1H',
+        'DURATION:PT721H',
+      ]) {
+        const text = feed(vevent(`DTSTART;TZID=Europe/London:20261024T120000\r\n${property}`));
+        expect(() => subscriptionBusyIntervals(text, body, window)).toThrow();
+      }
+      expect(warn).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('does not mark transparent or cancelled events busy', () => {
     for (const field of ['TRANSP:TRANSPARENT', 'STATUS:CANCELLED']) {
       expect(
@@ -331,6 +402,26 @@ describe('authenticated availability read', () => {
     ).json();
     expect(disallowed.complete).toBe(false);
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it('marks a nominal-duration feed incomplete instead of returning misleading busy intervals', async () => {
+    for (const duration of ['P1D', 'P1W', 'P1DT2H']) {
+      const request = vi.fn().mockResolvedValue({
+        status: 200,
+        body: new TextEncoder().encode(
+          feed(
+            vevent(
+              `DTSTART;TZID=Europe/London:20261024T120000\r\nDURATION:${duration}\r\nRRULE:FREQ=DAILY;COUNT=2`,
+            ),
+          ),
+        ),
+      });
+      const response = await calendarAvailability(sqlFor([calendar]), 'owner', body, env, request);
+      const result = await response.json();
+      expect(result.complete).toBe(false);
+      expect(result.busy).toEqual([]);
+      expect(result.sources[0].complete).toBe(false);
+    }
   });
 
   it('enforces the request quota before calendar reads', async () => {
