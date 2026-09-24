@@ -81,6 +81,43 @@ describe('auth', () => {
 });
 
 describe('routing', () => {
+  test('out-of-office settings require the verified owner and default to off', async () => {
+    mockQuery.mockResolvedValueOnce([{ settings: null }]).mockResolvedValueOnce([]);
+    const response = await worker.fetch(request('/emails/out-of-office'), env, ctx);
+    expect(response.status).toBe(200);
+    expect((await response.json()).enabled).toBe(false);
+    expect(mockQuery.mock.calls[0]).toContain('user-1');
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    verifyAccessToken.mockRejectedValue(new Error('invalid token'));
+    const denied = await worker.fetch(
+      request('/emails/out-of-office', { method: 'PUT', body: '{"action":"stop"}' }),
+      env,
+      ctx,
+    );
+    expect(denied.status).toBe(401);
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  test('out-of-office settings reject unsupported methods and invalid dates', async () => {
+    const method = await worker.fetch(
+      request('/emails/out-of-office', { method: 'POST', body: '{}' }),
+      env,
+      ctx,
+    );
+    expect(method.status).toBe(405);
+    expect(method.headers.get('Allow')).toBe('GET, PUT');
+    const invalid = await worker.fetch(
+      request('/emails/out-of-office', {
+        method: 'PUT',
+        body: '{"revision":0,"enabled":true,"startDate":"2026-02-30"}',
+      }),
+      env,
+      ctx,
+    );
+    expect(invalid.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   test('GET /emails/auto-archive returns opt-in defaults for the authenticated user', async () => {
     const response = await worker.fetch(request('/emails/auto-archive'), env, ctx);
     expect(response.status).toBe(200);

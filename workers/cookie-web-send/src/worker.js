@@ -27,6 +27,7 @@ import {
   parseScheduledFor,
 } from './scheduled.js';
 import { handleFollowUp } from './followUp.js';
+import { flushWithOutOfOffice, runOutOfOfficeInBackground } from './outOfOffice.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -417,7 +418,18 @@ const worker = {
         if (!sendingConfigured(env)) {
           return Response.json({ error: 'Email sending is not configured' }, { status: 503 });
         }
-        return await handleFlush(sql, services);
+        return await flushWithOutOfOffice(
+          sql,
+          services,
+          handleFlush,
+          (promise) => ctx.waitUntil(promise),
+          async () => {
+            // Request cleanup closes `sql` when the scheduled response returns.
+            // Automatic work must own a different client for its waitUntil leg.
+            const automaticSql = createSql(env.HYPERDRIVE.connectionString);
+            await runOutOfOfficeInBackground(automaticSql, services);
+          },
+        );
       }
 
       let userId;

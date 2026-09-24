@@ -129,6 +129,7 @@ const futureIso = (msFromNow = 10 * 60_000) => new Date(Date.now() + msFromNow).
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockQuery.mockImplementation(scriptedQuery);
   responses = [];
   call = 0;
   waited = [];
@@ -136,7 +137,8 @@ beforeEach(() => {
   verifyAccessToken.mockResolvedValue({ userId: USER_ID });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(waited);
   vi.useRealTimers();
 });
 
@@ -533,6 +535,40 @@ describe('POST /send/flush', () => {
     expect(second.status).toBe(401);
   });
 
+  test('returns the scheduled result while automatic work owns a separate live connection', async () => {
+    let release;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    mockQuery.mockImplementation(async (parts) => {
+      if (parts.join(' ').includes('FROM messages m JOIN users u')) return pending;
+      return [];
+    });
+    try {
+      const response = await worker.fetch(
+        flushRequest({ Authorization: 'Bearer flush-secret' }),
+        env,
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        claimed: 0,
+        sent: 0,
+        retried: 0,
+        failed: 0,
+        unconfirmed: 0,
+      });
+      expect(clients).toHaveLength(2);
+      expect(sqlEnd).toHaveBeenCalledTimes(1);
+      expect(sqlEnd.mock.contexts[0]).toBe(clients[0]);
+    } finally {
+      release([]);
+    }
+    await Promise.all(waited);
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+    expect(sqlEnd.mock.contexts[1]).toBe(clients[1]);
+  });
+
   test('delivers a claimed due row end to end and marks it sent', async () => {
     const claimedRow = {
       id: 'sched-1',
@@ -663,9 +699,10 @@ describe('POST /send/flush', () => {
       failed: 0,
       unconfirmed: 0,
     });
-    // Failed claim, claim retry, then the three sweeps every flush runs:
-    // resolved sends, expired receipts, orphaned uploads.
-    expect(mockQuery).toHaveBeenCalledTimes(5);
+    // Failed claim, claim retry, three existing sweeps, then the independent
+    // autoresponder arrival, due-delivery and sent-copy scans.
+    await Promise.all(waited);
+    expect(mockQuery).toHaveBeenCalledTimes(8);
   });
 
   test('returns 500 after persistent transient claim failures', async () => {
@@ -679,7 +716,9 @@ describe('POST /send/flush', () => {
 
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'Flush failed' });
-    expect(mockQuery).toHaveBeenCalledTimes(3);
+    // Scheduled failures preserve their response while the automatic leg runs.
+    await Promise.all(waited);
+    expect(mockQuery).toHaveBeenCalledTimes(6);
   });
 
   test('leaves a rate-limited row pending for the next flush instead of spending a retry', async () => {

@@ -289,6 +289,7 @@ export function parseFollowUpAt(value, after = Date.now()) {
  *   indexSentMessage: (messageUuid: string) => void,
  *   indexSentMessages: (messageUuids: string[]) => void,
  *   armScheduledSendClock?: (scheduledFor: string) => void,
+ *   sendAutoReply?: (payload: Record<string, any>, key: string, timeoutMs: number) => Promise<{status: string, providerId: string | null}>,
  * }} SendServices
  */
 
@@ -429,7 +430,7 @@ async function loadProviderAttachments(attachments, readBlob) {
  * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null, attachments?: any[], followUpAt?: string | null}} message
  * @param {SendServices} services
  */
-async function storeSentMessage(
+export async function storeSentMessage(
   sql,
   userId,
   {
