@@ -1,4 +1,4 @@
-import { parseSearchQuery } from './queryParse.js';
+import { parseFederatedSearchQuery } from './queryParse.js';
 
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
 const FOLDERS = new Set(['all', 'inbox', 'sent', 'spam', 'snoozed', 'done']);
@@ -8,7 +8,7 @@ const MAX_VIEWS = 30;
 const MAX_QUERY_LENGTH = 470;
 
 /**
- * Saved views deliberately accept a strict subset of the existing mail parser.
+ * Saved views deliberately accept a strict subset of the scoped mail-search parser.
  * That parser treats unknown/malformed operators as free text, which would
  * make a persisted view appear to filter when it does not.
  * @param {string} query
@@ -40,10 +40,10 @@ export function savedQueryError(query) {
       return 'Boolean AND, OR, and NOT are not supported in saved views.';
     const operator = /^([a-z][\w-]*):(.*)$/i.exec(part);
     if (!operator) {
-      // The runtime parser recognizes operators anywhere in a token. A
-      // prefixed form such as -from:alice would otherwise validate as text
-      // but execute as a positive sender filter.
-      if (Object.keys(parseSearchQuery(part).filters).length)
+      // Scoped search recognizes operators anywhere in a token, including
+      // is:starred. A prefixed form would validate as text but execute as a
+      // positive filter.
+      if (Object.keys(parseFederatedSearchQuery(part).filters).length)
         return 'Remove the unsupported prefix before a search operator.';
       if (part.includes('"') && !/^"[^":]*"$/.test(part))
         return 'Use quotation marks around a whole phrase or an operator value.';
@@ -76,7 +76,7 @@ export function savedQueryError(query) {
   }
   if (!hasCriterion) return 'Enter search words or a supported filter.';
 
-  const parsed = parseSearchQuery(query);
+  const parsed = parseFederatedSearchQuery(query);
   if (!parsed.text && !Object.keys(parsed.filters).length)
     return 'Enter search words or a supported filter.';
   return null;

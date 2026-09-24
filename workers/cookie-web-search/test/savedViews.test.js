@@ -6,7 +6,7 @@ import {
   savedQueryError,
   savedViewsError,
 } from '../src/savedViews.js';
-import { parseSearchQuery } from '../src/queryParse.js';
+import { parseFederatedSearchQuery, parseSearchQuery } from '../src/queryParse.js';
 
 const A = 'user-a';
 const B = 'user-b';
@@ -59,6 +59,15 @@ describe('saved mail-view queries', () => {
     expect(parseSearchQuery('-from:alice').filters).toEqual({ from: 'alice' });
     expect(savedQueryError('-from:alice')).toContain('prefix');
   });
+
+  test.each(['-is:starred', 'client-is:starred', '-IS:STARRED'])(
+    'rejects prefixed %s rather than searching with a positive starred filter',
+    (query) => {
+      expect(parseFederatedSearchQuery(query).filters).toEqual({ starred: true });
+      expect(savedQueryError(query)).toContain('prefix');
+      expect(savedViewsError({ revision: 0, views: [{ ...view, query }] })).toContain('prefix');
+    },
+  );
 
   test.each([
     ['after:2026-02-30', 'real date'],
