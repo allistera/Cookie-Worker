@@ -12,6 +12,7 @@ vi.mock('postgres', () => ({
   default: () => {
     /** @type {any} */
     const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
+    sql.json = (value) => ({ value });
     sql.begin = async (/** @type {(sql: any) => unknown} */ callback) => callback(sql);
     sql.end = sqlEnd;
     return sql;
@@ -137,6 +138,58 @@ describe('GET /search', () => {
     const response = await worker.fetch(request('/search?q=x', { method: 'POST' }), env, ctx);
     expect(response.status).toBe(405);
     expect(response.headers.get('Allow')).toBe('GET');
+  });
+});
+
+describe('/saved-views', () => {
+  test('rejects an unverified token before reading saved views', async () => {
+    verifyAccessToken.mockRejectedValue(new Error('unverified'));
+    const response = await worker.fetch(request('/saved-views'), env, ctx);
+    expect(response.status).toBe(401);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('GET reads only the verified owner and sends private no-store', async () => {
+    verifyAccessToken.mockResolvedValue({ userId: 'account-b' });
+    mockQuery.mockResolvedValue([{ views: { revision: 3, views: [] } }]);
+
+    const response = await worker.fetch(request('/saved-views'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(await response.json()).toEqual({ revision: 3, views: [] });
+    expect(mockQuery.mock.calls[0][1]).toBe('account-b');
+  });
+
+  test('PUT validates before querying and conditionally saves the verified owner', async () => {
+    const invalid = await worker.fetch(
+      request('/saved-views', {
+        method: 'PUT',
+        body: JSON.stringify({ revision: 0, views: [{ query: 'is:starred' }] }),
+      }),
+      env,
+      ctx,
+    );
+    expect(invalid.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+
+    const view = {
+      id: '11111111-1111-4111-8111-111111111111',
+      name: 'Invoices',
+      query: 'invoice',
+      folder: 'all',
+    };
+    mockQuery.mockResolvedValue([{ views: { revision: 1, views: [view] } }]);
+    const response = await worker.fetch(
+      request('/saved-views', {
+        method: 'PUT',
+        body: JSON.stringify({ revision: 0, views: [view] }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(mockQuery.mock.calls[0][2]).toBe('user-1');
+    expect(mockQuery.mock.calls[0][3]).toBe('0');
   });
 });
 

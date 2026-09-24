@@ -406,6 +406,64 @@ describe('mergeFederatedResults', () => {
 });
 
 describe('GET /search?scope=', () => {
+  it('paginates a saved-view mail query on the server and keeps all-folder deleted exclusion', async () => {
+    const federatedSearch = mockFederatedSearch(async (_env, _units, options) => ({
+      hits: [
+        { id: options.offset === 20 ? 'page-2' : 'page-1', _federation: { indexUid: 'messages' } },
+      ],
+      estimatedTotalHits: 21,
+    }));
+    const sql = createMockSql([[{ id: 'page-1' }], [{ id: 'page-2' }]]);
+    const first = await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=invoice+in%3Aall&scope=mail&mode=keyword&limit=20&offset=0'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+    const second = await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=invoice+in%3Aall&scope=mail&mode=keyword&limit=20&offset=20'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+    expect((await first.json()).results).toEqual([{ type: 'email', id: 'page-1' }]);
+    expect((await second.json()).results).toEqual([{ type: 'email', id: 'page-2' }]);
+    expect(federatedSearch.mock.calls[1][2]).toMatchObject({
+      userId: USER_ID,
+      limit: 20,
+      offset: 20,
+    });
+    const units = federatedSearch.mock.calls[1][1];
+    expect(units).toHaveLength(1);
+    expect(units[0].semantic).toBe(false);
+    expect(units[0].filter).toContain('is_deleted = false');
+  });
+
+  it('lets two independent saved queries return the same owned message', async () => {
+    const federatedSearch = mockFederatedSearch(async () => ({
+      hits: [{ id: 'shared', _federation: { indexUid: 'messages' } }],
+      estimatedTotalHits: 1,
+    }));
+    const sql = createMockSql([[{ id: 'shared' }], [{ id: 'shared' }]]);
+    const queries = ['floor+plan+in%3Ainbox', 'from%3Aclient%40example.com+in%3Ainbox'];
+    const results = await Promise.all(
+      queries.map(async (query) => {
+        const response = await handleSearch(
+          sql,
+          USER_ID,
+          url(`?q=${query}&scope=mail&mode=keyword`),
+          ENV,
+          deps({ federatedSearch }),
+        );
+        return (await response.json()).results;
+      }),
+    );
+    expect(results).toEqual([[{ type: 'email', id: 'shared' }], [{ type: 'email', id: 'shared' }]]);
+    expect(federatedSearch.mock.calls.every((call) => call[2].userId === USER_ID)).toBe(true);
+  });
+
   it('rejects an unrecognized scope', async () => {
     const sql = createMockSql([]);
     const response = await handleSearch(sql, USER_ID, url('?q=roof&scope=bogus'), ENV, deps());

@@ -6,6 +6,7 @@ import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { handleSearch } from './search.js';
 import { handleAsk } from './ask.js';
+import { getSavedViews, putSavedViews } from './savedViews.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 import { configureOpenAi } from '../../../shared/openai.js';
@@ -22,7 +23,7 @@ export function createSql(databaseUrl) {
 }
 
 /**
- * Routes GET /search and POST /ask — Cookie-Web's api/search.js and
+ * Routes GET /search, GET/PUT /saved-views, and POST /ask — Cookie-Web's api/search.js and
  * api/ask.js, sharing this Worker because they share Meilisearch retrieval
  * (queryParse/meili) and, for ask, the 'ai' quota. Quota is claimed inside
  * handleAsk, not here: search never spends AI quota (Meilisearch embeds
@@ -65,6 +66,28 @@ async function route(url, request, sql, userId, env) {
       throw error;
     }
     return handleAsk(sql, userId, body, env);
+  }
+
+  if (resource === 'saved-views') {
+    if (request.method === 'GET') return getSavedViews(sql, userId);
+    if (request.method !== 'PUT') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, PUT', 'Cache-Control': 'private, no-store' } },
+      );
+    }
+    let body;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) {
+        errorResponse.headers.set('Cache-Control', 'private, no-store');
+        return errorResponse;
+      }
+      throw error;
+    }
+    return putSavedViews(sql, userId, body);
   }
 
   return Response.json({ error: 'Not Found' }, { status: 404 });
