@@ -60,7 +60,9 @@ export async function purgeExpiredSpam(env, deps = {}) {
       UPDATE messages m
       SET is_deleted = true, search_indexed_at = NULL
       FROM expired
-      WHERE m.id = expired.id
+      -- Block can commit while this UPDATE waits for its message row lock.
+      -- Recheck the target, not only the candidate's earlier snapshot.
+      WHERE m.id = expired.id AND m.screening_status = 'allowed'
       RETURNING m.id
     `,
     );

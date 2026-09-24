@@ -18,6 +18,22 @@ jobs:
   lint-test:
     name: Lint, typecheck, test, and dry-run deploy
     runs-on: ubuntu-latest
+    services:
+      retention-postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: retention-test-only
+          POSTGRES_DB: cookie_screening_retention_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cookie_screening_retention_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SCREENING_RETENTION_TEST_DATABASE_URL: postgres://postgres:retention-test-only@127.0.0.1:5432/cookie_screening_retention_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
