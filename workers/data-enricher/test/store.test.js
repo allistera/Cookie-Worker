@@ -170,6 +170,14 @@ describe('storeDigest', () => {
     expect(sql.calls[1].values).toContain('');
     expect(sql.calls).toHaveLength(3);
   });
+
+  test('records all source ids, including noise, so later blocking can hide the whole generated snapshot', async () => {
+    const sql = mockSql([{ id: 'digest-4' }]);
+    await storeDigest(sql, 'user-1', digest, null, ['visible-mail', 'noise-mail']);
+    expect(sql.calls[1].values).toContainEqual({
+      __pgJson: expect.objectContaining({ source_message_ids: ['visible-mail', 'noise-mail'] }),
+    });
+  });
 });
 
 describe('fetchInterests', () => {

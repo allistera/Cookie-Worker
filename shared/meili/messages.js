@@ -82,7 +82,9 @@ export const MESSAGES_INDEX = {
       is_starred: Boolean(msg.is_starred),
       is_archived: Boolean(msg.is_archived),
       is_sent: Boolean(msg.is_sent),
-      is_deleted: Boolean(msg.is_deleted),
+      // Reuse the existing exclusion filter during staged rollout; the owned
+      // Postgres hydration also rejects held rows while index updates catch up.
+      is_deleted: Boolean(msg.is_deleted) || ['held', 'blocked'].includes(msg.screening_status),
       has_attachments: Boolean(msg.has_attachments),
       is_spam: msg.spam_verdict === 'spam',
     };

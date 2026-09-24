@@ -411,6 +411,7 @@ describe('fetchDigestMessages', () => {
     expect(text).toContain('NOT messages.is_sent');
     expect(text).toContain('NOT messages.is_archived');
     expect(text).toContain('NOT messages.is_deleted');
+    expect(text).toContain("messages.screening_status = 'allowed'");
     expect(text).toContain("spam_verdict, 'inbox') <> 'spam'");
     expect(values).toContain('user-1');
   });

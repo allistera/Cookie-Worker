@@ -30,7 +30,7 @@ const UNSUBSCRIBE_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
  */
 export function fetchOwnedMessageBody(sql, id, userId) {
   return sql`
-    SELECT m.id, m.thread_id, m.body_html, m.body_text, m.headers,
+    SELECT m.id, m.thread_id, m.body_html, m.body_text, m.headers, m.screening_status,
            CASE WHEN t.ai_summary_message_id = latest.id
                 THEN t.ai_summary ELSE NULL END AS thread_summary,
            latest.id AS thread_latest_message_id,
@@ -67,6 +67,7 @@ export function fetchThreadMessages(sql, threadId, userId) {
     FROM messages m
     WHERE m.thread_id = ${threadId} AND m.user_id = ${userId}
       AND NOT m.is_deleted
+      AND m.screening_status = 'allowed'
     ORDER BY m.sent_at ASC
     LIMIT ${MAX_THREAD_MESSAGES}
   `;

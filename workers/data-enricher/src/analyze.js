@@ -45,6 +45,7 @@ export async function fetchImportantMessages(sql, userId) {
     WHERE messages.user_id = ${userId}
       AND NOT messages.is_sent
       AND NOT messages.is_deleted
+      AND messages.screening_status = 'allowed'
       AND message_ai.status = 'completed'
       AND message_ai.priority = 'high'
       AND messages.sent_at > now() - interval '1 day'

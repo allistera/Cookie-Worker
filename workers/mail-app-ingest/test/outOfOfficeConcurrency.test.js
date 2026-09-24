@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import worker from '../src/worker.js';
 import { claimAutoReply, dispatchAutoReply } from '../../cookie-web-send/src/outOfOffice.js';
 import { putOutOfOffice } from '../../cookie-web-emails/src/outOfOffice.js';
+import { putSenders } from '../../cookie-web-emails/src/senders.js';
 import { lockOutOfOfficeDispatch } from '../../../shared/outOfOffice.js';
 import {
   DELIVERY,
@@ -29,7 +30,28 @@ afterEach(() => {
 });
 
 describe('responder dispatch does not borrow inbound storage locks', () => {
-  test.each(['stop', 'save', 'resolve', 'claim', 'screen'])(
+  test('a displayed-From block between claim and dispatch suppresses a different envelope sender', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-25T12:00:00Z'));
+    const { connect, state } = outOfOfficeConcurrencyDatabase();
+    state.messages.get(MESSAGE).from_address = 'author@example.com';
+    const claim = await claimAutoReply(connect(), { id: DELIVERY, user_id: OWNER }, FROM);
+    expect(claim).toBeTruthy();
+    await putSenders(connect(), OWNER, { action: 'block', address: 'author@example.com' });
+    const sendAutoReply = vi.fn();
+    await dispatchAutoReply(
+      connect(),
+      claim,
+      /** @type {any} */ ({ env: { EMAIL_FROM: FROM }, sendAutoReply }),
+    );
+    expect(sendAutoReply).not.toHaveBeenCalled();
+    expect(state.deliveries.get(DELIVERY)).toMatchObject({
+      status: 'suppressed',
+      reason: 'screened',
+    });
+  });
+
+  test.each(['stop', 'save', 'resolve', 'claim', 'screen', 'sender-block', 'screening-settings'])(
     'stores and forwards within the unchanged budget while a slow provider and %s wait',
     async (contender) => {
       vi.useFakeTimers();
@@ -71,20 +93,28 @@ describe('responder dispatch does not borrow inbound storage locks', () => {
       const waiting = (
         contender === 'claim'
           ? claimAutoReply(connect(), { id: REVIEW, user_id: OWNER }, FROM)
-          : contender === 'screen'
-            ? connect().begin(async (tx) => {
-                await lockOutOfOfficeDispatch(tx, OWNER);
-                await tx`UPDATE messages SET auto_reply_suppressed = true WHERE id = ${MESSAGE} AND user_id = ${OWNER}`;
-              })
-            : putOutOfOffice(
+          : contender === 'sender-block' || contender === 'screening-settings'
+            ? putSenders(
                 connect(),
                 OWNER,
-                contender === 'stop'
-                  ? { action: 'stop' }
-                  : contender === 'save'
-                    ? { ...SETTINGS, text: 'New reviewed reply' }
-                    : { action: 'resolve', deliveryId: REVIEW, outcome: 'not_delivered' },
+                contender === 'sender-block'
+                  ? { action: 'block', address: 'sender@example.com', messageId: MESSAGE }
+                  : { action: 'settings', enabled: true },
               )
+            : contender === 'screen'
+              ? connect().begin(async (tx) => {
+                  await lockOutOfOfficeDispatch(tx, OWNER);
+                  await tx`UPDATE messages SET auto_reply_suppressed = true WHERE id = ${MESSAGE} AND user_id = ${OWNER}`;
+                })
+              : putOutOfOffice(
+                  connect(),
+                  OWNER,
+                  contender === 'stop'
+                    ? { action: 'stop' }
+                    : contender === 'save'
+                      ? { ...SETTINGS, text: 'New reviewed reply' }
+                      : { action: 'resolve', deliveryId: REVIEW, outcome: 'not_delivered' },
+                )
       ).then((result) => {
         contenderComplete = true;
         return result;
@@ -135,6 +165,9 @@ describe('responder dispatch does not borrow inbound storage locks', () => {
       );
       expect(storedLater.out_of_office_revision).toBe(
         contender === 'stop' ? null : contender === 'save' ? 2 : 1,
+      );
+      expect(storedLater.screening_status).toBe(
+        contender === 'screening-settings' ? 'held' : 'allowed',
       );
       await Promise.all(pending);
     },

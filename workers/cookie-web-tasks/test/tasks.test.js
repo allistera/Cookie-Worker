@@ -71,10 +71,12 @@ describe('fetchTasks', () => {
 
   // Marking the source email Done means the work is handled, so its extracted
   // action item should not keep asking for attention.
-  it('drops a gathered task whose source email is done', () => {
+  it('drops a gathered task whose source email is done or held', () => {
     const sql = createMockSql();
     fetchTasks(sql, USER_ID, null);
-    expect(sql.calls[0].text).toContain('t.message_id IS NULL OR NOT m.is_archived');
+    expect(sql.calls[0].text).toContain(
+      "t.message_id IS NULL OR (NOT m.is_archived AND m.screening_status = 'allowed')",
+    );
   });
 
   it('excludes a task_item with no due date, and one already completed', () => {
@@ -93,6 +95,11 @@ describe('fetchLatestSummary', () => {
     expect(sql.calls[0].text).toContain('FROM summaries s');
     expect(sql.calls[0].text).toContain('WHERE s.user_id =');
     expect(sql.calls[0].text).toContain('s.message_id IS NULL');
+    expect(sql.calls[0].text).toContain(
+      "held.user_id = s.user_id AND held.screening_status <> 'allowed'",
+    );
+    expect(sql.calls[0].text).toContain("(s.raw -> 'source_message_ids') ? held.id::text");
+    expect(sql.calls[0].text).toContain("held.sent_at > s.created_at - interval '1 day'");
     expect(sql.calls[0].text).toContain('ORDER BY s.created_at DESC');
     expect(sql.calls[0].text).toContain('LIMIT 1');
     expect(sql.calls[0].values).toEqual([USER_ID, 'daily_digest']);
@@ -113,6 +120,7 @@ describe('fetchMessageStates', () => {
     expect(sql.calls[0].text).toContain('WHERE m.user_id =');
     expect(sql.calls[0].text).toContain('::uuid[]');
     expect(sql.calls[0].text).toContain('NOT m.is_deleted');
+    expect(sql.calls[0].text).toContain("m.screening_status = 'allowed'");
     expect(sql.calls[0].values).toEqual([USER_ID, [ID_A]]);
   });
 });

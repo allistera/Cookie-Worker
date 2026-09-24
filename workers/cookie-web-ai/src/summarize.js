@@ -38,6 +38,7 @@ export function fetchThreadMessages(sql, userId, id) {
         ON tm.thread_id = selected.thread_id AND tm.user_id = selected.user_id
       WHERE selected.id = ${id} AND selected.user_id = ${userId}
         AND NOT selected.is_deleted AND NOT tm.is_deleted
+        AND selected.screening_status = 'allowed' AND tm.screening_status = 'allowed'
       ORDER BY tm.sent_at DESC, tm.id DESC
       LIMIT ${MAX_SUMMARY_MESSAGES + 1}
     ) bounded
@@ -169,6 +170,8 @@ export function saveThreadSummary(sql, userId, threadId, latestMessageId, summar
         ai_summary_message_id = ${latestMessageId},
         ai_summary_updated_at = now()
     WHERE t.id = ${threadId} AND t.user_id = ${userId}
+      AND NOT EXISTS (SELECT 1 FROM messages held
+        WHERE held.thread_id = t.id AND held.user_id = t.user_id AND held.screening_status <> 'allowed')
       AND ${latestMessageId} = (
         SELECT latest.id
         FROM messages latest

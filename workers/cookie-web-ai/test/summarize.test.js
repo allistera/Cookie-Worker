@@ -63,6 +63,9 @@ describe('thread summarization', () => {
     expect(query).toContain('tm.user_id = selected.user_id');
     expect(query).toContain('selected.user_id =');
     expect(query).toContain('NOT selected.is_deleted AND NOT tm.is_deleted');
+    expect(query).toContain(
+      "selected.screening_status = 'allowed' AND tm.screening_status = 'allowed'",
+    );
     expect(query).toContain("left(coalesce(tm.body_text, ''),");
     expect(query).toContain('ORDER BY tm.sent_at DESC, tm.id DESC');
     expect(query).toContain('LIMIT');
@@ -154,6 +157,9 @@ describe('thread summarization', () => {
     expect(query).toContain('ai_summary_message_id =');
     expect(query).toContain('t.user_id =');
     expect(query).toContain('NOT latest.is_deleted');
+    expect(query).toContain(
+      "held.thread_id = t.id AND held.user_id = t.user_id AND held.screening_status <> 'allowed'",
+    );
     expect(query).toContain('ORDER BY latest.sent_at DESC, latest.id DESC');
     expect(query).toContain('RETURNING t.id');
     expect(values).toEqual([

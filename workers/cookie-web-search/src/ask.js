@@ -163,6 +163,7 @@ export async function handleAsk(sql, userId, body, env, deps = DEFAULT_DEPS) {
              LEFT(m.body_text, ${CONTEXT_BODY_CHARS}) AS body_text, m.sent_at
       FROM messages m
       WHERE m.user_id = ${userId} AND NOT m.is_deleted AND m.id = ANY(${ids}::uuid[])
+        AND m.screening_status = 'allowed'
     `;
     const byId = new Map(rows.map((/** @type {any} */ row) => [row.id, row]));
     const ordered = ids.map((id) => byId.get(id)).filter(Boolean);

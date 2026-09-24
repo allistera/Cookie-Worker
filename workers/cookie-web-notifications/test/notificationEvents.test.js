@@ -18,6 +18,18 @@ beforeEach(() => {
 });
 
 describe('claim', () => {
+  test('withholds an old queued alert using current disposition and the displayed sender decision', async () => {
+    const response = await handleNotificationEvent(sql, USER_ID, {
+      action: 'claim',
+      eventId: EVENT_ID,
+    });
+    expect(response.status).toBe(204);
+    const query = sql.calls[0].text;
+    expect(query).toContain("message.screening_status = 'allowed'");
+    expect(query).toContain('sender.user_id = message.user_id');
+    expect(query).toContain('lower(btrim(message.from_address))');
+    expect(query).toContain("sender.decision = 'blocked'");
+  });
   test('returns the leased event with only the sender and subject', async () => {
     sql = createMockSql([
       [

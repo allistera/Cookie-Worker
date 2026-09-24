@@ -205,11 +205,13 @@ export async function storeNews(sql, userId, news, model) {
  * @param {string} userId
  * @param {{overview: string, topics: unknown[], noise?: {count: number, categories: unknown[]}}} digest
  * @param {string | null} [model]
+ * @param {string[]} [sourceMessageIds] Includes noise contributors for live screening checks.
  */
-export async function storeDigest(sql, userId, digest, model) {
+export async function storeDigest(sql, userId, digest, model, sourceMessageIds) {
   return replaceSingletonSummary(sql, userId, DIGEST_KIND, digest.overview, model, {
     topics: digest.topics,
     noise: digest.noise ?? { count: 0, categories: [] },
+    ...(sourceMessageIds ? { source_message_ids: sourceMessageIds } : {}),
     prompt_version: DIGEST_PROMPT_VERSION,
     policy_source: TRIAGE_POLICY_SOURCE,
   });

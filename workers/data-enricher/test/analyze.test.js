@@ -133,6 +133,7 @@ describe('fetchImportantMessages', () => {
     expect(rows).toEqual([MESSAGE]);
     expect(calls[0].text).toContain('message_ai');
     expect(calls[0].text).toContain("priority = 'high'");
+    expect(calls[0].text).toContain("messages.screening_status = 'allowed'");
     expect(calls[0].values).toContain('user-1');
   });
 });

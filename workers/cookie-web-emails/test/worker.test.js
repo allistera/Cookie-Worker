@@ -81,6 +81,33 @@ describe('auth', () => {
 });
 
 describe('routing', () => {
+  test('sender settings use the verified owner, reject invalid mutations, and require authentication', async () => {
+    mockQuery.mockImplementation((strings) =>
+      Promise.resolve(strings.join('').includes('FROM users') ? [{ enabled: false }] : []),
+    );
+    const response = await worker.fetch(request('/emails/senders?userId=someone-else'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ enabled: false, decisions: [], nextCursor: null });
+    expect(mockQuery.mock.calls[0]).toContain('user-1');
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    const invalid = await worker.fetch(
+      request('/emails/senders', { method: 'PUT', body: '{"action":"settings","enabled":"true"}' }),
+      env,
+      ctx,
+    );
+    expect(invalid.status).toBe(400);
+    const method = await worker.fetch(
+      request('/emails/senders', { method: 'POST', body: '{}' }),
+      env,
+      ctx,
+    );
+    expect(method.status).toBe(405);
+    const count = mockQuery.mock.calls.length;
+    verifyAccessToken.mockRejectedValue(new Error('invalid token'));
+    expect((await worker.fetch(request('/emails/senders'), env, ctx)).status).toBe(401);
+    expect(mockQuery).toHaveBeenCalledTimes(count);
+  });
+
   test('out-of-office settings require the verified owner and default to off', async () => {
     mockQuery.mockResolvedValueOnce([{ settings: null }]).mockResolvedValueOnce([]);
     const response = await worker.fetch(request('/emails/out-of-office'), env, ctx);

@@ -86,6 +86,7 @@ export function fetchSearchEmails(sql, userId, ids) {
     LEFT JOIN labels l ON l.id = ml.label_id
     WHERE m.user_id = ${userId}
       AND NOT m.is_deleted
+      AND m.screening_status = 'allowed'
       AND m.id = ANY(${ids}::uuid[])
     GROUP BY m.id, ai.spam_score, ai.spam_verdict, c.id
   `;

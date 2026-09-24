@@ -33,7 +33,7 @@ export function fetchTasks(sql, userId, date) {
         AND (t.due_date IS NULL OR t.due_date <= COALESCE(${date}::date, CURRENT_DATE))
         -- An action item extracted from mail retires with its source: once
         -- the email is done, the work it described is handled.
-        AND (t.message_id IS NULL OR NOT m.is_archived)
+        AND (t.message_id IS NULL OR (NOT m.is_archived AND m.screening_status = 'allowed'))
       UNION ALL
       SELECT t.id, 'task' AS source, t.content, t.description, t.due_date,
              NULL::smallint AS priority, NULL::text AS url, NULL::uuid AS message_id,
@@ -62,6 +62,16 @@ export function fetchLatestSummary(sql, userId, kind) {
     WHERE s.user_id = ${userId}
       AND s.kind = ${kind}
       AND s.message_id IS NULL
+      -- A generated overview or topic title can mention a contributor that is
+      -- no longer visible. Hide that whole snapshot, not just its linked items.
+      AND (s.kind <> 'daily_digest' OR NOT EXISTS (
+        SELECT 1 FROM messages held
+        WHERE held.user_id = s.user_id AND held.screening_status <> 'allowed'
+          AND CASE WHEN jsonb_typeof(s.raw -> 'source_message_ids') = 'array'
+            THEN (s.raw -> 'source_message_ids') ? held.id::text
+            ELSE held.created_at <= s.created_at AND held.sent_at > s.created_at - interval '1 day'
+          END
+      ))
     ORDER BY s.created_at DESC
     LIMIT 1
   `;
@@ -120,6 +130,7 @@ export function fetchMessageStates(sql, userId, ids) {
     WHERE m.user_id = ${userId}
       AND m.id = ANY(${ids}::uuid[])
       AND NOT m.is_deleted
+      AND m.screening_status = 'allowed'
   `;
 }
 

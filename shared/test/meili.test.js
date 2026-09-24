@@ -222,6 +222,23 @@ describe('MESSAGES_INDEX.toDocument — is_spam and scheduled_for', () => {
 
     expect(MESSAGES_INDEX.toDocument({ ...ROW, scheduled_for: null }).scheduled_for).toBe(0);
   });
+
+  it('excludes held content using the existing deletion filter and restores it without losing spam state', () => {
+    for (const screening_status of ['held', 'blocked']) {
+      expect(MESSAGES_INDEX.toDocument({ ...ROW, screening_status })).toMatchObject({
+        is_deleted: true,
+        is_spam: true,
+      });
+    }
+    expect(MESSAGES_INDEX.toDocument({ ...ROW, screening_status: 'allowed' })).toMatchObject({
+      is_deleted: false,
+      is_spam: true,
+    });
+    expect(
+      MESSAGES_INDEX.toDocument({ ...ROW, screening_status: 'allowed', is_deleted: true })
+        .is_deleted,
+    ).toBe(true);
+  });
 });
 
 // The filter builder used by hybridSearch (via search.js/ask.js).

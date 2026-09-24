@@ -45,7 +45,13 @@ async function buildDailyTriage(sql, env, userId) {
   const triage = messages.length
     ? await buildDigest(messages, apiKey, env.AI_MODEL)
     : { overview: '', topics: [], noise: { count: 0, categories: [] } };
-  await storeDigest(sql, userId, triage, env.AI_MODEL);
+  await storeDigest(
+    sql,
+    userId,
+    triage,
+    env.AI_MODEL,
+    messages.map((message) => message.id),
+  );
   console.log(
     JSON.stringify({
       event: 'triage_built',

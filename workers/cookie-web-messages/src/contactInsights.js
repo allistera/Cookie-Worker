@@ -77,6 +77,7 @@ export function fetchContactHistory(sql, userId, address, limit, before) {
     FROM messages m
     WHERE m.user_id = ${userId}
       AND NOT m.is_deleted
+      AND m.screening_status = 'allowed'
       AND (
         (NOT m.is_sent AND lower(btrim(m.from_address)) = ${address})
         OR (

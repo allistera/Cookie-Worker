@@ -44,6 +44,7 @@ export async function purgeExpiredSpam(env, deps = {}) {
         JOIN messages m ON m.id = ai.message_id
         JOIN users u ON u.id = m.user_id
         WHERE ai.spam_verdict = 'spam'
+          AND m.screening_status = 'allowed'
           AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
           AND COALESCE(ai.processed_at, m.created_at) < now() - make_interval(
             days => LEAST(365, GREATEST(1,

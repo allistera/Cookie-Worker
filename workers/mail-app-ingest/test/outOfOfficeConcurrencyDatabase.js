@@ -9,10 +9,14 @@ export function outOfOfficeConcurrencyDatabase() {
   const held = new Map();
   const waiting = new Map();
   const { state } = model;
+  state.senderDecisions = new Map();
+  state.concurrentQueries = [];
+  for (const message of state.messages.values()) message.screening_status = 'allowed';
 
   function connect() {
     const execute = async (transaction, parts, ...values) => {
       const query = parts.join('?').replace(/\s+/g, ' ').trim();
+      state.concurrentQueries.push({ query, values });
       state.now = new Date(Date.now());
       const acquire = async (key, mode = 'exclusive', nowait = false) => {
         if (!transaction) throw new Error('Lock outside transaction');
@@ -52,11 +56,93 @@ export function outOfOfficeConcurrencyDatabase() {
       )
         await acquire(`users/${values[0]}`);
       if (query.startsWith('UPDATE users')) await acquire(`users/${values[1]}`);
+      if (query.startsWith("SELECT prefs -> 'senderScreening'")) {
+        const owner = state.users.get(values[0]);
+        return owner ? [{ enabled: owner.senderScreening === true }] : [];
+      }
+      if (query.startsWith('UPDATE users') && query.includes("'{senderScreening}'")) {
+        state.users.get(values[1]).senderScreening = values[0];
+        return [];
+      }
+      if (query.startsWith('SELECT from_address, screening_status FROM messages')) {
+        await acquire(`messages/${values[0]}`);
+        const message = state.messages.get(values[0]);
+        return message?.user_id === values[1] && !message.is_sent && !message.is_deleted
+          ? [{ ...message }]
+          : [];
+      }
+      if (query.startsWith('INSERT INTO sender_decisions')) {
+        state.senderDecisions.set(`${values[0]}/${values[1]}`, values[2]);
+        return [];
+      }
+      if (query.startsWith('DELETE FROM sender_decisions')) {
+        const key = `${values[0]}/${values[1]}`;
+        if (state.senderDecisions.get(key) === values[2]) state.senderDecisions.delete(key);
+        return [];
+      }
+      if (query.startsWith('SELECT decision FROM sender_decisions')) {
+        const decision = state.senderDecisions.get(`${values[0]}/${values[1]}`);
+        return decision ? [{ decision }] : [];
+      }
+      if (query.startsWith('SELECT address FROM sender_decisions')) {
+        return state.senderDecisions.get(`${values[0]}/${values[1]}`) === 'blocked'
+          ? [{ address: values[1] }]
+          : [];
+      }
+      if (
+        query.startsWith('DELETE FROM browser_notification_events') ||
+        query.startsWith('DELETE FROM ntfy_notification_events')
+      )
+        return [];
+      if (query.startsWith("UPDATE messages SET screening_status = 'allowed'")) {
+        const message = state.messages.get(values[0]);
+        if (message?.user_id === values[1]) {
+          message.screening_status = 'allowed';
+          message.search_indexed_at = null;
+        }
+        return [];
+      }
+      if (query.startsWith('UPDATE messages SET screening_status = ?')) {
+        const changed = [];
+        for (const message of state.messages.values()) {
+          if (
+            message.user_id !== values[1] ||
+            message.from_address.trim().toLowerCase() !== values[2] ||
+            message.is_sent ||
+            message.is_deleted
+          )
+            continue;
+          if (message.screening_status === 'allowed' && !(values[3] && message.id === values[4]))
+            continue;
+          await acquire(`messages/${message.id}`);
+          Object.assign(message, {
+            screening_status: values[0],
+            auto_reply_suppressed: true,
+            search_indexed_at: null,
+          });
+          changed.push({ id: message.id, thread_id: message.thread_id });
+        }
+        return changed;
+      }
+      if (query.startsWith('UPDATE threads SET ai_summary')) return [];
       if (query.includes('FROM messages m JOIN message_ai') && query.includes('FOR UPDATE')) {
         await acquire(`messages/${values[0]}`, 'exclusive', true);
         await acquire(`message_ai/${values[0]}`, 'exclusive', true);
       }
       if (query.startsWith('UPDATE messages SET auto_reply_suppressed = true')) {
+        if (query.includes('lower(btrim(from_address))')) {
+          for (const message of state.messages.values()) {
+            if (
+              message.user_id === values[0] &&
+              message.from_address.trim().toLowerCase() === values[1] &&
+              !message.is_sent
+            ) {
+              await acquire(`messages/${message.id}`);
+              message.auto_reply_suppressed = true;
+            }
+          }
+          return [];
+        }
         await acquire(`messages/${values[0]}`);
         const message = state.messages.get(values[0]);
         if (message?.user_id === values[1]) message.auto_reply_suppressed = true;
@@ -95,6 +181,15 @@ export function outOfOfficeConcurrencyDatabase() {
       if (query.startsWith('INSERT INTO messages')) {
         await acquire(`users/${values[2]}`, 'shared');
         const settings = state.users.get(values[2]).settings;
+        const decision = state.senderDecisions.get(
+          `${values[2]}/${values[4].trim().toLowerCase()}`,
+        );
+        const screening =
+          decision === 'blocked'
+            ? 'blocked'
+            : state.users.get(values[2]).senderScreening && decision !== 'accepted'
+              ? 'held'
+              : 'allowed';
         state.messages.set(values[0], {
           id: values[0],
           thread_id: values[1],
@@ -109,7 +204,8 @@ export function outOfOfficeConcurrencyDatabase() {
           is_sent: false,
           is_deleted: false,
           out_of_office_revision: settings.enabled ? settings.revision : null,
-          auto_reply_suppressed: false,
+          auto_reply_suppressed: screening !== 'allowed',
+          screening_status: screening,
         });
         return [{ id: values[0] }];
       }

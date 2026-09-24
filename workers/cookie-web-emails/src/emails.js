@@ -8,7 +8,17 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 const MAX_LABEL_NAME = 100;
 const CURSOR_RE = /^(.+)\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
-const FOLDERS = new Set(['inbox', 'sent', 'spam', 'snoozed', 'done', 'starred', 'label']);
+const FOLDERS = new Set([
+  'inbox',
+  'sent',
+  'spam',
+  'snoozed',
+  'done',
+  'starred',
+  'label',
+  'screening',
+  'blocked',
+]);
 
 // Folder predicates are inlined (not `${folder} = 'inbox'`) so Postgres can
 // use the 0035 partial indexes. Parameterized OR-across-folders cannot.
@@ -18,6 +28,8 @@ const FOLDERS = new Set(['inbox', 'sent', 'spam', 'snoozed', 'done', 'starred', 
  * @param {string} [labelName]
  */
 export function folderPredicate(sql, folder, labelName) {
+  if (folder === 'screening') return sql`NOT m.is_sent AND m.screening_status = 'held'`;
+  if (folder === 'blocked') return sql`NOT m.is_sent AND m.screening_status = 'blocked'`;
   if (folder === 'done') return sql`m.is_archived`;
   if (folder === 'sent') return sql`NOT m.is_archived AND m.is_sent`;
   if (folder === 'spam') {
@@ -56,6 +68,7 @@ function followUpPredicate(sql) {
       SELECT 1 FROM messages reply
       WHERE reply.user_id = m.user_id AND reply.thread_id = m.thread_id
         AND NOT reply.is_sent AND NOT reply.is_deleted AND reply.sent_at > m.sent_at
+        AND reply.screening_status = 'allowed'
     )`;
 }
 
@@ -92,6 +105,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
     JOIN threads t ON t.id = m.thread_id AND t.user_id = m.user_id
     LEFT JOIN message_ai ai ON ai.message_id = m.id
     WHERE m.user_id = ${userId} AND NOT m.is_deleted AND (${predicate})
+      ${['screening', 'blocked'].includes(folder) ? sql`` : sql`AND m.screening_status = 'allowed'`}
       ${cursor ? sql`AND (${order}, m.id) < (${cursor.sentAt}::text::timestamptz, ${cursor.id}::uuid)` : sql``}
     ORDER BY ${order} DESC, m.id DESC
     LIMIT ${limit + 1}
@@ -112,7 +126,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
                 ELSE m.recipients END AS recipients,
            m.subject, m.snippet, ${sortAt} AS sort_at,
            to_char((${sortAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS sort_cursor,
-           m.sent_at, m.is_unread, m.is_starred,
+           m.sent_at, m.is_unread, m.is_starred, m.screening_status,
            m.is_sent, m.is_archived, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
            ai.priority,
            BOOL_OR(
@@ -168,6 +182,7 @@ export function fetchUnreadCount(sql, userId) {
     FROM messages m
     LEFT JOIN message_ai ai ON ai.message_id = m.id
     WHERE m.user_id = ${userId} AND m.is_unread
+      AND m.screening_status = 'allowed'
       AND NOT m.is_archived AND NOT m.is_sent AND NOT m.is_deleted
       AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())
   `;
@@ -188,6 +203,7 @@ export function fetchSpamCount(sql, userId) {
     FROM messages m
     JOIN message_ai ai ON ai.message_id = m.id
     WHERE m.user_id = ${userId}
+      AND m.screening_status = 'allowed'
       AND ai.spam_verdict = 'spam'
       AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
   `;
@@ -206,6 +222,7 @@ export function fetchSnoozedCount(sql, userId) {
     FROM messages m
     LEFT JOIN message_ai ai ON ai.message_id = m.id
     WHERE m.user_id = ${userId}
+      AND m.screening_status = 'allowed'
       AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
       AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
       AND m.scheduled_for > now()

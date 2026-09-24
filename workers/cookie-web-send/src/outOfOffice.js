@@ -45,7 +45,7 @@ export async function enqueueAutoReplies(sql, from, deadline = Infinity) {
   // that the owner had enabled the responder when a message was received.
   const arrivals = await sql`
     SELECT m.id, m.user_id, m.created_at, m.message_id, m.from_address, m.envelope_from,
-           m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed,
+           m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed, m.screening_status,
            m.out_of_office_revision, u.email AS owner_email, u.prefs -> 'outOfOffice' AS settings,
            ai.status AS ai_status, ai.spam_verdict, clock_timestamp() AS clock
     FROM messages m JOIN users u ON u.id = m.user_id
@@ -97,7 +97,7 @@ async function currentSuppression(tx, row, owner, from, now) {
   if (row.payload.from !== from) return 'sender_identity_changed';
   const [message] = await tx`
     SELECT m.id, m.created_at, m.message_id, m.from_address, m.envelope_from,
-           m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed,
+           m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed, m.screening_status,
            m.out_of_office_revision, ai.status AS ai_status, ai.spam_verdict
     FROM messages m JOIN message_ai ai ON ai.message_id = m.id
     WHERE m.id = ${row.message_id} AND m.user_id = ${row.user_id}

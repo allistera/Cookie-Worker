@@ -54,6 +54,7 @@ export async function syncMessageToMeili(sql, env, messageUuid) {
       m.is_archived,
       m.is_sent,
       m.is_deleted,
+      m.screening_status,
       ai.spam_verdict,
       EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
       COALESCE(
@@ -138,6 +139,7 @@ export async function syncMessagesToMeili(sql, env, messageUuids) {
       m.is_archived,
       m.is_sent,
       m.is_deleted,
+      m.screening_status,
       ai.spam_verdict,
       EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
       COALESCE(

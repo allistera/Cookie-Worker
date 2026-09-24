@@ -176,6 +176,7 @@ describe('ntfy delivery', () => {
             body_text: 'Please confirm by Friday.',
           },
         ])
+        .mockResolvedValueOnce([{ event_id: 'event-1' }])
         .mockResolvedValueOnce([])
     );
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
@@ -183,8 +184,8 @@ describe('ntfy delivery', () => {
     await expect(
       deliverPendingNtfy(sql, { baseUrl: 'https://ntfy.sh', fetchImpl }),
     ).resolves.toEqual({ attempted: 1, delivered: 1, failed: 0 });
-    expect(sql).toHaveBeenCalledTimes(2);
-    expect(sql.mock.calls[1][0].join(' ')).toContain('published_at = now()');
+    expect(sql).toHaveBeenCalledTimes(3);
+    expect(sql.mock.calls[2][0].join(' ')).toContain('published_at = now()');
     const [, request] = fetchImpl.mock.calls[0];
     expect(request.headers['X-Title']).toBe('Appointment reminder');
     expect(request.body).toBe('Please confirm by Friday.');
@@ -205,6 +206,47 @@ describe('ntfy delivery', () => {
     expect(query).toContain('LEFT JOIN email_categories category');
     expect(query).toContain('message.id = event.message_id AND message.user_id = event.user_id');
     expect(query).toContain('(message.category_id IS NULL OR category.notifications_enabled)');
+  });
+
+  test('suppresses an event blocked after its batch was claimed', async () => {
+    const sql = /** @type {any} */ (
+      vi
+        .fn()
+        .mockResolvedValueOnce([
+          { event_id: 'event-1', message_id: 'message-1', topic: 'cookie-topic' },
+        ])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+    );
+    const fetchImpl = vi.fn();
+    expect(await deliverPendingNtfy(sql, { fetchImpl })).toEqual({
+      attempted: 1,
+      delivered: 0,
+      failed: 0,
+      suppressed: 1,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const query = sql.mock.calls[1][0].join(' ');
+    expect(query).toContain("message.screening_status = 'allowed'");
+    expect(query).toContain('sender.user_id = message.user_id');
+    expect(query).toContain('lower(btrim(message.from_address))');
+  });
+
+  test('rechecks screening before a retry rather than reusing the first eligibility result', async () => {
+    const canPublish = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('retry', { status: 503 }));
+    await expect(
+      publishNtfy(
+        { topic: 'cookie-topic', messageId: 'message-1' },
+        {
+          fetchImpl,
+          canPublish,
+          sleepImpl: vi.fn().mockResolvedValue(undefined),
+        },
+      ),
+    ).rejects.toThrow();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(canPublish).toHaveBeenCalledTimes(2);
   });
 });
 

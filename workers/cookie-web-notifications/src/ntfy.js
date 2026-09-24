@@ -7,6 +7,8 @@ const IOS_APP_SCHEME = 'com.cookie.ios';
 const MAX_RETRY_DELAY_MS = 5000;
 const MAX_BODY_BYTES = 3500;
 
+class NotificationSuppressedError extends Error {}
+
 export class NtfyPublishError extends Error {
   /** @param {number} status @param {number | null} retryAfterSeconds */
   constructor(status, retryAfterSeconds = null) {
@@ -53,7 +55,7 @@ function truncateBody(text) {
 
 /**
  * @param {{topic: string, messageId: string, subject?: string | null, bodyText?: string | null, title?: string | null}} notification
- * @param {{baseUrl?: string, fetchImpl?: typeof fetch, maxAttempts?: number, sleepImpl?: (milliseconds: number) => Promise<void>}} [options]
+ * @param {{baseUrl?: string, fetchImpl?: typeof fetch, maxAttempts?: number, sleepImpl?: (milliseconds: number) => Promise<void>, canPublish?: () => Promise<boolean>}} [options]
  */
 export async function publishNtfy(notification, options = {}) {
   if (!TOPIC_RE.test(notification.topic)) throw new Error('invalid ntfy topic');
@@ -70,6 +72,9 @@ export async function publishNtfy(notification, options = {}) {
     String(notification.bodyText || '').trim() || 'No plain-text content available.';
   const body = truncateBody(plainText);
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // Check again before every external attempt, including retries after a wait.
+    if (options.canPublish && !(await options.canPublish()))
+      throw new NotificationSuppressedError();
     const response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/${notification.topic}`, {
       method: 'POST',
       headers: {
@@ -226,6 +231,12 @@ export async function deliverPendingNtfy(sql, options = {}) {
         AND NOT message.is_sent
         AND NOT message.is_archived
         AND NOT message.is_deleted
+        AND message.screening_status = 'allowed'
+        AND NOT EXISTS (
+          SELECT 1 FROM sender_decisions sender
+          WHERE sender.user_id = message.user_id AND sender.address = lower(btrim(message.from_address))
+            AND sender.decision = 'blocked'
+        )
         AND (message.scheduled_for IS NULL OR message.scheduled_for <= now())
         AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
         AND (ai.status IS DISTINCT FROM 'pending'
@@ -243,6 +254,7 @@ export async function deliverPendingNtfy(sql, options = {}) {
               pending.subject, pending.body_text
   `;
   let delivered = 0;
+  let suppressed = 0;
   for (const row of rows) {
     try {
       await publishNtfy(
@@ -252,7 +264,19 @@ export async function deliverPendingNtfy(sql, options = {}) {
           subject: row.subject,
           bodyText: row.body_text,
         },
-        options,
+        {
+          ...options,
+          canPublish: async () => {
+            const [eligible] = await sql`SELECT event.event_id FROM ntfy_notification_events event
+              JOIN messages message ON message.id = event.message_id AND message.user_id = event.user_id
+              WHERE event.event_id = ${row.event_id} AND event.published_at IS NULL
+                AND message.screening_status = 'allowed'
+                AND NOT EXISTS (SELECT 1 FROM sender_decisions sender
+                  WHERE sender.user_id = message.user_id AND sender.address = lower(btrim(message.from_address))
+                    AND sender.decision = 'blocked')`;
+            return Boolean(eligible);
+          },
+        },
       );
       await sql`
         UPDATE ntfy_notification_events
@@ -261,6 +285,11 @@ export async function deliverPendingNtfy(sql, options = {}) {
       `;
       delivered += 1;
     } catch (error) {
+      if (error instanceof NotificationSuppressedError) {
+        suppressed += 1;
+        await sql`DELETE FROM ntfy_notification_events WHERE event_id = ${row.event_id} AND published_at IS NULL`;
+        continue;
+      }
       await sql`
         UPDATE ntfy_notification_events
         SET last_error = ${String(error).slice(0, 500)}
@@ -268,5 +297,10 @@ export async function deliverPendingNtfy(sql, options = {}) {
       `;
     }
   }
-  return { attempted: rows.length, delivered, failed: rows.length - delivered };
+  return {
+    attempted: rows.length,
+    delivered,
+    failed: rows.length - delivered - suppressed,
+    ...(suppressed ? { suppressed } : {}),
+  };
 }

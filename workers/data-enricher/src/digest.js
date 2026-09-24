@@ -91,6 +91,7 @@ export async function fetchDigestMessages(sql, userId) {
       AND NOT messages.is_sent
       AND NOT messages.is_archived
       AND NOT messages.is_deleted
+      AND messages.screening_status = 'allowed'
       AND coalesce(message_ai.spam_verdict, 'inbox') <> 'spam'
       AND (messages.scheduled_for IS NULL OR messages.scheduled_for <= now())
       AND messages.sent_at > now() - interval '1 day'

@@ -27,6 +27,31 @@ const USER_ID = '99999999-9999-4999-8999-999999999999';
 
 describe('fetchEmails', () => {
   test.each([
+    ['screening', 'held'],
+    ['blocked', 'blocked'],
+  ])(
+    'keeps %s mail reviewable despite archive, spam, or pending classification',
+    (folder, status) => {
+      const capture = captureQuery();
+      fetchEmails(capture.sql, USER_ID, 50, null, folder);
+      const query = capture.query();
+      expect(query).toContain(`m.screening_status = '${status}'`);
+      expect(query).not.toContain("m.screening_status = 'allowed'");
+      expect(query).not.toContain('NOT m.is_archived');
+      expect(query).not.toContain("ai.status = 'completed'");
+      expect(query).toContain('m.user_id = ?');
+      expect(query).toContain('NOT m.is_deleted');
+    },
+  );
+  test.each(['inbox', 'spam', 'snoozed', 'starred', 'done', 'label'])(
+    'excludes withheld messages from the %s folder',
+    (folder) => {
+      const capture = captureQuery();
+      fetchEmails(capture.sql, USER_ID, 50, null, folder, 'Tag');
+      expect(capture.query()).toContain("m.screening_status = 'allowed'");
+    },
+  );
+  test.each([
     ['first page', null],
     [
       'cursor page',
@@ -133,6 +158,7 @@ describe('fetchEmails', () => {
     expect(capture.query()).toContain('reply.user_id = m.user_id');
     expect(capture.query()).toContain('reply.thread_id = m.thread_id');
     expect(capture.query()).toContain('reply.sent_at > m.sent_at');
+    expect(capture.query()).toContain("reply.screening_status = 'allowed'");
     expect(capture.query()).toContain(
       'CASE WHEN m.is_sent THEN m.follow_up_at ELSE m.sent_at END AS sort_at',
     );

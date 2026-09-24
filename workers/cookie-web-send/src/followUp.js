@@ -32,6 +32,7 @@ export async function handleFollowUp(sql, userId, request) {
       AND (${followUpAt}::timestamptz IS NULL OR NOT EXISTS (
         SELECT 1 FROM messages reply WHERE reply.user_id = m.user_id
           AND reply.thread_id = m.thread_id AND NOT reply.is_sent AND NOT reply.is_deleted AND reply.sent_at > m.sent_at
+          AND reply.screening_status = 'allowed'
       ))
     RETURNING m.id, m.follow_up_at AS "followUpAt"
   `;

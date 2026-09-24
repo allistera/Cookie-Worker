@@ -9,6 +9,7 @@ import { getSpamRetention, putSpamRetention } from './spamRetention.js';
 import { getAutoArchive, putAutoArchive } from './autoArchive.js';
 import { getComposePreferences, putComposePreferences } from './composePreferences.js';
 import { getOutOfOffice, putOutOfOffice } from './outOfOffice.js';
+import { getSenders, putSenders } from './senders.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 /** @param {string} databaseUrl */
@@ -41,6 +42,7 @@ async function route(url, request, sql, userId) {
   const isAutoArchive = sub === 'auto-archive';
   const isComposePreferences = sub === 'compose-preferences';
   const isOutOfOffice = sub === 'out-of-office';
+  const isSenders = sub === 'senders';
   if (
     segments[0] !== 'emails' ||
     (segments.length > 1 &&
@@ -48,19 +50,22 @@ async function route(url, request, sql, userId) {
       !isSpamRetention &&
       !isAutoArchive &&
       !isComposePreferences &&
-      !isOutOfOffice)
+      !isOutOfOffice &&
+      !isSenders)
   ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
-  if (isSpamRetention || isAutoArchive || isComposePreferences || isOutOfOffice) {
+  if (isSpamRetention || isAutoArchive || isComposePreferences || isOutOfOffice || isSenders) {
     if (request.method === 'GET')
-      return isOutOfOffice
-        ? getOutOfOffice(sql, userId)
-        : isAutoArchive
-          ? getAutoArchive(sql, userId)
-          : isComposePreferences
-            ? getComposePreferences(sql, userId)
-            : getSpamRetention(sql, userId);
+      return isSenders
+        ? getSenders(sql, userId, url)
+        : isOutOfOffice
+          ? getOutOfOffice(sql, userId)
+          : isAutoArchive
+            ? getAutoArchive(sql, userId)
+            : isComposePreferences
+              ? getComposePreferences(sql, userId)
+              : getSpamRetention(sql, userId);
     if (request.method !== 'PUT') {
       return Response.json(
         { error: 'Method not allowed' },
@@ -78,13 +83,15 @@ async function route(url, request, sql, userId) {
       if (errorResponse) return errorResponse;
       throw error;
     }
-    return isOutOfOffice
-      ? putOutOfOffice(sql, userId, body)
-      : isAutoArchive
-        ? putAutoArchive(sql, userId, body)
-        : isComposePreferences
-          ? putComposePreferences(sql, userId, body)
-          : putSpamRetention(sql, userId, body);
+    return isSenders
+      ? putSenders(sql, userId, body)
+      : isOutOfOffice
+        ? putOutOfOffice(sql, userId, body)
+        : isAutoArchive
+          ? putAutoArchive(sql, userId, body)
+          : isComposePreferences
+            ? putComposePreferences(sql, userId, body)
+            : putSpamRetention(sql, userId, body);
   }
   if (request.method !== 'GET') {
     return Response.json(

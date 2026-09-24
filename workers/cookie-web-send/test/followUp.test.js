@@ -32,6 +32,7 @@ describe('follow-up updates', () => {
     );
     expect(response.status).toBe(status);
     expect(sql.calls[0].text).toContain('NOT EXISTS');
+    expect(sql.calls[0].text).toContain("reply.screening_status = 'allowed'");
   });
   it('rejects invalid dates before any database access', async () => {
     const sql = createMockSql([]);

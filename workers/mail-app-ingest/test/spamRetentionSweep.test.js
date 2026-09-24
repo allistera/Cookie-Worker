@@ -65,6 +65,7 @@ describe('purgeExpiredSpam', () => {
     expect(text).toContain("ai.spam_verdict = 'spam'");
     // Only what the Spam folder lists: spam moved to Done is kept.
     expect(text).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
+    expect(text).toContain("m.screening_status = 'allowed'");
     // The clock starts when the verdict landed, not when the mail arrived.
     expect(text).toContain('COALESCE(ai.processed_at, m.created_at) < now() - make_interval');
     // The stored preference is bounded in SQL too, and read only as a number.
