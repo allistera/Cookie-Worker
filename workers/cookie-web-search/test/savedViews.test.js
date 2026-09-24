@@ -60,12 +60,16 @@ describe('saved mail-view queries', () => {
     expect(savedQueryError('-from:alice')).toContain('prefix');
   });
 
-  test.each(['-is:starred', 'client-is:starred', '-IS:STARRED'])(
+  test.each([
+    ['-is:starred', 'Remove the unsupported prefix before a search operator.'],
+    ['client-is:starred', 'client-is: is not a supported saved-view operator.'],
+    ['-IS:STARRED', 'Remove the unsupported prefix before a search operator.'],
+  ])(
     'rejects prefixed %s rather than searching with a positive starred filter',
-    (query) => {
+    (query, reason) => {
       expect(parseFederatedSearchQuery(query).filters).toEqual({ starred: true });
-      expect(savedQueryError(query)).toContain('prefix');
-      expect(savedViewsError({ revision: 0, views: [{ ...view, query }] })).toContain('prefix');
+      expect(savedQueryError(query)).toBe(reason);
+      expect(savedViewsError({ revision: 0, views: [{ ...view, query }] })).toBe(reason);
     },
   );
 
@@ -75,7 +79,7 @@ describe('saved mail-view queries', () => {
     ['from:a sender:b', 'only once'],
     ['from:a from:b', 'only once'],
     ['from:a OR from:b', 'Boolean'],
-    ['client-from:alice', 'prefix'],
+    ['client-from:alice', 'client-from: is not a supported saved-view operator.'],
     ['-in:done', 'prefix'],
     ['has:images', 'has:attachment'],
     ['in:unread invoice', 'folder selector'],
