@@ -406,6 +406,122 @@ describe('mergeFederatedResults', () => {
 });
 
 describe('GET /search?scope=', () => {
+  it('finds a verified mail next page when estimated totals are too low', async () => {
+    const ids = Array.from({ length: 21 }, (_, index) => `mail-${index}`);
+    const federatedSearch = mockFederatedSearch(async (_env, _units, options) => ({
+      hits: ids.slice(options.offset, options.offset + options.limit).map((id) => ({
+        id,
+        _federation: { indexUid: MESSAGES_INDEX.name },
+      })),
+      estimatedTotalHits: 1,
+    }));
+    const sql = createMockSql([ids.map((id) => ({ id })), [{ id: 'mail-20' }]]);
+    const query = '?q=invoice+in%3Aall&scope=mail&mode=keyword&pagination=verified&limit=20';
+    const first = await handleSearch(
+      sql,
+      USER_ID,
+      url(`${query}&offset=0`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+    const firstPage = await first.json();
+    expect(firstPage.results).toHaveLength(20);
+    expect(firstPage.estimatedTotalHits).toBe(1);
+    expect(firstPage.nextOffset).toBe(20);
+    expect(firstPage.scanLimitReached).toBe(false);
+    expect(federatedSearch.mock.calls[0][1]).toHaveLength(1);
+    expect(federatedSearch.mock.calls[0][1][0].semantic).toBe(false);
+    expect(federatedSearch.mock.calls[0][1][0].filter).toContain('is_deleted = false');
+
+    const second = await handleSearch(
+      sql,
+      USER_ID,
+      url(`${query}&offset=20`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+    expect((await second.json()).results).toEqual([{ type: 'email', id: 'mail-20' }]);
+  });
+
+  it('skips stale indexed hits so Next points to a hydrateable mail result', async () => {
+    const ids = Array.from({ length: 70 }, (_, index) => `mail-${index}`);
+    const live = [...ids.slice(0, 20), 'mail-60'];
+    const federatedSearch = mockFederatedSearch(async (_env, _units, options) => ({
+      hits: ids.slice(options.offset, options.offset + options.limit).map((id) => ({
+        id,
+        _federation: { indexUid: MESSAGES_INDEX.name },
+      })),
+      estimatedTotalHits: 100,
+    }));
+    const sql = createMockSql([
+      live.slice(0, 20).map((id) => ({ id })),
+      [{ id: 'mail-60' }],
+      [{ id: 'mail-60' }],
+    ]);
+    const query = '?q=invoice+in%3Ainbox&scope=mail&mode=keyword&pagination=verified&limit=20';
+    const first = await handleSearch(
+      sql,
+      USER_ID,
+      url(`${query}&offset=0`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+    expect((await first.json()).nextOffset).toBe(60);
+    expect(federatedSearch.mock.calls[1][2].offset).toBe(50);
+
+    const second = await handleSearch(
+      sql,
+      USER_ID,
+      url(`${query}&offset=60`),
+      ENV,
+      deps({ federatedSearch }),
+    );
+    const secondPage = await second.json();
+    expect(secondPage.results).toEqual([{ type: 'email', id: 'mail-60' }]);
+    expect(secondPage.nextOffset).toBeNull();
+    expect(secondPage.scanLimitReached).toBe(false);
+  });
+
+  it('reports the verified scan cap instead of claiming end-of-results', async () => {
+    const federatedSearch = mockFederatedSearch(async (_env, _units, options) => ({
+      hits: Array.from({ length: options.limit }, (_, index) => ({
+        id: `stale-${options.offset + index}`,
+        _federation: { indexUid: MESSAGES_INDEX.name },
+      })),
+      estimatedTotalHits: 1,
+    }));
+    const sql = createMockSql(Array.from({ length: 20 }, () => []));
+    const response = await handleSearch(
+      sql,
+      USER_ID,
+      url('?q=invoice&scope=mail&mode=keyword&pagination=verified&limit=20&offset=0'),
+      ENV,
+      deps({ federatedSearch }),
+    );
+    const page = await response.json();
+    expect(page.results).toEqual([]);
+    expect(page.nextOffset).toBeNull();
+    expect(page.scanLimitReached).toBe(true);
+    expect(federatedSearch).toHaveBeenCalledTimes(20);
+    expect(federatedSearch.mock.calls.at(-1)[2].offset).toBe(950);
+  });
+
+  it.each(['-1', '1000', '1.5', 'abc'])(
+    'rejects out-of-bounds verified offset %s before searching',
+    async (offset) => {
+      const federatedSearch = mockFederatedSearch(async () => ({ hits: [] }));
+      const response = await handleSearch(
+        createMockSql([]),
+        USER_ID,
+        url(`?q=invoice&scope=mail&mode=keyword&pagination=verified&offset=${offset}`),
+        ENV,
+        deps({ federatedSearch }),
+      );
+      expect(response.status).toBe(400);
+      expect(federatedSearch).not.toHaveBeenCalled();
+    },
+  );
+
   it('paginates a saved-view mail query on the server and keeps all-folder deleted exclusion', async () => {
     const federatedSearch = mockFederatedSearch(async (_env, _units, options) => ({
       hits: [

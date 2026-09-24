@@ -22,6 +22,9 @@ const RESULTS = 20;
 // frontend is built against — see handleScopedSearch.
 const DEFAULT_SCOPED_LIMIT = 20;
 const MAX_SCOPED_LIMIT = 50;
+// Verified mail pagination scans only the first 1,000 indexed hits. Reaching
+// this bound is reported separately from a confirmed end of results.
+const VERIFIED_MAIL_SCAN_CAP = 1000;
 const SCOPES = new Set(['all', 'mail', 'documents', 'tasks']);
 
 /**
@@ -318,6 +321,85 @@ export function mergeFederatedResults(hits, emailRows, documentRows, taskRows = 
     .filter(Boolean);
 }
 
+/**
+ * Opt-in saved-view pagination. Collect up to `limit` hydrated mail rows and
+ * one more live hit, so neither estimated totals nor stale indexed rows can
+ * manufacture or hide a Next page. The returned cursor is a raw-hit offset.
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {any} env
+ * @param {import('../../../shared/meili.js').FederatedSearchUnit} unit
+ * @param {string} query
+ * @param {number} limit
+ * @param {number} offset
+ * @param {SearchDeps} deps
+ */
+async function handleVerifiedMailPage(sql, userId, env, unit, query, limit, offset, deps) {
+  /** @type {{type: string, [key: string]: any}[]} */
+  const results = [];
+  let scanOffset = offset;
+  let estimatedTotalHits = 0;
+  let nextOffset = null;
+  let exhausted = false;
+
+  while (scanOffset < VERIFIED_MAIL_SCAN_CAP) {
+    const batchLimit = Math.min(MAX_SCOPED_LIMIT, VERIFIED_MAIL_SCAN_CAP - scanOffset);
+    let page;
+    try {
+      page = await deps.federatedSearch(env, [unit], {
+        userId,
+        limit: batchLimit,
+        offset: scanOffset,
+      });
+    } catch (error) {
+      console.log(
+        JSON.stringify({
+          event: 'federated_search_meili_failed',
+          message: /** @type {Error} */ (error).message,
+        }),
+      );
+      return Response.json({ error: 'Search is unavailable' }, { status: 503 });
+    }
+    if (scanOffset === offset) estimatedTotalHits = page.estimatedTotalHits;
+    if (!page.hits.length) {
+      exhausted = true;
+      break;
+    }
+
+    const mailIds = page.hits
+      .filter((hit) => hit._federation?.indexUid === MESSAGES_INDEX.name)
+      .map((hit) => hit.id);
+    const rows = mailIds.length ? await fetchSearchEmails(sql, userId, mailIds) : [];
+    const byId = new Map();
+    for (const row of rows) byId.set(row.id, row);
+    for (const [index, hit] of page.hits.entries()) {
+      const row = byId.get(hit.id);
+      if (!row) continue;
+      if (results.length === limit) {
+        nextOffset = scanOffset + index;
+        break;
+      }
+      results.push({ type: 'email', ...row });
+    }
+    if (nextOffset !== null) break;
+    scanOffset += page.hits.length;
+    if (page.hits.length < batchLimit) {
+      exhausted = true;
+      break;
+    }
+  }
+
+  return Response.json({
+    query,
+    results,
+    estimatedTotalHits,
+    limit,
+    offset,
+    nextOffset,
+    scanLimitReached: nextOffset === null && !exhausted && scanOffset >= VERIFIED_MAIL_SCAN_CAP,
+  });
+}
+
 // GET /search?q=…&scope=all|mail|documents|tasks — federated mail + documents
 // + tasks search via Meilisearch's multi-search federation (shared/meili.js's
 // federatedSearch). Single-index scopes run the same federated path with a
@@ -350,6 +432,23 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
 
   const limit = parseScopedLimit(url);
   const offset = parseScopedOffset(url);
+  const verifiedPagination = url.searchParams.get('pagination') === 'verified';
+  if (verifiedPagination) {
+    if (scope !== 'mail' || url.searchParams.get('mode') !== 'keyword') {
+      return Response.json(
+        { error: 'Verified pagination requires mail scope and keyword mode' },
+        { status: 400 },
+      );
+    }
+    const rawOffset = url.searchParams.get('offset') ?? '0';
+    if (
+      !/^(0|[1-9]\d*)$/.test(rawOffset) ||
+      !Number.isSafeInteger(Number(rawOffset)) ||
+      Number(rawOffset) >= VERIFIED_MAIL_SCAN_CAP
+    ) {
+      return Response.json({ error: 'Verified search offset is out of range' }, { status: 400 });
+    }
+  }
 
   const spec = parseFederatedSearchQuery(q);
   const hasFilters = Object.keys(spec.filters).length > 0;
@@ -417,6 +516,10 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
   if (!spec.text && units.length === 1) {
     const [unit] = units;
     unit.sort = unit.descriptor === MESSAGES_INDEX ? ['sent_at:desc'] : ['updated_at:desc'];
+  }
+
+  if (verifiedPagination) {
+    return handleVerifiedMailPage(sql, userId, env, units[0], q, limit, offset, deps);
   }
 
   let federated;

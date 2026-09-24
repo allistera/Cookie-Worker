@@ -6,6 +6,7 @@ import {
   savedQueryError,
   savedViewsError,
 } from '../src/savedViews.js';
+import { parseSearchQuery } from '../src/queryParse.js';
 
 const A = 'user-a';
 const B = 'user-b';
@@ -48,6 +49,15 @@ describe('saved mail-view queries', () => {
       savedQueryError('invoice from:"Jane Doe" tag:Work has:attachment before:2026-12-31'),
     ).toBeNull();
     expect(savedQueryError('sender:client@example.com')).toBeNull();
+    expect(savedQueryError('tag:"Project in:inbox Plans"')).toBeNull();
+    expect(parseSearchQuery('tag:"Project in:inbox Plans"').filters).toEqual({
+      tag: 'Project in:inbox Plans',
+    });
+  });
+
+  test('rejects a prefixed token that runtime search would interpret as a positive filter', () => {
+    expect(parseSearchQuery('-from:alice').filters).toEqual({ from: 'alice' });
+    expect(savedQueryError('-from:alice')).toContain('prefix');
   });
 
   test.each([
@@ -56,6 +66,8 @@ describe('saved mail-view queries', () => {
     ['from:a sender:b', 'only once'],
     ['from:a from:b', 'only once'],
     ['from:a OR from:b', 'Boolean'],
+    ['client-from:alice', 'prefix'],
+    ['-in:done', 'prefix'],
     ['has:images', 'has:attachment'],
     ['in:unread invoice', 'folder selector'],
     ['is:starred', 'not a supported'],

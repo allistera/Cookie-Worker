@@ -40,6 +40,11 @@ export function savedQueryError(query) {
       return 'Boolean AND, OR, and NOT are not supported in saved views.';
     const operator = /^([a-z][\w-]*):(.*)$/i.exec(part);
     if (!operator) {
+      // The runtime parser recognizes operators anywhere in a token. A
+      // prefixed form such as -from:alice would otherwise validate as text
+      // but execute as a positive sender filter.
+      if (Object.keys(parseSearchQuery(part).filters).length)
+        return 'Remove the unsupported prefix before a search operator.';
       if (part.includes('"') && !/^"[^":]*"$/.test(part))
         return 'Use quotation marks around a whole phrase or an operator value.';
       hasCriterion = true;
