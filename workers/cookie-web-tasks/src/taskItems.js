@@ -7,8 +7,8 @@ import { normalizeTaskMetadata } from './taskMetadata.js';
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
 import { isAncestorOf } from './ancestry.js';
 import { removeTaskItemFromMeili, syncTaskItemToMeili } from './taskItemMeiliSync.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CONTENT_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 10000;
@@ -47,11 +47,6 @@ export function isCalendarDate(value) {
  */
 export function isPriority(value) {
   return Number.isInteger(value) && value >= MIN_PRIORITY && value <= MAX_PRIORITY;
-}
-
-/** @param {any} value */
-function isUuid(value) {
-  return value === String(value ?? '') && UUID_RE.test(value);
 }
 
 /** @param {any} value @param {number} max */
@@ -115,7 +110,7 @@ export async function getTaskItems(sql, userId, url) {
   const project = url.searchParams.get('project') ?? 'inbox';
   const inbox = project === 'inbox';
   const today = project === 'today';
-  if (!inbox && !today && !isUuid(project)) {
+  if (!inbox && !today && !validId(project)) {
     return Response.json(
       { error: 'project must be a project id, "inbox" or "today"' },
       { status: 400 },
@@ -245,7 +240,7 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
   const parentId = body?.parentId ?? null;
   let projectId = body?.projectId ?? null;
   if (parentId !== null) {
-    if (!isUuid(parentId)) {
+    if (!validId(parentId)) {
       return Response.json({ error: 'Task not found' }, { status: 404 });
     }
     const [parent] = await sql`
@@ -258,7 +253,7 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
     }
     projectId = parent.projectId;
   } else if (projectId !== null) {
-    if (!isUuid(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
+    if (!validId(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
   }
@@ -335,7 +330,7 @@ async function createDivider(sql, userId, body) {
   }
   const projectId = body?.projectId ?? null;
   if (projectId !== null) {
-    if (!isUuid(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
+    if (!validId(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
   }
@@ -376,7 +371,7 @@ function fetchOwnedTaskItem(sql, userId, id) {
  * @param {any} [env] Meilisearch config for the best-effort search sync.
  */
 async function updateTaskItemUnlocked(sql, userId, body, env) {
-  const id = isUuid(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
   const [existing] = await fetchOwnedTaskItem(sql, userId, id);
   if (!existing) {
@@ -438,7 +433,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
 
   let projectId = hasProject ? (body.projectId ?? null) : null;
   if (hasProject && projectId !== null) {
-    if (!isUuid(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
+    if (!validId(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
   }
@@ -449,7 +444,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
     if (parentId === id) {
       return Response.json({ error: 'A task cannot be its own parent' }, { status: 400 });
     }
-    if (isUuid(parentId)) [targetParent] = await fetchOwnedTaskItem(sql, userId, parentId);
+    if (validId(parentId)) [targetParent] = await fetchOwnedTaskItem(sql, userId, parentId);
     if (!targetParent) return Response.json({ error: 'Task not found' }, { status: 404 });
     if (targetParent.kind === 'divider') {
       return Response.json({ error: 'A divider cannot have sub-tasks' }, { status: 400 });
@@ -687,7 +682,7 @@ export function dealtPositions(rows) {
  */
 export async function reorderTaskItems(sql, userId, body) {
   const ids = Array.isArray(body?.ids) ? body.ids : null;
-  if (!ids?.length || ids.length > MAX_REORDER_IDS || !ids.every(isUuid)) {
+  if (!ids?.length || ids.length > MAX_REORDER_IDS || !ids.every(validId)) {
     return Response.json(
       { error: `ids must be a list of 1 to ${MAX_REORDER_IDS} task ids` },
       { status: 400 },
@@ -763,7 +758,7 @@ export async function reorderTaskItems(sql, userId, body) {
  * @param {any} [env] Meilisearch config for the best-effort search sync.
  */
 export async function deleteTaskItem(sql, userId, body, env) {
-  const id = isUuid(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
 
   const deleted = await sql`

@@ -10,8 +10,8 @@ import {
   syncCalendarSubscription,
   validSubscriptionUrl,
 } from './calendarSync.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const MAX_NAME = 50;
 // A subscription sync performs a server-side HTTPS fetch (10s timeout, 5MB
@@ -193,7 +193,7 @@ export async function createCalendar(sql, userId, body, env, sync = syncCalendar
  * @param {typeof syncCalendarSubscription} [sync]
  */
 export async function syncCalendar(sql, userId, body, env, sync = syncCalendarSubscription) {
-  const id = UUID_RE.test(body.id) ? String(body.id) : null;
+  const id = validId(body.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
   }
@@ -231,7 +231,7 @@ export async function syncCalendar(sql, userId, body, env, sync = syncCalendarSu
  * @param {any} body
  */
 export async function renameCalendar(sql, userId, body) {
-  const id = UUID_RE.test(body.id) ? String(body.id) : null;
+  const id = validId(body.id) ? String(body.id) : null;
   const name = id ? validName(body.name) : null;
   if (!id || !name) {
     return Response.json({ error: 'id and a valid name (max 50) are required' }, { status: 400 });
@@ -270,7 +270,7 @@ export async function renameCalendar(sql, userId, body) {
  * @param {any} body
  */
 export async function deleteCalendar(sql, userId, body) {
-  const id = UUID_RE.test(body.id) ? String(body.id) : null;
+  const id = validId(body.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
   }

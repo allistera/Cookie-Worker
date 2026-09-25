@@ -1,7 +1,7 @@
 import { createTaskTree, isCalendarDate } from './taskItems.js';
 import { isTaskTimeZone, normalizeTaskLabels, normalizeTaskMetadata } from './taskMetadata.js';
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
-import { allowRequest } from './rateLimit.js';
+import { allowRequest } from '../../../shared/rate-limit.js';
 
 import { responsesUrl } from '../../../shared/openai.js';
 /** Extract explicit shortcuts before AI so p1, #projects and @labels are exact. @param {string} text */

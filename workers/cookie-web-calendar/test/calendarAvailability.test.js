@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   calendarAvailability,
+  mapWithConcurrency,
   nativeBusyIntervals,
   subscriptionBusyIntervals,
   validateAvailabilityRequest,
@@ -429,5 +430,29 @@ describe('authenticated availability read', () => {
     const sql = sqlFor([]);
     expect((await calendarAvailability(sql, 'owner', body, env)).status).toBe(429);
     expect(sql).not.toHaveBeenCalled();
+  });
+});
+
+describe('bounded subscription fetching', () => {
+  // Ten 5 MB feeds fetched at once would all sit in memory together.
+  it('never runs more than the limit at once and keeps results in order', async () => {
+    let active = 0;
+    let peak = 0;
+    const results = await mapWithConcurrency([5, 1, 4, 2, 3, 0, 6], 3, async (delay) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      active -= 1;
+      return delay * 10;
+    });
+
+    expect(peak).toBe(3);
+    expect(results).toEqual([50, 10, 40, 20, 30, 0, 60]);
+  });
+
+  it('resolves an empty list without calling back', async () => {
+    const callback = vi.fn();
+    await expect(mapWithConcurrency([], 3, callback)).resolves.toEqual([]);
+    expect(callback).not.toHaveBeenCalled();
   });
 });

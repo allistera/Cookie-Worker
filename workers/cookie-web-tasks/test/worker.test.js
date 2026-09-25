@@ -28,7 +28,7 @@ vi.mock('../../../shared/auth-jwt.js', () => ({
   verifyAccessToken: (/** @type {any[]} */ ...args) => verifyAccessToken(...args),
   authFailureResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }),
 }));
-vi.mock('../src/rateLimit.js', () => ({ allowRequest: async () => true }));
+vi.mock('../../../shared/rate-limit.js', () => ({ allowRequest: async () => true }));
 
 const captureHandledException = vi.fn();
 vi.mock('../src/sentry.js', () => ({

@@ -3,14 +3,9 @@
 // on GET that the client assembles into a tree.
 
 import { isAncestorOf } from './ancestry.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_NAME_LENGTH = 120;
-
-/** @param {any} value */
-function isUuid(value) {
-  return value === String(value ?? '') && UUID_RE.test(value);
-}
 
 /** @param {any} value */
 function cleanName(value) {
@@ -54,7 +49,7 @@ export async function createProject(sql, userId, body) {
 
   const parentId = body?.parentId ?? null;
   if (parentId !== null) {
-    if (!isUuid(parentId) || !(await fetchOwnedProject(sql, userId, parentId)).length) {
+    if (!validId(parentId) || !(await fetchOwnedProject(sql, userId, parentId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
   }
@@ -76,7 +71,17 @@ export async function createProject(sql, userId, body) {
  * @param {any} body
  */
 export async function updateProject(sql, userId, body) {
-  const id = isUuid(body?.id) ? String(body.id) : null;
+  // The cycle check and the reparent must be atomic: two concurrent opposite
+  // moves (A under B, B under A) would otherwise both pass the check.
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 2))`;
+    return updateProjectUnlocked(/** @type {any} */ (tx), userId, body);
+  });
+}
+
+/** @param {import('postgres').Sql} sql @param {string} userId @param {any} body */
+async function updateProjectUnlocked(sql, userId, body) {
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid project id is required' }, { status: 400 });
   if (!(await fetchOwnedProject(sql, userId, id)).length) {
     return Response.json({ error: 'Project not found' }, { status: 404 });
@@ -104,7 +109,7 @@ export async function updateProject(sql, userId, body) {
     if (parentId === id) {
       return Response.json({ error: 'A project cannot be its own parent' }, { status: 400 });
     }
-    if (!isUuid(parentId) || !(await fetchOwnedProject(sql, userId, parentId)).length) {
+    if (!validId(parentId) || !(await fetchOwnedProject(sql, userId, parentId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
     if (
@@ -142,7 +147,7 @@ export async function updateProject(sql, userId, body) {
  * @param {any} body
  */
 export async function deleteProject(sql, userId, body) {
-  const id = isUuid(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid project id is required' }, { status: 400 });
 
   const deleted = await sql`

@@ -16,13 +16,41 @@ import {
   wallClock,
   wallTimeToInstant,
 } from './availabilityTime.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_ROWS = 1000;
 const MAX_BUSY = 5000;
 const MAX_DURATION = 30 * DAY_MS;
 const INCOMPLETE =
   'Could not completely check this calendar. Try a shorter range or another calendar.';
+// Each feed may be up to 5 MB of ICS text plus its parsed events. Fetching
+// all ten selectable feeds at once could hold ~50 MB in one isolate, so only a
+// few are in flight; each feed's text is dropped once reduced to intervals.
+const FEED_CONCURRENCY = 3;
+
+/**
+ * Maps items with at most `limit` callbacks running at once, keeping order.
+ *
+ * @template T, R
+ * @param {T[]} items
+ * @param {number} limit
+ * @param {(item: T) => Promise<R>} callback
+ * @returns {Promise<R[]>}
+ */
+export async function mapWithConcurrency(items, limit, callback) {
+  /** @type {R[]} */
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await callback(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 /** @param {any} body */
 export function validateAvailabilityRequest(body) {
@@ -30,9 +58,7 @@ export function validateAvailabilityRequest(body) {
     Array.isArray(body?.calendarIds) &&
     body.calendarIds.length > 0 &&
     body.calendarIds.length <= 10 &&
-    body.calendarIds.every(
-      (/** @type {unknown} */ id) => typeof id === 'string' && UUID_RE.test(id),
-    ) &&
+    body.calendarIds.every((/** @type {unknown} */ id) => typeof id === 'string' && validId(id)) &&
     new Set(body.calendarIds).size === body.calendarIds.length &&
     validDate(body.from) &&
     validDate(body.to) &&
@@ -333,33 +359,33 @@ export async function calendarAvailability(sql, userId, body, env, request = req
       );
     }
   }
-  const feeds = await Promise.all(
-    calendars
-      .filter((c) => c.subscriptionUrl)
-      .map(async (calendar) => {
-        const status = {
-          id: calendar.id,
-          kind: 'subscription',
-          subscriptionSyncedAt: calendar.subscriptionSyncedAt,
-          cachedSyncFailed: Boolean(calendar.subscriptionError),
+  const feeds = await mapWithConcurrency(
+    calendars.filter((c) => c.subscriptionUrl),
+    FEED_CONCURRENCY,
+    async (calendar) => {
+      const status = {
+        id: calendar.id,
+        kind: 'subscription',
+        subscriptionSyncedAt: calendar.subscriptionSyncedAt,
+        cachedSyncFailed: Boolean(calendar.subscriptionError),
+      };
+      try {
+        const url = validSubscriptionUrl(
+          calendar.subscriptionUrl,
+          calendarSubscriptionAllowlist(env),
+        );
+        if (!url) throw new Error('Subscription not allowed');
+        const intervals = subscriptionBusyIntervals(await fetchIcs(url, request), body, window);
+        return {
+          status: { ...status, complete: true, checkedAt: new Date().toISOString() },
+          intervals,
         };
-        try {
-          const url = validSubscriptionUrl(
-            calendar.subscriptionUrl,
-            calendarSubscriptionAllowlist(env),
-          );
-          if (!url) throw new Error('Subscription not allowed');
-          const intervals = subscriptionBusyIntervals(await fetchIcs(url, request), body, window);
-          return {
-            status: { ...status, complete: true, checkedAt: new Date().toISOString() },
-            intervals,
-          };
-        } catch {
-          // Deliberately omit remote error details: they may contain private URLs
-          // or feed content, including when the parser itself throws.
-          return { status: { ...status, complete: false, error: INCOMPLETE }, intervals: [] };
-        }
-      }),
+      } catch {
+        // Deliberately omit remote error details: they may contain private URLs
+        // or feed content, including when the parser itself throws.
+        return { status: { ...status, complete: false, error: INCOMPLETE }, intervals: [] };
+      }
+    },
   );
   for (const feed of feeds) {
     sources.push(feed.status);

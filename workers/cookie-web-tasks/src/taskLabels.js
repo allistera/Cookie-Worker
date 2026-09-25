@@ -5,18 +5,13 @@
 // shapes.
 
 import { normalizeTaskLabels } from './taskMetadata.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const COLOR_RE = /^#[0-9a-f]{6}$/;
 export const DEFAULT_LABEL_COLOR = '#64748b';
 
 const BAD_NAME = 'Labels must be 1–40 characters without spaces, @, or #';
 const BAD_COLOR = 'color must be a hex colour such as #1a73e8';
-
-/** @param {any} value */
-function isUuid(value) {
-  return value === String(value ?? '') && UUID_RE.test(value);
-}
 
 /**
  * One label name, normalised the way task writes normalise them, or null
@@ -98,7 +93,7 @@ export async function createTaskLabel(sql, userId, body) {
  * @param {any} body
  */
 export async function updateTaskLabel(sql, userId, body) {
-  const id = isUuid(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid label id is required' }, { status: 400 });
   const hasName = Object.hasOwn(body, 'name');
   const hasColor = Object.hasOwn(body, 'color');
@@ -153,7 +148,7 @@ export async function updateTaskLabel(sql, userId, body) {
  * @param {any} body
  */
 export async function deleteTaskLabel(sql, userId, body) {
-  const id = isUuid(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid label id is required' }, { status: 400 });
 
   return sql.begin(async (tx) => {

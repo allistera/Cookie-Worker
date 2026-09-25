@@ -19,8 +19,8 @@ import { resolveDailyNoteEventDate, syncDailyNoteEvents } from './dailyEventSync
 import { removeDocumentFromMeili, syncDocumentToMeili } from './documentMeiliSync.js';
 import { flattenBlocksToText } from './documentText.js';
 import { parseDocumentSearchQuery } from './queryParse.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const MAX_TITLE_LENGTH = 300;
 export const MAX_EMOJI_LENGTH = 16;
 // Blocks are stored verbatim, including base64 images, so the cap is generous
@@ -36,13 +36,6 @@ const SEARCH_RESULTS = 20;
  *   hybridSearch: (env: any, descriptor: any, query: {userId: string, text?: string, filter?: string, limit: number, semanticRatio?: number, sort?: string[]}, client?: any) => Promise<{id: string}[]>,
  * }} DocumentsDeps
  */
-
-// UUID_RE.test coerces its argument; the identity check keeps non-strings
-// that could coerce into a valid-looking id out of the raw SQL bindings.
-/** @param {any} value */
-function isUuid(value) {
-  return value === String(value ?? '') && UUID_RE.test(value);
-}
 
 // Titles and emoji come straight from contenteditable inputs; bound them
 // rather than trusting the client. Returns null when not a string at all.
@@ -168,7 +161,7 @@ export async function getDocuments(sql, userId, url, deps) {
 
   const templateId = url.searchParams.get('templateId');
   if (templateId) {
-    if (!isUuid(templateId)) {
+    if (!validId(templateId)) {
       return Response.json({ error: 'A valid template id is required' }, { status: 400 });
     }
     const [template] = await fetchTemplate(sql, userId, templateId);
@@ -183,7 +176,7 @@ export async function getDocuments(sql, userId, url, deps) {
 
   const id = url.searchParams.get('id');
   if (id) {
-    if (!isUuid(id))
+    if (!validId(id))
       return Response.json({ error: 'A valid document id is required' }, { status: 400 });
     const [document] = await fetchDocument(sql, userId, id);
     if (!document) return Response.json({ error: 'Document not found' }, { status: 404 });
@@ -316,7 +309,7 @@ export async function createDocument(sql, userId, body, deps, env = {}) {
     if (!title) return Response.json({ error: 'A folder title is required' }, { status: 400 });
     const parentId = body.parentId ?? null;
     if (parentId !== null) {
-      if (!isUuid(parentId) || !(await fetchOwnedFolder(sql, userId, parentId)).length) {
+      if (!validId(parentId) || !(await fetchOwnedFolder(sql, userId, parentId)).length) {
         return Response.json({ error: 'parentId must be one of your folders' }, { status: 400 });
       }
     }
@@ -350,14 +343,14 @@ export async function createDocument(sql, userId, body, deps, env = {}) {
   if (body.kind === 'document') {
     const folderId = body.folderId ?? null;
     if (folderId !== null) {
-      if (!isUuid(folderId) || !(await fetchOwnedFolder(sql, userId, folderId)).length) {
+      if (!validId(folderId) || !(await fetchOwnedFolder(sql, userId, folderId)).length) {
         return Response.json({ error: 'folderId must be one of your folders' }, { status: 400 });
       }
     }
     /** @type {any} */
     let template = null;
     if (body.templateId !== undefined && body.templateId !== null) {
-      if (!isUuid(body.templateId)) {
+      if (!validId(body.templateId)) {
         return Response.json(
           { error: 'templateId must be one of your templates' },
           { status: 400 },
@@ -404,7 +397,7 @@ export async function createDocument(sql, userId, body, deps, env = {}) {
  * @param {any} env
  */
 export async function updateDocument(sql, userId, body, deps, env = {}) {
-  if (!isUuid(body.id)) return Response.json({ error: 'A valid id is required' }, { status: 400 });
+  if (!validId(body.id)) return Response.json({ error: 'A valid id is required' }, { status: 400 });
 
   if (body.kind === 'folder') {
     const title = cleanText(body.title, MAX_TITLE_LENGTH);
@@ -463,7 +456,7 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
   }
   if (Object.hasOwn(body, 'folderId')) {
     if (body.folderId !== null) {
-      if (!isUuid(body.folderId) || !(await fetchOwnedFolder(sql, userId, body.folderId)).length) {
+      if (!validId(body.folderId) || !(await fetchOwnedFolder(sql, userId, body.folderId)).length) {
         return Response.json({ error: 'folderId must be one of your folders' }, { status: 400 });
       }
     }
@@ -595,7 +588,7 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
  * @param {any} env
  */
 export async function deleteDocument(sql, userId, body, env = {}) {
-  if (!isUuid(body.id)) return Response.json({ error: 'A valid id is required' }, { status: 400 });
+  if (!validId(body.id)) return Response.json({ error: 'A valid id is required' }, { status: 400 });
 
   const result =
     body.kind === 'folder'

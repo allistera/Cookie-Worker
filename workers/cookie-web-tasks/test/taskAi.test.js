@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { allowRequestMock } = vi.hoisted(() => ({ allowRequestMock: vi.fn() }));
 
-vi.mock('../src/rateLimit.js', () => ({ allowRequest: allowRequestMock }));
+vi.mock('../../../shared/rate-limit.js', () => ({ allowRequest: allowRequestMock }));
 
 import {
   createAiTask,

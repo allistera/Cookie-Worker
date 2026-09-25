@@ -3,7 +3,7 @@
 // trigger token is passed in explicitly (env binding) rather than read from
 // process.env, and (req, res) handling becomes returning a Response.
 
-import { allowRequest } from './rateLimit.js';
+import { allowRequest } from '../../../shared/rate-limit.js';
 
 // A triage and news rebuild is bounded but not free: cap it well below what a
 // held-down button could manage.

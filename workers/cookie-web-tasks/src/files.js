@@ -4,6 +4,7 @@
 // ever leave through getFileContent, which checks ownership first.
 
 import { cleanText, fetchOwnedFolder } from './documents.js';
+import { validId } from '../../../shared/pagination.js';
 
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 // Multipart framing around the file itself; a declared body past this is
@@ -11,7 +12,6 @@ export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
 const MAX_NAME_LENGTH = 255;
 const UPLOAD_RATE_LIMIT = { limit: 60, windowMs: 60_000 };
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const FALLBACK_TYPE = 'application/octet-stream';
 // The only types ever served inline: the sniffed set, nothing the client says.
 const INLINE_TYPES = new Set([
@@ -21,11 +21,6 @@ const INLINE_TYPES = new Set([
   'image/webp',
   'application/pdf',
 ]);
-
-/** @param {unknown} value */
-function isUuid(value) {
-  return typeof value === 'string' && UUID_RE.test(value);
-}
 
 /**
  * @param {ArrayBuffer} buffer
@@ -80,7 +75,7 @@ function cleanMimeType(type) {
  */
 export async function listFiles(sql, userId, url) {
   const folder = url.searchParams.get('folder');
-  if (folder && folder !== 'root' && !isUuid(folder)) {
+  if (folder && folder !== 'root' && !validId(folder)) {
     return Response.json({ error: 'Invalid folder' }, { status: 400 });
   }
   const files =
@@ -149,7 +144,7 @@ export async function uploadFile(request, sql, userId, env, deps) {
   const folderField = form.get('folder');
   const folderId = typeof folderField === 'string' && folderField ? folderField : null;
   if (folderId !== null) {
-    if (!isUuid(folderId)) return Response.json({ error: 'Invalid folder' }, { status: 400 });
+    if (!validId(folderId)) return Response.json({ error: 'Invalid folder' }, { status: 400 });
     const [owned] = await fetchOwnedFolder(sql, userId, folderId);
     if (!owned) return Response.json({ error: 'Folder not found' }, { status: 404 });
   }
@@ -232,7 +227,7 @@ export async function updateFile(sql, userId, id, body) {
     if (body.folder === null) {
       updates.folder_id = null;
     } else {
-      if (!isUuid(body.folder)) return Response.json({ error: 'Invalid folder' }, { status: 400 });
+      if (!validId(body.folder)) return Response.json({ error: 'Invalid folder' }, { status: 400 });
       const [owned] = await fetchOwnedFolder(sql, userId, body.folder);
       if (!owned) return Response.json({ error: 'Folder not found' }, { status: 404 });
       updates.folder_id = body.folder;

@@ -204,9 +204,16 @@ export async function sendNtfyTest(sql, userId, options = {}) {
 }
 
 /**
- * Delivers queued notifications with a short lease-like attempt stamp. A
- * failed delivery remains queued for the next scheduled run, while the
- * attempt cap prevents a permanently invalid topic from retrying forever.
+ * Delivers queued notifications. Claiming a row stamps last_attempt_at, and a
+ * row is only claimable again once its backoff has elapsed: 2, 4, 8, 16, 32
+ * minutes, then hourly. The shortest wait doubles as a lease, so a run that
+ * overlaps the next every-minute cron tick cannot publish the same row twice
+ * (FOR UPDATE SKIP LOCKED only holds for the claiming statement). A failed
+ * delivery keeps retrying through an ntfy outage until the event is a day
+ * old, matching mail-app-ingest's purge of day-old notification events.
+ * A slow run can still outlive that lease, so each claim remembers its attempt
+ * number and only publishes or records a result while the row still carries
+ * it; a row a later tick has reclaimed is skipped and left to that tick.
  *
  * @param {import('postgres').Sql} sql
  * @param {{baseUrl?: string, fetchImpl?: typeof fetch, limit?: number}} [options]
@@ -225,7 +232,10 @@ export async function deliverPendingNtfy(sql, options = {}) {
       LEFT JOIN email_categories category
         ON category.id = message.category_id AND category.user_id = message.user_id
       WHERE event.published_at IS NULL
-        AND event.attempts < 5
+        AND event.created_at > now() - interval '24 hours'
+        AND (event.last_attempt_at IS NULL
+          OR event.last_attempt_at <= now()
+            - LEAST(interval '1 hour', interval '1 minute' * power(2, event.attempts)))
         AND subscription.enabled
         AND message.is_unread
         AND NOT message.is_sent
@@ -251,11 +261,13 @@ export async function deliverPendingNtfy(sql, options = {}) {
     FROM pending
     WHERE event.event_id = pending.event_id
     RETURNING pending.event_id, pending.message_id, pending.topic,
-              pending.subject, pending.body_text
+              pending.subject, pending.body_text, event.attempts
   `;
   let delivered = 0;
   let suppressed = 0;
+  let skipped = 0;
   for (const row of rows) {
+    let claimLost = false;
     try {
       await publishNtfy(
         {
@@ -267,24 +279,33 @@ export async function deliverPendingNtfy(sql, options = {}) {
         {
           ...options,
           canPublish: async () => {
-            const [eligible] = await sql`SELECT event.event_id FROM ntfy_notification_events event
+            const [event] = await sql`SELECT event.attempts,
+                (message.screening_status = 'allowed'
+                  AND NOT EXISTS (SELECT 1 FROM sender_decisions sender
+                    WHERE sender.user_id = message.user_id AND sender.address = lower(btrim(message.from_address))
+                      AND sender.decision = 'blocked')) AS eligible
+              FROM ntfy_notification_events event
               JOIN messages message ON message.id = event.message_id AND message.user_id = event.user_id
-              WHERE event.event_id = ${row.event_id} AND event.published_at IS NULL
-                AND message.screening_status = 'allowed'
-                AND NOT EXISTS (SELECT 1 FROM sender_decisions sender
-                  WHERE sender.user_id = message.user_id AND sender.address = lower(btrim(message.from_address))
-                    AND sender.decision = 'blocked')`;
-            return Boolean(eligible);
+              WHERE event.event_id = ${row.event_id} AND event.published_at IS NULL`;
+            if (event && Number(event.attempts) !== Number(row.attempts)) {
+              claimLost = true;
+              return false;
+            }
+            return Boolean(event?.eligible);
           },
         },
       );
       await sql`
         UPDATE ntfy_notification_events
         SET published_at = now(), last_error = NULL
-        WHERE event_id = ${row.event_id}
+        WHERE event_id = ${row.event_id} AND attempts = ${row.attempts}
       `;
       delivered += 1;
     } catch (error) {
+      if (claimLost) {
+        skipped += 1;
+        continue;
+      }
       if (error instanceof NotificationSuppressedError) {
         suppressed += 1;
         await sql`DELETE FROM ntfy_notification_events WHERE event_id = ${row.event_id} AND published_at IS NULL`;
@@ -293,14 +314,15 @@ export async function deliverPendingNtfy(sql, options = {}) {
       await sql`
         UPDATE ntfy_notification_events
         SET last_error = ${String(error).slice(0, 500)}
-        WHERE event_id = ${row.event_id}
+        WHERE event_id = ${row.event_id} AND attempts = ${row.attempts}
       `;
     }
   }
   return {
     attempted: rows.length,
     delivered,
-    failed: rows.length - delivered - suppressed,
+    failed: rows.length - delivered - suppressed - skipped,
     ...(suppressed ? { suppressed } : {}),
+    ...(skipped ? { skipped } : {}),
   };
 }

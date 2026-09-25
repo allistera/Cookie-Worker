@@ -5,6 +5,7 @@ import postgres from 'postgres';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { hybridSearch } from '../../../shared/meili.js';
+import { validId } from '../../../shared/pagination.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { getDailyNoteSeed, putDailyNoteSeed } from './dailyNoteSeed.js';
 import { createDocument, deleteDocument, getDocuments, updateDocument } from './documents.js';
@@ -14,7 +15,7 @@ import { postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
 import { createTaskLabel, deleteTaskLabel, getTaskLabels, updateTaskLabel } from './taskLabels.js';
-import { allowRequest } from './rateLimit.js';
+import { allowRequest } from '../../../shared/rate-limit.js';
 import { postRefresh } from './refresh.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 import {
@@ -31,7 +32,6 @@ import { configureOpenAi } from '../../../shared/openai.js';
 // Vercel's body cap is 4.5 MB; keep that for document payloads, but use a much
 // smaller default for the ordinary command endpoints this Worker serves.
 const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
-const FILE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
@@ -157,7 +157,7 @@ async function route(url, request, sql, userId, env, email) {
       );
     }
     const id = segments[1];
-    if (!FILE_UUID.test(id) || segments.length > 3) {
+    if (!validId(id) || segments.length > 3) {
       return Response.json({ error: 'Not Found' }, { status: 404 });
     }
     if (segments.length === 3) {

@@ -2,9 +2,9 @@
 // AI Today's task list.
 
 import { isCalendarDate, updateTaskItem } from './taskItems.js';
+import { validId } from '../../../shared/pagination.js';
 
 const RESULTS = 25;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // The authenticated user's gathered tasks, most-pressing first: soonest due,
@@ -145,7 +145,7 @@ export function digestMessageIds(row) {
       (/** @type {any} */ item) => item?.message_id,
     ),
   );
-  return [...new Set(ids.filter((/** @type {any} */ id) => UUID_RE.test(String(id))))];
+  return [...new Set(ids.filter((/** @type {any} */ id) => validId(String(id))))];
 }
 
 // Fold live message state into stored triage: drop items whose message is
@@ -265,7 +265,7 @@ async function rescheduleTask(sql, userId, task, dueDate) {
 export async function postTasks(sql, userId, body, env) {
   const id = String(body.id ?? '');
   const { action } = body;
-  if (!UUID_RE.test(id)) {
+  if (!validId(id)) {
     return Response.json({ error: 'A valid task id is required' }, { status: 400 });
   }
   if (action !== 'complete' && action !== 'reschedule') {

@@ -11,8 +11,8 @@ import {
   WEEKDAY_CODES,
 } from './recurrence.js';
 import { generateCalendarEventDraft } from './calendarAi.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
 const MAX_TITLE = 200;
@@ -55,7 +55,7 @@ function validEventFields(body) {
     !TIME_RE.test(start) ||
     duration <= 0 ||
     duration > MAX_DURATION_MINUTES ||
-    !(UUID_RE.test(calendar) || LEGACY_CALENDAR_NAMES.has(calendar)) ||
+    !(validId(calendar) || LEGACY_CALENDAR_NAMES.has(calendar)) ||
     (tone !== null && !ALLOWED_TONES.has(tone)) ||
     (location && location.length > MAX_LOCATION) ||
     (description && description.length > MAX_DESCRIPTION) ||
@@ -298,7 +298,7 @@ export async function createEvent(sql, userId, body) {
  * @param {any} body
  */
 export async function updateEvent(sql, userId, body) {
-  const id = UUID_RE.test(body.id) ? String(body.id) : null;
+  const id = validId(body.id) ? String(body.id) : null;
   const fields = id ? validEventFields(body) : null;
   if (!fields) {
     return Response.json({ error: 'id and valid event fields are required' }, { status: 400 });
@@ -348,7 +348,7 @@ export async function updateEvent(sql, userId, body) {
  * @param {any} body
  */
 export async function deleteEvent(sql, userId, body) {
-  const id = UUID_RE.test(body.id) ? String(body.id) : null;
+  const id = validId(body.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
   }

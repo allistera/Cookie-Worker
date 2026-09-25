@@ -48,4 +48,20 @@ describe('isAncestorOf', () => {
     expect(sql.calls.some((call) => call.text.includes('task_items'))).toBe(false);
     expect(sql.calls[0].text).toContain('WITH RECURSIVE ancestry');
   });
+
+  // UNION ALL re-emits visited rows forever once the table already holds a
+  // cycle; UNION discards them, so the walk always terminates.
+  it('deduplicates visited rows so an existing cycle cannot recurse forever', async () => {
+    const sql = createMockSql([[]]);
+
+    await isAncestorOf(sql, {
+      table: 'task_projects',
+      userId: USER_ID,
+      id: ID_A,
+      candidateParentId: ID_B,
+    });
+
+    expect(sql.calls[0].text).toMatch(/\bUNION\s+SELECT/);
+    expect(sql.calls[0].text).not.toContain('UNION ALL');
+  });
 });

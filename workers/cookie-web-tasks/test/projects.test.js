@@ -86,6 +86,28 @@ describe('PATCH /projects', () => {
     expect(sql.calls.some((call) => call.text.includes('UPDATE task_projects'))).toBe(false);
   });
 
+  it('checks for a cycle and reparents under one per-owner lock', async () => {
+    const sql = createMockSql([
+      [{ id: PROJECT_ID }], // the project being moved exists
+      [{ id: PARENT_ID }], // the proposed parent exists
+      [], // ancestry walk finds no cycle
+      [{ id: PROJECT_ID, parentId: PARENT_ID, name: 'Work', createdAt: 't0' }],
+    ]);
+
+    const response = await updateProject(sql, USER_ID, {
+      id: PROJECT_ID,
+      parentId: PARENT_ID,
+    });
+
+    expect(response.status).toBe(200);
+    expect(sql.begin).toHaveBeenCalledTimes(1);
+    expect(sql.controlCalls).toHaveLength(1);
+    expect(sql.controlCalls[0].text).toContain('pg_advisory_xact_lock');
+    expect(sql.controlCalls[0].values).toEqual([USER_ID]);
+    expect(sql.calls[2].text).toContain('WITH RECURSIVE ancestry');
+    expect(sql.calls[3].text).toContain('UPDATE task_projects');
+  });
+
   it('allows a move to the root with parentId null', async () => {
     const sql = createMockSql([
       [{ id: PROJECT_ID }],

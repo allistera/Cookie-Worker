@@ -174,9 +174,10 @@ describe('ntfy delivery', () => {
             topic: 'cookie-topic',
             subject: 'Appointment reminder',
             body_text: 'Please confirm by Friday.',
+            attempts: 1,
           },
         ])
-        .mockResolvedValueOnce([{ event_id: 'event-1' }])
+        .mockResolvedValueOnce([{ attempts: 1, eligible: true }])
         .mockResolvedValueOnce([])
     );
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
@@ -186,6 +187,8 @@ describe('ntfy delivery', () => {
     ).resolves.toEqual({ attempted: 1, delivered: 1, failed: 0 });
     expect(sql).toHaveBeenCalledTimes(3);
     expect(sql.mock.calls[2][0].join(' ')).toContain('published_at = now()');
+    expect(sql.mock.calls[2][0].join(' ')).toContain('AND attempts =');
+    expect(sql.mock.calls[2].slice(1)).toEqual(['event-1', 1]);
     const [, request] = fetchImpl.mock.calls[0];
     expect(request.headers['X-Title']).toBe('Appointment reminder');
     expect(request.body).toBe('Please confirm by Friday.');
@@ -208,14 +211,42 @@ describe('ntfy delivery', () => {
     expect(query).toContain('(message.category_id IS NULL OR category.notifications_enabled)');
   });
 
+  // FOR UPDATE SKIP LOCKED releases when the claim commits, so an overlapping
+  // cron tick must be kept off the row by its attempt stamp instead.
+  test('only reclaims a row after its exponential backoff has elapsed', async () => {
+    const sql = /** @type {any} */ (vi.fn().mockResolvedValueOnce([]));
+
+    await deliverPendingNtfy(sql, { fetchImpl: vi.fn() });
+
+    const query = sql.mock.calls[0][0].join(' ').replace(/\s+/g, ' ');
+    expect(query).toContain(
+      "(event.last_attempt_at IS NULL OR event.last_attempt_at <= now() - LEAST(interval '1 hour', interval '1 minute' * power(2, event.attempts)))",
+    );
+    expect(query).toContain('SET attempts = event.attempts + 1, last_attempt_at = now()');
+  });
+
+  // A flat five-try cap dropped notifications after ~5 minutes of ntfy
+  // outage; retries now continue until the event is a day old.
+  test('expires undelivered rows by age rather than a fixed attempt count', async () => {
+    const sql = /** @type {any} */ (vi.fn().mockResolvedValueOnce([]));
+
+    await deliverPendingNtfy(sql, { fetchImpl: vi.fn() });
+
+    const query = sql.mock.calls[0][0].join(' ').replace(/\s+/g, ' ');
+    expect(query).toContain("event.created_at > now() - interval '24 hours'");
+    expect(query).not.toContain('event.attempts <');
+  });
+
   test('suppresses an event blocked after its batch was claimed', async () => {
     const sql = /** @type {any} */ (
       vi
         .fn()
         .mockResolvedValueOnce([
-          { event_id: 'event-1', message_id: 'message-1', topic: 'cookie-topic' },
+          { event_id: 'event-1', message_id: 'message-1', topic: 'cookie-topic', attempts: 1 },
         ])
-        .mockResolvedValueOnce([])
+        // The event row still exists with this run's claim, but the message
+        // is no longer eligible (sender blocked or screening changed).
+        .mockResolvedValueOnce([{ attempts: 1, eligible: false }])
         .mockResolvedValueOnce([])
     );
     const fetchImpl = vi.fn();
@@ -230,6 +261,29 @@ describe('ntfy delivery', () => {
     expect(query).toContain("message.screening_status = 'allowed'");
     expect(query).toContain('sender.user_id = message.user_id');
     expect(query).toContain('lower(btrim(message.from_address))');
+  });
+
+  // A run slow enough to outlive the backoff lease must not publish a row the
+  // next cron tick has reclaimed, nor treat it as suppressed and delete it.
+  test('skips a row whose claim a later run has taken over', async () => {
+    const sql = /** @type {any} */ (
+      vi
+        .fn()
+        .mockResolvedValueOnce([
+          { event_id: 'event-1', message_id: 'message-1', topic: 'cookie-topic', attempts: 1 },
+        ])
+        .mockResolvedValueOnce([{ attempts: 2, eligible: true }])
+    );
+    const fetchImpl = vi.fn();
+
+    expect(await deliverPendingNtfy(sql, { fetchImpl })).toEqual({
+      attempted: 1,
+      delivered: 0,
+      failed: 0,
+      skipped: 1,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sql).toHaveBeenCalledTimes(2);
   });
 
   test('rechecks screening before a retry rather than reusing the first eligibility result', async () => {

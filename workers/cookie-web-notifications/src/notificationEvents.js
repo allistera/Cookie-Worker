@@ -3,7 +3,7 @@
 // the (req, res) mutation style becomes returning a Response, since Workers
 // speak Web-standard fetch.
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { validId } from '../../../shared/pagination.js';
 
 /**
  * @param {import('postgres').Sql} sql
@@ -102,10 +102,10 @@ function json(status, body, headers = {}) {
  * @param {any} body
  */
 export async function handleNotificationEvent(sql, userId, body) {
-  if (!['claim', 'ack'].includes(body?.action) || !UUID_RE.test(body?.eventId || '')) {
+  if (!['claim', 'ack'].includes(body?.action) || !validId(body?.eventId || '')) {
     return json(400, { error: 'A valid action and event id are required' });
   }
-  if (body.action === 'ack' && !UUID_RE.test(body.claimToken || '')) {
+  if (body.action === 'ack' && !validId(body.claimToken || '')) {
     return json(400, { error: 'A valid claim token is required' });
   }
 
