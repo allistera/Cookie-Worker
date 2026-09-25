@@ -385,6 +385,26 @@ const worker = {
     const resource =
       segments[0] === 'send' && segments.length <= 2 ? (segments[1] ?? 'send') : null;
     const services = createSendServices(env, ctx);
+    if (resource === 'scheduled' && request.method === 'GET') {
+      // Listing is a pure read, so a dropped Hyperdrive connection gets one
+      // more go on a fresh client. Everything else here writes or sends
+      // mail and stays on the single request client below, which is only
+      // created after this branch so a listing opens one connection.
+      let response;
+      try {
+        response = await withUserSql(request, env, ctx, { retryable: true }, (readSql, userId) =>
+          handleScheduled(readSql, userId, request),
+        );
+      } catch (err) {
+        console.error(`${request.method} /send failed:`, err);
+        captureHandledException('send', err, env, {
+          path: url.pathname,
+          method: request.method,
+        });
+        response = Response.json({ error: 'Failed to send email' }, { status: 500 });
+      }
+      return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
+    }
     const sql = createSql(env.HYPERDRIVE.connectionString);
     try {
       if (!resource || !['send', 'scheduled', 'flush', 'follow-up'].includes(resource)) {
@@ -420,27 +440,6 @@ const worker = {
             await runOutOfOfficeInBackground(automaticSql, services);
           },
         );
-      }
-
-      if (resource === 'scheduled' && request.method === 'GET') {
-        // Listing is a pure read, so a dropped Hyperdrive connection gets one
-        // more go on a fresh client. Everything else here writes or sends
-        // mail and stays on the single request client below. The unused
-        // request client costs nothing: postgres.js connects lazily.
-        let response;
-        try {
-          response = await withUserSql(request, env, ctx, { retryable: true }, (readSql, userId) =>
-            handleScheduled(readSql, userId, request),
-          );
-        } catch (err) {
-          console.error(`${request.method} /send failed:`, err);
-          captureHandledException('send', err, env, {
-            path: url.pathname,
-            method: request.method,
-          });
-          response = Response.json({ error: 'Failed to send email' }, { status: 500 });
-        }
-        return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
       }
 
       let userId;
