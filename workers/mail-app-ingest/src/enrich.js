@@ -13,6 +13,10 @@ export const REVIEW_THRESHOLD = 0.8;
 export const CLASSIFICATION_INPUT_CAP = 12_000;
 export const AI_ATTEMPTS = 3;
 export const AI_RETRY_BASE_DELAY_MS = 500;
+// Failed enrichments the recovery sweep retries before leaving the row
+// failed for good. Each run spends a slot of the shared inbound AI budget, so
+// a message that always fails must not keep starving new mail.
+export const MAX_ENRICHMENT_ATTEMPTS = 3;
 
 export class ResponsesApiError extends Error {
   /** @param {number} status */
@@ -271,10 +275,12 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
   }
 
   try {
-    const classification = await withAiRetry(async () => {
-      await claimInboundAiRequest(sql, state.user_id);
-      return classifyEmail(record, labels, apiKey, model, aiRules, categories);
-    });
+    // One budget slot per enrichment run: transient retries below are part of
+    // the same run and must not spend extra slots.
+    await claimInboundAiRequest(sql, state.user_id);
+    const classification = await withAiRetry(() =>
+      classifyEmail(record, labels, apiKey, model, aiRules, categories),
+    );
     const allowed = new Map(labels.map((label) => [label.id, label]));
     const selected = classification.labels.filter(
       (label) => allowed.has(label.id) && label.confidence >= MATCH_THRESHOLD,
@@ -445,12 +451,17 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
     }
     // Same guard as the success path: a user's verdict is complete and must
     // not be flipped to 'failed', or the recovery sweep would retry it on
-    // every tick for nothing.
+    // every tick for nothing. Counting the failure lets the sweep stop after
+    // MAX_ENRICHMENT_ATTEMPTS.
     await sql`
-      INSERT INTO message_ai (message_id, status, provider, model, prompt_version, error_code, updated_at)
-      VALUES (${messageUuid}, 'failed', 'openai', ${model}, ${PROMPT_VERSION}, 'enrichment_failed', now())
+      INSERT INTO message_ai (
+        message_id, status, provider, model, prompt_version, error_code,
+        enrichment_attempts, updated_at
+      )
+      VALUES (${messageUuid}, 'failed', 'openai', ${model}, ${PROMPT_VERSION}, 'enrichment_failed', 1, now())
       ON CONFLICT (message_id) DO UPDATE SET
-        status = 'failed', error_code = 'enrichment_failed', updated_at = now()
+        status = 'failed', error_code = 'enrichment_failed',
+        enrichment_attempts = message_ai.enrichment_attempts + 1, updated_at = now()
       WHERE message_ai.provider IS DISTINCT FROM 'user'
     `.catch(() => undefined);
     throw error;

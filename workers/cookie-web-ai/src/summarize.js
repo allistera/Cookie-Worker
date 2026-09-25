@@ -3,7 +3,8 @@
 // (req, res) mutation style becomes returning a Response, and configuration
 // comes from the Worker env instead of process.env.
 
-import { responsesUrl, DEFAULT_MODEL, UUID_RE, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL, outputText } from './openai.js';
+import { validId } from '../../../shared/pagination.js';
 
 export const MAX_SUMMARY_MESSAGES = 50;
 export const MAX_SUMMARY_BODY_CHARS = 20_000;
@@ -197,7 +198,7 @@ export async function handleSummarize(sql, userId, body, env) {
   const model = env.OPENAI_SUMMARY_MODEL || env.OPENAI_COMPOSE_MODEL || DEFAULT_MODEL;
 
   const id = String(body.id ?? '');
-  if (!UUID_RE.test(id)) {
+  if (!validId(id)) {
     return Response.json({ error: 'A valid message id is required' }, { status: 400 });
   }
 

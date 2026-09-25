@@ -3,7 +3,8 @@
 // (req, res) mutation style becomes returning a Response, and configuration
 // comes from the Worker env instead of process.env.
 
-import { responsesUrl, DEFAULT_MODEL, UUID_RE, clean, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL, clean, outputText } from './openai.js';
+import { validId } from '../../../shared/pagination.js';
 
 const SNIPPET_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -13,12 +14,13 @@ const SNIPPET_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
  * @param {string} id
  */
 async function replyContext(sql, userId, id) {
-  if (!id || !UUID_RE.test(id)) return null;
+  if (!id || !validId(id)) return null;
   const [message] = await sql`
     SELECT m.from_name, m.from_address, m.subject,
            left(coalesce(m.body_text, ''), 6001) AS body_text, m.sent_at
     FROM messages m
     WHERE m.id = ${id} AND m.user_id = ${userId} AND NOT m.is_deleted
+      AND m.screening_status = 'allowed'
     LIMIT 1
   `;
   return message ?? null;

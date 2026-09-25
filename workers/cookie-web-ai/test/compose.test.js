@@ -77,6 +77,8 @@ describe('handleCompose draft', () => {
       draft: { subject: 'Re: Kitchen', text: 'Sounds good.' },
     });
     expect(sql.calls[0].text).toContain('m.user_id = ?');
+    // Held (screened) mail must never reach the model as reply context.
+    expect(sql.calls[0].text).toContain("m.screening_status = 'allowed'");
     const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
     const input = JSON.parse(payload.input[1].content);
     expect(input.reply_context.body).toBe('Cabinets Tuesday.');

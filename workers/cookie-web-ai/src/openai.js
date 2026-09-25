@@ -3,7 +3,6 @@
 
 export { responsesUrl } from '../../../shared/openai.js';
 export const DEFAULT_MODEL = 'gpt-5.6-luna';
-export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
 /** @param {any} body */

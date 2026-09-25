@@ -505,7 +505,10 @@ describe('AI enrichment', () => {
     // The classification transaction never committed...
     expect(sql.transactions).toHaveLength(0);
     // ...and the row is marked failed so the recovery cron retries it.
-    expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(true);
+    const failure = sql.queries.find((query) => query.text.includes('enrichment_failed'));
+    expect(failure).toBeDefined();
+    // Each failed run is counted so recovery stops after MAX_ENRICHMENT_ATTEMPTS.
+    expect(failure.text).toContain('enrichment_attempts = message_ai.enrichment_attempts + 1');
   });
 
   test('retries a transient classification failure within the run', async () => {
@@ -532,7 +535,8 @@ describe('AI enrichment', () => {
 
     expect(result).toMatchObject({ verdict: 'inbox' });
     expect(responsesCalls).toBe(2);
-    expect(claimInboundAiRequest).toHaveBeenCalledTimes(2);
+    // Transient retries belong to one enrichment run: one budget slot.
+    expect(claimInboundAiRequest).toHaveBeenCalledTimes(1);
     expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(false);
   });
 

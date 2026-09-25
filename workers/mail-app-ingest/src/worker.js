@@ -1,7 +1,7 @@
 import * as Sentry from '@sentry/cloudflare';
 import postgres from 'postgres';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
-import { AI_MODEL, enrichMessage } from './enrich.js';
+import { AI_MODEL, enrichMessage, MAX_ENRICHMENT_ATTEMPTS } from './enrich.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
 import { sweepSearchDrift } from './searchDriftSweep.js';
@@ -350,6 +350,9 @@ export async function recoverPendingEnrichment(env) {
               JOIN users u ON u.id = m.user_id
               WHERE u.email = ${env.OWNER_EMAIL}
                 AND ai.status IN ('pending', 'failed')
+                -- A row that has failed MAX_ENRICHMENT_ATTEMPTS times stays
+                -- failed rather than spending the shared AI budget forever.
+                AND ai.enrichment_attempts < ${MAX_ENRICHMENT_ATTEMPTS}
                 AND ai.updated_at < now() - interval '2 minutes'
               ORDER BY ai.updated_at
               LIMIT 3
@@ -376,9 +379,7 @@ export async function recoverPendingEnrichment(env) {
       { attempts: 3, isRetryable: isTransientDbError },
     );
   } catch (err) {
-    captureHandledException('ai_recovery', err, [env.HYPERDRIVE.connectionString], {
-      owner_email: env.OWNER_EMAIL,
-    });
+    captureHandledException('ai_recovery', err, [env.HYPERDRIVE.connectionString]);
     return;
   }
   if (!Array.isArray(rows)) return;

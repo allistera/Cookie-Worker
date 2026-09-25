@@ -1,5 +1,6 @@
-import { responsesUrl, UUID_RE, outputText } from './openai.js';
+import { responsesUrl, outputText } from './openai.js';
 import { markdownToBlocks } from './document.js';
+import { validId } from '../../../shared/pagination.js';
 
 export const DOCUMENT_CHAT_MODEL = 'gpt-5.6-sol';
 export const MAX_CHAT_BODY_BYTES = 1024 * 1024;
@@ -29,7 +30,7 @@ export function validateChat(body) {
     if (
       !isObject(document) ||
       typeof document.id !== 'string' ||
-      !UUID_RE.test(document.id) ||
+      !validId(document.id) ||
       typeof document.title !== 'string' ||
       document.title.length > 200 ||
       !Array.isArray(document.blocks) ||
