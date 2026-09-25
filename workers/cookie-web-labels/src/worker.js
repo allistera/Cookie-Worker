@@ -1,25 +1,12 @@
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
-import postgres from 'postgres';
-import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { withUserSql } from '../../../shared/db.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { createCategory, deleteCategory, listCategories, updateCategory } from './categories.js';
 import { createLabel, deleteLabel, listLabels, updateLabel } from './labels.js';
 import { createRule, deleteRule, listRules, updateRule } from './labelRules.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
-
-/** @param {string} databaseUrl */
-export function createSql(databaseUrl) {
-  // No ssl option: Hyperdrive terminates TLS to the origin database itself;
-  // asking the driver for TLS makes every connect fail (see data-enricher).
-  return postgres(databaseUrl, {
-    prepare: false,
-    max: 1,
-    idle_timeout: 20,
-    connect_timeout: 10,
-  });
-}
 
 const LABEL_HANDLERS = { POST: createLabel, PATCH: updateLabel, DELETE: deleteLabel };
 const CATEGORY_HANDLERS = {
@@ -91,21 +78,16 @@ const worker = {
     }
 
     const url = new URL(request.url);
-    const sql = createSql(env.HYPERDRIVE.connectionString);
     try {
-      let userId;
-      try {
-        ({ userId } = await verifyAccessToken(request, env, sql));
-      } catch (error) {
-        return withCors(
-          authFailureResponse(error),
-          origin,
-          env.ALLOWED_ORIGIN,
-          env.SENTRY_ENVIRONMENT,
-        );
-      }
-
-      const response = await route(url, request, sql, userId);
+      // Reads are idempotent, so a dropped Hyperdrive connection gets one more
+      // go on a fresh client. Writes are not retried.
+      const response = await withUserSql(
+        request,
+        env,
+        ctx,
+        { retryable: request.method === 'GET' },
+        (sql, userId) => route(url, request, sql, userId),
+      );
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(
@@ -118,8 +100,6 @@ const worker = {
         env.ALLOWED_ORIGIN,
         env.SENTRY_ENVIRONMENT,
       );
-    } finally {
-      ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
     }
   },
 };

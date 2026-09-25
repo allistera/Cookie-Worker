@@ -108,6 +108,17 @@ describe('createDraft', () => {
     await createDraft(sql, USER_ID, draft());
     expect(sql.calls[0].text).toMatch(/pg_advisory_xact_lock/);
   });
+
+  test("resolves the reply target against the user's own messages so a purged id cannot fail the FK", async () => {
+    const REPLY_ID = '33333333-3333-4333-8333-333333333333';
+    const sql = createMockSql([[], [{ id: DRAFT_ID, updatedAt: 'now' }], []]);
+    await createDraft(sql, USER_ID, draft({ replyToMessageId: REPLY_ID }));
+    const insert = sql.calls[1];
+    expect(insert.text).toMatch(
+      /SELECT m\.id FROM messages m\s+WHERE m\.id = \?::uuid AND m\.user_id = \?/,
+    );
+    expect(insert.values).toEqual(expect.arrayContaining([REPLY_ID, USER_ID]));
+  });
 });
 
 describe('updateDraft', () => {
@@ -117,6 +128,13 @@ describe('updateDraft', () => {
     expect(response.status).toBe(200);
     expect(sql.calls[0].text).toMatch(/UPDATE drafts/);
     expect(sql.calls[0].values).toContain('Changed');
+  });
+
+  test("resolves the reply target against the user's own messages", async () => {
+    const sql = createMockSql([[{ id: DRAFT_ID, updatedAt: 'now' }], [], []]);
+    await updateDraft(sql, USER_ID, DRAFT_ID, draft());
+    expect(sql.calls[0].text).toMatch(/reply_to_message_id = \(SELECT m\.id FROM messages m/);
+    expect(sql.calls[0].text).toMatch(/m\.user_id = \?/);
   });
 
   test('404s a draft belonging to someone else', async () => {
@@ -184,5 +202,12 @@ describe('listDrafts', () => {
     expect(body.drafts).toHaveLength(1);
     expect(JSON.stringify(body)).not.toContain('blob_url');
     expect(sql.calls[0].text).toMatch(/ORDER BY d.updated_at DESC/);
+  });
+
+  test('always returns bounded summaries, never full bodies', async () => {
+    const sql = createMockSql([[]]);
+    await listDrafts(sql, USER_ID);
+    expect(sql.calls[0].text).toMatch(/LIMIT/);
+    expect(sql.calls[0].text).not.toMatch(/body_html/);
   });
 });

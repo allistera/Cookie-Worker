@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { createRule, deleteRule, listRules, updateRule } from '../src/labelRules.js';
+import {
+  createRule,
+  deleteRule,
+  listRules,
+  MAX_AI_RULES_PER_USER,
+  updateRule,
+} from '../src/labelRules.js';
 import { createMockSql } from './helpers.js';
 
 const RULE_ID = '22222222-2222-2222-2222-222222222222';
@@ -103,7 +109,10 @@ describe('createRule', () => {
   });
 
   test('creates an AI rule from a prompt, with no condition rows', async () => {
+    // The per-user lock and AI-rule count, then the insert.
     const sql = createMockSql([
+      [],
+      [{ count: 0 }],
       [
         {
           id: RULE_ID,
@@ -132,6 +141,27 @@ describe('createRule', () => {
     expect(sql.calls.some((call) => call.text.includes('INSERT INTO label_rule_conditions'))).toBe(
       false,
     );
+  });
+
+  test('refuses an AI rule once the per-user cap is reached, counted under a lock', async () => {
+    const sql = createMockSql([[], [{ count: MAX_AI_RULES_PER_USER }]]);
+    const response = await createRule(sql, USER_ID, {
+      kind: 'ai',
+      prompt: 'Receipts',
+      action: 'apply_label',
+      label_id: LABEL_ID,
+    });
+    expect(response.status).toBe(429);
+    expect((await response.json()).error).toMatch(/at most 25 AI rules/);
+    expect(sql.calls[0].text).toMatch(/pg_advisory_xact_lock/);
+    expect(sql.calls[1].text).toMatch(/r\.kind = 'ai'/);
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO label_rules'))).toBe(false);
+  });
+
+  test('does not count AI rules for a conditions rule', async () => {
+    const sql = createMockSql([[{ id: RULE_ID, action: 'mark_done' }], []]);
+    await createRule(sql, USER_ID, { action: 'mark_done', conditions: CONDITIONS });
+    expect(sql.calls.some((call) => call.text.includes('pg_advisory_xact_lock'))).toBe(false);
   });
 
   test.each([
@@ -316,6 +346,12 @@ describe('updateRule', () => {
           enabled: true,
         },
       ],
+      // The per-user lock, the rule's kind re-read under it, then the lock
+      // again and the AI-rule count, since this adds an AI rule.
+      [],
+      [{ kind: 'conditions' }],
+      [],
+      [{ count: 0 }],
       [
         {
           id: RULE_ID,
@@ -344,6 +380,88 @@ describe('updateRule', () => {
     expect(sql.calls.some((call) => call.text.includes('INSERT INTO label_rule_conditions'))).toBe(
       false,
     );
+  });
+
+  test('refuses switching a conditions rule to AI once the AI-rule cap is reached', async () => {
+    const sql = createMockSql([
+      [
+        {
+          name: 'Invoices',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          kind: 'conditions',
+          prompt: null,
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+      [],
+      [{ kind: 'conditions' }],
+      [],
+      [{ count: MAX_AI_RULES_PER_USER }],
+    ]);
+    const response = await updateRule(sql, USER_ID, {
+      id: RULE_ID,
+      kind: 'ai',
+      prompt: 'Invoices and bills',
+    });
+    expect(response.status).toBe(429);
+    expect(sql.calls.some((call) => call.text.includes('UPDATE label_rules'))).toBe(false);
+  });
+
+  test('checks the AI-rule cap against the kind read under the lock, not the earlier read', async () => {
+    const conditionsRule = {
+      name: 'Invoices',
+      label_id: LABEL_ID,
+      action: 'apply_label',
+      kind: 'conditions',
+      prompt: null,
+      match_type: 'all',
+      enabled: true,
+    };
+    const sql = createMockSql([
+      [conditionsRule],
+      [],
+      // A concurrent update already made this rule an AI rule, so switching
+      // it again takes no new slot, even with the user at the cap.
+      [{ kind: 'ai' }],
+      [{ ...conditionsRule, id: RULE_ID, kind: 'ai', prompt: 'Invoices and bills' }],
+      [],
+    ]);
+    const response = await updateRule(sql, USER_ID, {
+      id: RULE_ID,
+      kind: 'ai',
+      prompt: 'Invoices and bills',
+    });
+    expect(response.status).toBe(200);
+    expect(sql.calls[1].text).toMatch(/pg_advisory_xact_lock/);
+    expect(sql.calls[2].text).toMatch(/FOR UPDATE/);
+    expect(sql.calls.some((call) => call.text.includes("r.kind = 'ai'"))).toBe(false);
+  });
+
+  test('editing the prompt of a rule that was switched to conditions meanwhile counts it', async () => {
+    const sql = createMockSql([
+      [
+        {
+          name: 'Invoices',
+          label_id: LABEL_ID,
+          action: 'apply_label',
+          kind: 'ai',
+          prompt: 'Invoices',
+          match_type: 'all',
+          enabled: true,
+        },
+      ],
+      [],
+      // A concurrent update switched it to conditions and a create took the
+      // freed slot, so this edit would make a 26th AI rule.
+      [{ kind: 'conditions' }],
+      [],
+      [{ count: MAX_AI_RULES_PER_USER }],
+    ]);
+    const response = await updateRule(sql, USER_ID, { id: RULE_ID, prompt: 'Invoices and bills' });
+    expect(response.status).toBe(429);
+    expect(sql.calls.some((call) => call.text.includes('UPDATE label_rules'))).toBe(false);
   });
 
   test('switching an AI rule back to conditions requires conditions', async () => {

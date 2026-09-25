@@ -3,6 +3,7 @@ import {
   createCategory,
   deleteCategory,
   listCategories,
+  MAX_CATEGORIES_PER_USER,
   updateCategory,
 } from '../src/categories.js';
 import { createMockSql } from './helpers.js';
@@ -30,7 +31,10 @@ describe('listCategories', () => {
 
 describe('createCategory', () => {
   test('creates a category with normalized fields', async () => {
+    // The per-user lock and category count, then the insert.
     const sql = createMockSql([
+      [],
+      [{ count: 0 }],
       [
         {
           id: CATEGORY_ID,
@@ -50,7 +54,7 @@ describe('createCategory', () => {
     expect(await response.json()).toMatchObject({
       category: { name: 'Projects', description: null, notifications_enabled: true },
     });
-    expect(sql.calls[0].text).toContain('notifications_enabled');
+    expect(sql.calls[2].text).toContain('notifications_enabled');
   });
 
   test.each([
@@ -66,11 +70,22 @@ describe('createCategory', () => {
   });
 
   test('returns a conflict when the name already exists', async () => {
-    const response = await createCategory(createMockSql([[]]), USER_ID, {
+    const response = await createCategory(createMockSql([[], [{ count: 0 }], []]), USER_ID, {
       name: 'Projects',
       color: '#2F6BE0',
     });
     expect(response.status).toBe(409);
+  });
+
+  test('refuses once the per-user category cap is reached, counted under a lock', async () => {
+    const sql = createMockSql([[], [{ count: MAX_CATEGORIES_PER_USER }]]);
+    const response = await createCategory(sql, USER_ID, { name: 'Projects', color: '#2F6BE0' });
+    expect(response.status).toBe(429);
+    expect((await response.json()).error).toMatch(/at most 100 categories/);
+    expect(sql.calls[0].text).toMatch(/pg_advisory_xact_lock/);
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO email_categories'))).toBe(
+      false,
+    );
   });
 });
 

@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { createLabel, deleteLabel, listLabels, updateLabel } from '../src/labels.js';
+import {
+  createLabel,
+  deleteLabel,
+  listLabels,
+  MAX_LABELS_PER_USER,
+  updateLabel,
+} from '../src/labels.js';
 import { createMockSql } from './helpers.js';
 
 const LABEL_ID = '11111111-1111-1111-1111-111111111111';
@@ -20,7 +26,10 @@ describe('listLabels', () => {
 
 describe('createLabel', () => {
   test('creates a label with a trimmed name and hex color', async () => {
+    // The per-user lock and label count, then the insert.
     const sql = createMockSql([
+      [],
+      [{ count: 0 }],
       [{ id: LABEL_ID, name: 'Work', color: '#2F6BE0', kind: 'user', message_count: 0 }],
     ]);
     const response = await createLabel(sql, USER_ID, { name: '  Work  ', color: '#2F6BE0' });
@@ -41,9 +50,18 @@ describe('createLabel', () => {
   });
 
   test('returns a conflict when the name already exists', async () => {
-    const sql = createMockSql([[]]);
+    const sql = createMockSql([[], [{ count: 0 }], []]);
     const response = await createLabel(sql, USER_ID, { name: 'Work', color: '#2F6BE0' });
     expect(response.status).toBe(409);
+  });
+
+  test('refuses once the per-user label cap is reached, counted under a lock', async () => {
+    const sql = createMockSql([[], [{ count: MAX_LABELS_PER_USER }]]);
+    const response = await createLabel(sql, USER_ID, { name: 'Work', color: '#2F6BE0' });
+    expect(response.status).toBe(429);
+    expect((await response.json()).error).toMatch(/at most 100 labels/);
+    expect(sql.calls[0].text).toMatch(/pg_advisory_xact_lock/);
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO labels'))).toBe(false);
   });
 });
 

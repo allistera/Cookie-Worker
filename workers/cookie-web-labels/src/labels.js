@@ -3,10 +3,14 @@
 // (req, res) mutation style becomes returning a Response, since Workers
 // speak Web-standard fetch.
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { validId } from '../../../shared/pagination.js';
+
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const MAX_NAME = 50;
 const MAX_DESCRIPTION = 200;
+// Every user label is fed to the enrichment prompt of every inbound email, so
+// an unbounded set is an unbounded AI bill.
+export const MAX_LABELS_PER_USER = 100;
 
 /**
  * @param {import('postgres').Sql} sql
@@ -44,16 +48,32 @@ export async function createLabel(sql, userId, body) {
     return Response.json({ error: 'name (max 50) and hex color are required' }, { status: 400 });
   }
 
-  const [label] = await sql`
-    INSERT INTO labels (user_id, name, color, description)
-    VALUES (${userId}, ${name}, ${color}, ${description})
-    ON CONFLICT (user_id, name) DO NOTHING
-    RETURNING id, name, color, kind, description, auto_apply, 0 AS message_count
-  `;
-  if (!label) {
-    return Response.json({ error: 'A label with that name already exists' }, { status: 409 });
-  }
-  return Response.json({ label }, { status: 201 });
+  return sql.begin(async (tx) => {
+    // Count and insert under a per-user advisory lock (as drafts do), since
+    // READ COMMITTED alone lets two concurrent creates both see room for the
+    // last slot.
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${`labels:${userId}`})::bigint)`;
+    const [{ count }] = await tx`
+      SELECT count(*)::int AS count FROM labels l
+      WHERE l.user_id = ${userId} AND l.kind = 'user'
+    `;
+    if (count >= MAX_LABELS_PER_USER) {
+      return Response.json(
+        { error: `You can have at most ${MAX_LABELS_PER_USER} labels` },
+        { status: 429 },
+      );
+    }
+    const [label] = await tx`
+      INSERT INTO labels (user_id, name, color, description)
+      VALUES (${userId}, ${name}, ${color}, ${description})
+      ON CONFLICT (user_id, name) DO NOTHING
+      RETURNING id, name, color, kind, description, auto_apply, 0 AS message_count
+    `;
+    if (!label) {
+      return Response.json({ error: 'A label with that name already exists' }, { status: 409 });
+    }
+    return Response.json({ label }, { status: 201 });
+  });
 }
 
 /**
@@ -62,7 +82,7 @@ export async function createLabel(sql, userId, body) {
  * @param {any} body
  */
 export async function updateLabel(sql, userId, body) {
-  const id = UUID_RE.test(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   const hasName = Object.hasOwn(body ?? {}, 'name');
   const hasColor = Object.hasOwn(body ?? {}, 'color');
   const hasDescription = Object.hasOwn(body ?? {}, 'description');
@@ -127,7 +147,7 @@ export async function updateLabel(sql, userId, body) {
  * @param {any} body
  */
 export async function deleteLabel(sql, userId, body) {
-  const id = UUID_RE.test(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
   }

@@ -5,7 +5,7 @@
 //
 // Drafts deliberately do not live in `messages` (see migration 0061).
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { validId } from '../../../shared/pagination.js';
 
 // Mirrors cookie-web-send's outbound ceilings exactly, so a draft can never
 // grow into something the send path would refuse to deliver. The recipient
@@ -56,9 +56,7 @@ export function parseDraftBody(body) {
     return null;
   }
 
-  const replyToMessageId = UUID_RE.test(body.replyToMessageId)
-    ? String(body.replyToMessageId)
-    : null;
+  const replyToMessageId = validId(body.replyToMessageId) ? String(body.replyToMessageId) : null;
 
   const followUpAt =
     body.followUpAt === null || body.followUpAt === undefined ? null : new Date(body.followUpAt);
@@ -68,7 +66,7 @@ export function parseDraftBody(body) {
   if (!Array.isArray(rawAttachments) || rawAttachments.length > MAX_ATTACHMENTS) return null;
   const attachmentIds = rawAttachments.map((id) => String(id));
   if (
-    attachmentIds.some((id) => !UUID_RE.test(id)) ||
+    attachmentIds.some((id) => !validId(id)) ||
     new Set(attachmentIds).size !== attachmentIds.length
   ) {
     return null;
@@ -138,46 +136,23 @@ async function replaceDraftAttachments(sql, userId, draftId, attachmentIds) {
 }
 
 /**
- * GET /drafts — newest first. The list is small and bounded by
- * MAX_DRAFTS_PER_USER, so it is returned in one page.
+ * GET /drafts — newest first, as summaries only: the list never needs a
+ * draft's full bodies, and 200 of them at up to ~300KB each is too much to
+ * return in one response. The composer reopens a draft through GET
+ * /drafts/:id. The list is bounded by MAX_DRAFTS_PER_USER, so it is returned
+ * in one page.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {boolean} [summary]
  */
-export async function listDrafts(sql, userId, summary = false) {
-  if (summary) {
-    const drafts = await sql`
-      SELECT d.id, left(d.to_addresses, 512) AS "to", d.subject,
-        left(d.body_text, 141) AS preview, d.reply_to_message_id AS "replyToMessageId",
-        d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated", true AS "isSummary",
-        (SELECT count(*)::int FROM draft_attachments da WHERE da.draft_id = d.id) AS "attachmentCount"
-      FROM drafts d WHERE d.user_id = ${userId}
-      ORDER BY d.updated_at DESC LIMIT ${MAX_DRAFTS_PER_USER}
-    `;
-    return Response.json({ drafts });
-  }
+export async function listDrafts(sql, userId) {
   const drafts = await sql`
-    SELECT
-      d.id, d.to_addresses AS "to", d.subject, d.body_text AS "text",
-      d.body_html AS "html", d.reply_to_message_id AS "replyToMessageId",
-      d.follow_up_at AS "followUpAt", d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated",
-      COALESCE((
-        SELECT jsonb_agg(jsonb_build_object(
-          'id', COALESCE(a.id, oa.id),
-          'filename', COALESCE(a.filename, oa.filename),
-          'content_type', COALESCE(a.content_type, oa.content_type),
-          'size_bytes', COALESCE(a.size_bytes, oa.size_bytes),
-          'source', CASE WHEN oa.id IS NOT NULL THEN 'upload' ELSE 'inbound' END
-        ) ORDER BY da.position)
-        FROM draft_attachments da
-        LEFT JOIN attachments a ON a.id = da.attachment_id
-        LEFT JOIN outbound_attachments oa ON oa.id = da.outbound_attachment_id
-        WHERE da.draft_id = d.id
-      ), '[]'::jsonb) AS attachments
-    FROM drafts d
-    WHERE d.user_id = ${userId}
-    ORDER BY d.updated_at DESC
+    SELECT d.id, left(d.to_addresses, 512) AS "to", d.subject,
+      left(d.body_text, 141) AS preview, d.reply_to_message_id AS "replyToMessageId",
+      d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated", true AS "isSummary",
+      (SELECT count(*)::int FROM draft_attachments da WHERE da.draft_id = d.id) AS "attachmentCount"
+    FROM drafts d WHERE d.user_id = ${userId}
+    ORDER BY d.updated_at DESC LIMIT ${MAX_DRAFTS_PER_USER}
   `;
   return Response.json({ drafts });
 }
@@ -190,7 +165,7 @@ export async function listDrafts(sql, userId, summary = false) {
  * @param {string} id
  */
 export async function getDraft(sql, userId, id) {
-  if (!UUID_RE.test(id)) {
+  if (!validId(id)) {
     return Response.json({ error: 'A valid draft id is required' }, { status: 400 });
   }
   const [draft] = await sql`
@@ -242,7 +217,12 @@ export async function createDraft(sql, userId, body) {
       INSERT INTO drafts
         (user_id, to_addresses, subject, body_text, body_html, reply_to_message_id, follow_up_at)
       SELECT ${userId}, ${parsed.toAddresses}, ${parsed.subject}, ${parsed.text},
-             ${parsed.html}, ${parsed.replyToMessageId}::uuid,
+             ${parsed.html},
+             -- reply_to_message_id references messages (migration 0061), so a
+             -- purged or foreign id is resolved to NULL here rather than
+             -- failing the FK and costing the whole autosave.
+             (SELECT m.id FROM messages m
+              WHERE m.id = ${parsed.replyToMessageId}::uuid AND m.user_id = ${userId}),
              ${parsed.followUpAt}::timestamptz
       WHERE (SELECT count(*) FROM drafts d WHERE d.user_id = ${userId}) < ${MAX_DRAFTS_PER_USER}
       RETURNING id, updated_at AS "updatedAt"
@@ -265,7 +245,7 @@ export async function createDraft(sql, userId, body) {
  * @param {any} body
  */
 export async function updateDraft(sql, userId, id, body) {
-  if (!UUID_RE.test(id)) {
+  if (!validId(id)) {
     return Response.json({ error: 'A valid draft id is required' }, { status: 400 });
   }
   const parsed = parseDraftBody(body);
@@ -282,7 +262,10 @@ export async function updateDraft(sql, userId, id, body) {
           subject = ${parsed.subject},
           body_text = ${parsed.text},
           body_html = ${parsed.html},
-          reply_to_message_id = ${parsed.replyToMessageId}::uuid,
+          -- Resolved in-statement for the FK, as in createDraft.
+          reply_to_message_id = (SELECT m.id FROM messages m
+                                 WHERE m.id = ${parsed.replyToMessageId}::uuid
+                                   AND m.user_id = ${userId}),
           follow_up_at = ${parsed.followUpAt}::timestamptz,
           updated_at = now()
       WHERE id = ${id} AND user_id = ${userId}
@@ -304,7 +287,7 @@ export async function updateDraft(sql, userId, id, body) {
  * @param {string} id
  */
 export async function deleteDraft(sql, userId, id) {
-  if (!UUID_RE.test(id)) {
+  if (!validId(id)) {
     return Response.json({ error: 'A valid draft id is required' }, { status: 400 });
   }
   const [row] = await sql`

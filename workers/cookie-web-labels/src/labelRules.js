@@ -7,7 +7,8 @@
 // a plain-language prompt (kind = 'ai', judged by the enrichment classifier
 // alongside label auto-tagging).
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { validId } from '../../../shared/pagination.js';
+
 const FIELDS = ['subject', 'body', 'from', 'to'];
 const OPERATORS = ['contains', 'equals', 'starts_with', 'ends_with'];
 const MATCH_TYPES = ['all', 'any'];
@@ -17,6 +18,45 @@ const MAX_NAME = 100;
 const MAX_VALUE = 200;
 const MAX_CONDITIONS = 10;
 const MAX_PROMPT = 500;
+// Every AI rule's prompt is fed to the enrichment classifier for every
+// inbound email, so an unbounded set is an unbounded AI bill.
+export const MAX_AI_RULES_PER_USER = 25;
+const TOO_MANY_AI_RULES = Symbol('too many AI rules');
+
+/**
+ * Takes the per-user rules lock for the rest of the transaction. Re-taking it
+ * in the same transaction is harmless.
+ *
+ * @param {import('postgres').TransactionSql} tx
+ * @param {string} userId
+ */
+async function lockRules(tx, userId) {
+  await tx`SELECT pg_advisory_xact_lock(hashtext(${`label-rules:${userId}`})::bigint)`;
+}
+
+/**
+ * Takes the per-user rules lock and reports whether another AI rule fits.
+ * Counted under a per-user advisory lock (as drafts do), since READ COMMITTED
+ * alone lets two concurrent requests both see room for the last slot.
+ *
+ * @param {import('postgres').TransactionSql} tx
+ * @param {string} userId
+ */
+async function hasRoomForAiRule(tx, userId) {
+  await lockRules(tx, userId);
+  const [{ count }] = await tx`
+    SELECT count(*)::int AS count FROM label_rules r
+    WHERE r.user_id = ${userId} AND r.kind = 'ai'
+  `;
+  return count < MAX_AI_RULES_PER_USER;
+}
+
+function tooManyAiRules() {
+  return Response.json(
+    { error: `You can have at most ${MAX_AI_RULES_PER_USER} AI rules` },
+    { status: 429 },
+  );
+}
 
 /** @param {unknown} value */
 function normalizePrompt(value) {
@@ -98,7 +138,7 @@ export async function listRules(sql, userId) {
 export async function createRule(sql, userId, body) {
   const name = String(body?.name ?? '').trim() || null;
   const action = ACTIONS.includes(body?.action) ? body.action : 'apply_label';
-  const labelId = UUID_RE.test(body?.label_id) ? String(body.label_id) : null;
+  const labelId = validId(body?.label_id) ? String(body.label_id) : null;
   const matchType = MATCH_TYPES.includes(body?.match_type) ? body.match_type : 'all';
   const enabled = body?.enabled === true || body?.enabled === false ? body.enabled : true;
   const kind = KINDS.includes(body?.kind) ? body.kind : 'conditions';
@@ -133,6 +173,7 @@ export async function createRule(sql, userId, body) {
   let rule;
   try {
     rule = await sql.begin(async (tx) => {
+      if (kind === 'ai' && !(await hasRoomForAiRule(tx, userId))) return TOO_MANY_AI_RULES;
       let inserted;
       if (action === 'apply_label') {
         [inserted] = await tx`
@@ -171,6 +212,7 @@ export async function createRule(sql, userId, body) {
     );
     return Response.json({ error: 'Failed to create rule' }, { status: 500 });
   }
+  if (rule === TOO_MANY_AI_RULES) return tooManyAiRules();
   if (!rule) {
     return Response.json({ error: 'Label not found' }, { status: 404 });
   }
@@ -184,7 +226,7 @@ export async function createRule(sql, userId, body) {
  * @param {any} body
  */
 export async function updateRule(sql, userId, body) {
-  const id = UUID_RE.test(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   const hasName = Object.hasOwn(body ?? {}, 'name');
   const hasAction = Object.hasOwn(body ?? {}, 'action');
   const hasLabelId = Object.hasOwn(body ?? {}, 'label_id');
@@ -195,7 +237,7 @@ export async function updateRule(sql, userId, body) {
   const hasPrompt = Object.hasOwn(body ?? {}, 'prompt');
 
   const name = String(body?.name ?? '').trim() || null;
-  const labelId = UUID_RE.test(body?.label_id) ? String(body.label_id) : null;
+  const labelId = validId(body?.label_id) ? String(body.label_id) : null;
   const conditions = hasConditions ? normalizeConditions(body?.conditions) : undefined;
   const prompt = hasPrompt ? normalizePrompt(body?.prompt) : undefined;
 
@@ -285,7 +327,21 @@ export async function updateRule(sql, userId, body) {
           }))
         : null;
 
-  const [rule] = await sql.begin(async (tx) => {
+  const updated = await sql.begin(async (tx) => {
+    // Turning a conditions rule into an AI rule is bounded like creating one.
+    // The kind is re-read under the lock, as the pre-transaction read can be
+    // stale against a concurrent update of this same rule.
+    if (resultKind === 'ai') {
+      await lockRules(tx, userId);
+      const [current] = await tx`
+        SELECT r.kind FROM label_rules r
+        WHERE r.id = ${id} AND r.user_id = ${userId}
+        FOR UPDATE
+      `;
+      if (current && current.kind !== 'ai' && !(await hasRoomForAiRule(tx, userId))) {
+        return TOO_MANY_AI_RULES;
+      }
+    }
     const rows = await tx`
       UPDATE label_rules r
       SET name = ${hasName ? name : existing.name},
@@ -312,6 +368,8 @@ export async function updateRule(sql, userId, body) {
     }
     return rows;
   });
+  if (updated === TOO_MANY_AI_RULES) return tooManyAiRules();
+  const [rule] = updated;
 
   const rows =
     positionedConditions ??
@@ -328,7 +386,7 @@ export async function updateRule(sql, userId, body) {
  * @param {any} body
  */
 export async function deleteRule(sql, userId, body) {
-  const id = UUID_RE.test(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
   }

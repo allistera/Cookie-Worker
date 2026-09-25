@@ -1,7 +1,10 @@
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { validId } from '../../../shared/pagination.js';
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const MAX_NAME = 50;
 const MAX_DESCRIPTION = 200;
+// Every category is fed to the enrichment prompt of every inbound email, so
+// an unbounded set is an unbounded AI bill.
+export const MAX_CATEGORIES_PER_USER = 100;
 
 /**
  * @param {import('postgres').Sql} sql
@@ -38,16 +41,31 @@ export async function createCategory(sql, userId, body) {
     return Response.json({ error: 'name (max 50) and hex color are required' }, { status: 400 });
   }
 
-  const [category] = await sql`
-    INSERT INTO email_categories (user_id, name, color, description)
-    VALUES (${userId}, ${name}, ${color}, ${description})
-    ON CONFLICT (user_id, name) DO NOTHING
-    RETURNING id, name, color, description, notifications_enabled, 0 AS message_count
-  `;
-  if (!category) {
-    return Response.json({ error: 'A category with that name already exists' }, { status: 409 });
-  }
-  return Response.json({ category }, { status: 201 });
+  return sql.begin(async (tx) => {
+    // Count and insert under a per-user advisory lock (as drafts do), since
+    // READ COMMITTED alone lets two concurrent creates both see room for the
+    // last slot.
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${`categories:${userId}`})::bigint)`;
+    const [{ count }] = await tx`
+      SELECT count(*)::int AS count FROM email_categories c WHERE c.user_id = ${userId}
+    `;
+    if (count >= MAX_CATEGORIES_PER_USER) {
+      return Response.json(
+        { error: `You can have at most ${MAX_CATEGORIES_PER_USER} categories` },
+        { status: 429 },
+      );
+    }
+    const [category] = await tx`
+      INSERT INTO email_categories (user_id, name, color, description)
+      VALUES (${userId}, ${name}, ${color}, ${description})
+      ON CONFLICT (user_id, name) DO NOTHING
+      RETURNING id, name, color, description, notifications_enabled, 0 AS message_count
+    `;
+    if (!category) {
+      return Response.json({ error: 'A category with that name already exists' }, { status: 409 });
+    }
+    return Response.json({ category }, { status: 201 });
+  });
 }
 
 /**
@@ -56,7 +74,7 @@ export async function createCategory(sql, userId, body) {
  * @param {any} body
  */
 export async function updateCategory(sql, userId, body) {
-  const id = UUID_RE.test(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   const hasName = Object.hasOwn(body ?? {}, 'name');
   const hasColor = Object.hasOwn(body ?? {}, 'color');
   const hasDescription = Object.hasOwn(body ?? {}, 'description');
@@ -108,7 +126,7 @@ export async function updateCategory(sql, userId, body) {
  * @param {any} body
  */
 export async function deleteCategory(sql, userId, body) {
-  const id = UUID_RE.test(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
   }

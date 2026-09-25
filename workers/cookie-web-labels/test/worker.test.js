@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 // sql, so the database itself is stubbed here rather than exercised.
 // mockQuery is reset in beforeEach and can be overridden per test (e.g. to
 // make a handler's query throw, for the error-reporting tests below).
-const mockQuery = vi.fn(/** @param {any[]} _args */ (..._args) => Promise.resolve([]));
+const mockQuery = vi.fn(
+  /** @param {any[]} _args */ (..._args) => Promise.resolve(/** @type {any[]} */ ([])),
+);
 const sqlEnd = vi.fn(async () => undefined);
 vi.mock('postgres', () => ({
   default: () => {
@@ -116,6 +118,8 @@ describe('routing', () => {
   });
 
   test('POST /categories dispatches to createCategory', async () => {
+    // The per-user lock, then the category count.
+    mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([{ count: 0 }]);
     const response = await worker.fetch(
       request('/categories', {
         method: 'POST',
@@ -128,6 +132,8 @@ describe('routing', () => {
   });
 
   test('POST /labels dispatches to createLabel (reaches its validation)', async () => {
+    // The per-user lock, then the label count.
+    mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([{ count: 0 }]);
     const response = await worker.fetch(
       request('/labels', {
         method: 'POST',
@@ -183,5 +189,36 @@ describe('cleanup and error reporting', () => {
     expect(response.status).toBe(500);
     expect(captureHandledException).toHaveBeenCalledOnce();
     expect(sqlEnd).toHaveBeenCalledOnce();
+  });
+});
+
+// The socket to Hyperdrive drops under a query now and then; reads get one
+// more go on a fresh connection, writes do not.
+describe('a dropped connection', () => {
+  const dropped = () => new Error('Network connection lost.');
+
+  test('retries a read once on a fresh connection, and nobody hears of it', async () => {
+    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([]);
+    const response = await worker.fetch(request('/labels'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ labels: [] });
+    expect(captureHandledException).not.toHaveBeenCalled();
+    // The dead connection and the fresh one are both closed.
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not retry a write', async () => {
+    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([]);
+    const response = await worker.fetch(
+      request('/labels', {
+        method: 'PATCH',
+        body: JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', name: 'Renamed' }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(500);
+    expect(mockQuery).toHaveBeenCalledOnce();
+    expect(captureHandledException).toHaveBeenCalledOnce();
   });
 });
