@@ -1,6 +1,6 @@
 import { lockOutOfOfficeDispatch, normaliseAddress } from '../../../shared/outOfOffice.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const reply = (body, status = 200) =>
   Response.json(body, { status, headers: { 'Cache-Control': 'private, no-store' } });
 
@@ -50,7 +50,7 @@ export async function putSenders(sql, userId, body) {
     return reply({ error: 'Use one exact email address, without a name or wildcard.' }, 400);
   if (
     ((body.messageId !== undefined && body.messageId !== null) || action === 'restore') &&
-    !UUID_RE.test(body.messageId || '')
+    !validId(body.messageId || '')
   )
     return reply({ error: 'Choose a valid message.' }, 400);
 

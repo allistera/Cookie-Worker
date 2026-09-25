@@ -3,7 +3,8 @@
 // the (req, res) mutation style becomes returning a Response, and the pixel
 // bytes come from atob instead of node:buffer.
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { validId } from '../../../shared/pagination.js';
+
 const MAX_MESSAGES = 100;
 // A transparent 1x1 GIF. Receipt requests always return the same image so an
 // invalid or expired opaque token reveals nothing about mailbox state.
@@ -105,7 +106,7 @@ function pixelResponse() {
  * @param {string} ip
  */
 export async function handlePixel(sql, token, ip) {
-  if (UUID_RE.test(token) && !pixelFlooded(ip)) {
+  if (validId(token) && !pixelFlooded(ip)) {
     try {
       await recordReadReceipt(sql, token);
     } catch (err) {
@@ -132,11 +133,7 @@ export async function handleStatus(sql, userId, url) {
   // 3,699 chars, so anything past 4,000 can't be a valid request.
   const rawParam = url.searchParams.get('messageIds') || '';
   const rawIds = rawParam.length > 4000 ? [] : rawParam.split(',').filter(Boolean);
-  if (
-    rawIds.length === 0 ||
-    rawIds.length > MAX_MESSAGES ||
-    !rawIds.every((id) => UUID_RE.test(id))
-  ) {
+  if (rawIds.length === 0 || rawIds.length > MAX_MESSAGES || !rawIds.every((id) => validId(id))) {
     return Response.json({ error: 'One to 100 valid messageIds are required' }, { status: 400 });
   }
 

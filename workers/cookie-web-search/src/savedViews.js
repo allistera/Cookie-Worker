@@ -1,8 +1,8 @@
 import { parseFederatedSearchQuery } from './queryParse.js';
+import { validId } from '../../../shared/pagination.js';
 
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
 const FOLDERS = new Set(['all', 'inbox', 'sent', 'spam', 'snoozed', 'done']);
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_VIEWS = 30;
 const MAX_QUERY_LENGTH = 470;
@@ -110,7 +110,7 @@ export function savedViewsError(body) {
   const names = new Set();
   for (const view of value.views) {
     if (!view || typeof view !== 'object' || Array.isArray(view)) return 'Invalid saved view.';
-    if (typeof view.id !== 'string' || !UUID_RE.test(view.id) || ids.has(view.id))
+    if (typeof view.id !== 'string' || !validId(view.id) || ids.has(view.id))
       return 'Each saved view needs a unique ID.';
     if (
       typeof view.name !== 'string' ||

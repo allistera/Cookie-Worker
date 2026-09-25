@@ -4,9 +4,9 @@ import {
   outOfOfficeSettings,
   outOfOfficeStatus,
 } from '../../../shared/outOfOffice.js';
+import { validId } from '../../../shared/pagination.js';
 
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const reply = (body, status = 200) => Response.json(body, { status, headers: NO_STORE });
 
 /** @param {import('postgres').Sql} sql @param {string} userId */
@@ -69,10 +69,7 @@ export async function putOutOfOffice(sql, userId, body) {
 
 /** Manual resolution never sends or retries mail. @param {import('postgres').Sql} sql @param {string} userId @param {any} body */
 async function resolveDelivery(sql, userId, body) {
-  if (
-    !UUID_RE.test(String(body.deliveryId)) ||
-    !['delivered', 'not_delivered'].includes(body.outcome)
-  )
+  if (!validId(String(body.deliveryId)) || !['delivered', 'not_delivered'].includes(body.outcome))
     return reply({ error: 'Choose a delivery and a verified outcome.' }, 400);
   const changed = await sql.begin(async (tx) => {
     await lockOutOfOfficeDispatch(tx, userId);

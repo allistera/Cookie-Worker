@@ -21,7 +21,8 @@ vi.mock('postgres', () => ({
 const verifyAccessToken = vi.fn();
 vi.mock('../../../shared/auth-jwt.js', () => ({
   verifyAccessToken: (...args) => verifyAccessToken(...args),
-  authFailureResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }),
+  authFailureResponse: (/** @type {any} */ error) =>
+    Response.json({ error: 'Unauthorized' }, { status: error?.status ?? 401 }),
 }));
 
 const captureHandledException = vi.fn();
@@ -287,5 +288,73 @@ describe('cleanup', () => {
   test('closes the sql connection on a successful request', async () => {
     await worker.fetch(request('/emails'), env, ctx);
     expect(sqlEnd).toHaveBeenCalledOnce();
+  });
+});
+
+// The socket to Hyperdrive drops under a query now and then; GET /emails is
+// the busiest read, so reads get one more go on a fresh connection.
+describe('a dropped connection', () => {
+  const dropped = () => new Error('Network connection lost.');
+
+  test('retries a read once on a fresh connection, and nobody hears of it', async () => {
+    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([{ days: 14 }]);
+    const response = await worker.fetch(request('/emails/spam-retention'), env, ctx);
+    expect(response.status).toBe(200);
+    expect((await response.json()).spamRetentionDays).toBe(14);
+    expect(captureHandledException).not.toHaveBeenCalled();
+    // The dead connection and the fresh one are both closed.
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not retry a write', async () => {
+    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([{ days: 60 }]);
+    const response = await worker.fetch(
+      request('/emails/spam-retention', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spamRetentionDays: 60 }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(500);
+    expect(mockQuery).toHaveBeenCalledOnce();
+    expect(captureHandledException).toHaveBeenCalledOnce();
+  });
+
+  // Mirrors AuthFailure('Mailbox lookup failed', 503, {cause}) from auth-jwt.
+  const droppedLookup = () =>
+    Object.assign(new Error('Mailbox lookup failed', { cause: dropped() }), { status: 503 });
+
+  test('a write whose mailbox lookup drops stays a 503 and is not reported', async () => {
+    verifyAccessToken.mockRejectedValue(droppedLookup());
+    const response = await worker.fetch(
+      request('/emails/spam-retention', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spamRetentionDays: 60 }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    expect(verifyAccessToken).toHaveBeenCalledOnce();
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
+  test('a read whose mailbox lookup drops twice ends as a 503, not a 500', async () => {
+    verifyAccessToken.mockRejectedValue(droppedLookup());
+    const response = await worker.fetch(request('/emails/spam-retention'), env, ctx);
+    expect(response.status).toBe(503);
+    expect(verifyAccessToken).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
+  test('does not retry a read that failed for another reason', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('syntax error')).mockResolvedValue([]);
+    const response = await worker.fetch(request('/emails/spam-retention'), env, ctx);
+    expect(response.status).toBe(500);
+    expect(mockQuery).toHaveBeenCalledOnce();
   });
 });
