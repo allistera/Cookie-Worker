@@ -10,7 +10,9 @@ describe('isTransientDbError', () => {
     ],
     ['a closed connection', Object.assign(new Error('closed'), { code: 'CONNECTION_CLOSED' })],
     ['a connection failure', Object.assign(new Error('database down'), { code: '08001' })],
-    ['a timed-out write', new Error('write timed out')],
+    ['an ended connection', Object.assign(new Error('ended'), { code: 'CONNECTION_ENDED' })],
+    ['a dropped connection', Object.assign(new Error('terminated'), { code: '08006' })],
+    ['a postgres.js closed message', new Error('write CONNECTION_CLOSED db.example:5432')],
     [
       'a wrapped transient cause',
       new Error('Mailbox lookup failed', {
@@ -25,6 +27,12 @@ describe('isTransientDbError', () => {
     ['a syntax error', new Error('syntax error at or near "SELEC"')],
     ['a constraint violation', Object.assign(new Error('duplicate key'), { code: '23505' })],
     ['a plain reset', new Error('connection reset')],
+    [
+      'a statement timeout',
+      Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+    ],
+    ['a fetch timeout', new Error('The operation timed out')],
+    ['a Blob read that timed out', new Error('blob read timed out')],
     ['a non-error', 'nope'],
   ])('leaves %s to fail', (_label, error) => {
     expect(isTransientDbError(error)).toBe(false);

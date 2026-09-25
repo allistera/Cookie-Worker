@@ -10,8 +10,8 @@ import { allowRequest } from '../../../shared/rate-limit.js';
 import { extractCalendarInvite, isCalendarAttachment } from './calendarInvite.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
+import { validId } from '../../../shared/pagination.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SIGNED_URL_TTL_MS = 5 * 60 * 1000;
 // Unsubscribe actions can perform outbound POSTs or send email, so cap the
 // rate per user to prevent abuse of provider quotas.
@@ -143,7 +143,7 @@ function noStore(response) {
  * }} blob
  */
 export async function getAttachment(sql, userId, id, blob) {
-  if (!id || !UUID_RE.test(id)) {
+  if (!id || !validId(id)) {
     return noStore(Response.json({ error: 'A valid attachment id is required' }, { status: 400 }));
   }
 
@@ -202,7 +202,7 @@ export async function getAttachment(sql, userId, id, blob) {
  * @param {CalendarInviteDeps} [deps]
  */
 export async function getMessage(sql, userId, id, deps = {}) {
-  if (!id || !UUID_RE.test(id)) {
+  if (!id || !validId(id)) {
     return Response.json({ error: 'A valid message id is required' }, { status: 400 });
   }
 
@@ -245,7 +245,7 @@ export async function getMessage(sql, userId, id, deps = {}) {
  * @param {CalendarInviteDeps} [deps]
  */
 export async function getCalendarInvite(sql, userId, id, deps = {}) {
-  if (!id || !UUID_RE.test(id))
+  if (!id || !validId(id))
     return Response.json({ error: 'A valid message id is required' }, { status: 400 });
   const [owned] =
     await sql`SELECT id FROM messages WHERE id = ${id} AND user_id = ${userId} AND NOT is_deleted`;
@@ -285,7 +285,7 @@ export async function getCalendarInvite(sql, userId, id, deps = {}) {
  * @param {ReindexDeps} deps
  */
 async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, deps) {
-  const labelId = UUID_RE.test(rawLabelId) ? String(rawLabelId) : null;
+  const labelId = validId(rawLabelId) ? String(rawLabelId) : null;
   if (!labelId) {
     return Response.json({ error: 'A valid label_id is required' }, { status: 400 });
   }
@@ -375,7 +375,7 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
  */
 async function setMessageCategory(sql, userId, messageId, rawCategoryId) {
   const clearing = rawCategoryId === null;
-  const categoryId = UUID_RE.test(rawCategoryId) ? String(rawCategoryId) : null;
+  const categoryId = validId(rawCategoryId) ? String(rawCategoryId) : null;
   if (!clearing && !categoryId) {
     return Response.json({ error: 'category_id must be a valid UUID or null' }, { status: 400 });
   }
@@ -604,7 +604,7 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
  */
 export async function postMessage(sql, userId, body, deps) {
   const { action } = body ?? {};
-  const id = UUID_RE.test(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'A valid id is required' }, { status: 400 });
   }
@@ -737,7 +737,7 @@ async function applySpamVerdict(tx, messageId, isSpam) {
 export async function patchMessage(sql, userId, body, deps = {}) {
   const { is_unread, is_starred, is_archived, is_deleted, is_spam } = body ?? {};
   const flags = [is_unread, is_starred, is_archived, is_deleted, is_spam];
-  const id = UUID_RE.test(body?.id) ? String(body.id) : null;
+  const id = validId(body?.id) ? String(body.id) : null;
   const flagsValid = flags.every((f) => f === undefined || f === true || f === false);
   const hasScheduledChange = Object.hasOwn(body ?? {}, 'scheduled_for');
   const scheduledFor =

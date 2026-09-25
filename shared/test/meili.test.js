@@ -152,7 +152,22 @@ describe('hybridSearch', () => {
       client,
     );
 
-    expect(calls[0].args.params.filter).toBe(`user_id = '${USER_ID}' AND is_archived = false`);
+    expect(calls[0].args.params.filter).toBe(`user_id = '${USER_ID}' AND (is_archived = false)`);
+  });
+
+  it('keeps an OR in the caller filter inside the user_id conjunction', async () => {
+    const { client, calls } = createMockMeili({ search: { hits: [] } });
+
+    await hybridSearch(
+      ENV,
+      MESSAGES_INDEX,
+      { userId: USER_ID, filter: 'is_starred = true OR is_unread = true', limit: 20 },
+      client,
+    );
+
+    expect(calls[0].args.params.filter).toBe(
+      `user_id = '${USER_ID}' AND (is_starred = true OR is_unread = true)`,
+    );
   });
 
   it('returns hit ids in Meilisearch order', async () => {
@@ -407,7 +422,7 @@ describe('federatedSearch', () => {
       client,
     );
 
-    expect(calls[0].queries[0].filter).toBe(`user_id = '${USER_ID}' AND is_starred = true`);
+    expect(calls[0].queries[0].filter).toBe(`user_id = '${USER_ID}' AND (is_starred = true)`);
   });
 
   it('applies hybrid at the descriptor default when a unit is semantic (the default)', async () => {

@@ -2,15 +2,21 @@ import { retryWithBackoff } from './retry.js';
 
 /**
  * Whether a database error is worth one more try: the connection never came
- * up, timed out, or the socket to Hyperdrive dropped under a query (the
- * runtime's "Network connection lost", seen on cookie-web-messages reads as
- * Sentry COOKIE-WEB-M and COOKIE-WEB-R). Anything else — a bad query, a
- * constraint, a refused login — is permanent and must not be retried.
+ * up or the socket to Hyperdrive dropped under a query (the runtime's
+ * "Network connection lost", seen on cookie-web-messages reads as Sentry
+ * COOKIE-WEB-M and COOKIE-WEB-R). Only dropped-connection signals count:
+ * postgres.js's CONNECTION_CLOSED / CONNECTION_ENDED / CONNECT_TIMEOUT and
+ * SQLSTATE class 08. A statement_timeout (57014) is the query itself being
+ * too slow and would just time out again, and a generic "timed out" from
+ * fetch or Blob is not a database connection at all. Anything else — a bad
+ * query, a constraint, a refused login — is permanent and must not be
+ * retried.
  *
  * @param {unknown} err
  */
 export function isTransientDbError(err) {
   const code = /** @type {{code?: unknown}} */ (err)?.code;
+  if (code === '57014') return false;
   const message = err instanceof Error ? err.message : String(err);
   // A wrapper such as AuthFailure('Mailbox lookup failed', {cause}) keeps the
   // dropped socket underneath it; the retry decision needs to see through.
@@ -19,9 +25,9 @@ export function isTransientDbError(err) {
   return (
     code === 'CONNECT_TIMEOUT' ||
     code === 'CONNECTION_CLOSED' ||
-    code === '08006' ||
-    code === '08001' ||
-    /Failed to connect to database|CONNECT_TIMEOUT|timed? ?out|Network connection lost/i.test(
+    code === 'CONNECTION_ENDED' ||
+    (typeof code === 'string' && /^08[0-9A-Z]{3}$/.test(code)) ||
+    /Failed to connect to database|CONNECT_TIMEOUT|CONNECTION_CLOSED|CONNECTION_ENDED|Network connection lost/i.test(
       message,
     )
   );

@@ -340,6 +340,60 @@ describe('postMessage — unsubscribe action', () => {
     );
   });
 
+  test('never mails a sender-supplied address list; falls back to the link', async () => {
+    const sql = createMockSql([
+      [
+        {
+          headers: [
+            {
+              key: 'List-Unsubscribe',
+              value: '<mailto:unsub@example.com,victim@example.org>, <https://x.example/u>',
+            },
+          ],
+        },
+      ],
+    ]);
+    const sendEmail = vi.fn().mockResolvedValue(undefined);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ resendApiKey: 'key', emailFrom: 'Cookie <mail@example.com>', sendEmail }),
+    );
+
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({
+      status: 'manual',
+      method: 'link',
+      url: 'https://x.example/u',
+    });
+  });
+
+  test('never mails a subject carrying CR/LF', async () => {
+    const sql = createMockSql([
+      [
+        {
+          headers: [
+            {
+              key: 'List-Unsubscribe',
+              value: '<mailto:unsub@example.com?subject=stop%0D%0ABcc:%20victim@example.org>',
+            },
+          ],
+        },
+      ],
+    ]);
+    const sendEmail = vi.fn().mockResolvedValue(undefined);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ resendApiKey: 'key', emailFrom: 'Cookie <mail@example.com>', sendEmail }),
+    );
+
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(response.status).toBe(422);
+  });
+
   test('sends one-click to any https host, not just known ESPs', async () => {
     const sql = createMockSql([
       [

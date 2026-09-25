@@ -67,21 +67,51 @@ export function fetchContactProfile(sql, userId, address) {
   `;
 }
 
+// Received and sent mail are separate UNION ALL branches (disjoint on
+// is_sent) so the received side can use the user/sent_at index on its own,
+// and the recipients jsonb expansion only runs over the caller's sent rows.
+// Each branch is ordered and limited before the outer merge.
 export function fetchContactHistory(sql, userId, address, limit, before) {
+  const beforeSentAt = before?.sentAt ?? null;
+  const beforeId = before?.id ?? null;
   return sql`
-    SELECT m.id, m.from_name, m.from_address, m.recipients, m.subject, m.snippet,
-           m.sent_at, m.is_sent, m.is_unread, m.is_starred, m.is_archived,
-           m.scheduled_for, m.follow_up_at,
-           (m.body_html_url IS NOT NULL) AS has_html,
-           EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments
-    FROM messages m
-    WHERE m.user_id = ${userId}
-      AND NOT m.is_deleted
-      AND m.screening_status = 'allowed'
-      AND (
-        (NOT m.is_sent AND lower(btrim(m.from_address)) = ${address})
-        OR (
-          m.is_sent AND EXISTS (
+    SELECT h.*,
+           EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = h.id) AS has_attachments
+    FROM (
+      (
+        SELECT m.id, m.from_name, m.from_address, m.recipients, m.subject, m.snippet,
+               m.sent_at, m.is_sent, m.is_unread, m.is_starred, m.is_archived,
+               m.scheduled_for, m.follow_up_at,
+               (m.body_html IS NOT NULL) AS has_html
+        FROM messages m
+        WHERE m.user_id = ${userId}
+          AND NOT m.is_deleted
+          AND m.screening_status = 'allowed'
+          AND NOT m.is_sent
+          AND lower(btrim(m.from_address)) = ${address}
+          AND (
+            ${beforeSentAt}::timestamptz IS NULL
+            OR (m.sent_at, m.id) < (${beforeSentAt}::timestamptz, ${beforeId}::uuid)
+          )
+        ORDER BY m.sent_at DESC, m.id DESC
+        LIMIT ${limit + 1}
+      )
+      UNION ALL
+      (
+        SELECT m.id, m.from_name, m.from_address, m.recipients, m.subject, m.snippet,
+               m.sent_at, m.is_sent, m.is_unread, m.is_starred, m.is_archived,
+               m.scheduled_for, m.follow_up_at,
+               (m.body_html IS NOT NULL) AS has_html
+        FROM messages m
+        WHERE m.user_id = ${userId}
+          AND NOT m.is_deleted
+          AND m.screening_status = 'allowed'
+          AND m.is_sent
+          AND (
+            ${beforeSentAt}::timestamptz IS NULL
+            OR (m.sent_at, m.id) < (${beforeSentAt}::timestamptz, ${beforeId}::uuid)
+          )
+          AND EXISTS (
             SELECT 1
             FROM jsonb_array_elements(
               coalesce(m.recipients->'to', '[]'::jsonb)
@@ -93,13 +123,11 @@ export function fetchContactHistory(sql, userId, address, limit, before) {
                    ELSE recipient->>'address' END
             )) = ${address}
           )
-        )
+        ORDER BY m.sent_at DESC, m.id DESC
+        LIMIT ${limit + 1}
       )
-      AND (
-        ${before?.sentAt ?? null}::timestamptz IS NULL
-        OR (m.sent_at, m.id) < (${before?.sentAt ?? null}::timestamptz, ${before?.id ?? null}::uuid)
-      )
-    ORDER BY m.sent_at DESC, m.id DESC
+    ) h
+    ORDER BY h.sent_at DESC, h.id DESC
     LIMIT ${limit + 1}
   `;
 }

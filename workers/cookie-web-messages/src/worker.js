@@ -1,12 +1,9 @@
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { get, getDownloadUrl, issueSignedToken, presignUrl } from '@vercel/blob';
-import postgres from 'postgres';
-import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { createSql, withUserSql } from '../../../shared/db.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
-import { retryWithBackoff } from '../../../shared/retry.js';
-import { isTransientDbError } from '../../../shared/transient-db.js';
 import { getContacts } from './contacts.js';
 import { getContactInsights, patchContactInsights } from './contactInsights.js';
 import {
@@ -23,17 +20,6 @@ import { requestPublicHttps } from '../../../shared/safe-https.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 import { configureOpenAi } from '../../../shared/openai.js';
-/** @param {string} databaseUrl */
-export function createSql(databaseUrl) {
-  // No ssl option: Hyperdrive terminates TLS to the origin database itself;
-  // asking the driver for TLS makes every connect fail (see data-enricher).
-  return postgres(databaseUrl, {
-    prepare: false,
-    max: 1,
-    idle_timeout: 20,
-    connect_timeout: 10,
-  });
-}
 
 /**
  * Best-effort push of one just-changed message to Meilisearch, so an archive,
@@ -210,43 +196,15 @@ const worker = {
     }
 
     const url = new URL(request.url);
-    let sql = createSql(env.HYPERDRIVE.connectionString);
     try {
-      // The socket to Hyperdrive drops under a query now and then (Sentry
-      // COOKIE-WEB-M, -R, -17 ("Network connection lost"), and -Z ("write
-      // CONNECTION_CLOSED ...hyperdrive.local:5432")). Reads and PATCH
-      // /messages are idempotent, so they get one more go on a fresh
-      // connection (the PATCH body is replayed from a clone taken up front).
-      // POST is not retried since it sends mail and may have landed.
+      // Reads and PATCH /messages are idempotent, so a dropped Hyperdrive
+      // connection gets one more go on a fresh client (the PATCH body is
+      // replayed from a clone taken up front). POST is not retried since it
+      // sends mail and may have landed.
       const retryable = request.method === 'GET' || request.method === 'PATCH';
       const replay = request.method === 'PATCH' ? /** @type {Request} */ (request.clone()) : null;
-      const response = await retryWithBackoff(
-        async (attempt) => {
-          if (attempt > 1) {
-            ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
-            sql = createSql(env.HYPERDRIVE.connectionString);
-            console.log(
-              JSON.stringify({
-                event: 'request_retried',
-                path: url.pathname,
-                method: request.method,
-              }),
-            );
-          }
-          let userId;
-          try {
-            ({ userId } = await verifyAccessToken(request, env, sql));
-          } catch (error) {
-            if (isTransientDbError(error)) throw error;
-            return authFailureResponse(error);
-          }
-          return route(url, attempt > 1 && replay ? replay : request, sql, userId, env, ctx);
-        },
-        {
-          attempts: retryable ? 2 : 1,
-          baseDelayMs: 100,
-          isRetryable: isTransientDbError,
-        },
+      const response = await withUserSql(request, env, ctx, { retryable }, (sql, userId, attempt) =>
+        route(url, attempt > 1 && replay ? replay : request, sql, userId, env, ctx),
       );
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
@@ -260,8 +218,6 @@ const worker = {
         env.ALLOWED_ORIGIN,
         env.SENTRY_ENVIRONMENT,
       );
-    } finally {
-      ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
     }
   },
 };

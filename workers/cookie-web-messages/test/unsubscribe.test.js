@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { isSafeUnsubscribeUrl, parseListUnsubscribe } from '../src/unsubscribe.js';
+import {
+  isSafeUnsubscribeUrl,
+  MAX_MAILTO_SUBJECT_LENGTH,
+  parseListUnsubscribe,
+} from '../src/unsubscribe.js';
 
 const h = (key, value) => ({ key, value });
 
@@ -97,6 +101,46 @@ describe('parseListUnsubscribe', () => {
     );
     expect(r.url).toBe('https://a.example/1');
     expect(r.mailto?.address).toBe('one@x.example');
+  });
+
+  test('drops a mailto whose target is an address list', () => {
+    expect(
+      parseListUnsubscribe([h('List-Unsubscribe', '<mailto:a@x.example,b@y.example>')]),
+    ).toBeNull();
+    expect(parseListUnsubscribe([h('List-Unsubscribe', '<mailto:not-an-address>')])).toBeNull();
+  });
+
+  test('skips an invalid mailto and keeps the next valid one', () => {
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h('List-Unsubscribe', '<mailto:a@x.example,b@y.example>, <mailto:ok@x.example>'),
+      ]),
+    );
+    expect(r.mailto).toEqual({ address: 'ok@x.example', subject: null });
+  });
+
+  test('drops a mailto whose subject has control characters', () => {
+    const r = assertParsed(
+      parseListUnsubscribe([
+        h(
+          'List-Unsubscribe',
+          '<mailto:u@x.example?subject=hi%0D%0ABcc:%20v@y.example>, <https://x.example/u>',
+        ),
+      ]),
+    );
+    expect(r).toEqual({ oneClick: false, url: 'https://x.example/u', mailto: null });
+  });
+
+  test('drops a mailto whose subject exceeds the length cap', () => {
+    const long = 'a'.repeat(MAX_MAILTO_SUBJECT_LENGTH + 1);
+    expect(
+      parseListUnsubscribe([h('List-Unsubscribe', `<mailto:u@x.example?subject=${long}>`)]),
+    ).toBeNull();
+    const ok = 'a'.repeat(MAX_MAILTO_SUBJECT_LENGTH);
+    const r = assertParsed(
+      parseListUnsubscribe([h('List-Unsubscribe', `<mailto:u@x.example?subject=${ok}>`)]),
+    );
+    expect(r.mailto?.subject).toBe(ok);
   });
 
   test('matches header keys case-insensitively', () => {

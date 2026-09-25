@@ -66,6 +66,23 @@ describe('contact insights', () => {
     });
   });
 
+  test('scopes both history branches to the caller and derives has_html from body_html', async () => {
+    const sql = createMockSql([[{}], []]);
+    await getContactInsights(
+      sql,
+      USER_ID,
+      new URL('https://example.test/messages/contact-insights?address=alex%40example.com&limit=5'),
+    );
+
+    const history = sql.calls[1];
+    expect(history.text).toContain('UNION ALL');
+    expect(history.text).toContain('m.body_html IS NOT NULL');
+    expect(history.text).not.toContain('body_html_url');
+    expect(history.values.filter((value) => value === USER_ID)).toHaveLength(2);
+    expect(history.values.filter((value) => value === 'alex@example.com')).toHaveLength(2);
+    expect(history.values.filter((value) => value === 6)).toHaveLength(3);
+  });
+
   test('saves user-owned fields for the normalized address', async () => {
     const sql = createMockSql([
       [

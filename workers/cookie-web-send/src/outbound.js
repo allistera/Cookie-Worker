@@ -8,7 +8,9 @@
 
 import { Buffer } from 'node:buffer';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { hasControlChars, isValidEmailAddress } from '../../../shared/email-validation.js';
+import { validId } from '../../../shared/pagination.js';
+
 const SNIPPET_LENGTH = 100;
 export const MAX_OUTBOUND_RECIPIENTS = 20;
 export const MAX_OUTBOUND_SUBJECT_BYTES = 998;
@@ -40,7 +42,7 @@ const READ_RECEIPTS_PIXEL_BASE = 'https://receipts-api.infinitywave.online/read-
 
 /** @param {string} token */
 export function buildReadReceiptUrl(token) {
-  if (!UUID_RE.test(token)) return null;
+  if (!validId(token)) return null;
   const url = new URL(READ_RECEIPTS_PIXEL_BASE);
   url.searchParams.set('token', token);
   return url.toString();
@@ -105,30 +107,8 @@ export function parseAttachmentIds(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > MAX_OUTBOUND_ATTACHMENTS) return null;
   const ids = value.map((id) => String(id));
-  if (ids.some((id) => !UUID_RE.test(id)) || new Set(ids).size !== ids.length) return null;
+  if (ids.some((id) => !validId(id)) || new Set(ids).size !== ids.length) return null;
   return ids;
-}
-
-// Pragmatic RFC 5322 subset: one @, no whitespace or control characters, no
-// header-significant punctuation, and a dotted domain. Resend would reject
-// malformed values anyway, but rejecting here keeps CRLF/control-character
-// payloads (classic SMTP header-injection shapes) out of the provider payload,
-// the stored recipients column, and the scheduled-send queue.
-const ADDRESS_RE =
-  /^[A-Za-z0-9!#$%&'*+/=?^_`{|}.-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
-
-/** @param {string} value */
-function hasControlChars(value) {
-  for (const character of value) {
-    const code = /** @type {number} */ (character.codePointAt(0));
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
-}
-
-/** @param {string} address */
-function validOutboundAddress(address) {
-  return address.length <= 320 && ADDRESS_RE.test(address);
 }
 
 const byteLength = (/** @type {string} */ value) => new TextEncoder().encode(value).length;
@@ -142,7 +122,7 @@ export function validateOutboundMessage({ to, subject, text, html }) {
   const bodyText = String(text ?? '');
   if (
     recipients.length === 0 ||
-    !recipients.every(validOutboundAddress) ||
+    !recipients.every(isValidEmailAddress) ||
     !subjectText.trim() ||
     hasControlChars(subjectText) ||
     !bodyText.trim()

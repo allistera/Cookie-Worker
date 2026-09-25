@@ -8,6 +8,8 @@
 // treats that input as hostile — malformed shapes and malformed URIs are
 // skipped, never thrown.
 
+import { hasControlChars, isValidEmailAddress } from '../../../shared/email-validation.js';
+
 /**
  * Shared policy for unsubscribe URLs exposed in app chrome or fetched by the
  * server. Sender-controlled targets must be public HTTPS URLs with no
@@ -41,6 +43,32 @@ export function isSafeUnsubscribeUrl(url) {
 
   const blockedSuffixes = ['.localhost', '.local', '.internal', '.lan', '.home.arpa'];
   return !blockedSuffixes.some((suffix) => host.endsWith(suffix));
+}
+
+// The subject is sender-chosen text we send from the user's verified domain;
+// a real unsubscribe subject is a word or two, so cap it well below the
+// RFC 5322 line limit.
+export const MAX_MAILTO_SUBJECT_LENGTH = 200;
+
+/**
+ * Validates a sender-controlled mailto: target before it can reach Resend.
+ * The address must be exactly one valid address (a comma-separated list
+ * would have the user's domain mail attacker-chosen recipients) and the
+ * subject must be short and free of control characters (CR/LF header
+ * injection). Anything else makes the mailto unusable, so callers fall
+ * through to the http(s) methods.
+ *
+ * @param {URL} parsed
+ * @returns {{address: string, subject: string | null} | null}
+ */
+function parseMailtoTarget(parsed) {
+  const address = parsed.pathname.trim();
+  if (!isValidEmailAddress(address)) return null;
+  const subject = parsed.searchParams.get('subject');
+  if (subject && (subject.length > MAX_MAILTO_SUBJECT_LENGTH || hasControlChars(subject))) {
+    return null;
+  }
+  return { address, subject: subject && subject.length ? subject : null };
 }
 
 /**
@@ -94,10 +122,7 @@ export function parseListUnsubscribe(headers) {
       if ((protocol === 'http:' || protocol === 'https:') && url === null) {
         url = uri;
       } else if (protocol === 'mailto:' && mailto === null) {
-        const address = parsed.pathname.trim();
-        if (!address) continue;
-        const subject = parsed.searchParams.get('subject');
-        mailto = { address, subject: subject && subject.length ? subject : null };
+        mailto = parseMailtoTarget(parsed);
       }
     }
   }

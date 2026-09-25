@@ -7,6 +7,7 @@ import worker, {
   redact,
   withTimeout,
 } from '../src/worker.js';
+import { MAX_ENRICHMENT_ATTEMPTS } from '../src/enrich.js';
 import { simpleFixture, fakeMessage } from './helpers.js';
 
 vi.mock('postgres', () => ({
@@ -551,6 +552,10 @@ describe('scheduled recovery', () => {
       .map((call) => call[0].join('?'))
       .find((query) => query.includes('FROM message_ai'));
     expect(recoveryQuery).toContain("ai.status IN ('pending', 'failed')");
+    // Rows past the attempt cap stay failed instead of spending AI budget forever.
+    expect(recoveryQuery).toContain('ai.enrichment_attempts < ?');
+    const recoveryCall = sql.mock.calls.find((call) => call[0].join('?') === recoveryQuery);
+    expect(recoveryCall.slice(1)).toContain(MAX_ENRICHMENT_ATTEMPTS);
     expect(recoveryQuery).not.toContain('embedding');
   });
 
@@ -599,6 +604,8 @@ describe('scheduled recovery', () => {
     expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
       tags: { service: 'mail-app-ingest', operation: 'ai_recovery' },
     });
+    // The owner's address is personal data and stays out of Sentry.
+    expect(JSON.stringify(sentry.captureException.mock.calls[0][1])).not.toContain('owner_email');
     expect(clients.every((sql) => sql.end.mock.calls.length === 1)).toBe(true);
   });
 });
@@ -617,7 +624,13 @@ describe('helpers', () => {
     expect(isTransientDbError(Object.assign(new Error('database down'), { code: '08001' }))).toBe(
       true,
     );
-    expect(isTransientDbError(new Error('write timed out'))).toBe(true);
+    expect(isTransientDbError(new Error('write CONNECTION_CLOSED db:5432'))).toBe(true);
+    // Statement and fetch timeouts are not dropped connections; retrying them
+    // would double the load on an already slow database.
+    expect(isTransientDbError(new Error('write timed out'))).toBe(false);
+    expect(
+      isTransientDbError(Object.assign(new Error('canceling statement'), { code: '57014' })),
+    ).toBe(false);
     expect(isTransientDbError(new Error('Network connection lost.'))).toBe(true);
     expect(isTransientDbError(new Error('syntax error'))).toBe(false);
   });

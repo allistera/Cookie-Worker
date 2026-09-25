@@ -214,7 +214,9 @@ export function deleteDocuments(env, descriptor, ids, client) {
 export async function hybridSearch(env, descriptor, query, client) {
   const index = clientFor(env, client).index(descriptor.name);
   const filters = [`user_id = '${escapeFilter(query.userId)}'`];
-  if (query.filter) filters.push(query.filter);
+  // Parenthesized so an OR inside the caller's filter can't escape the
+  // user_id conjunction.
+  if (query.filter) filters.push(`(${query.filter})`);
 
   const result = await index.search(query.text ?? '', {
     limit: query.limit,
@@ -274,7 +276,7 @@ export async function federatedSearch(env, units, options, client) {
 
   const queries = units.map((unit) => {
     const filters = [userFilter];
-    if (unit.filter) filters.push(unit.filter);
+    if (unit.filter) filters.push(`(${unit.filter})`);
 
     return {
       indexUid: unit.descriptor.name,
