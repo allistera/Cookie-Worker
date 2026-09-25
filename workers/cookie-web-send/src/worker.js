@@ -1,13 +1,14 @@
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { del, get } from '@vercel/blob';
-import postgres from 'postgres';
 import { Resend } from 'resend';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { createSql, withUserSql } from '../../../shared/db.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { syncMessageToMeili, syncMessagesToMeili } from '../../../shared/meiliSync.js';
+import { validId } from '../../../shared/pagination.js';
 import {
   deliverMail,
   parseFollowUpAt,
@@ -30,7 +31,6 @@ import { handleFollowUp } from './followUp.js';
 import { flushWithOutOfOffice, runOutOfOfficeInBackground } from './outOfOffice.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Names the single ScheduledSendClock instance (see scheduledSendClock.js).
 const SCHEDULED_SEND_CLOCK_NAME = 'scheduled-sends';
 
@@ -66,17 +66,7 @@ async function armScheduledSendClock(env, scheduledFor) {
 // send, but use the shared helper for consistent JSON error handling.
 const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
 
-/** @param {string} databaseUrl */
-export function createSql(databaseUrl) {
-  // No ssl option: Hyperdrive terminates TLS to the origin database itself;
-  // asking the driver for TLS makes every connect fail (see data-enricher).
-  return postgres(databaseUrl, {
-    prepare: false,
-    max: 1,
-    idle_timeout: 20,
-    connect_timeout: 10,
-  });
-}
+export { createSql };
 
 /**
  * Runs a best-effort search sync after the response has been handed back.
@@ -195,7 +185,7 @@ async function handleSend(sql, userId, request, services) {
     );
   }
   // Fixture ids from e2e/dev mode aren't UUIDs — ignore them rather than error.
-  let replyTo = UUID_RE.test(replyToMessageId) ? String(replyToMessageId) : null;
+  let replyTo = validId(replyToMessageId) ? String(replyToMessageId) : null;
 
   if (sendAt !== undefined) {
     const scheduledFor = parseScheduledFor(sendAt);
@@ -356,7 +346,7 @@ async function handleScheduled(sql, userId, request) {
       if (errorResponse) return errorResponse;
       throw error;
     }
-    const id = UUID_RE.test(body.id) ? String(body.id) : null;
+    const id = validId(body.id) ? String(body.id) : null;
     if (!id) {
       return Response.json({ error: 'id is required' }, { status: 400 });
     }
@@ -430,6 +420,27 @@ const worker = {
             await runOutOfOfficeInBackground(automaticSql, services);
           },
         );
+      }
+
+      if (resource === 'scheduled' && request.method === 'GET') {
+        // Listing is a pure read, so a dropped Hyperdrive connection gets one
+        // more go on a fresh client. Everything else here writes or sends
+        // mail and stays on the single request client below. The unused
+        // request client costs nothing: postgres.js connects lazily.
+        let response;
+        try {
+          response = await withUserSql(request, env, ctx, { retryable: true }, (readSql, userId) =>
+            handleScheduled(readSql, userId, request),
+          );
+        } catch (err) {
+          console.error(`${request.method} /send failed:`, err);
+          captureHandledException('send', err, env, {
+            path: url.pathname,
+            method: request.method,
+          });
+          response = Response.json({ error: 'Failed to send email' }, { status: 500 });
+        }
+        return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
       }
 
       let userId;

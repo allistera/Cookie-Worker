@@ -457,6 +457,28 @@ describe('GET/DELETE /send/scheduled', () => {
     expect((await response.json()).scheduledSends).toEqual(rows);
   });
 
+  test('retries the list once on a fresh connection when the socket drops', async () => {
+    const rows = [{ id: 'sched-1', status: 'pending' }];
+    responses = [new Error('Network connection lost.'), rows];
+    const response = await worker.fetch(request('/send/scheduled', { method: 'GET' }), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).scheduledSends).toEqual(rows);
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
+  test('does not retry a cancel when the socket drops', async () => {
+    responses = [new Error('Network connection lost.')];
+    const response = await worker.fetch(
+      request('/send/scheduled', { method: 'DELETE', body: JSON.stringify({ id: USER_ID }) }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(500);
+    expect(mockQuery).toHaveBeenCalledOnce();
+  });
+
   test('cancels a pending scheduled send and returns its content for the composer', async () => {
     const row = {
       id: 'sched-1',

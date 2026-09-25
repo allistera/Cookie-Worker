@@ -1,6 +1,6 @@
 import { parseFollowUpAt } from './outbound.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { validId } from '../../../shared/pagination.js';
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {Request} request */
 export async function handleFollowUp(sql, userId, request) {
@@ -17,7 +17,7 @@ export async function handleFollowUp(sql, userId, request) {
     if (response) return response;
     throw error;
   }
-  if (!body || !UUID_RE.test(body.messageId) || !Object.hasOwn(body, 'followUpAt')) {
+  if (!body || !validId(body.messageId) || !Object.hasOwn(body, 'followUpAt')) {
     return Response.json({ error: 'messageId and followUpAt are required' }, { status: 400 });
   }
   const followUpAt = body.followUpAt === null ? null : parseFollowUpAt(body.followUpAt);

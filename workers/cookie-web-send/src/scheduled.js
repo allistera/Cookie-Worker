@@ -240,6 +240,11 @@ export async function cancelScheduledSend(sql, userId, id) {
 // (e.g. a slow run overlapping the next tick) never send the same row twice
 // — FOR UPDATE SKIP LOCKED lets a concurrent call skip rows this one already
 // has locked instead of blocking on them.
+//
+// Reclaiming an expired 'sending' lease counts as an attempt: the previous
+// delivery never resolved the row (the isolate died mid-send, or the result
+// could not be recorded), and without counting it a row that reliably kills
+// its isolate would be reclaimed forever.
 /**
  * @param {import('postgres').Sql} sql
  * @param {number} limit
@@ -248,7 +253,8 @@ async function claimDueScheduledSends(sql, limit) {
   try {
     return await sql`
       UPDATE scheduled_sends s
-      SET status = 'sending', claimed_at = now()
+      SET status = 'sending', claimed_at = now(),
+          attempts = s.attempts + CASE WHEN s.status = 'sending' THEN 1 ELSE 0 END
       FROM (
         SELECT id FROM scheduled_sends
         WHERE (status = 'pending' AND scheduled_for <= now())
@@ -280,7 +286,8 @@ async function claimDueScheduledSends(sql, limit) {
     if (!isUndefinedScheduledAttachmentsTable(err)) throw err;
     return sql`
       UPDATE scheduled_sends s
-      SET status = 'sending', claimed_at = now()
+      SET status = 'sending', claimed_at = now(),
+          attempts = s.attempts + CASE WHEN s.status = 'sending' THEN 1 ELSE 0 END
       FROM (
         SELECT id FROM scheduled_sends
         WHERE (status = 'pending' AND scheduled_for <= now())
@@ -349,6 +356,12 @@ async function markScheduledSendFailed(sql, id, error, attempts = null) {
  * @returns {Promise<{status: string, storedMessageUuid: string | null}>}
  */
 export async function deliverScheduledSend(sql, row, services) {
+  if (row.attempts >= MAX_SCHEDULED_SEND_ATTEMPTS) {
+    // Only an expired lease reaches here: every earlier attempt ended without
+    // resolving the row, so stop instead of re-sending it yet again.
+    await markScheduledSendFailed(sql, row.id, 'Delivery could not be completed or confirmed');
+    return { status: 'failed', storedMessageUuid: null };
+  }
   const [owner] = await sql`SELECT 1 AS "exists" FROM users WHERE id = ${row.user_id}`;
   if (!owner) {
     await markScheduledSendFailed(sql, row.id, 'Owning user no longer exists');
