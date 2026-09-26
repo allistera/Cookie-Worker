@@ -193,6 +193,9 @@ describe('routing', () => {
       spamCount: 0,
       snoozedCount: 0,
       scheduledCount: 0,
+      starredCount: 0,
+      screeningCount: 0,
+      blockedCount: 0,
       userId: 'user-1',
     });
   });

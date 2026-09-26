@@ -33,6 +33,9 @@ describe('handleList', () => {
       spamCount: 0,
       snoozedCount: 0,
       scheduledCount: 0,
+      starredCount: 0,
+      screeningCount: 0,
+      blockedCount: 0,
       userId: USER_ID,
     });
   });
@@ -50,6 +53,7 @@ describe('handleList', () => {
     expect(body).not.toHaveProperty('spamCount');
     expect(body).not.toHaveProperty('snoozedCount');
     expect(body).not.toHaveProperty('scheduledCount');
+    expect(body).not.toHaveProperty('starredCount');
     expect(body).not.toHaveProperty('userId');
   });
 
@@ -103,6 +107,14 @@ describe('handleList', () => {
 });
 
 describe('handleState', () => {
+  // Starred, New senders and Blocked are likewise listed only while they
+  // hold mail, so their counts arrive with the bootstrap too.
+  test('reports how many messages Starred, New senders and Blocked hold', async () => {
+    const rows = [{ unread: 1, starred: 2, screening: 3, blocked: 4 }];
+    const body = await (await handleState(stubSql(rows), USER_ID)).json();
+    expect(body).toMatchObject({ starredCount: 2, screeningCount: 3, blockedCount: 4 });
+  });
+
   test('returns lightweight inbox state without a message list', async () => {
     const response = await handleState(stubSql([{ unread: 7 }]), USER_ID);
 
@@ -112,6 +124,9 @@ describe('handleState', () => {
       spamCount: 0,
       snoozedCount: 0,
       scheduledCount: 0,
+      starredCount: 0,
+      screeningCount: 0,
+      blockedCount: 0,
       userId: USER_ID,
     });
   });
@@ -128,6 +143,9 @@ describe('handleState', () => {
       spamCount: 2,
       snoozedCount: 3,
       scheduledCount: 0,
+      starredCount: 0,
+      screeningCount: 0,
+      blockedCount: 0,
       userId: USER_ID,
     });
   });

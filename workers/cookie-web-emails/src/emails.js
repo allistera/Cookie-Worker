@@ -246,6 +246,26 @@ export function fetchScheduledCount(sql, userId) {
   `;
 }
 
+// How many messages the Starred, New senders (held) and Blocked folders
+// hold. The sidebar lists each only while it has something, so the counts
+// travel with the others. Same predicates as folderPredicate for those
+// folders, plus the list's NOT is_deleted (and starred's allowed-only rule).
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ */
+export function fetchPresenceCounts(sql, userId) {
+  return sql`
+    SELECT
+      count(*) FILTER (WHERE m.is_starred AND m.screening_status = 'allowed')::int AS starred,
+      count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'held')::int AS screening,
+      count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'blocked')::int AS blocked
+    FROM messages m
+    WHERE m.user_id = ${userId} AND NOT m.is_deleted
+      AND (m.is_starred OR m.screening_status <> 'allowed')
+  `;
+}
+
 /**
  * GET /emails/state — lightweight app bootstrap for routes that need the
  * unread badge and Realtime channel identity but do not render the mailbox
@@ -256,17 +276,21 @@ export function fetchScheduledCount(sql, userId) {
  */
 export async function handleState(sql, userId) {
   try {
-    const [[userRow], [spamRow], [snoozedRow], [scheduledRow]] = await Promise.all([
+    const [[userRow], [spamRow], [snoozedRow], [scheduledRow], [presenceRow]] = await Promise.all([
       fetchUnreadCount(sql, userId),
       fetchSpamCount(sql, userId),
       fetchSnoozedCount(sql, userId),
       fetchScheduledCount(sql, userId),
+      fetchPresenceCounts(sql, userId),
     ]);
     return Response.json({
       unreadCount: userRow?.unread ?? 0,
       spamCount: spamRow?.spam ?? 0,
       snoozedCount: snoozedRow?.snoozed ?? 0,
       scheduledCount: scheduledRow?.scheduled ?? 0,
+      starredCount: presenceRow?.starred ?? 0,
+      screeningCount: presenceRow?.screening ?? 0,
+      blockedCount: presenceRow?.blocked ?? 0,
       userId,
     });
   } catch (err) {
@@ -321,13 +345,15 @@ export async function handleList(sql, userId, url) {
   try {
     // The unread and spam counts only matter on a list's first page; the
     // client ignores them on cursor pages, so skip the aggregates there.
-    const [rows, [userRow], [spamRow], [snoozedRow], [scheduledRow]] = await Promise.all([
-      timing.run('list', () => fetchEmails(sql, userId, limit, cursor, folder, labelName)),
-      cursor ? [] : timing.run('unread', () => fetchUnreadCount(sql, userId)),
-      cursor ? [] : timing.run('spam', () => fetchSpamCount(sql, userId)),
-      cursor ? [] : timing.run('snoozed', () => fetchSnoozedCount(sql, userId)),
-      cursor ? [] : timing.run('scheduled', () => fetchScheduledCount(sql, userId)),
-    ]);
+    const [rows, [userRow], [spamRow], [snoozedRow], [scheduledRow], [presenceRow]] =
+      await Promise.all([
+        timing.run('list', () => fetchEmails(sql, userId, limit, cursor, folder, labelName)),
+        cursor ? [] : timing.run('unread', () => fetchUnreadCount(sql, userId)),
+        cursor ? [] : timing.run('spam', () => fetchSpamCount(sql, userId)),
+        cursor ? [] : timing.run('snoozed', () => fetchSnoozedCount(sql, userId)),
+        cursor ? [] : timing.run('scheduled', () => fetchScheduledCount(sql, userId)),
+        cursor ? [] : timing.run('presence', () => fetchPresenceCounts(sql, userId)),
+      ]);
     const hasMore = rows.length > limit;
     const emails = hasMore ? rows.slice(0, limit) : rows;
     const last = emails[emails.length - 1];
@@ -350,6 +376,9 @@ export async function handleList(sql, userId, url) {
       payload.spamCount = spamRow?.spam ?? 0;
       payload.snoozedCount = snoozedRow?.snoozed ?? 0;
       payload.scheduledCount = scheduledRow?.scheduled ?? 0;
+      payload.starredCount = presenceRow?.starred ?? 0;
+      payload.screeningCount = presenceRow?.screening ?? 0;
+      payload.blockedCount = presenceRow?.blocked ?? 0;
       payload.userId = userId;
     }
     return timing.response(Response.json(payload));
