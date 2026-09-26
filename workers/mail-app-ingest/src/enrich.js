@@ -207,7 +207,7 @@ export async function classifyEmail(
  * @param {string} [model]
  */
 export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI_MODEL) {
-  const [labelRows, categoryRows, aiRuleRows, stateRows] = await Promise.all([
+  const [labelRows, categoryRows, aiRuleRows, stateRows, importanceRows] = await Promise.all([
     sql`
       SELECT l.id, l.name, l.description
       FROM labels l
@@ -240,17 +240,34 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       LEFT JOIN message_ai ai ON ai.message_id = m.id
       WHERE m.id = ${messageUuid}
     `,
+    // The owner marked this sender "Not important" from the reader
+    // (cookie-web-messages markNotImportant).
+    sql`
+      SELECT EXISTS (
+        SELECT 1 FROM sender_importance_feedback f
+        JOIN messages m ON m.user_id = f.user_id
+        WHERE m.id = ${messageUuid} AND f.address = lower(btrim(m.from_address))
+      ) AS not_important
+    `,
   ]);
+  const notImportantSender = Boolean(importanceRows[0]?.not_important);
   const labels = labelRows.map((label) => ({
     id: String(label.id),
     name: String(label.name),
     description: typeof label.description === 'string' ? label.description : null,
   }));
-  const categories = categoryRows.map((category) => ({
-    id: String(category.id),
-    name: String(category.name),
-    description: typeof category.description === 'string' ? category.description : null,
-  }));
+  const categories = categoryRows
+    .map((category) => ({
+      id: String(category.id),
+      name: String(category.name),
+      description: typeof category.description === 'string' ? category.description : null,
+    }))
+    // A sender marked not important is never filed under a category named
+    // Important (the name Cookie-Web's Important tab keys on); the model
+    // picks the best of the rest instead.
+    .filter(
+      (category) => !notImportantSender || category.name.trim().toLowerCase() !== 'important',
+    );
   /** @type {AiRule[]} */
   const aiRules = aiRuleRows
     .filter((rule) => typeof rule.prompt === 'string' && rule.prompt.trim())
@@ -285,6 +302,9 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
     const selected = classification.labels.filter(
       (label) => allowed.has(label.id) && label.confidence >= MATCH_THRESHOLD,
     );
+    // ...and never rated high priority, which would put it in Important too.
+    const priority =
+      notImportantSender && classification.priority === 'high' ? 'normal' : classification.priority;
     const allowedCategoryIds = new Set(categories.map((category) => category.id));
     const selectedCategoryId = allowedCategoryIds.has(classification.category_id)
       ? classification.category_id
@@ -405,7 +425,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
           priority, provider, model, prompt_version, processed_at, updated_at
         ) VALUES (
           ${messageUuid}, 'completed', ${verdict}, ${score}, ${classification.spam_reason},
-          ${classification.priority}, 'openai', ${model},
+          ${priority}, 'openai', ${model},
           ${PROMPT_VERSION}, now(), now()
         )
         ON CONFLICT (message_id) DO UPDATE SET

@@ -1175,3 +1175,114 @@ describe('deferred calendar enrichment', () => {
     expect(readBlob).not.toHaveBeenCalled();
   });
 });
+
+describe('postMessage — not important', () => {
+  test('remembers the sender and takes the message out of Important', async () => {
+    const sql = createMockSql([
+      [
+        {
+          address: 'news@shop.example',
+          category_id: CATEGORY_ID,
+          priority: 'high',
+          important_category: true,
+        },
+      ],
+      [],
+      [],
+      [],
+    ]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'mark_not_important' },
+      unsubscribeDeps(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      sender: 'news@shop.example',
+      priority: 'normal',
+      category_id: null,
+      previous: { priority: 'high', category_id: CATEGORY_ID },
+    });
+    expect(sql.begin).toHaveBeenCalledOnce();
+    expect(sql.calls[0].text).toContain('m.user_id = ?');
+    expect(sql.calls[0].text).toContain("lower(btrim(c.name)) = 'important'");
+    expect(sql.calls[0].text).toContain('FOR UPDATE OF m');
+    expect(sql.calls[1].text).toContain('INSERT INTO sender_importance_feedback');
+    expect(sql.calls[1].values).toEqual([USER_ID, 'news@shop.example']);
+    expect(sql.calls[2].text).toContain("SET priority = 'normal'");
+    expect(sql.calls[3].text).toContain('SET category_id = NULL');
+  });
+
+  test('keeps an ordinary category and priority, still remembering the sender', async () => {
+    const sql = createMockSql([
+      [
+        {
+          address: 'a@b.example',
+          category_id: CATEGORY_ID,
+          priority: 'normal',
+          important_category: false,
+        },
+      ],
+      [],
+    ]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'mark_not_important' },
+      unsubscribeDeps(),
+    );
+
+    expect(await response.json()).toMatchObject({ priority: 'normal', category_id: CATEGORY_ID });
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[1].text).toContain('INSERT INTO sender_importance_feedback');
+  });
+
+  test('404s for a message the user does not own', async () => {
+    const sql = createMockSql([[]]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'mark_not_important' },
+      unsubscribeDeps(),
+    );
+    expect(response.status).toBe(404);
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  test('undo forgets the sender and restores only valid previous values', async () => {
+    const sql = createMockSql([[{ address: 'news@shop.example' }], [], [], []]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      {
+        id: MESSAGE_ID,
+        action: 'undo_not_important',
+        previous: { priority: 'high', category_id: CATEGORY_ID },
+      },
+      unsubscribeDeps(),
+    );
+
+    expect(await response.json()).toEqual({ restored: true });
+    expect(sql.calls[1].text).toContain('DELETE FROM sender_importance_feedback');
+    expect(sql.calls[1].values).toEqual([USER_ID, 'news@shop.example']);
+    expect(sql.calls[2].text).toContain("SET priority = 'high'");
+    expect(sql.calls[2].text).toContain("priority = 'normal'");
+    expect(sql.calls[3].text).toContain('category_id IS NULL');
+    expect(sql.calls[3].text).toContain('c.user_id = ?');
+
+    const ignored = createMockSql([[{ address: 'news@shop.example' }], []]);
+    await postMessage(
+      ignored,
+      USER_ID,
+      {
+        id: MESSAGE_ID,
+        action: 'undo_not_important',
+        previous: { priority: 'urgent', category_id: 'not-a-uuid' },
+      },
+      unsubscribeDeps(),
+    );
+    expect(ignored.calls).toHaveLength(2);
+  });
+});

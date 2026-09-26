@@ -594,7 +594,8 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
 }
 
 /**
- * POST /messages — unsubscribe, label/category edits, or mute_thread/unmute_thread.
+ * POST /messages — unsubscribe, label/category edits, mute_thread/unmute_thread, or
+ * mark_not_important/undo_not_important.
  * Muting applies to the owned message's entire conversation and clears queued alerts.
  *
  * @param {import('postgres').Sql} sql
@@ -642,6 +643,14 @@ export async function postMessage(sql, userId, body, deps) {
     return setMessageCategory(sql, userId, id, body.category_id);
   }
 
+  if (action === 'mark_not_important') {
+    return markNotImportant(sql, userId, id);
+  }
+
+  if (action === 'undo_not_important') {
+    return undoNotImportant(sql, userId, id, body.previous);
+  }
+
   if (action !== 'unsubscribe') {
     return Response.json({ error: 'A valid id and action are required' }, { status: 400 });
   }
@@ -658,6 +667,105 @@ export async function postMessage(sql, userId, body, deps) {
   }
 
   return unsubscribe(sql, userId, id, deps, body.allow_ai === true);
+}
+
+/**
+ * "Not important" from the reader: remembers the sender so classification
+ * (mail-app-ingest enrich.js) never rates their mail high priority or files it
+ * under a category named Important, and takes this message out of Important
+ * now by lowering a high priority to normal and clearing such a category.
+ * Returns the previous values so the client can offer Undo.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} messageId
+ */
+async function markNotImportant(sql, userId, messageId) {
+  const result = await sql.begin(async (tx) => {
+    const [message] = await tx`
+      SELECT lower(btrim(m.from_address)) AS address, m.category_id, ai.priority,
+             -- Categories count as Important by name, as in Cookie-Web's tabs.
+             COALESCE(lower(btrim(c.name)) = 'important', false) AS important_category
+      FROM messages m
+      LEFT JOIN message_ai ai ON ai.message_id = m.id
+      LEFT JOIN email_categories c ON c.id = m.category_id AND c.user_id = m.user_id
+      WHERE m.id = ${messageId} AND m.user_id = ${userId} AND NOT m.is_deleted AND NOT m.is_sent
+      FOR UPDATE OF m
+    `;
+    if (!message) return null;
+    if (message.address) {
+      await tx`
+        INSERT INTO sender_importance_feedback (user_id, address)
+        VALUES (${userId}, ${message.address})
+        ON CONFLICT (user_id, address) DO NOTHING
+      `;
+    }
+    const lowered = message.priority === 'high';
+    if (lowered) {
+      await tx`
+        UPDATE message_ai SET priority = 'normal', updated_at = now()
+        WHERE message_id = ${messageId} AND priority = 'high'
+      `;
+    }
+    if (message.important_category) {
+      await tx`UPDATE messages SET category_id = NULL WHERE id = ${messageId}`;
+    }
+    return {
+      sender: message.address || null,
+      priority: lowered ? 'normal' : (message.priority ?? null),
+      category_id: message.important_category ? null : (message.category_id ?? null),
+      previous: { priority: message.priority ?? null, category_id: message.category_id ?? null },
+    };
+  });
+  if (!result) return Response.json({ error: 'Message not found' }, { status: 404 });
+  return Response.json(result);
+}
+
+/**
+ * Undo for markNotImportant: forgets the sender and puts back the priority
+ * and category it changed, unless something else has changed them since.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} messageId
+ * @param {any} previous
+ */
+async function undoNotImportant(sql, userId, messageId, previous) {
+  const priority = previous?.priority === 'high' ? 'high' : null;
+  const categoryId = validId(previous?.category_id) ? String(previous.category_id) : null;
+  const restored = await sql.begin(async (tx) => {
+    const [message] = await tx`
+      SELECT lower(btrim(m.from_address)) AS address
+      FROM messages m
+      WHERE m.id = ${messageId} AND m.user_id = ${userId} AND NOT m.is_deleted
+      FOR UPDATE OF m
+    `;
+    if (!message) return false;
+    if (message.address) {
+      await tx`
+        DELETE FROM sender_importance_feedback
+        WHERE user_id = ${userId} AND address = ${message.address}
+      `;
+    }
+    if (priority) {
+      await tx`
+        UPDATE message_ai SET priority = 'high', updated_at = now()
+        WHERE message_id = ${messageId} AND priority = 'normal'
+      `;
+    }
+    if (categoryId) {
+      await tx`
+        UPDATE messages m SET category_id = ${categoryId}
+        WHERE m.id = ${messageId} AND m.category_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM email_categories c WHERE c.id = ${categoryId} AND c.user_id = ${userId}
+          )
+      `;
+    }
+    return true;
+  });
+  if (!restored) return Response.json({ error: 'Message not found' }, { status: 404 });
+  return Response.json({ restored: true });
 }
 
 /**

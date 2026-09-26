@@ -186,6 +186,79 @@ describe('AI enrichment', () => {
     expect(assignment.text).toContain('category_id IS NULL');
   });
 
+  test('never rates a not-important sender high or files it under Important', async () => {
+    const importantId = '11111111-1111-1111-1111-111111111111';
+    const personalId = '22222222-2222-2222-2222-222222222222';
+    const sql = createMockSql({
+      categoryRows: [
+        { id: importantId, name: ' Important ', description: null },
+        { id: personalId, name: 'Personal', description: null },
+      ],
+      importanceRows: [{ not_important: true }],
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(
+            responseResult({ priority: 'high', category_id: personalId }),
+          ),
+        }),
+      })),
+    );
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'news@shop.example', subject: 'Deal', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    const request = JSON.parse(mockedFetch().mock.calls[0][1].body);
+    expect(JSON.parse(request.input[1].content).categories.map((c) => c.id)).toEqual([personalId]);
+    expect(request.text.format.schema.properties.category_id.enum).toEqual([personalId]);
+    const upsert = sql.transactions[0].find((query) =>
+      query.text.includes('INSERT INTO message_ai'),
+    );
+    expect(upsert.values).toContain('normal');
+    expect(upsert.values).not.toContain('high');
+  });
+
+  test('keeps high priority and Important for other senders', async () => {
+    const importantId = '11111111-1111-1111-1111-111111111111';
+    const sql = createMockSql({
+      categoryRows: [{ id: importantId, name: 'Important', description: null }],
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(
+            responseResult({ priority: 'high', category_id: importantId }),
+          ),
+        }),
+      })),
+    );
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'boss@work.example', subject: 'Now', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    const upsert = sql.transactions[0].find((query) =>
+      query.text.includes('INSERT INTO message_ai'),
+    );
+    expect(upsert.values).toContain('high');
+    const assignment = sql.transactions[0].find((query) =>
+      query.text.includes('SET category_id ='),
+    );
+    expect(assignment.values).toEqual([importantId, 'message-1']);
+  });
+
   test('ignores a category id that was not supplied by the application', async () => {
     const categoryId = '11111111-1111-1111-1111-111111111111';
     const sql = createMockSql({
