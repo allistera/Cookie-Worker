@@ -29,13 +29,21 @@ export function createSentryOptions({ service, env, trigger, beforeSend }) {
     enabled: Boolean(env.SENTRY_DSN),
     environment: env.SENTRY_ENVIRONMENT ?? 'production',
     tracesSampleRate: 0,
+    // SDK v11 turned this on by default; keep non-Error throws without a
+    // synthetic call-site stack, as in v10, so issue grouping stays stable.
+    attachStacktrace: false,
+    // Every category is listed on purpose: an omitted one falls back to the
+    // SDK default, which collects it.
     dataCollection: {
       userInfo: false,
       cookies: false,
       httpHeaders: { request: false, response: false },
       httpBodies: [],
-      queryParams: false,
+      urlQueryParams: false,
+      graphQL: { document: false, variables: false },
       genAI: { inputs: false, outputs: false },
+      databaseQueryData: false,
+      queues: false,
       stackFrameVariables: false,
     },
     beforeSend(event, hint) {

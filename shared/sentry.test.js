@@ -43,15 +43,23 @@ describe('createSentryOptions', () => {
   test('opts out of every category of personal data', () => {
     expect(createSentryOptions({ service: 'a-worker', env: { SENTRY_DSN: DSN } })).toMatchObject({
       tracesSampleRate: 0,
-      dataCollection: {
-        userInfo: false,
-        cookies: false,
-        httpHeaders: { request: false, response: false },
-        httpBodies: [],
-        queryParams: false,
-        genAI: { inputs: false, outputs: false },
-        stackFrameVariables: false,
-      },
+      attachStacktrace: false,
+    });
+    // toEqual, not toMatchObject: a category left out falls back to the
+    // SDK's collect-by-default setting.
+    expect(
+      createSentryOptions({ service: 'a-worker', env: { SENTRY_DSN: DSN } }).dataCollection,
+    ).toEqual({
+      userInfo: false,
+      cookies: false,
+      httpHeaders: { request: false, response: false },
+      httpBodies: [],
+      urlQueryParams: false,
+      graphQL: { document: false, variables: false },
+      genAI: { inputs: false, outputs: false },
+      databaseQueryData: false,
+      queues: false,
+      stackFrameVariables: false,
     });
   });
 
