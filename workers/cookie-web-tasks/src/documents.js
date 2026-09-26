@@ -23,6 +23,11 @@ import { validId } from '../../../shared/pagination.js';
 
 export const MAX_TITLE_LENGTH = 300;
 export const MAX_EMOJI_LENGTH = 16;
+// Documents can also use a Material Symbols icon, stored in the same emoji
+// column as `ms:<icon_name>` (Cookie-Web src/lib/documentIcons.js).
+export const ICON_PREFIX = 'ms:';
+export const MAX_ICON_NAME_LENGTH = 64;
+const ICON_NAME_PATTERN = /^[a-z0-9_]+$/;
 // Blocks are stored verbatim, including base64 images, so the cap is generous
 // but still bounds a single row (and request) to something sane.
 export const MAX_BLOCKS_BYTES = 4 * 1024 * 1024;
@@ -43,6 +48,20 @@ const SEARCH_RESULTS = 20;
 export function cleanText(value, max) {
   if (!(value?.trim instanceof Function)) return null;
   return value.trim().slice(0, max);
+}
+
+// An icon is either an emoji (bounded like any other text) or `ms:` plus a
+// Material Symbols name. An `ms:` value is never truncated, since a clipped
+// name would point at a different or missing glyph; a malformed one is
+// rejected (null) instead. Empty strings pass through for the callers'
+// defaults.
+/** @param {any} value */
+export function cleanEmoji(value) {
+  const text = cleanText(value, Infinity);
+  if (!text?.startsWith(ICON_PREFIX)) return text?.slice(0, MAX_EMOJI_LENGTH) ?? null;
+  const name = text.slice(ICON_PREFIX.length);
+  if (name.length > MAX_ICON_NAME_LENGTH || !ICON_NAME_PATTERN.test(name)) return null;
+  return text;
 }
 
 // A document body must be an array of objects small enough to store. Returns
@@ -313,7 +332,7 @@ export async function createDocument(sql, userId, body, deps, env = {}) {
         return Response.json({ error: 'parentId must be one of your folders' }, { status: 400 });
       }
     }
-    const emoji = cleanText(body.emoji, MAX_EMOJI_LENGTH) || '📁';
+    const emoji = cleanEmoji(body.emoji) || '📁';
     const [folder] = await sql`
       INSERT INTO document_folders (user_id, parent_id, title, emoji)
       VALUES (${userId}, ${parentId}, ${title}, ${emoji})
@@ -331,7 +350,7 @@ export async function createDocument(sql, userId, body, deps, env = {}) {
         { status: 400 },
       );
     }
-    const emoji = cleanText(body.emoji, MAX_EMOJI_LENGTH) || '📄';
+    const emoji = cleanEmoji(body.emoji) || '📄';
     const [template] = await sql`
       INSERT INTO document_templates (user_id, title, emoji, blocks)
       VALUES (${userId}, ${title}, ${emoji}, ${sql.json(blocks)})
@@ -443,9 +462,13 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
     updates.title = title;
   }
   if (Object.hasOwn(body, 'emoji')) {
-    const emoji = cleanText(body.emoji, MAX_EMOJI_LENGTH);
-    if (!emoji)
-      return Response.json({ error: 'emoji must be a non-empty string' }, { status: 400 });
+    const emoji = cleanEmoji(body.emoji);
+    if (!emoji) {
+      return Response.json(
+        { error: 'emoji must be a non-empty emoji or an ms:<icon_name> icon' },
+        { status: 400 },
+      );
+    }
     updates.emoji = emoji;
   }
   if (Object.hasOwn(body, 'starred')) {

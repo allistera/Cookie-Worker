@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   MAX_BLOCKS_BYTES,
+  cleanEmoji,
   cleanText,
   createDocument,
   deleteDocument,
@@ -535,6 +536,34 @@ describe('PATCH /documents', () => {
     expect((await response.json()).error).toContain('updated elsewhere');
   });
 
+  it('saves a Material Symbols icon longer than the emoji cap untruncated', async () => {
+    const sql = createMockSql([[{ id: DOC_ID, emoji: 'ms:check_box_outline_blank' }]]);
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      { id: DOC_ID, emoji: 'ms:check_box_outline_blank' },
+      deps(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(sql.calls[0].text).toBe('SET(emoji)');
+    expect(sql.mock.calls[0][0]).toEqual({ emoji: 'ms:check_box_outline_blank' });
+  });
+
+  it('rejects a malformed Material Symbols icon', async () => {
+    const sql = createMockSql();
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      { id: DOC_ID, emoji: 'ms:Rocket-Launch' },
+      deps(),
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('ms:<icon_name>');
+    expect(sql.calls).toHaveLength(0);
+  });
+
   it('moves a document to the root with folderId null', async () => {
     const sql = createMockSql([[{ id: DOC_ID, folder_id: null }]]);
     const response = await updateDocument(sql, USER_ID, { id: DOC_ID, folderId: null }, deps());
@@ -683,6 +712,29 @@ describe('normalizeBlocks', () => {
   it('rejects a payload over the size cap', () => {
     const oversized = [{ type: 'image', data: { url: 'x'.repeat(MAX_BLOCKS_BYTES) } }];
     expect(normalizeBlocks(oversized)).toBeNull();
+  });
+});
+
+describe('cleanEmoji', () => {
+  it('bounds emoji like other text', () => {
+    expect(cleanEmoji(' 🚀 ')).toBe('🚀');
+    expect(cleanEmoji('x'.repeat(40))).toBe('x'.repeat(16));
+    expect(cleanEmoji('')).toBe('');
+    expect(cleanEmoji(null)).toBeNull();
+  });
+
+  it('accepts ms: followed by a lowercase icon name', () => {
+    expect(cleanEmoji('ms:rocket_launch')).toBe('ms:rocket_launch');
+    expect(cleanEmoji(' ms:looks_3 ')).toBe('ms:looks_3');
+    expect(cleanEmoji(`ms:${'a'.repeat(64)}`)).toBe(`ms:${'a'.repeat(64)}`);
+  });
+
+  it('rejects malformed or oversized ms: values instead of truncating them', () => {
+    expect(cleanEmoji('ms:')).toBeNull();
+    expect(cleanEmoji('ms:Rocket')).toBeNull();
+    expect(cleanEmoji('ms:rocket launch')).toBeNull();
+    expect(cleanEmoji('ms:<script>')).toBeNull();
+    expect(cleanEmoji(`ms:${'a'.repeat(65)}`)).toBeNull();
   });
 });
 
