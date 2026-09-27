@@ -102,6 +102,47 @@ export function outOfOfficeConcurrencyDatabase() {
         }
         return [];
       }
+      // cookie-web-emails fetchRelatedHeldAddresses: held mail from other
+      // addresses with the same display name on the same/parent/sub domain.
+      if (query.startsWith('SELECT DISTINCT held.address')) {
+        const [userId, address] = values;
+        const clean = (name) =>
+          String(name ?? '')
+            .trim()
+            .replace(/\s+/g, ' ')
+            .toLowerCase();
+        const norm = (value) => value.trim().toLowerCase();
+        const domainOf = (value) => value.slice(value.lastIndexOf('@') + 1);
+        const own = [...state.messages.values()]
+          .filter(
+            (m) =>
+              m.user_id === userId &&
+              !m.is_sent &&
+              norm(m.from_address) === address &&
+              clean(m.from_name),
+          )
+          .sort((a, b) => String(b.sent_at ?? '').localeCompare(String(a.sent_at ?? '')))[0];
+        if (!own) return [];
+        const domain = domainOf(address);
+        const related = new Set();
+        for (const m of state.messages.values()) {
+          const other = norm(m.from_address);
+          const otherDomain = domainOf(other);
+          if (
+            m.user_id === userId &&
+            !m.is_sent &&
+            !m.is_deleted &&
+            m.screening_status === 'held' &&
+            other !== address &&
+            clean(m.from_name) === clean(own.from_name) &&
+            (otherDomain === domain ||
+              otherDomain.endsWith(`.${domain}`) ||
+              domain.endsWith(`.${otherDomain}`))
+          )
+            related.add(other);
+        }
+        return [...related].sort().map((value) => ({ address: value }));
+      }
       if (query.startsWith('UPDATE messages SET screening_status = ?')) {
         const changed = [];
         for (const message of state.messages.values()) {

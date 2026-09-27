@@ -100,32 +100,110 @@ export async function putSenders(sql, userId, body) {
         : current?.decision === 'accepted' || owner.enabled !== true
           ? 'allowed'
           : 'held';
-    if (action === 'block') {
-      // Suppress even an already-queued reply/alert whose different envelope
-      // identity would otherwise evade the displayed From-address decision.
-      // Sticky suppression avoids replaying old replies after a later unblock.
-      await tx`UPDATE messages SET auto_reply_suppressed = true
-        WHERE user_id = ${userId} AND lower(btrim(from_address)) = ${address}
-          AND NOT is_sent AND NOT auto_reply_suppressed`;
-      await tx`DELETE FROM browser_notification_events event USING messages m
-        WHERE event.message_id = m.id AND event.user_id = ${userId} AND m.user_id = ${userId}
-          AND lower(btrim(m.from_address)) = ${address}`;
-      await tx`DELETE FROM ntfy_notification_events event USING messages m
-        WHERE event.message_id = m.id AND event.user_id = ${userId} AND m.user_id = ${userId}
-          AND lower(btrim(m.from_address)) = ${address} AND event.published_at IS NULL`;
+    // Non-settings actions were rejected above without an exact address.
+    const sender = /** @type {string} */ (address);
+    /** @type {import('postgres').Row[]} */
+    const rows = [
+      ...(await applyDisposition(tx, userId, sender, action, status, body.messageId ?? null)),
+    ];
+    // One contact often writes from several addresses (e.g. a company's
+    // marketing and account mail). Accept and Block also cover the other
+    // addresses of the same contact still waiting in New senders, each as its
+    // own exact decision, so future mail keeps exact-address screening.
+    /** @type {string[]} */
+    const related = [];
+    if (action === 'block' || action === 'accept') {
+      for (const row of await fetchRelatedHeldAddresses(tx, userId, sender)) {
+        const other = exactAddress(row.address);
+        if (!other) continue;
+        await tx`INSERT INTO sender_decisions (user_id, address, decision)
+          VALUES (${userId}, ${other}, ${action === 'block' ? 'blocked' : 'accepted'})
+          ON CONFLICT (user_id, address) DO UPDATE SET decision = EXCLUDED.decision, updated_at = now()`;
+        rows.push(...(await applyDisposition(tx, userId, other, action, status, null)));
+        related.push(other);
+      }
     }
-    // Only held mail and the explicitly selected reader message move. Older
-    // ordinary mail remains where it was; accepting never forces it into Inbox.
-    const rows = await tx`UPDATE messages SET screening_status = ${status},
-        auto_reply_suppressed = true, search_indexed_at = NULL
-      WHERE user_id = ${userId} AND lower(btrim(from_address)) = ${address}
-        AND NOT is_sent AND NOT is_deleted
-        AND (screening_status <> 'allowed' OR (${action === 'block'} AND id = ${body.messageId ?? null}::uuid))
-      RETURNING id, thread_id`;
     if (rows.length) {
       await tx`UPDATE threads SET ai_summary = NULL, ai_summary_message_id = NULL, ai_summary_updated_at = NULL
         WHERE user_id = ${userId} AND id = ANY(${rows.map((row) => row.thread_id)}::uuid[])`;
     }
-    return reply({ address, decision: current?.decision ?? null, status, updated: rows.length });
+    return reply({
+      address,
+      decision: current?.decision ?? null,
+      status,
+      updated: rows.length,
+      related,
+    });
   });
+}
+
+/**
+ * Moves one exact address's mail to `status`. Only held mail and the
+ * explicitly selected reader message move; older ordinary mail remains where
+ * it was, and accepting never forces it into Inbox.
+ *
+ * @param {import('postgres').TransactionSql} tx
+ * @param {string} userId
+ * @param {string} address
+ * @param {string} action
+ * @param {string} status
+ * @param {string | null} messageId
+ */
+async function applyDisposition(tx, userId, address, action, status, messageId) {
+  if (action === 'block') {
+    // Suppress even an already-queued reply/alert whose different envelope
+    // identity would otherwise evade the displayed From-address decision.
+    // Sticky suppression avoids replaying old replies after a later unblock.
+    await tx`UPDATE messages SET auto_reply_suppressed = true
+      WHERE user_id = ${userId} AND lower(btrim(from_address)) = ${address}
+        AND NOT is_sent AND NOT auto_reply_suppressed`;
+    await tx`DELETE FROM browser_notification_events event USING messages m
+      WHERE event.message_id = m.id AND event.user_id = ${userId} AND m.user_id = ${userId}
+        AND lower(btrim(m.from_address)) = ${address}`;
+    await tx`DELETE FROM ntfy_notification_events event USING messages m
+      WHERE event.message_id = m.id AND event.user_id = ${userId} AND m.user_id = ${userId}
+        AND lower(btrim(m.from_address)) = ${address} AND event.published_at IS NULL`;
+  }
+  return tx`UPDATE messages SET screening_status = ${status},
+      auto_reply_suppressed = true, search_indexed_at = NULL
+    WHERE user_id = ${userId} AND lower(btrim(from_address)) = ${address}
+      AND NOT is_sent AND NOT is_deleted
+      AND (screening_status <> 'allowed' OR (${action === 'block'} AND id = ${messageId}::uuid))
+    RETURNING id, thread_id`;
+}
+
+/**
+ * Other addresses of the same contact still waiting in New senders (held):
+ * the same display name (ignoring case and spacing) AND the same domain or a
+ * parent/subdomain of it, e.g. email.smarty.co.uk alongside smarty.co.uk.
+ * Requiring both keeps a copied display name on an unrelated domain out.
+ *
+ * @param {import('postgres').TransactionSql} tx
+ * @param {string} userId
+ * @param {string} address
+ */
+export function fetchRelatedHeldAddresses(tx, userId, address) {
+  const domain = address.slice(address.lastIndexOf('@') + 1);
+  return tx`SELECT DISTINCT held.address FROM (
+      SELECT lower(btrim(m.from_address)) AS address,
+             split_part(lower(btrim(m.from_address)), '@', 2) AS domain
+      FROM messages m
+      WHERE m.user_id = ${userId} AND NOT m.is_sent AND NOT m.is_deleted
+        AND m.screening_status = 'held'
+        AND lower(btrim(m.from_address)) <> ${address}
+        AND lower(regexp_replace(btrim(m.from_name), '[[:space:]]+', ' ', 'g')) = (
+          SELECT lower(regexp_replace(btrim(own.from_name), '[[:space:]]+', ' ', 'g'))
+          FROM messages own
+          WHERE own.user_id = ${userId} AND NOT own.is_sent
+            AND lower(btrim(own.from_address)) = ${address}
+            AND btrim(coalesce(own.from_name, '')) <> ''
+          ORDER BY own.sent_at DESC
+          LIMIT 1
+        )
+    ) held
+    WHERE held.domain = ${domain}
+      OR right(held.domain, ${domain.length + 1}) = ${'.' + domain}
+      OR right(${domain}, length(held.domain) + 1) = '.' || held.domain
+    ORDER BY held.address
+    LIMIT 20`;
 }

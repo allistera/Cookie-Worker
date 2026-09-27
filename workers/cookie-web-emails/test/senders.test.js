@@ -120,6 +120,44 @@ describe('exact sender decisions', () => {
     expect((await putSenders(connect(), OWNER, { action: 'block', address })).status).toBe(400);
     expect(state.concurrentQueries).toHaveLength(0);
   });
+  test("accept and block also cover the same contact's other held addresses", async () => {
+    const { connect, state } = outOfOfficeConcurrencyDatabase();
+    const base = state.messages.get(MESSAGE);
+    const add = (id, from_address, from_name, screening_status = 'held') =>
+      state.messages.set(id, { ...base, id, from_address, from_name, screening_status });
+    add(MESSAGE, 'offers@smarty.co.uk', 'SMARTY');
+    add('66666666-6666-4666-8666-666666666661', 'news@email.smarty.co.uk', ' Smarty ');
+    add('66666666-6666-4666-8666-666666666662', 'help@smarty.co.uk', 'SMARTY');
+    // Same name on an unrelated domain, and a different name on the domain.
+    add('66666666-6666-4666-8666-666666666663', 'x@evil.example', 'SMARTY');
+    add('66666666-6666-4666-8666-666666666664', 'y@smarty.co.uk', 'Other');
+
+    const response = await putSenders(connect(), OWNER, {
+      action: 'accept',
+      address: 'offers@smarty.co.uk',
+      messageId: MESSAGE,
+    });
+    const body = await response.json();
+
+    expect(body.related).toEqual(['help@smarty.co.uk', 'news@email.smarty.co.uk']);
+    expect(body.updated).toBe(3);
+    const status = (id) => state.messages.get(id).screening_status;
+    expect(status(MESSAGE)).toBe('allowed');
+    expect(status('66666666-6666-4666-8666-666666666661')).toBe('allowed');
+    expect(status('66666666-6666-4666-8666-666666666662')).toBe('allowed');
+    expect(status('66666666-6666-4666-8666-666666666663')).toBe('held');
+    expect(status('66666666-6666-4666-8666-666666666664')).toBe('held');
+    // Each address is its own exact decision.
+    expect(state.senderDecisions.size).toBe(3);
+
+    const blocked = await putSenders(connect(), OWNER, {
+      action: 'block',
+      address: 'x@evil.example',
+      messageId: '66666666-6666-4666-8666-666666666663',
+    });
+    expect((await blocked.json()).related).toEqual([]);
+  });
+
   test('lists only the verified owner with bounded cursor pages and private caching', async () => {
     const calls = [];
     const rows = Array.from({ length: 51 }, (_, i) => ({
