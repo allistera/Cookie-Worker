@@ -54,11 +54,11 @@ describe.skipIf(!databaseUrl)('sender blocking versus retention on PostgreSQL', 
       CREATE TABLE threads (id uuid PRIMARY KEY, user_id uuid REFERENCES users(id),
         ai_summary text, ai_summary_message_id uuid, ai_summary_updated_at timestamptz);
       CREATE TABLE messages (id uuid PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id),
-        thread_id uuid NOT NULL REFERENCES threads(id), from_address text NOT NULL,
+        thread_id uuid NOT NULL REFERENCES threads(id), from_address text NOT NULL, from_name text,
         is_sent boolean NOT NULL DEFAULT false, is_deleted boolean NOT NULL DEFAULT false,
         is_archived boolean NOT NULL DEFAULT false, auto_reply_suppressed boolean NOT NULL DEFAULT false,
         screening_status text NOT NULL DEFAULT 'allowed', created_at timestamptz NOT NULL DEFAULT now(),
-        search_indexed_at timestamptz);
+        sent_at timestamptz NOT NULL DEFAULT now(), search_indexed_at timestamptz);
       CREATE TABLE message_ai (message_id uuid PRIMARY KEY REFERENCES messages(id), spam_verdict text, processed_at timestamptz);
       CREATE TABLE sender_decisions (user_id uuid REFERENCES users(id), address text, decision text,
         updated_at timestamptz DEFAULT now(), PRIMARY KEY(user_id, address));
