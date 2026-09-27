@@ -10,6 +10,7 @@ import { allowRequest } from '../../../shared/rate-limit.js';
 import { extractCalendarInvite, isCalendarAttachment } from './calendarInvite.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
+import { privateBlobPathname } from '../../../shared/private-blob.js';
 import { validId } from '../../../shared/pagination.js';
 
 const SIGNED_URL_TTL_MS = 5 * 60 * 1000;
@@ -111,15 +112,6 @@ export function fetchOwnedAttachment(sql, id, userId) {
     JOIN messages m ON m.id = a.message_id
     WHERE a.id = ${id} AND m.user_id = ${userId}
   `;
-}
-
-/** @param {string} blobUrl */
-export function privateBlobPathname(blobUrl) {
-  const url = new URL(blobUrl);
-  if (!url.hostname.endsWith('.private.blob.vercel-storage.com')) {
-    throw new Error('Attachment does not reference private Blob storage');
-  }
-  return decodeURIComponent(url.pathname.replace(/^\//, ''));
 }
 
 /** @param {Response} response */

@@ -1,6 +1,6 @@
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
-import { put } from '@vercel/blob';
+import { issueSignedToken, presignUrl, put } from '@vercel/blob';
 import postgres from 'postgres';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
@@ -11,7 +11,7 @@ import { getDailyNoteSeed, putDailyNoteSeed } from './dailyNoteSeed.js';
 import { createDocument, deleteDocument, getDocuments, updateDocument } from './documents.js';
 import { getEnrichmentSettings, putEnrichmentSettings } from './enrichmentSettings.js';
 import { deleteFile, getFile, getFileContent, listFiles, updateFile, uploadFile } from './files.js';
-import { postImageUpload } from './imageUpload.js';
+import { getDocumentImageUrl, postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
 import { createTaskLabel, deleteTaskLabel, getTaskLabels, updateTaskLabel } from './taskLabels.js';
@@ -50,7 +50,7 @@ export function createSql(databaseUrl) {
  * GET/PUT /tasks/enrichment-settings,
  * POST /task-items/reorder, POST /task-items/interpret,
  * GET/POST/PATCH/DELETE /task-labels,
- * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, and
+ * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, GET /tasks/document-image, and
  * GET/POST/PATCH/DELETE /documents — the resources Cookie-Web's api/tasks.js
  * served, previously reached only via
  * api/tasks.js?resource=(refresh|interests|documents|daily-note-seed|image-upload)
@@ -220,9 +220,14 @@ async function route(url, request, sql, userId, env, email) {
   const sub = segments[1];
   if (
     sub &&
-    !['refresh', 'interests', 'enrichment-settings', 'daily-note-seed', 'image-upload'].includes(
-      sub,
-    )
+    ![
+      'refresh',
+      'interests',
+      'enrichment-settings',
+      'daily-note-seed',
+      'image-upload',
+      'document-image',
+    ].includes(sub)
   ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
@@ -275,7 +280,30 @@ async function route(url, request, sql, userId, env, email) {
         { error: 'Method not allowed' },
         { status: 405, headers: { Allow: 'POST' } },
       );
-    return postImageUpload(request, { put, allowRequest, sql, userId }, env.BLOB_READ_WRITE_TOKEN);
+    return postImageUpload(
+      request,
+      {
+        put,
+        allowRequest,
+        sql,
+        userId,
+        report: (operation, error) => captureHandledException(operation, error, env),
+      },
+      env.BLOB_READ_WRITE_TOKEN,
+    );
+  }
+
+  if (sub === 'document-image') {
+    if (request.method !== 'GET')
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET' } },
+      );
+    return getDocumentImageUrl(url, userId, {
+      issueSignedToken,
+      presignUrl,
+      token: env.BLOB_READ_WRITE_TOKEN,
+    });
   }
 
   if (sub === 'interests') {

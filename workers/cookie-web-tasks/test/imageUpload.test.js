@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { postImageUpload, sniffImageType } from '../src/imageUpload.js';
+import { getDocumentImageUrl, postImageUpload, sniffImageType } from '../src/imageUpload.js';
 
 function pngBytes(length = 16) {
   const bytes = new Uint8Array(Math.max(length, 8));
@@ -45,7 +45,7 @@ describe('postImageUpload', () => {
       expect.stringMatching(/^documents\/user-1\/[0-9a-f-]{36}\.png$/),
       expect.any(ArrayBuffer),
       {
-        access: 'public',
+        access: 'private',
         contentType: 'image/png',
         token: 'blob-token',
         addRandomSuffix: true,
@@ -120,5 +120,90 @@ describe('postImageUpload', () => {
 
     expect(response.status).toBe(500);
     expect(JSON.stringify(await response.json())).not.toContain('blob API down');
+  });
+});
+
+describe('postImageUpload failures', () => {
+  it('reports a storage failure instead of only logging it', async () => {
+    const error = new Error('Vercel Blob: Cannot use public access on a private store.');
+    const put = vi.fn().mockRejectedValue(error);
+    const report = vi.fn();
+    const response = await postImageUpload(
+      uploadRequest(),
+      { put, report, userId: 'user-1' },
+      'blob-token',
+    );
+    expect(response.status).toBe(500);
+    expect(report).toHaveBeenCalledWith('image_upload', error);
+  });
+});
+
+describe('getDocumentImageUrl', () => {
+  const USER = '11111111-1111-4111-8111-111111111111';
+  const own = `https://store1.private.blob.vercel-storage.com/documents/${USER}/abc-XYZ.png`;
+
+  function signer(overrides = {}) {
+    return {
+      issueSignedToken: vi.fn().mockResolvedValue('signed-token'),
+      presignUrl: vi.fn().mockResolvedValue({ presignedUrl: `${own}?sig=1` }),
+      token: 'blob-token',
+      now: () => Date.parse('2026-09-27T09:00:00Z'),
+      ...overrides,
+    };
+  }
+
+  function requestFor(url) {
+    const request = new URL('https://tasks.example/tasks/document-image');
+    if (url !== undefined) request.searchParams.set('url', url);
+    return request;
+  }
+
+  it("signs a short-lived GET link for the caller's own image", async () => {
+    const s = signer();
+    const response = await getDocumentImageUrl(requestFor(own), USER, s);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(await response.json()).toEqual({
+      url: `${own}?sig=1`,
+      expiresAt: '2026-09-27T10:00:00.000Z',
+    });
+    expect(s.issueSignedToken).toHaveBeenCalledWith(
+      expect.objectContaining({ pathname: `documents/${USER}/abc-XYZ.png`, operations: ['get'] }),
+    );
+    expect(s.presignUrl).toHaveBeenCalledWith(
+      'signed-token',
+      expect.objectContaining({ access: 'private', operation: 'get' }),
+    );
+  });
+
+  it.each([
+    ['another user', `https://store1.private.blob.vercel-storage.com/documents/other/abc.png`, 404],
+    [
+      'a mail attachment',
+      `https://store1.private.blob.vercel-storage.com/attachments/${USER}/a.pdf`,
+      404,
+    ],
+    [
+      'a traversal',
+      `https://store1.private.blob.vercel-storage.com/documents/${USER}/%2E%2E/x.png`,
+      404,
+    ],
+    [
+      'a public store',
+      `https://store1.public.blob.vercel-storage.com/documents/${USER}/a.png`,
+      400,
+    ],
+    ['another host', `https://evil.example/documents/${USER}/a.png`, 400],
+    ['a missing url', undefined, 400],
+  ])('refuses %s', async (_label, url, status) => {
+    const s = signer();
+    const response = await getDocumentImageUrl(requestFor(url), USER, s);
+    expect(response.status).toBe(status);
+    expect(s.issueSignedToken).not.toHaveBeenCalled();
+  });
+
+  it('503s without a storage token', async () => {
+    const response = await getDocumentImageUrl(requestFor(own), USER, signer({ token: undefined }));
+    expect(response.status).toBe(503);
   });
 });
