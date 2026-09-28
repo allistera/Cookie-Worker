@@ -537,6 +537,48 @@ export async function storeSentMessage(
 // Sends immediately through Resend, from the shared inbound handler (a
 // logged-in user's request) and the flush job (a claimed scheduled row)
 // alike. Throws on failure; callers decide how to react.
+// A reply names the message it answers (In-Reply-To) and the chain before it
+// (References, RFC 5322 section 3.6.4), so the recipient's mail app threads it.
+// Only a received message's own Message-ID is usable: a sent copy stores a
+// placeholder, and ingest invents one for mail that arrived without it.
+const MESSAGE_ID_TOKEN = /<[^<>\s]{1,900}>/g;
+const MAX_REFERENCES_LENGTH = 2000;
+
+/** @param {string} id */
+function usableMessageId(id) {
+  return (
+    /^<[^<>\s]{1,900}>$/.test(id) &&
+    !hasControlChars(id) &&
+    !id.startsWith('<synthetic-') &&
+    !id.endsWith('@resend.cookie-web>')
+  );
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} replyToMessageId
+ * @returns {Promise<Record<string, string>>}
+ */
+export async function replyThreadingHeaders(sql, userId, replyToMessageId) {
+  const [original] = await sql`
+    SELECT m.message_id, m.headers, m.is_sent FROM messages m
+    WHERE m.id = ${replyToMessageId}::uuid AND m.user_id = ${userId}
+  `;
+  const parent = String(original?.message_id ?? '');
+  if (!original || original.is_sent || !usableMessageId(parent)) return {};
+  const earlier = (Array.isArray(original.headers) ? original.headers : [])
+    .filter((header) => /^(references|in-reply-to)$/i.test(String(header?.key ?? '')))
+    .flatMap((header) => String(header.value ?? '').match(MESSAGE_ID_TOKEN) ?? [])
+    .filter(usableMessageId);
+  const references = [...new Set([...earlier, parent].reverse())].reverse();
+  // Long chains lose their oldest ids first; the parent always stays.
+  while (references.length > 1 && references.join(' ').length > MAX_REFERENCES_LENGTH) {
+    references.shift();
+  }
+  return { 'In-Reply-To': parent, References: references.join(' ') };
+}
+
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -576,6 +618,16 @@ export async function deliverMail(
   };
   if (trackedHtml) payload.html = trackedHtml;
   if (providerAttachments.length) payload.attachments = providerAttachments;
+  if (replyToMessageId) {
+    try {
+      const headers = await replyThreadingHeaders(sql, userId, replyToMessageId);
+      if (Object.keys(headers).length) payload.headers = headers;
+    } catch (err) {
+      // Threading headers are a courtesy to the recipient's mail app; the
+      // reply still goes out without them.
+      console.error('failed to load reply threading headers:', /** @type {Error} */ (err).message);
+    }
+  }
   const { data, error } = idempotencyKey
     ? await resend.emails.send(payload, { idempotencyKey })
     : await resend.emails.send(payload);

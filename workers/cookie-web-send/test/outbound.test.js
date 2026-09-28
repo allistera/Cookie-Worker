@@ -13,6 +13,7 @@ import {
   immediateSendIdempotencyKey,
   parseAttachmentIds,
   parseRecipients,
+  replyThreadingHeaders,
   resolveOwnedAttachments,
   validateOutboundMessage,
 } from '../src/outbound.js';
@@ -270,4 +271,104 @@ it('requires a follow-up after the scheduled send, not just after now', () => {
   const sendAt = Date.now() + 3600000;
   expect(parseFollowUpAt(new Date(sendAt - 1000).toISOString(), sendAt)).toBeNull();
   expect(parseFollowUpAt(new Date(sendAt + 120000).toISOString(), sendAt)).toBeTruthy();
+});
+
+describe('reply threading headers', () => {
+  const REPLY_TO = '11111111-1111-1111-1111-111111111111';
+
+  it('names the parent and carries the earlier chain', async () => {
+    const sql = createMockSql([
+      [
+        {
+          message_id: '<parent@example.com>',
+          is_sent: false,
+          headers: [
+            { key: 'References', value: '<first@example.com> <second@example.com>' },
+            { key: 'In-Reply-To', value: '<second@example.com>' },
+            { key: 'Subject', value: '<not-a-reference@example.com>' },
+          ],
+        },
+      ],
+    ]);
+
+    expect(await replyThreadingHeaders(sql, 'owner', REPLY_TO)).toEqual({
+      'In-Reply-To': '<parent@example.com>',
+      References: '<first@example.com> <second@example.com> <parent@example.com>',
+    });
+    expect(sql.calls[0].values).toEqual([REPLY_TO, 'owner']);
+  });
+
+  it('leaves out ids the original never really had', async () => {
+    for (const row of [
+      { message_id: '<synthetic-abc@mail-app-ingest>', is_sent: false, headers: [] },
+      { message_id: '<provider-1@resend.cookie-web>', is_sent: true, headers: [] },
+      { message_id: 'no-brackets@example.com', is_sent: false, headers: [] },
+    ]) {
+      expect(await replyThreadingHeaders(createMockSql([[row]]), 'owner', REPLY_TO)).toEqual({});
+    }
+    expect(await replyThreadingHeaders(createMockSql([[]]), 'owner', REPLY_TO)).toEqual({});
+  });
+
+  it('drops the oldest references from an overlong chain but keeps the parent', async () => {
+    const chain = Array.from(
+      { length: 60 },
+      (_, i) => `<message-${i}-${'x'.repeat(40)}@example.com>`,
+    );
+    const sql = createMockSql([
+      [
+        {
+          message_id: '<parent@example.com>',
+          is_sent: false,
+          headers: [{ key: 'References', value: chain.join(' ') }],
+        },
+      ],
+    ]);
+
+    const { References } = await replyThreadingHeaders(sql, 'owner', REPLY_TO);
+
+    expect(References.length).toBeLessThanOrEqual(2000);
+    expect(References.endsWith(`${chain.at(-1)} <parent@example.com>`)).toBe(true);
+    expect(References).not.toContain(chain[0]);
+  });
+
+  it('sends a reply with the headers, and without them when the lookup fails', async () => {
+    const payloads = [];
+    const services = /** @type {any} */ ({
+      env: { EMAIL_FROM: 'Cookie <sender@example.com>' },
+      createResend: () => ({
+        emails: {
+          send: async (payload) => {
+            payloads.push(payload);
+            return { data: { id: 'provider-1' } };
+          },
+        },
+      }),
+    });
+    const reply = {
+      recipients: ['alex@example.com'],
+      subject: 'Re: Hi',
+      text: 'Thanks',
+      html: null,
+      replyToMessageId: REPLY_TO,
+    };
+    const sql = createMockSql([
+      [{ message_id: '<parent@example.com>', is_sent: false, headers: [] }],
+      [{ existing_message_id: 'stored' }],
+    ]);
+    await deliverMail(sql, 'owner', reply, services);
+
+    const failing = /** @type {any} */ (
+      async (/** @type {TemplateStringsArray} */ strings) => {
+        if (strings.join('').includes('m.headers')) throw new Error('database down');
+        return [{ existing_message_id: 'stored' }];
+      }
+    );
+    await deliverMail(failing, 'owner', reply, services);
+
+    expect(payloads[0].headers).toEqual({
+      'In-Reply-To': '<parent@example.com>',
+      References: '<parent@example.com>',
+    });
+    expect(payloads[1]).not.toHaveProperty('headers');
+  });
 });
