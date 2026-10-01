@@ -26,7 +26,7 @@ describe('claim', () => {
     expect(response.status).toBe(204);
     const query = sql.calls[0].text;
     expect(query).toContain("message.screening_status = 'allowed'");
-    expect(query).toContain('sender.user_id = message.user_id');
+    expect(query).toContain('effective_sender_decision(message.user_id, message.from_address)');
     expect(query).toContain('lower(btrim(message.from_address))');
     expect(query).toContain("sender.decision = 'blocked'");
   });

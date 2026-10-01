@@ -180,8 +180,14 @@ describe('responder dispatch does not borrow inbound storage locks', () => {
       expect(storedLater.out_of_office_revision).toBe(
         contender === 'stop' ? null : contender === 'save' ? 2 : 1,
       );
+      // Blocking sender@example.com blocks the example.com domain, which also
+      // covers the later arrival from alice@example.com.
       expect(storedLater.screening_status).toBe(
-        contender === 'screening-settings' ? 'held' : 'allowed',
+        contender === 'screening-settings'
+          ? 'held'
+          : contender === 'sender-block'
+            ? 'blocked'
+            : 'allowed',
       );
       await Promise.all(pending);
     },

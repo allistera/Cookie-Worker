@@ -259,7 +259,7 @@ describe('ntfy delivery', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     const query = sql.mock.calls[1][0].join(' ');
     expect(query).toContain("message.screening_status = 'allowed'");
-    expect(query).toContain('sender.user_id = message.user_id');
+    expect(query).toContain('effective_sender_decision(message.user_id, message.from_address)');
     expect(query).toContain('lower(btrim(message.from_address))');
   });
 
