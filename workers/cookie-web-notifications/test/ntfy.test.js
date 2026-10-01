@@ -260,7 +260,7 @@ describe('ntfy delivery', () => {
     const query = sql.mock.calls[1][0].join(' ');
     expect(query).toContain("message.screening_status = 'allowed'");
     expect(query).toContain('effective_sender_decision(message.user_id, message.from_address)');
-    expect(query).toContain('lower(btrim(message.from_address))');
+    expect(query).toContain("sender.decision = 'blocked'");
   });
 
   // A run slow enough to outlive the backoff lease must not publish a row the

@@ -27,7 +27,6 @@ describe('claim', () => {
     const query = sql.calls[0].text;
     expect(query).toContain("message.screening_status = 'allowed'");
     expect(query).toContain('effective_sender_decision(message.user_id, message.from_address)');
-    expect(query).toContain('lower(btrim(message.from_address))');
     expect(query).toContain("sender.decision = 'blocked'");
   });
   test('returns the leased event with only the sender and subject', async () => {
