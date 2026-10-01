@@ -43,7 +43,7 @@ describe('responder dispatch does not borrow inbound storage locks', () => {
       claim_token: expect.any(String),
     });
     await putSenders(connect(), OWNER, { action: 'block', address: 'author@example.com' });
-    expect(state.senderDecisions.get(`${OWNER}/author@example.com`)).toBe('blocked');
+    expect(state.senderDecisions.get(`${OWNER}/@example.com`)).toBe('blocked');
     expect(state.messages.get(MESSAGE)).toMatchObject({ auto_reply_suppressed: true });
     const sendAutoReply = vi.fn();
     await dispatchAutoReply(

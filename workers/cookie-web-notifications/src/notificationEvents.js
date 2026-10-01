@@ -25,9 +25,8 @@ export function claimNotificationEvent(sql, userId, eventId) {
       AND message.user_id = ${userId}
       AND message.screening_status = 'allowed'
       AND NOT EXISTS (
-        SELECT 1 FROM sender_decisions sender
-        WHERE sender.user_id = message.user_id
-          AND sender.address = lower(btrim(message.from_address)) AND sender.decision = 'blocked'
+        SELECT 1 FROM effective_sender_decision(message.user_id, message.from_address) sender
+          WHERE sender.decision = 'blocked'
       )
       AND NOT EXISTS (
         SELECT 1 FROM threads t

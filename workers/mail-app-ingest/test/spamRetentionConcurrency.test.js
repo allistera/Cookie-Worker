@@ -45,7 +45,7 @@ describe.skipIf(!databaseUrl)('sender blocking versus retention on PostgreSQL', 
   let observer;
   beforeAll(async () => {
     observer = connect('screening-retention-observer');
-    // Deliberately minimal post-0083 fixture: actual sender/retention handlers
+    // Deliberately minimal post-0089 fixture: actual sender/retention handlers
     // execute their own SQL. Migration/trigger/privacy behavior is tested by
     // Cookie-Web's separate actual-0080/0082/0083 PostgreSQL CI fixture.
     await observer.unsafe(`
@@ -62,6 +62,20 @@ describe.skipIf(!databaseUrl)('sender blocking versus retention on PostgreSQL', 
       CREATE TABLE message_ai (message_id uuid PRIMARY KEY REFERENCES messages(id), spam_verdict text, processed_at timestamptz);
       CREATE TABLE sender_decisions (user_id uuid REFERENCES users(id), address text, decision text,
         updated_at timestamptz DEFAULT now(), PRIMARY KEY(user_id, address));
+      -- Same body as Cookie-Web migration 0089, resolved through this schema.
+      CREATE FUNCTION effective_sender_decision(p_user_id uuid, p_from_address text)
+      RETURNS TABLE (address text, decision text) LANGUAGE sql STABLE AS $$
+        SELECT d.address, d.decision
+        FROM (SELECT lower(btrim(p_from_address)) AS sender) s
+        CROSS JOIN LATERAL (SELECT regexp_replace(s.sender, '^.*@', '') AS domain) dm
+        JOIN sender_decisions d ON d.user_id = p_user_id
+        WHERE d.address = s.sender
+           OR (left(d.address, 1) = '@' AND position('@' IN s.sender) > 0 AND (
+                 dm.domain = substr(d.address, 2)
+                 OR right(dm.domain, length(d.address)) = '.' || substr(d.address, 2)))
+        ORDER BY (d.address = s.sender) DESC, length(d.address) DESC
+        LIMIT 1
+      $$;
       CREATE TABLE browser_notification_events (user_id uuid, message_id uuid);
       CREATE TABLE ntfy_notification_events (user_id uuid, message_id uuid, published_at timestamptz);
     `);

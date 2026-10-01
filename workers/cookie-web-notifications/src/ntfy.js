@@ -243,9 +243,8 @@ export async function deliverPendingNtfy(sql, options = {}) {
         AND NOT message.is_deleted
         AND message.screening_status = 'allowed'
         AND NOT EXISTS (
-          SELECT 1 FROM sender_decisions sender
-          WHERE sender.user_id = message.user_id AND sender.address = lower(btrim(message.from_address))
-            AND sender.decision = 'blocked'
+          SELECT 1 FROM effective_sender_decision(message.user_id, message.from_address) sender
+          WHERE sender.decision = 'blocked'
         )
         AND (message.scheduled_for IS NULL OR message.scheduled_for <= now())
         AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
@@ -281,9 +280,8 @@ export async function deliverPendingNtfy(sql, options = {}) {
           canPublish: async () => {
             const [event] = await sql`SELECT event.attempts,
                 (message.screening_status = 'allowed'
-                  AND NOT EXISTS (SELECT 1 FROM sender_decisions sender
-                    WHERE sender.user_id = message.user_id AND sender.address = lower(btrim(message.from_address))
-                      AND sender.decision = 'blocked')) AS eligible
+                  AND NOT EXISTS (SELECT 1 FROM effective_sender_decision(message.user_id, message.from_address) sender
+          WHERE sender.decision = 'blocked')) AS eligible
               FROM ntfy_notification_events event
               JOIN messages message ON message.id = event.message_id AND message.user_id = event.user_id
               WHERE event.event_id = ${row.event_id} AND event.published_at IS NULL`;

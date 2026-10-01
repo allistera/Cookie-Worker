@@ -11,6 +11,41 @@ export function outOfOfficeConcurrencyDatabase() {
   const { state } = model;
   state.senderDecisions = new Map();
   state.concurrentQueries = [];
+  const norm = (value) =>
+    String(value ?? '')
+      .trim()
+      .toLowerCase();
+  const domainOf = (value) => value.slice(value.lastIndexOf('@') + 1);
+  // Mirrors effective_sender_decision (migration 0089): the exact address row
+  // wins, else the longest '@domain' row covering the sender's domain.
+  const effectiveDecision = (userId, from) => {
+    const sender = norm(from);
+    const domain = domainOf(sender);
+    let best = /** @type {{ address: string, decision: string } | null} */ (null);
+    for (const [entry, decision] of state.senderDecisions) {
+      const owner = entry.slice(0, entry.indexOf('/'));
+      const address = entry.slice(entry.indexOf('/') + 1);
+      if (owner !== userId) continue;
+      if (address === sender) return { address, decision };
+      if (
+        address.startsWith('@') &&
+        sender.includes('@') &&
+        (domain === address.slice(1) || domain.endsWith(`.${address.slice(1)}`)) &&
+        (!best || address.length > best.address.length)
+      )
+        best = { address, decision };
+    }
+    return best;
+  };
+  // senders.js scope(): exact address, or (domain set) a domain + subdomains.
+  const inScope = (from, exact, domain) => {
+    const sender = norm(from);
+    const senderDomain = domainOf(sender);
+    return (
+      sender === exact ||
+      (domain !== '' && (senderDomain === domain || senderDomain.endsWith(`.${domain}`)))
+    );
+  };
   for (const message of state.messages.values()) message.screening_status = 'allowed';
 
   function connect() {
@@ -76,18 +111,33 @@ export function outOfOfficeConcurrencyDatabase() {
         return [];
       }
       if (query.startsWith('DELETE FROM sender_decisions')) {
-        const key = `${values[0]}/${values[1]}`;
-        if (state.senderDecisions.get(key) === values[2]) state.senderDecisions.delete(key);
+        if (query.includes('ANY(')) {
+          for (const address of values[1]) {
+            const key = `${values[0]}/${address}`;
+            if (state.senderDecisions.get(key) === values[2]) state.senderDecisions.delete(key);
+          }
+        } else state.senderDecisions.delete(`${values[0]}/${values[1]}`);
         return [];
       }
       if (query.startsWith('SELECT decision FROM sender_decisions')) {
         const decision = state.senderDecisions.get(`${values[0]}/${values[1]}`);
         return decision ? [{ decision }] : [];
       }
-      if (query.startsWith('SELECT address FROM sender_decisions')) {
-        return state.senderDecisions.get(`${values[0]}/${values[1]}`) === 'blocked'
-          ? [{ address: values[1] }]
-          : [];
+      if (query.includes('FROM effective_sender_decision(?, ?)')) {
+        const found = effectiveDecision(values[0], values[1]);
+        return found ? [found] : [];
+      }
+      if (query.startsWith('SELECT m.id FROM messages m CROSS JOIN LATERAL')) {
+        const [userId, exact, domain] = values;
+        return [...state.messages.values()]
+          .filter(
+            (m) =>
+              m.user_id === userId &&
+              !m.is_sent &&
+              inScope(m.from_address, exact, domain) &&
+              effectiveDecision(userId, m.from_address)?.decision === 'blocked',
+          )
+          .map((m) => ({ id: m.id }));
       }
       if (
         query.startsWith('DELETE FROM browser_notification_events') ||
@@ -102,66 +152,36 @@ export function outOfOfficeConcurrencyDatabase() {
         }
         return [];
       }
-      // cookie-web-emails fetchRelatedHeldAddresses: held mail from other
-      // addresses with the same display name on the same/parent/sub domain.
-      if (query.startsWith('SELECT DISTINCT held.address')) {
-        const [userId, address] = values;
-        const clean = (name) =>
-          String(name ?? '')
-            .trim()
-            .replace(/\s+/g, ' ')
-            .toLowerCase();
-        const norm = (value) => value.trim().toLowerCase();
-        const domainOf = (value) => value.slice(value.lastIndexOf('@') + 1);
-        const own = [...state.messages.values()]
-          .filter(
-            (m) =>
-              m.user_id === userId &&
-              !m.is_sent &&
-              norm(m.from_address) === address &&
-              clean(m.from_name),
-          )
-          .sort((a, b) => String(b.sent_at ?? '').localeCompare(String(a.sent_at ?? '')))[0];
-        if (!own) return [];
-        const domain = domainOf(address);
-        const related = new Set();
-        for (const m of state.messages.values()) {
-          const other = norm(m.from_address);
-          const otherDomain = domainOf(other);
-          if (
-            m.user_id === userId &&
-            !m.is_sent &&
-            !m.is_deleted &&
-            m.screening_status === 'held' &&
-            other !== address &&
-            clean(m.from_name) === clean(own.from_name) &&
-            (otherDomain === domain ||
-              otherDomain.endsWith(`.${domain}`) ||
-              domain.endsWith(`.${otherDomain}`))
-          )
-            related.add(other);
-        }
-        return [...related].sort().map((value) => ({ address: value }));
-      }
-      if (query.startsWith('UPDATE messages SET screening_status = ?')) {
+      if (query.startsWith('UPDATE messages target SET screening_status = scoped.status')) {
+        const [enabled, userId, exact, domain, , , , isBlock, messageId] = values;
         const changed = [];
         for (const message of state.messages.values()) {
           if (
-            message.user_id !== values[1] ||
-            message.from_address.trim().toLowerCase() !== values[2] ||
+            message.user_id !== userId ||
             message.is_sent ||
-            message.is_deleted
+            message.is_deleted ||
+            !inScope(message.from_address, exact, domain)
           )
             continue;
-          if (message.screening_status === 'allowed' && !(values[3] && message.id === values[4]))
+          if (message.screening_status === 'allowed' && !(isBlock && message.id === messageId))
             continue;
           await acquire(`messages/${message.id}`);
+          const decision = effectiveDecision(userId, message.from_address)?.decision;
           Object.assign(message, {
-            screening_status: values[0],
+            screening_status:
+              decision === 'blocked'
+                ? 'blocked'
+                : decision === 'accepted' || !enabled
+                  ? 'allowed'
+                  : 'held',
             auto_reply_suppressed: true,
             search_indexed_at: null,
           });
-          changed.push({ id: message.id, thread_id: message.thread_id });
+          changed.push({
+            id: message.id,
+            thread_id: message.thread_id,
+            address: norm(message.from_address),
+          });
         }
         return changed;
       }
@@ -171,16 +191,12 @@ export function outOfOfficeConcurrencyDatabase() {
         await acquire(`message_ai/${values[0]}`, 'exclusive', true);
       }
       if (query.startsWith('UPDATE messages SET auto_reply_suppressed = true')) {
-        if (query.includes('lower(btrim(from_address))')) {
-          for (const message of state.messages.values()) {
-            if (
-              message.user_id === values[0] &&
-              message.from_address.trim().toLowerCase() === values[1] &&
-              !message.is_sent
-            ) {
-              await acquire(`messages/${message.id}`);
-              message.auto_reply_suppressed = true;
-            }
+        if (query.includes('id = ANY(')) {
+          for (const id of values[1]) {
+            const message = state.messages.get(id);
+            if (message?.user_id !== values[0]) continue;
+            await acquire(`messages/${message.id}`);
+            message.auto_reply_suppressed = true;
           }
           return [];
         }
@@ -222,9 +238,7 @@ export function outOfOfficeConcurrencyDatabase() {
       if (query.startsWith('INSERT INTO messages')) {
         await acquire(`users/${values[2]}`, 'shared');
         const settings = state.users.get(values[2]).settings;
-        const decision = state.senderDecisions.get(
-          `${values[2]}/${values[4].trim().toLowerCase()}`,
-        );
+        const decision = effectiveDecision(values[2], values[4])?.decision;
         const screening =
           decision === 'blocked'
             ? 'blocked'
