@@ -9,6 +9,10 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
+    // Export Cloudflare automatic traces over OTLP to Honeycomb (EU). The
+    // endpoint and API key live in the "honeycomb-traces" destination in the
+    // Cloudflare dashboard, not in this repo.
+    "traces": { "enabled": true, "destinations": ["honeycomb-traces"], "head_sampling_rate": 1 },
   },
   "triggers": {
     // Cron Triggers run on UTC.
