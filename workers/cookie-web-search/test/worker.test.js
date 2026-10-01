@@ -33,7 +33,7 @@ vi.mock('../../../shared/rate-limit.js', () => ({
 // GET /search and POST /ask retrieve through Meilisearch; only
 // hybridSearch is faked here (MESSAGES_INDEX/meiliMessageFilter stay real —
 // they're pure and have their own unit tests), so routing/CORS/auth/quota
-// wiring can be tested without a real Meilisearch Cloud instance.
+// wiring can be tested without a real Meilisearch instance.
 const hybridSearch = vi.fn();
 vi.mock('../../../shared/meili.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());

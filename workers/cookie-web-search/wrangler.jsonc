@@ -31,10 +31,10 @@
     // straight to api.openai.com. The account id is a public identifier.
     "CLOUDFLARE_ACCOUNT_ID": "b581e48529728e578cea1d0b0a2ecab3",
     "AI_GATEWAY_ID": "cookie",
-    // Meilisearch Cloud endpoint and index name. The API key is a secret
+    // Self-hosted Meilisearch endpoint and index name. The API key is a secret
     // (MEILISEARCH_API_KEY) set via `wrangler secret put`. Leave the URL empty
     // to keep the existing Postgres keyword search until the project is ready.
-    "MEILISEARCH_URL": "https://ms-52028f71df74-53700.lon.meilisearch.io",
+    "MEILISEARCH_URL": "https://meilisearch.infinitywave.online",
     // OPENAI_ASK_MODEL is an optional override for the default in src/ask.js.
   },
 }

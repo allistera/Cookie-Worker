@@ -4,7 +4,7 @@ export { MESSAGES_INDEX } from './meili/messages.js';
 export { EMBEDDER } from './meili/embedder.js';
 
 /**
- * Checks whether Meilisearch Cloud is configured for this environment. Used
+ * Checks whether Meilisearch is configured for this environment. Used
  * by the sync paths (mail-app-ingest, cookie-web-tasks) to no-op when
  * Meilisearch isn't configured.
  *
