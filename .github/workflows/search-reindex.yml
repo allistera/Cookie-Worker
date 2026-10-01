@@ -56,8 +56,8 @@ jobs:
       - name: Reindex
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          MEILISEARCH_URL: https://ms-52028f71df74-53700.lon.meilisearch.io
-          MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
+          MEILISEARCH_URL: https://meilisearch.infinitywave.online
+          MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_REINDEX_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           if [ "${{ inputs.target }}" = "all" ]; then

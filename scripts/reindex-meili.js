@@ -10,6 +10,11 @@
 // Usage: DATABASE_URL=... MEILISEARCH_URL=... MEILISEARCH_API_KEY=... \
 //        OPENAI_API_KEY=... node scripts/reindex-meili.js [documents|messages|task_items]
 // With no argument, every index is reindexed.
+//
+// MEILISEARCH_API_KEY needs settings.update for configureIndex, so the
+// Workers' runtime key (MEILISEARCH_API_KEY secret) is not enough: use the
+// cookie-reindex key (MEILISEARCH_REINDEX_KEY secret, as
+// .github/workflows/search-reindex.yml does) or the master key.
 
 import process from 'node:process';
 import postgres from 'postgres';
