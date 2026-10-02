@@ -23,9 +23,11 @@ const pixelHits = new Map();
 export function clientIp(request) {
   // CF-Connecting-IP is set by Cloudflare itself and cannot be spoofed by the
   // caller, unlike the X-Forwarded-For chain the Vercel handler had to parse.
+  // `||`, not `??`: an absent or empty X-Forwarded-For still splits to '',
+  // which must fall through to 'unknown' rather than key the flood guard.
   return (
-    request.headers.get('CF-Connecting-IP') ??
-    (request.headers.get('X-Forwarded-For') ?? '').split(',')[0].trim() ??
+    request.headers.get('CF-Connecting-IP') ||
+    (request.headers.get('X-Forwarded-For') ?? '').split(',')[0].trim() ||
     'unknown'
   );
 }
@@ -100,24 +102,41 @@ function pixelResponse() {
  * The unauthenticated tracking pixel. The response is identical for a valid,
  * invalid, expired, or flood-limited token, so nothing about mailbox state
  * leaks to recipients — and tracking failures never affect the image either.
+ * The image goes back straight away; the open is recorded under waitUntil on
+ * a client opened only for a token worth recording, and closed once the
+ * write settles.
  *
- * @param {import('postgres').Sql} sql
+ * @param {() => import('postgres').Sql} openSql
  * @param {string} token
  * @param {string} ip
+ * @param {{waitUntil(promise: Promise<unknown>): void}} ctx
  */
-export async function handlePixel(sql, token, ip) {
+export function handlePixel(openSql, token, ip, ctx) {
   if (validId(token) && !pixelFlooded(ip)) {
-    try {
-      await recordReadReceipt(sql, token);
-    } catch (err) {
-      // Tracking must never affect delivery or leak failures to recipients.
-      // 42P01 (missing table during a rolling deploy) is expected noise.
-      if (/** @type {{code?: string}} */ (err)?.code !== '42P01') {
-        console.error('GET /read-receipts (pixel) failed:', err);
-      }
-    }
+    ctx.waitUntil(trackOpen(openSql, token));
   }
   return pixelResponse();
+}
+
+/**
+ * @param {() => import('postgres').Sql} openSql
+ * @param {string} token
+ */
+async function trackOpen(openSql, token) {
+  /** @type {import('postgres').Sql | undefined} */
+  let sql;
+  try {
+    sql = openSql();
+    await recordReadReceipt(sql, token);
+  } catch (err) {
+    // Tracking must never affect delivery or leak failures to recipients.
+    // 42P01 (missing table during a rolling deploy) is expected noise.
+    if (/** @type {{code?: string}} */ (err)?.code !== '42P01') {
+      console.error('GET /read-receipts (pixel) failed:', err);
+    }
+  } finally {
+    await sql?.end({ timeout: 2 }).catch(() => undefined);
+  }
 }
 
 /**

@@ -37,7 +37,15 @@ const env = /** @type {any} */ ({
   AUTH0_AUDIENCE: 'https://cookie-web/api',
   ALLOWED_ORIGIN: PRODUCTION,
 });
-const ctx = /** @type {any} */ ({ waitUntil: (promise) => promise });
+/** @type {Promise<unknown>[]} */
+let pending = [];
+const ctx = /** @type {any} */ ({
+  waitUntil: (/** @type {Promise<unknown>} */ promise) => {
+    pending.push(promise);
+  },
+});
+/** Awaits the work the worker handed to waitUntil (the pixel's write, closes). */
+const settled = () => Promise.all(pending);
 
 const TOKEN = '11111111-1111-4111-8111-111111111111';
 const MESSAGE_ID = '33333333-3333-4333-8333-333333333333';
@@ -52,6 +60,7 @@ function request(path, init = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pending = [];
   verifyAccessToken.mockResolvedValue({ userId: 'user-1' });
   mockQuery.mockReset().mockResolvedValue([]);
 });
@@ -85,6 +94,7 @@ describe('pixel path', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('image/gif');
     expect(verifyAccessToken).not.toHaveBeenCalled();
+    await settled();
     expect(mockQuery).toHaveBeenCalledOnce();
   });
 
@@ -98,7 +108,28 @@ describe('pixel path', () => {
     );
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('image/gif');
+    await settled();
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(sqlEnd).not.toHaveBeenCalled();
+  });
+
+  test('a failed write still gets the pixel, with no 500 and no Sentry report', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('connection reset'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const response = await worker.fetch(
+      new Request(`https://cookie-web-receipts.example/read-receipts?token=${TOKEN}`, {
+        headers: { 'CF-Connecting-IP': '203.0.113.53' },
+      }),
+      env,
+      ctx,
+    );
+    await settled();
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('image/gif');
+    expect(captureHandledException).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledOnce();
+    expect(sqlEnd).toHaveBeenCalledOnce();
+    consoleError.mockRestore();
   });
 });
 
@@ -155,6 +186,30 @@ describe('cleanup', () => {
       ctx,
     );
     await worker.fetch(request(`/read-receipts?messageIds=${MESSAGE_ID}`), env, ctx);
+    await settled();
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+  });
+});
+
+// The socket to Hyperdrive drops under a query now and then. handleStatus
+// already degrades its own query failures to an empty list, so the retry's
+// work here is the caller lookup: one more go on a fresh connection rather
+// than a spurious 503.
+describe('a dropped connection', () => {
+  test('retries the caller lookup once on a fresh connection', async () => {
+    verifyAccessToken
+      .mockRejectedValueOnce(new Error('Network connection lost.'))
+      .mockResolvedValueOnce({ userId: 'user-1' });
+    const response = await worker.fetch(
+      request(`/read-receipts?messageIds=${MESSAGE_ID}`),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ receipts: [] });
+    expect(verifyAccessToken).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).not.toHaveBeenCalled();
+    await settled();
     expect(sqlEnd).toHaveBeenCalledTimes(2);
   });
 });

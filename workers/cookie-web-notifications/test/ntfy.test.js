@@ -2,12 +2,117 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   createNtfySubscription,
   deliverPendingNtfy,
+  encodeHeaderValue,
   NtfyPublishError,
   publishNtfy,
   sendNtfyTest,
 } from '../src/ntfy.js';
 
+/**
+ * A fetch stand-in that builds the real Request, as the runtime's fetch does,
+ * so a header value that is not a ByteString throws here just as it would in
+ * production instead of passing through a plain object unchecked.
+ */
+function requestBuildingFetch() {
+  return vi.fn(
+    async (/** @type {RequestInfo | URL} */ url, /** @type {RequestInit | undefined} */ init) => {
+      new Request(url, init);
+      return new Response(null, { status: 200 });
+    },
+  );
+}
+
+/**
+ * Decodes RFC 2047 base64 encoded words the way ntfy does: whitespace between
+ * adjacent encoded words is dropped and the words' text is joined.
+ *
+ * @param {string} value
+ */
+function decodeHeaderValue(value) {
+  const words = value.split(' ');
+  if (!words.every((word) => /^=\?UTF-8\?B\?[A-Za-z0-9+/=]*\?=$/.test(word))) return value;
+  return words
+    .map((word) =>
+      new TextDecoder('utf-8', { fatal: true }).decode(
+        Uint8Array.from(atob(word.slice(10, -2)), (c) => c.charCodeAt(0)),
+      ),
+    )
+    .join('');
+}
+
+describe('header encoding', () => {
+  test('leaves a plain ASCII value untouched', () => {
+    expect(encodeHeaderValue('Your winter vaccine appointment reminder')).toBe(
+      'Your winter vaccine appointment reminder',
+    );
+  });
+
+  test.each([
+    ['an emoji', 'Party time 🎉'],
+    ['an em dash', 'Invoice — due Friday'],
+    ['CJK', '会议提醒：明天上午十点'],
+    ['Latin-1', 'Café menu'],
+  ])('encodes a value with %s as RFC 2047 words that survive a real Headers', (_name, value) => {
+    const encoded = encodeHeaderValue(value);
+    expect(encoded).toMatch(/^=\?UTF-8\?B\?/);
+    expect(new Headers({ 'X-Title': encoded }).get('X-Title')).toBe(encoded);
+    expect(decodeHeaderValue(encoded)).toBe(value);
+  });
+
+  test('splits a long value into words of at most 75 characters without breaking a character', () => {
+    const value = `${'Quarterly report 📊 — '.repeat(20)}終わり`;
+    const encoded = encodeHeaderValue(value);
+    const words = encoded.split(' ');
+    expect(words.length).toBeGreaterThan(1);
+    for (const word of words) {
+      expect(word.length).toBeLessThanOrEqual(75);
+      // Each word decodes on its own, so none splits a UTF-8 sequence.
+      expect(() => decodeHeaderValue(word)).not.toThrow();
+    }
+    expect(decodeHeaderValue(encoded)).toBe(value);
+  });
+
+  test('replaces control characters, which are never valid in a header', () => {
+    expect(encodeHeaderValue('Folded\r\n subject')).toBe('Folded  subject');
+  });
+});
+
 describe('ntfy delivery', () => {
+  test.each([
+    ['an emoji', 'Your order has shipped 🚚'],
+    ['an em dash', 'Re: Lunch — Thursday?'],
+    ['a long CJK', '「重要なお知らせ」'.repeat(40)],
+  ])('publishes a subject with %s through a real Request', async (_name, subject) => {
+    const fetchImpl = requestBuildingFetch();
+
+    await publishNtfy({ topic: 'cookie-topic', messageId: 'message-1', subject }, { fetchImpl });
+
+    // publishNtfy resolving at all means the real Request accepted every header.
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const request = new Request(fetchImpl.mock.calls[0][0], fetchImpl.mock.calls[0][1]);
+    expect(decodeHeaderValue(/** @type {string} */ (request.headers.get('X-Title')))).toBe(subject);
+    expect(request.headers.get('X-Click')).toBe(
+      'https://mail.infinitywave.online/inbox?open=message-1',
+    );
+    expect(request.headers.get('X-Actions')).toBe(
+      'view, Open in Cookie app, com.cookie.ios://inbox?open=message-1, clear=true',
+    );
+  });
+
+  test('a message id with non-ASCII characters is percent-encoded in the click and action URLs', async () => {
+    const fetchImpl = requestBuildingFetch();
+
+    await publishNtfy(
+      { topic: 'cookie-topic', messageId: 'ünïcode-✉', subject: 'Subject' },
+      { fetchImpl },
+    );
+
+    const request = new Request(fetchImpl.mock.calls[0][0], fetchImpl.mock.calls[0][1]);
+    expect(request.headers.get('X-Click')).toBe(
+      `https://mail.infinitywave.online/inbox?open=${encodeURIComponent('ünïcode-✉')}`,
+    );
+  });
+
   test('publishes the subject as the title and plain-text email as the body', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
 
@@ -257,8 +362,17 @@ describe('ntfy delivery', () => {
       suppressed: 1,
     });
     expect(fetchImpl).not.toHaveBeenCalled();
-    const query = sql.mock.calls[1][0].join(' ');
+    const query = sql.mock.calls[1][0].join(' ').replace(/\s+/g, ' ');
     expect(query).toContain("message.screening_status = 'allowed'");
+    // Read, archived or deleted since the claim, or notifications switched
+    // off, also suppress the push.
+    expect(query).toContain('subscription.enabled');
+    expect(query).toContain('AND message.is_unread');
+    expect(query).toContain('AND NOT message.is_archived');
+    expect(query).toContain('AND NOT message.is_deleted');
+    expect(query).toContain(
+      'LEFT JOIN ntfy_subscriptions subscription ON subscription.user_id = event.user_id',
+    );
     expect(query).toContain('effective_sender_decision(message.user_id, message.from_address)');
     expect(query).toContain("sender.decision = 'blocked'");
   });

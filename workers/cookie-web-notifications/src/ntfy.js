@@ -6,6 +6,9 @@ const COOKIE_ORIGIN = 'https://mail.infinitywave.online';
 const IOS_APP_SCHEME = 'com.cookie.ios';
 const MAX_RETRY_DELAY_MS = 5000;
 const MAX_BODY_BYTES = 3500;
+// RFC 2047 caps an encoded word at 75 characters: "=?UTF-8?B?" + "?=" is 12,
+// and 45 bytes of base64 is 60, leaving the word at 72.
+const ENCODED_WORD_MAX_BYTES = 45;
 
 class NotificationSuppressedError extends Error {}
 
@@ -54,6 +57,33 @@ function truncateBody(text) {
 }
 
 /**
+ * Makes a value safe for an HTTP header. Header values must be ByteStrings,
+ * so fetch throws a TypeError on any character above U+00FF (an emoji, an
+ * em dash, CJK) and the push is never sent; Latin-1 characters get through
+ * but reach ntfy as invalid UTF-8. Anything beyond printable ASCII is sent as
+ * RFC 2047 encoded words instead, which ntfy decodes for X-Title (v2.4.0+).
+ * Words split on character boundaries, never inside a UTF-8 sequence, and
+ * ntfy ignores the whitespace between adjacent words when decoding.
+ *
+ * @param {string} value
+ */
+export function encodeHeaderValue(value) {
+  // Control characters (a folded subject's CR/LF) are never valid in a header.
+  const text = value.replace(/\p{Cc}+/gu, ' ');
+  if (/^[\x20-\x7e]*$/.test(text)) return text;
+
+  const encoder = new TextEncoder();
+  /** @type {number[][]} */
+  const words = [[]];
+  for (const character of text) {
+    const bytes = encoder.encode(character);
+    if (words[words.length - 1].length + bytes.length > ENCODED_WORD_MAX_BYTES) words.push([]);
+    words[words.length - 1].push(...bytes);
+  }
+  return words.map((bytes) => `=?UTF-8?B?${btoa(String.fromCharCode(...bytes))}?=`).join(' ');
+}
+
+/**
  * @param {{topic: string, messageId: string, subject?: string | null, bodyText?: string | null, title?: string | null}} notification
  * @param {{baseUrl?: string, fetchImpl?: typeof fetch, maxAttempts?: number, sleepImpl?: (milliseconds: number) => Promise<void>, canPublish?: () => Promise<boolean>}} [options]
  */
@@ -79,7 +109,7 @@ export async function publishNtfy(notification, options = {}) {
       method: 'POST',
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
-        'X-Title': notification.title || subject,
+        'X-Title': encodeHeaderValue(notification.title || subject),
         'X-Click': `${COOKIE_ORIGIN}/inbox?open=${encodeURIComponent(notification.messageId)}`,
         // Tapping the notification opens the web inbox (works for every ntfy
         // client); this button opens the same email in the iOS app instead.
@@ -278,12 +308,19 @@ export async function deliverPendingNtfy(sql, options = {}) {
         {
           ...options,
           canPublish: async () => {
+            // The message can be read, archived or deleted, the sender blocked,
+            // or notifications switched off while a publish waits to retry.
             const [event] = await sql`SELECT event.attempts,
-                (message.screening_status = 'allowed'
+                (subscription.enabled
+                  AND message.is_unread
+                  AND NOT message.is_archived
+                  AND NOT message.is_deleted
+                  AND message.screening_status = 'allowed'
                   AND NOT EXISTS (SELECT 1 FROM effective_sender_decision(message.user_id, message.from_address) sender
           WHERE sender.decision = 'blocked')) AS eligible
               FROM ntfy_notification_events event
               JOIN messages message ON message.id = event.message_id AND message.user_id = event.user_id
+              LEFT JOIN ntfy_subscriptions subscription ON subscription.user_id = event.user_id
               WHERE event.event_id = ${row.event_id} AND event.published_at IS NULL`;
             if (event && Number(event.attempts) !== Number(row.attempts)) {
               claimLost = true;

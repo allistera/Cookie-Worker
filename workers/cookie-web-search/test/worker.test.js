@@ -295,3 +295,36 @@ describe('routing and cleanup', () => {
     expect(sqlEnd).toHaveBeenCalledOnce();
   });
 });
+
+// The socket to Hyperdrive drops under a query now and then; reads get one
+// more go on a fresh connection, writes do not.
+describe('a dropped connection', () => {
+  const dropped = () => new Error('Network connection lost.');
+
+  test('retries a read once on a fresh connection, and nobody hears of it', async () => {
+    mockQuery
+      .mockRejectedValueOnce(dropped())
+      .mockResolvedValueOnce([{ views: { revision: 1, views: [] } }]);
+    const response = await worker.fetch(request('/saved-views'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ revision: 1, views: [] });
+    expect(captureHandledException).not.toHaveBeenCalled();
+    // The dead connection and the fresh one are both closed.
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not retry a write', async () => {
+    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([]);
+    const response = await worker.fetch(
+      request('/saved-views', {
+        method: 'PUT',
+        body: JSON.stringify({ revision: 0, views: [] }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(500);
+    expect(mockQuery).toHaveBeenCalledOnce();
+    expect(captureHandledException).toHaveBeenCalledOnce();
+  });
+});
