@@ -1,31 +1,12 @@
-import { responsesUrl } from '../../../shared/openai.js';
+import { parseOutputJson, responsesUrl } from '../../../shared/openai.js';
+import { validDate, validTime } from './availabilityTime.js';
 // Ported from Cookie-Web's api/_lib/calendar-ai.js. Behaviorally identical —
 // only the model configuration comes from the Worker env instead of
 // process.env (passed by the caller).
 
 const DEFAULT_MODEL = 'gpt-5.6-luna';
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const REPEAT_FREQUENCIES = new Set(['none', 'daily', 'weekly', 'monthly', 'yearly']);
 const WEEKDAY_CODES = new Set(['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']);
-
-/** @param {any} body */
-function outputText(body) {
-  if (body?.output_text) return String(body.output_text);
-  for (const item of body?.output || []) {
-    for (const content of item?.content || []) {
-      if (content?.type === 'output_text' && content.text) return String(content.text);
-    }
-  }
-  return '';
-}
-
-/** @param {string} value */
-function validDate(value) {
-  if (!DATE_RE.test(value)) return false;
-  const date = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
-}
 
 /** @param {any} value */
 export function normalizeCalendarEventDraft(value) {
@@ -50,7 +31,7 @@ export function normalizeCalendarEventDraft(value) {
   if (
     !title ||
     !validDate(date) ||
-    !TIME_RE.test(start) ||
+    !validTime(start) ||
     !Number.isInteger(duration) ||
     duration < 1 ||
     duration > 30 * 24 * 60 ||
@@ -154,6 +135,6 @@ export async function generateCalendarEventDraft(
     }),
   });
   if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-  const draft = normalizeCalendarEventDraft(JSON.parse(outputText(await response.json())));
+  const draft = normalizeCalendarEventDraft(parseOutputJson(await response.json()));
   return { draft, model };
 }

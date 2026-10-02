@@ -3,7 +3,9 @@
 // (req, res) mutation style becomes returning a Response, and configuration
 // comes from the Worker env instead of process.env.
 
-import { responsesUrl, DEFAULT_MODEL, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL } from './openai.js';
+import { parseOutputJson } from '../../../shared/openai.js';
+import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
 import { validId } from '../../../shared/pagination.js';
 
 export const MAX_SUMMARY_MESSAGES = 50;
@@ -98,6 +100,20 @@ export function buildThreadTranscript(messages) {
   return transcript;
 }
 
+// A one-sentence summary needs ~100 output tokens, but a reasoning model
+// spends output tokens on reasoning first; at 160 it regularly ran out and
+// returned status 'incomplete'. Leave reasoning room in line with the other
+// short structured calls here (compose 700, rule draft 1,400).
+export const SUMMARY_MAX_OUTPUT_TOKENS = 160;
+export const SUMMARY_REASONING_MAX_OUTPUT_TOKENS = 1_500;
+
+/** @param {string} model */
+export function summaryMaxOutputTokens(model) {
+  return supportsReasoning(model) || /^(?:gpt-5|o\d)/.test(model)
+    ? SUMMARY_REASONING_MAX_OUTPUT_TOKENS
+    : SUMMARY_MAX_OUTPUT_TOKENS;
+}
+
 /**
  * @param {any[]} messages
  * @param {string} apiKey
@@ -113,7 +129,7 @@ export async function generateThreadSummary(messages, apiKey, model) {
     signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({
       model,
-      max_output_tokens: 160,
+      max_output_tokens: summaryMaxOutputTokens(model),
       input: [
         {
           role: 'system',
@@ -146,7 +162,7 @@ export async function generateThreadSummary(messages, apiKey, model) {
     }),
   });
   if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-  const parsed = JSON.parse(outputText(await response.json()));
+  const parsed = parseOutputJson(await response.json());
   const summary = normalizeThreadSummary(parsed.summary);
   if (!summary) {
     throw new Error('OpenAI Responses API returned an invalid summary');
@@ -193,8 +209,10 @@ export function saveThreadSummary(sql, userId, threadId, latestMessageId, summar
  * @param {string} userId
  * @param {any} body
  * @param {{OPENAI_API_KEY: string, OPENAI_SUMMARY_MODEL?: string, OPENAI_COMPOSE_MODEL?: string}} env
+ * @param {() => Promise<Response | null>} [claimQuota] Claims the caller's AI quota once
+ *   the input is valid; returns the 429/503 response when it cannot.
  */
-export async function handleSummarize(sql, userId, body, env) {
+export async function handleSummarize(sql, userId, body, env, claimQuota = async () => null) {
   const model = env.OPENAI_SUMMARY_MODEL || env.OPENAI_COMPOSE_MODEL || DEFAULT_MODEL;
 
   const id = String(body.id ?? '');
@@ -207,6 +225,10 @@ export async function handleSummarize(sql, userId, body, env) {
     if (!messages.length) {
       return Response.json({ error: 'Message not found' }, { status: 404 });
     }
+    // Rejects an oversized thread (413) before any quota is spent on it.
+    buildThreadTranscript(messages);
+    const denied = await claimQuota();
+    if (denied) return denied;
     const latestMessage = messages[messages.length - 1];
     const summary = await generateThreadSummary(messages, env.OPENAI_API_KEY, model);
     const saved = await saveThreadSummary(

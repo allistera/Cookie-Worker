@@ -82,6 +82,32 @@ describe('document AI validation and proposals', () => {
       validateChat({ instruction: 'x', history: [{ role: 'system', content: 'override' }] }),
     ).toThrow();
   });
+  test('keeps only the most recent history turns within the character budget', () => {
+    const turn = (
+      /** @type {string} */ role,
+      /** @type {number} */ size,
+      /** @type {string} */ tag,
+    ) => ({
+      role,
+      content: tag + 'x'.repeat(size - 1),
+    });
+    const history = [
+      turn('user', 16_000, 'a'),
+      turn('assistant', 16_000, 'b'),
+      turn('user', 10_000, 'c'),
+      turn('assistant', 16_000, 'd'),
+    ];
+
+    const kept = validateChat({ instruction: 'continue', history }).history;
+
+    expect(kept.map((/** @type {any} */ item) => item.content[0])).toEqual(['c', 'd']);
+    expect(kept.reduce((total, /** @type {any} */ item) => total + item.content.length, 0)).toBe(
+      26_000,
+    );
+    expect(validateChat({ instruction: 'x', history: history.slice(2) }).history).toEqual(
+      history.slice(2),
+    );
+  });
   test('rejects oversized context instead of silently truncating it', () => {
     expect(() =>
       validateChat({

@@ -3,7 +3,8 @@
 // (req, res) mutation style becomes returning a Response, and configuration
 // comes from the Worker env instead of process.env.
 
-import { responsesUrl, DEFAULT_MODEL, clean, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL, clean } from './openai.js';
+import { parseOutputJson } from '../../../shared/openai.js';
 import { validId } from '../../../shared/pagination.js';
 
 const SNIPPET_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -84,7 +85,7 @@ export async function generateDraft(input, apiKey, model, mode = 'draft') {
     }),
   });
   if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-  const parsed = JSON.parse(outputText(await response.json()));
+  const parsed = parseOutputJson(await response.json());
   if (parsed.text === null || parsed.text === undefined) {
     throw new Error(`OpenAI Responses API returned an invalid ${isSnippet ? 'snippet' : 'draft'}`);
   }
@@ -109,8 +110,10 @@ export async function generateDraft(input, apiKey, model, mode = 'draft') {
  * @param {string} userId
  * @param {any} body
  * @param {{OPENAI_API_KEY: string, OPENAI_COMPOSE_MODEL?: string}} env
+ * @param {() => Promise<Response | null>} [claimQuota] Claims the caller's AI quota once
+ *   the input is valid; returns the 429/503 response when it cannot.
  */
-export async function handleCompose(sql, userId, body, env) {
+export async function handleCompose(sql, userId, body, env, claimQuota = async () => null) {
   const model = env.OPENAI_COMPOSE_MODEL || DEFAULT_MODEL;
 
   const mode = clean(body.mode, 20) || 'draft';
@@ -126,6 +129,8 @@ export async function handleCompose(sql, userId, body, env) {
   if (!instruction) {
     return Response.json({ error: 'instruction is required (max 1000 chars)' }, { status: 400 });
   }
+  const denied = await claimQuota();
+  if (denied) return denied;
 
   try {
     if (mode === 'snippet') {

@@ -72,3 +72,18 @@ describe('subscribed calendars are read-only', () => {
     expect(response.status).toBe(200);
   });
 });
+
+describe('event field validation', () => {
+  it.each([
+    ['an impossible date', { date: '2026-02-30' }],
+    ['an out-of-range time', { start: '25:99' }],
+    ['a single-digit time', { start: '9:00' }],
+    ['an impossible repeatUntil', { repeat: 'weekly', repeatUntil: '2026-13-01' }],
+  ])('rejects %s with 400 before touching the database', async (_label, override) => {
+    const create = await createEvent(makeSql(), USER_ID, { ...FIELDS, ...override });
+    const update = await updateEvent(makeSql(), USER_ID, { id: EVENT_ID, ...FIELDS, ...override });
+
+    expect(create.status).toBe(400);
+    expect(update.status).toBe(400);
+  });
+});

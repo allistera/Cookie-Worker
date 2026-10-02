@@ -282,6 +282,89 @@ describe('syncCalendarSubscription', () => {
     return { sql, inserted };
   }
 
+  it('honours EXDATE, moved RECURRENCE-ID instances and cancelled instances', async () => {
+    const year = new Date().getUTCFullYear() + 1;
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:series@example.com',
+      'DTSTAMP:20260101T000000Z',
+      `DTSTART:${year}0302T090000Z`,
+      `DTEND:${year}0302T100000Z`,
+      'SUMMARY:Standup',
+      'RRULE:FREQ=DAILY;COUNT=5',
+      `EXDATE:${year}0303T090000Z`,
+      'END:VEVENT',
+      'BEGIN:VEVENT',
+      'UID:series@example.com',
+      'DTSTAMP:20260101T000000Z',
+      `RECURRENCE-ID:${year}0304T090000Z`,
+      `DTSTART:${year}0304T150000Z`,
+      `DTEND:${year}0304T153000Z`,
+      'SUMMARY:Standup',
+      'END:VEVENT',
+      'BEGIN:VEVENT',
+      'UID:series@example.com',
+      'DTSTAMP:20260101T000000Z',
+      `RECURRENCE-ID:${year}0305T090000Z`,
+      `DTSTART:${year}0305T090000Z`,
+      `DTEND:${year}0305T100000Z`,
+      'SUMMARY:Standup',
+      'STATUS:CANCELLED',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    vi.mocked(requestPublicHttps).mockResolvedValue(httpsResponse(ics));
+    const { sql, inserted } = captureInsertedRows();
+
+    const result = await syncCalendarSubscription(
+      sql,
+      'cal-1',
+      'user-1',
+      'https://example.com/feed.ics',
+      requestPublicHttps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(
+      inserted[0].map((row) => ({ date: row.date, start: row.start, duration: row.duration })),
+    ).toEqual([
+      { date: `${year}-03-02`, start: '09:00', duration: 60 },
+      { date: `${year}-03-04`, start: '15:00', duration: 30 },
+      { date: `${year}-03-06`, start: '09:00', duration: 60 },
+    ]);
+  });
+
+  it('skips a cancelled single event', async () => {
+    const year = new Date().getUTCFullYear() + 1;
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:cancelled@example.com',
+      'DTSTAMP:20260101T000000Z',
+      `DTSTART:${year}0302T090000Z`,
+      `DTEND:${year}0302T100000Z`,
+      'SUMMARY:Cancelled meeting',
+      'STATUS:CANCELLED',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    vi.mocked(requestPublicHttps).mockResolvedValue(httpsResponse(ics));
+    const { sql } = captureInsertedRows();
+
+    const result = await syncCalendarSubscription(
+      sql,
+      'cal-1',
+      'user-1',
+      'https://example.com/feed.ics',
+      requestPublicHttps,
+    );
+
+    expect(result).toEqual({ ok: true, count: 0 });
+  });
+
   it('keeps TZID event wall times across daylight-saving offsets', async () => {
     const ics = [
       'BEGIN:VCALENDAR',

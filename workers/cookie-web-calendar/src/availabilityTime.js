@@ -21,6 +21,11 @@ export function validDate(date) {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
 }
 
+/** A 24-hour HH:MM wall time, 00:00-23:59. @param {unknown} time */
+export function validTime(time) {
+  return typeof time === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time);
+}
+
 /** @param {string} date @param {number} days */
 export function addDays(date, days) {
   return new Date(new Date(`${date}T00:00:00Z`).getTime() + days * DAY_MS)

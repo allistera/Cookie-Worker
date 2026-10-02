@@ -1,6 +1,7 @@
 // Ported from Cookie-Web's api/calendar-events.js — the recurrence-expansion
-// half, unchanged. Cookie-Web keeps its own copy in api/_lib/recurrence.js
-// for the vite dev/e2e calendar fixture — kept in sync by hand.
+// half. Cookie-Web keeps its own copy in scripts/localApi/recurrence.js for the vite
+// dev/e2e calendar fixture — kept in sync by hand (date-keyed occurrence ids
+// and start-relative MONTHLY/YEARLY expansion landed here first).
 
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export const EXPAND_PAST_DAYS = 365;
@@ -10,13 +11,10 @@ const MAX_OCCURRENCES_PER_SERIES = 366;
 // MAX_OCCURRENCES_PER_SERIES bounds each series individually; without a total
 // cap, N daily series serialize up to 366·N event objects on every load.
 const MAX_TOTAL_OCCURRENCES = 5000;
-// Occurrences before the window are stepped over without being emitted, so the
-// occurrence cap alone does not bound the work: a DAILY series dated 0001-01-01
-// (which both DATE_RE and migration 0022's CHECK accept) would step ~740k times
-// on every calendar load. Cap total steps too — 10k covers a daily series
-// starting ~27 years back, weekly ~190 years, monthly ~830 years. A WEEKLY
-// series with BYDAY steps day-by-day (see expandEvent), so it shares DAILY's
-// ~27-year reach rather than WEEKLY's.
+// Expansion jumps straight to the window (firstIndexNearWindow), but the
+// occurrence cap alone still does not bound the loop: a WEEKLY BYDAY series
+// steps day-by-day and skips unselected weekdays without emitting. Cap the
+// steps each series may take inside the window too.
 const MAX_STEPS_PER_SERIES = 10_000;
 // One aggregate stepping budget across the whole response. Per-series caps
 // bound each series, but N pathological series each stepping up to
@@ -60,33 +58,43 @@ function parseRecurrenceRule(rule) {
   return { freq: match[1], byday: match[2] ? match[2].split(',') : null, until: match[3] ?? null };
 }
 
-// Clamps day-of-month so e.g. "31st of every month" lands on the last day of
-// short months instead of overflowing into the next one.
+// The n-th occurrence (0 = the series start) is computed from the series
+// start rather than stepped from the previous occurrence, so a clamped short
+// month does not drag every later occurrence with it: "31st of every month"
+// lands on Feb 28/29, then back on Mar 31; a Feb 29 yearly series lands on
+// Feb 28 in common years and Feb 29 again in leap years.
 /**
- * @param {Date} date
+ * @param {Date} dtstart
  * @param {string} freq
+ * @param {number} n
  */
-function stepDate(date, freq) {
-  const next = new Date(date);
+function occurrenceAt(dtstart, freq, n) {
+  const next = new Date(dtstart);
   if (freq === 'DAILY') {
-    next.setUTCDate(next.getUTCDate() + 1);
+    next.setUTCDate(next.getUTCDate() + n);
     return next;
   }
   if (freq === 'WEEKLY') {
-    next.setUTCDate(next.getUTCDate() + 7);
+    next.setUTCDate(next.getUTCDate() + n * 7);
     return next;
   }
-  const day = next.getUTCDate();
-  const month = freq === 'YEARLY' ? next.getUTCMonth() : next.getUTCMonth() + 1;
-  const yearsAhead = freq === 'YEARLY' ? 1 : 0;
-  next.setUTCDate(1);
-  next.setUTCFullYear(next.getUTCFullYear() + yearsAhead);
-  next.setUTCMonth(month);
-  const daysInTargetMonth = new Date(
-    Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0),
-  ).getUTCDate();
-  next.setUTCDate(Math.min(day, daysInTargetMonth));
+  const monthIndex =
+    dtstart.getUTCFullYear() * 12 + dtstart.getUTCMonth() + (freq === 'YEARLY' ? n * 12 : n);
+  const year = Math.floor(monthIndex / 12);
+  const month = monthIndex % 12;
+  next.setUTCFullYear(year, month, Math.min(dtstart.getUTCDate(), daysInMonthUtc(year, month)));
   return next;
+}
+
+/**
+ * @param {number} year
+ * @param {number} month 0-based
+ */
+function daysInMonthUtc(year, month) {
+  // setUTCFullYear, unlike Date.UTC, does not remap years 0-99 to 1900-1999.
+  const date = new Date(0);
+  date.setUTCFullYear(year, month + 1, 0);
+  return date.getUTCDate();
 }
 
 /** @param {Date} date */
@@ -100,58 +108,25 @@ function daysBetweenUtc(from, to) {
   return Math.round((to.getTime() - from.getTime()) / MS_PER_DAY);
 }
 
-// Skip occurrence generation that would land before windowStart so an ancient
-// DAILY series does not burn MAX_STEPS_PER_SERIES just walking to the window.
-// The MONTHLY/YEARLY branches iterate stepDate too, so they share the same
-// step budget — otherwise a series dated 0001-01-01 would loop ~24k (monthly)
-// or ~2k (yearly) times per request, defeating the DAILY/WEEKLY bound.
+// Index of an occurrence at or shortly before windowStart, computed in O(1)
+// so an ancient series does not spend its step budget walking to the window.
+// It never overshoots: the expansion loop skips any leftover occurrences that
+// still fall before the window.
 /**
- * @param {Date} cursor
+ * @param {Date} dtstart
  * @param {Date} windowStart
  * @param {string} freq
- * @param {{remaining: number}} budget
  */
-function jumpToWindow(cursor, windowStart, freq, budget) {
-  if (cursor >= windowStart) return cursor;
-  if (freq === 'DAILY') {
-    const next = new Date(cursor);
-    next.setUTCDate(next.getUTCDate() + daysBetweenUtc(cursor, windowStart));
-    return next;
-  }
-  if (freq === 'WEEKLY') {
-    const weeks = Math.floor(daysBetweenUtc(cursor, windowStart) / 7);
-    const next = new Date(cursor);
-    next.setUTCDate(next.getUTCDate() + weeks * 7);
-    return next;
-  }
-  if (freq === 'YEARLY') {
-    let next = cursor;
-    const years = Math.min(
-      Math.max(0, windowStart.getUTCFullYear() - cursor.getUTCFullYear()),
-      MAX_STEPS_PER_SERIES,
-      budget.remaining,
-    );
-    for (let i = 0; i < years; i += 1) next = stepDate(next, 'YEARLY');
-    budget.remaining -= years;
-    return next;
-  }
-  if (freq === 'MONTHLY') {
-    const months =
-      (windowStart.getUTCFullYear() - cursor.getUTCFullYear()) * 12 +
-      (windowStart.getUTCMonth() - cursor.getUTCMonth());
-    let next = cursor;
-    const jumps = Math.min(Math.max(0, months - 1), MAX_STEPS_PER_SERIES, budget.remaining);
-    for (let i = 0; i < jumps; i += 1) next = stepDate(next, 'MONTHLY');
-    budget.remaining -= jumps;
-    let guard = 0;
-    while (next < windowStart && guard < MAX_STEPS_PER_SERIES && budget.remaining > 0) {
-      next = stepDate(next, 'MONTHLY');
-      guard += 1;
-      budget.remaining -= 1;
-    }
-    return next;
-  }
-  return cursor;
+function firstIndexNearWindow(dtstart, windowStart, freq) {
+  if (dtstart >= windowStart) return 0;
+  const elapsedMs = windowStart.getTime() - dtstart.getTime();
+  if (freq === 'DAILY') return Math.floor(elapsedMs / MS_PER_DAY);
+  if (freq === 'WEEKLY') return Math.floor(elapsedMs / (7 * MS_PER_DAY));
+  const months =
+    (windowStart.getUTCFullYear() - dtstart.getUTCFullYear()) * 12 +
+    (windowStart.getUTCMonth() - dtstart.getUTCMonth());
+  if (freq === 'YEARLY') return Math.max(0, Math.floor(months / 12) - 1);
+  return Math.max(0, months - 1);
 }
 
 // Expands one series-master row into its occurrences within [windowStart,
@@ -170,9 +145,7 @@ function expandEvent(event, windowStart, windowEnd, budget = { remaining: MAX_TO
 
   const dtstart = new Date(`${event.date}T${event.start}:00Z`);
   const until = rule.until ? new Date(`${rule.until}T23:59:59Z`) : null;
-  // A series that ended before the window can't emit anything — return
-  // before jumpToWindow, whose MONTHLY/YEARLY paths step iteratively, so an
-  // expired series costs nothing instead of up to MAX_STEPS_PER_SERIES.
+  // A series that ended before the window can't emit anything.
   if (until && until < windowStart) return [];
   // BYDAY (e.g. "Monday to Friday") only makes sense for WEEKLY, and needs
   // day-by-day stepping to land on each selected weekday rather than jumping
@@ -182,26 +155,32 @@ function expandEvent(event, windowStart, windowEnd, budget = { remaining: MAX_TO
     : null;
   const stepFreq = weekdays ? 'DAILY' : rule.freq;
   const occurrences = [];
-  let cursor = jumpToWindow(dtstart, windowStart, stepFreq, budget);
-  let index = 0;
+  let n = firstIndexNearWindow(dtstart, windowStart, stepFreq);
+  let cursor = occurrenceAt(dtstart, stepFreq, n);
+  let steps = 0;
   while (
     cursor <= windowEnd &&
     (!until || cursor <= until) &&
     occurrences.length < MAX_OCCURRENCES_PER_SERIES &&
-    index < MAX_STEPS_PER_SERIES &&
+    steps < MAX_STEPS_PER_SERIES &&
     budget.remaining > 0
   ) {
     if (cursor >= windowStart && (!weekdays || weekdays.has(cursor.getUTCDay()))) {
+      const date = toDateKey(cursor);
       occurrences.push({
         ...event,
-        id: `${event.id}:${index}`,
+        // Keyed by the occurrence's own date (at most one per day for every
+        // supported frequency), so the same occurrence keeps the same id
+        // whatever range the client asked for.
+        id: `${event.id}:${date}`,
         seriesId: event.id,
         seriesDate: event.date,
-        date: toDateKey(cursor),
+        date,
       });
     }
-    cursor = stepDate(cursor, stepFreq);
-    index += 1;
+    n += 1;
+    cursor = occurrenceAt(dtstart, stepFreq, n);
+    steps += 1;
     budget.remaining -= 1;
   }
   return occurrences;

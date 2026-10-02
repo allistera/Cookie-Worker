@@ -1,4 +1,5 @@
-import { responsesUrl, DEFAULT_MODEL, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL } from './openai.js';
+import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
 
 const FIELDS = ['subject', 'body', 'from', 'to'];
 const OPERATORS = ['contains', 'equals', 'starts_with', 'ends_with'];
@@ -99,13 +100,17 @@ function validateDraft(draft, labels) {
  * @param {string} userId
  * @param {any} body
  * @param {{OPENAI_API_KEY: string, OPENAI_COMPOSE_MODEL?: string}} env
+ * @param {() => Promise<Response | null>} [claimQuota] Claims the caller's AI quota once
+ *   the input is valid; returns the 429/503 response when it cannot.
  */
-export async function handleRuleDraft(sql, userId, body, env) {
+export async function handleRuleDraft(sql, userId, body, env, claimQuota = async () => null) {
   if (!validText(body?.instruction, 1000)) {
     return Response.json({ error: 'instruction is required (max 1000 chars)' }, { status: 400 });
   }
   const instruction = body.instruction.trim();
   const model = env.OPENAI_COMPOSE_MODEL || DEFAULT_MODEL;
+  const denied = await claimQuota();
+  if (denied) return denied;
   try {
     const labels = await sql`
       SELECT id, name FROM labels WHERE user_id = ${userId} AND kind = 'user'
@@ -150,14 +155,19 @@ export async function handleRuleDraft(sql, userId, body, env) {
       }),
     });
     if (!response.ok) throw new Error('Rule generation request failed');
-    const result = JSON.parse(outputText(await response.json()));
+    const result = parseOutputJson(await response.json());
     if (result?.draft === null && validText(result.error, 300)) {
       return Response.json({ error: result.error.trim() }, { status: 422 });
     }
     if (result?.error !== null) throw new Error('Invalid generation response');
     return Response.json({ draft: validateDraft(result.draft, labels), model });
-  } catch {
-    // Do not log instructions, label names or upstream response bodies.
+  } catch (error) {
+    // Do not log instructions, label names or upstream response bodies. An
+    // OpenAIOutputError message names only the failure (e.g. "incomplete
+    // (max_output_tokens)"), never the output text.
+    if (error instanceof OpenAIOutputError) {
+      console.error('POST /rule-draft failed:', error.message);
+    }
     return Response.json(
       { error: 'AI rule generation failed. Please try again.' },
       { status: 502 },

@@ -228,8 +228,6 @@ function startOfLocalDay(date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
-// A timed (non-all-day) occurrence: one row, positioned by its actual
-// start time and duration.
 /**
  * @param {any} rrule
  * @param {Date} windowStart
@@ -248,6 +246,38 @@ function rruleOccurrences(rrule, windowStart, windowEnd, max) {
   return Array.isArray(result) ? result.slice(0, max) : [];
 }
 
+/** @param {any} event */
+const isCancelled = (event) => String(event?.status ?? '').toUpperCase() === 'CANCELLED';
+
+// Every occurrence's own start/end. Recurring events go through node-ical's
+// expandRecurringEvent (as calendarAvailability.js does) so EXDATEs drop
+// their instances and RECURRENCE-ID overrides move or retime theirs; an
+// instance whose own VEVENT (the override, else the master) is
+// STATUS:CANCELLED is skipped. expandRecurringEvent enumerates every RRULE
+// date in its range without a cap, so a capped iteration first finds where
+// the MAX_OCCURRENCES_PER_EVENT-th start falls and the expansion stops there.
+/**
+ * @param {any} event
+ * @param {Date} windowStart
+ * @param {Date} windowEnd
+ * @returns {{start: Date, end: Date}[]}
+ */
+function occurrenceSpans(event, windowStart, windowEnd) {
+  if (!event.rrule) {
+    return isCancelled(event) ? [] : [{ start: event.start, end: event.end }];
+  }
+  const capped = rruleOccurrences(event.rrule, windowStart, windowEnd, MAX_OCCURRENCES_PER_EVENT);
+  const to =
+    capped.length >= MAX_OCCURRENCES_PER_EVENT ? new Date(capped[capped.length - 1]) : windowEnd;
+  return ical
+    .expandRecurringEvent(event, { from: windowStart, to })
+    .filter((instance) => !isCancelled(instance.event ?? event))
+    .slice(0, MAX_OCCURRENCES_PER_EVENT)
+    .map((instance) => ({ start: instance.start, end: instance.end }));
+}
+
+// A timed (non-all-day) occurrence: one row, positioned by its actual
+// start time and duration.
 /**
  * @param {any} event
  * @param {Date} windowStart
@@ -255,23 +285,20 @@ function rruleOccurrences(rrule, windowStart, windowEnd, max) {
  * @param {Map<string, Intl.DateTimeFormat>} formatters
  */
 function timedOccurrences(event, windowStart, windowEnd, formatters) {
-  const starts = event.rrule
-    ? rruleOccurrences(event.rrule, windowStart, windowEnd, MAX_OCCURRENCES_PER_EVENT)
-    : event.start >= windowStart && event.start <= windowEnd
-      ? [event.start]
-      : [];
-
-  const durationMs = Math.max(
-    new Date(event.end).getTime() - new Date(event.start).getTime(),
-    60_000,
+  const spans = occurrenceSpans(event, windowStart, windowEnd).filter(
+    ({ start }) => start >= windowStart && start <= windowEnd,
   );
-  const durationMinutes = Math.round(durationMs / 60_000);
-  return starts.map((/** @type {Date} */ start) => {
-    const keys = timedOccurrenceKeys(new Date(start), event.start.tz, formatters);
+
+  return spans.map(({ start, end }) => {
+    const durationMs = Math.max(new Date(end).getTime() - new Date(start).getTime(), 60_000);
+    // An override carries its own TZID (copied onto its start by node-ical);
+    // plain RRULE instances carry the master's.
+    const timeZone = /** @type {any} */ (start).tz ?? event.start.tz;
+    const keys = timedOccurrenceKeys(new Date(start), timeZone, formatters);
     return {
       date: keys.date,
       time: keys.time,
-      durationMinutes,
+      durationMinutes: Math.round(durationMs / 60_000),
       allDay: false,
     };
   });
@@ -288,19 +315,17 @@ function timedOccurrences(event, windowStart, windowEnd, formatters) {
  * @param {Date} windowEnd
  */
 export function allDayOccurrences(event, windowStart, windowEnd) {
-  const spanDays = Math.max(
-    Math.round((event.end.getTime() - event.start.getTime()) / MS_PER_DAY),
-    1,
-  );
-  const starts = event.rrule
-    ? rruleOccurrences(event.rrule, windowStart, windowEnd, MAX_OCCURRENCES_PER_EVENT)
-    : [event.start];
-
   const rows = [];
   const firstWindowDay = startOfLocalDay(windowStart);
   const afterLastWindowDay = addDaysLocal(startOfLocalDay(windowEnd), 1);
-  for (const occurrenceStart of starts) {
-    const firstOccurrenceDay = startOfLocalDay(new Date(occurrenceStart));
+  for (const { start, end } of occurrenceSpans(event, windowStart, windowEnd)) {
+    const firstOccurrenceDay = startOfLocalDay(new Date(start));
+    const spanDays = Math.max(
+      Math.round(
+        (startOfLocalDay(new Date(end)).getTime() - firstOccurrenceDay.getTime()) / MS_PER_DAY,
+      ),
+      1,
+    );
     const afterLastOccurrenceDay = addDaysLocal(firstOccurrenceDay, spanDays);
     const firstDay = firstOccurrenceDay < firstWindowDay ? firstWindowDay : firstOccurrenceDay;
     const afterLastDay =

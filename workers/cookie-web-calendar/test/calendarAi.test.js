@@ -67,6 +67,25 @@ describe('calendar event AI parsing', () => {
     expect(request.input[1].content).toContain('Europe/London');
   });
 
+  it('rejects an incomplete model response with a descriptive error', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        output_text: '{"title":"Dinn',
+      }),
+    }));
+
+    await expect(
+      generateCalendarEventDraft(
+        { text: 'Dinner', now: '2026-08-23T12:00:00.000Z', timeZone: 'UTC' },
+        'test-key',
+        /** @type {any} */ (fetchImpl),
+      ),
+    ).rejects.toThrow('OpenAI response incomplete (max_output_tokens)');
+  });
+
   it('rejects impossible dates and times from the model', () => {
     expect(() =>
       normalizeCalendarEventDraft({

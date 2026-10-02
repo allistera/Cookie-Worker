@@ -12,9 +12,8 @@ import {
 } from './recurrence.js';
 import { generateCalendarEventDraft } from './calendarAi.js';
 import { validId } from '../../../shared/pagination.js';
+import { validDate, validTime } from './availabilityTime.js';
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_RE = /^\d{2}:\d{2}$/;
 const MAX_TITLE = 200;
 const MAX_LOCATION = 200;
 const MAX_DESCRIPTION = 2000;
@@ -51,8 +50,8 @@ function validEventFields(body) {
   if (
     !title ||
     title.length > MAX_TITLE ||
-    !DATE_RE.test(date) ||
-    !TIME_RE.test(start) ||
+    !validDate(date) ||
+    !validTime(start) ||
     duration <= 0 ||
     duration > MAX_DURATION_MINUTES ||
     !(validId(calendar) || LEGACY_CALENDAR_NAMES.has(calendar)) ||
@@ -60,7 +59,7 @@ function validEventFields(body) {
     (location && location.length > MAX_LOCATION) ||
     (description && description.length > MAX_DESCRIPTION) ||
     !REPEAT_FREQUENCIES.has(repeat) ||
-    (repeatUntil && !DATE_RE.test(repeatUntil)) ||
+    (repeatUntil && !validDate(repeatUntil)) ||
     (repeatDaysRaw &&
       (repeat !== 'weekly' ||
         repeatDaysRaw.length === 0 ||

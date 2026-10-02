@@ -1,10 +1,19 @@
-import { responsesUrl, outputText } from './openai.js';
+import { responsesUrl } from './openai.js';
+import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
 import { markdownToBlocks } from './document.js';
 import { validId } from '../../../shared/pagination.js';
 
 export const DOCUMENT_CHAT_MODEL = 'gpt-5.6-sol';
 export const MAX_CHAT_BODY_BYTES = 1024 * 1024;
 const MAX_CONTEXT_CHARS = 250_000;
+// Each request already carries up to 250k characters of draft; 12 turns of
+// up to 16k each could add ~190k more. Older turns matter least once the
+// current draft is in context, so only the most recent turns that fit this
+// budget are sent.
+export const MAX_HISTORY_CHARS = 32_000;
+// Lower than the shared 'ai' quota (10/min): each call is a much larger
+// prompt to a bigger model with medium reasoning.
+export const DOCUMENT_CHAT_RATE_LIMIT = { limit: 4, windowMs: 60_000 };
 const MAX_BLOCKS = 500;
 const TEXT_BLOCKS = new Set(['paragraph', 'header', 'list', 'code', 'delimiter']);
 
@@ -59,7 +68,20 @@ export function validateChat(body) {
   ) {
     throw new Error('Conversation history is invalid');
   }
-  return { instruction: body.instruction.trim(), document, history };
+  return { instruction: body.instruction.trim(), document, history: recentHistory(history) };
+}
+
+/** The newest turns whose combined content fits MAX_HISTORY_CHARS.
+ * @param {{role: string, content: string}[]} history
+ */
+export function recentHistory(history) {
+  let start = history.length;
+  let total = 0;
+  while (start > 0 && total + history[start - 1].content.length <= MAX_HISTORY_CHARS) {
+    start -= 1;
+    total += history[start].content.length;
+  }
+  return history.slice(start);
 }
 
 /** Resolve validated model references back to the exact original blocks.
@@ -211,16 +233,20 @@ export async function generateDocumentChat(context, apiKey, model) {
   });
   if (!response.ok) throw new Error(`OpenAI status ${response.status}`);
   const payload = await response.json();
-  if (payload.status && payload.status !== 'completed')
-    throw new Error('AI response is incomplete');
-  return resolveProposal(JSON.parse(outputText(payload)), context.document);
+  // parseOutputJson rejects 'incomplete'; any other non-completed status
+  // (failed, cancelled, ...) is no more usable.
+  if (payload.status && payload.status !== 'completed' && payload.status !== 'incomplete')
+    throw new OpenAIOutputError(`OpenAI response ${payload.status}`);
+  return resolveProposal(parseOutputJson(payload), context.document);
 }
 
 /** POST /document-chat only returns proposals; writes use the existing document save flow.
  * @param {import('postgres').Sql} sql @param {string} userId @param {any} body
  * @param {{OPENAI_API_KEY: string, OPENAI_DOCUMENT_CHAT_MODEL?: string}} env
+ * @param {() => Promise<Response | null>} [claimQuota] Claims the caller's AI quota once
+ *   the input is valid; returns the 429/503 response when it cannot.
  */
-export async function handleDocumentChat(sql, userId, body, env) {
+export async function handleDocumentChat(sql, userId, body, env, claimQuota = async () => null) {
   let context;
   try {
     context = validateChat(body);
@@ -232,12 +258,18 @@ export async function handleDocumentChat(sql, userId, body, env) {
       await sql`SELECT id FROM documents WHERE id = ${context.document.id} AND user_id = ${userId} LIMIT 1`;
     if (!owned) return Response.json({ error: 'Document not found' }, { status: 404 });
   }
+  const denied = await claimQuota();
+  if (denied) return denied;
   const model = env.OPENAI_DOCUMENT_CHAT_MODEL || DOCUMENT_CHAT_MODEL;
   try {
     const result = await generateDocumentChat(context, env.OPENAI_API_KEY, model);
     return Response.json({ ...result, model });
-  } catch {
-    // Do not log document contents or model responses.
+  } catch (error) {
+    // Do not log document contents or model responses. An OpenAIOutputError
+    // message names only the failure, never the output text.
+    if (error instanceof OpenAIOutputError) {
+      console.error('POST /document-chat failed:', error.message);
+    }
     return Response.json(
       { error: 'AI could not complete this request. Please try again.' },
       { status: 502 },

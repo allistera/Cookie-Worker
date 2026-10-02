@@ -148,12 +148,12 @@ describe('expandEvents', () => {
     expect(occurrences.every((occurrence) => occurrence.seriesDate === '2026-01-05')).toBe(true);
   });
 
-  it('clamps monthly recurrence to the last day of short months', () => {
+  it('clamps monthly recurrence to short months without drifting off the 31st', () => {
     const event = {
       id: 'abc',
       date: '2026-01-31',
       start: '09:00',
-      recurrenceRule: 'MONTHLY;UNTIL=2026-04-01',
+      recurrenceRule: 'MONTHLY;UNTIL=2026-05-31',
     };
 
     const occurrences = expandEvents([event], now);
@@ -161,8 +161,75 @@ describe('expandEvents', () => {
     expect(occurrences.map((occurrence) => occurrence.date)).toEqual([
       '2026-01-31',
       '2026-02-28',
-      '2026-03-28',
+      '2026-03-31',
+      '2026-04-30',
+      '2026-05-31',
     ]);
+  });
+
+  it('lands a 31st-of-the-month series on Feb 29 in a leap year', () => {
+    const event = {
+      id: 'abc',
+      date: '2028-01-31',
+      start: '09:00',
+      recurrenceRule: 'MONTHLY;UNTIL=2028-03-31',
+    };
+
+    expect(
+      expandEvents([event], now, { from: '2028-01-01', to: '2028-12-31' }).map(
+        (occurrence) => occurrence.date,
+      ),
+    ).toEqual(['2028-01-31', '2028-02-29', '2028-03-31']);
+  });
+
+  it('keeps a Feb 29 yearly series on Feb 28 in common years and Feb 29 in leap years', () => {
+    const event = { id: 'abc', date: '2024-02-29', start: '09:00', recurrenceRule: 'YEARLY' };
+
+    expect(
+      expandEvents([event], now, { from: '2024-01-01', to: '2029-01-01' }).map(
+        (occurrence) => occurrence.date,
+      ),
+    ).toEqual(['2024-02-29', '2025-02-28', '2026-02-28', '2027-02-28', '2028-02-29']);
+  });
+
+  it('gives the same dates when the window starts far into the future as when stepping', () => {
+    const monthly = { id: 'm', date: '2026-01-31', start: '09:00', recurrenceRule: 'MONTHLY' };
+    const yearly = { id: 'y', date: '2024-02-29', start: '09:00', recurrenceRule: 'YEARLY' };
+    const range = { from: '2120-01-01', to: '2122-12-31' };
+
+    // Reference dates computed independently from the series start.
+    /** @param {number} year @param {number} month 1-based @param {number} day */
+    const clamped = (year, month, day) => {
+      const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
+    };
+    const expectedMonthly = [];
+    const expectedYearly = [];
+    for (let year = 2120; year <= 2122; year += 1) {
+      for (let month = 1; month <= 12; month += 1) expectedMonthly.push(clamped(year, month, 31));
+      expectedYearly.push(clamped(year, 2, 29));
+    }
+
+    expect(expandEvents([monthly], now, range).map((occurrence) => occurrence.date)).toEqual(
+      expectedMonthly,
+    );
+    expect(expandEvents([yearly], now, range).map((occurrence) => occurrence.date)).toEqual(
+      expectedYearly,
+    );
+    // 2120 is a leap year; 2121 and 2122 are not.
+    expect(expectedYearly).toEqual(['2120-02-29', '2121-02-28', '2122-02-28']);
+  });
+
+  it('keeps an occurrence id stable across differently-windowed requests', () => {
+    const event = { id: 'abc', date: '2026-01-05', start: '09:00', recurrenceRule: 'WEEKLY' };
+
+    const wide = expandEvents([event], now, { from: '2026-01-01', to: '2026-12-31' });
+    const narrow = expandEvents([event], now, { from: '2026-08-03', to: '2026-08-16' });
+
+    expect(narrow.map((occurrence) => occurrence.id)).toEqual(['abc:2026-08-03', 'abc:2026-08-10']);
+    for (const occurrence of narrow) {
+      expect(wide.find((candidate) => candidate.date === occurrence.date)?.id).toBe(occurrence.id);
+    }
   });
 
   it('stops generating occurrences once the window ends when there is no UNTIL', () => {

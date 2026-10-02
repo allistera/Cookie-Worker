@@ -120,36 +120,78 @@ describe('rate limiting', () => {
     });
   });
 
+  const MESSAGE_ID = '11111111-1111-4111-8111-111111111111';
+  const THREAD_ROW = {
+    id: MESSAGE_ID,
+    thread_id: '22222222-2222-4222-8222-222222222222',
+    from_name: 'Sam',
+    from_address: 'sam@example.com',
+    recipients: { to: [] },
+    subject: 'Hi',
+    body_text: 'Hello',
+    sent_at: '2026-08-01T00:00:00Z',
+    is_sent: false,
+  };
+
   test.each([
-    ['/compose', 'Too many compose requests, slow down'],
-    ['/summarize', 'Too many summary requests, slow down'],
-    ['/document', 'Too many document requests, slow down'],
-    ['/rule-draft', 'Too many rule generation requests, slow down'],
-  ])('%s answers 429 with its own wording when the quota is exhausted', async (path, error) => {
-    allowRequest.mockResolvedValue(false);
-    const response = await worker.fetch(request(path, { body: '{}' }), env, ctx);
-    expect(response.status).toBe(429);
-    expect(await response.json()).toEqual({ error });
-  });
+    ['/compose', { instruction: 'x' }, 'Too many compose requests, slow down'],
+    ['/summarize', { id: MESSAGE_ID }, 'Too many summary requests, slow down'],
+    ['/document', { instruction: 'x' }, 'Too many document requests, slow down'],
+    ['/rule-draft', { instruction: 'x' }, 'Too many rule generation requests, slow down'],
+    ['/document-chat', { instruction: 'x' }, 'Too many document AI requests, slow down'],
+  ])(
+    '%s answers 429 with its own wording when the quota is exhausted',
+    async (path, body, error) => {
+      allowRequest.mockResolvedValue(false);
+      mockQuery.mockResolvedValue([THREAD_ROW]);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      const response = await worker.fetch(request(path, { body: JSON.stringify(body) }), env, ctx);
+      expect(response.status).toBe(429);
+      expect(await response.json()).toEqual({ error });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+    },
+  );
 
   test('answers 503 when quota enforcement itself fails', async () => {
     allowRequest.mockRejectedValue(new Error('connection reset'));
-    const response = await worker.fetch(request('/summarize', { body: '{}' }), env, ctx);
+    mockQuery.mockResolvedValue([THREAD_ROW]);
+    const response = await worker.fetch(
+      request('/summarize', { body: JSON.stringify({ id: MESSAGE_ID }) }),
+      env,
+      ctx,
+    );
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: 'AI summarization is temporarily unavailable' });
+  });
+
+  test.each(['/compose', '/summarize', '/document', '/rule-draft', '/document-chat'])(
+    '%s does not spend quota on a request that fails validation',
+    async (path) => {
+      const response = await worker.fetch(request(path, { body: '{}' }), env, ctx);
+      expect(response.status).toBe(400);
+      expect(allowRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  test('does not spend quota on an oversized body', async () => {
+    const response = await worker.fetch(
+      request('/compose', { body: JSON.stringify({ instruction: 'x'.repeat(100_000) }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(413);
+    expect(allowRequest).not.toHaveBeenCalled();
   });
 });
 
 describe('routing', () => {
-  test('POST /rule-draft uses authentication, quota and handler validation', async () => {
+  test('POST /rule-draft uses authentication and handler validation before quota', async () => {
     const response = await worker.fetch(request('/rule-draft', { body: '{}' }), env, ctx);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'instruction is required (max 1000 chars)' });
     expect(verifyAccessToken).toHaveBeenCalledOnce();
-    expect(allowRequest).toHaveBeenCalledWith(expect.anything(), 'user-1', 'ai', {
-      limit: 10,
-      windowMs: 60_000,
-    });
+    expect(allowRequest).not.toHaveBeenCalled();
   });
 
   test('rejects unauthenticated rule generation before quota or data access', async () => {
@@ -194,11 +236,11 @@ describe('routing', () => {
     expect(response.headers.get('Allow')).toBe('POST');
   });
 
-  test('invalid JSON returns 400 after the quota claim, like the Vercel handlers did', async () => {
+  test('invalid JSON returns 400 without claiming quota', async () => {
     const response = await worker.fetch(request('/compose', { body: '{not json' }), env, ctx);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'Invalid JSON body' });
-    expect(allowRequest).toHaveBeenCalledOnce();
+    expect(allowRequest).not.toHaveBeenCalled();
   });
 });
 
@@ -233,6 +275,9 @@ test('document chat is authenticated, rate-limited and accepts drafts above 64 K
   );
   expect(response.status).toBe(200);
   expect(verifyAccessToken).toHaveBeenCalled();
-  expect(allowRequest).toHaveBeenCalledWith(expect.anything(), 'user-1', 'ai', expect.anything());
+  expect(allowRequest).toHaveBeenCalledWith(expect.anything(), 'user-1', 'document-chat', {
+    limit: 4,
+    windowMs: 60_000,
+  });
   expect(response.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION);
 });

@@ -122,6 +122,36 @@ describe('thread summarization', () => {
     expect(payload.max_output_tokens).toBe(160);
   });
 
+  test('leaves reasoning room in the output budget for reasoning models', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ output_text: JSON.stringify({ summary: 'Cabinets arrive Tuesday.' }) }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await generateThreadSummary(messages(), 'test-key', 'gpt-5.6-luna');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).max_output_tokens).toBe(1_500);
+  });
+
+  test('reports an incomplete response instead of an opaque JSON error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          output_text: '{"summary":"Cabin',
+        }),
+      }),
+    );
+
+    await expect(generateThreadSummary(messages(), 'test-key', 'test-model')).rejects.toThrow(
+      'OpenAI response incomplete (max_output_tokens)',
+    );
+  });
+
   test('normalizes model output to one bounded line', () => {
     expect(normalizeThreadSummary('  Cabinets arrive Tuesday.\n\nReply by Friday.  ')).toBe(
       'Cabinets arrive Tuesday. Reply by Friday.',

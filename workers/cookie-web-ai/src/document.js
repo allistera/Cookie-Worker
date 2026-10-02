@@ -6,7 +6,8 @@
 // numbered, checklist), fenced code and `---` dividers. Anything else
 // becomes a paragraph rather than failing the request.
 
-import { responsesUrl, DEFAULT_MODEL, clean, outputText } from './openai.js';
+import { responsesUrl, DEFAULT_MODEL, clean } from './openai.js';
+import { parseOutputJson } from '../../../shared/openai.js';
 
 const MAX_TITLE = 200;
 const MAX_BLOCKS = 200;
@@ -217,7 +218,7 @@ export async function generateDocument(instruction, apiKey, model) {
     }),
   });
   if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-  const parsed = JSON.parse(outputText(await response.json()));
+  const parsed = parseOutputJson(await response.json());
   const title = clean(parsed?.title, MAX_TITLE);
   const blocks = markdownToBlocks(parsed?.markdown);
   if (!title || !blocks.length) {
@@ -235,13 +236,17 @@ export async function generateDocument(instruction, apiKey, model) {
  * @param {string} _userId
  * @param {any} body
  * @param {{OPENAI_API_KEY: string, OPENAI_DOCUMENT_MODEL?: string}} env
+ * @param {() => Promise<Response | null>} [claimQuota] Claims the caller's AI quota once
+ *   the input is valid; returns the 429/503 response when it cannot.
  */
-export async function handleDocument(_sql, _userId, body, env) {
+export async function handleDocument(_sql, _userId, body, env, claimQuota = async () => null) {
   const model = env.OPENAI_DOCUMENT_MODEL || DEFAULT_MODEL;
   const instruction = clean(body.instruction, 1000);
   if (!instruction) {
     return Response.json({ error: 'instruction is required (max 1000 chars)' }, { status: 400 });
   }
+  const denied = await claimQuota();
+  if (denied) return denied;
 
   try {
     const document = await generateDocument(instruction, env.OPENAI_API_KEY, model);
