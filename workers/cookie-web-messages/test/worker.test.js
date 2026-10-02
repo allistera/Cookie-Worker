@@ -406,7 +406,7 @@ describe('search reindex after a write', () => {
     await expect(Promise.all(patchCtx.pending)).resolves.toBeDefined();
     expect(consoleError).toHaveBeenCalledWith(
       expect.stringContaining('failed to index message for search'),
-      'invalid connection string',
+      'database connection string is not valid',
     );
     consoleError.mockRestore();
   });
