@@ -28,6 +28,35 @@ function createMockMultiSearch(response = { hits: [], estimatedTotalHits: 0 }) {
 }
 
 const ENV = { MEILISEARCH_URL: 'https://meili.test', MEILISEARCH_API_KEY: 'key' };
+
+// Writes that wait for their task poll on timers; run them to completion under
+// fake timers so a test neither sleeps nor resolves before the poll.
+/** @param {Promise<any>} promise */
+async function settle(promise) {
+  /** @type {{ok: boolean, value: any}} */
+  let outcome = { ok: false, value: undefined };
+  const settled = promise.then(
+    (value) => {
+      outcome = { ok: true, value };
+    },
+    (error) => {
+      outcome = { ok: false, value: error };
+    },
+  );
+  await vi.runAllTimersAsync();
+  await settled;
+  if (!outcome.ok) throw outcome.value;
+  return outcome.value;
+}
+
+function useFakeTimers() {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+}
 const USER_ID = '99999999-9999-9999-9999-999999999999';
 
 // Every attribute meiliMessageFilter/MESSAGES_INDEX's toDocument can put
@@ -75,10 +104,12 @@ describe('index descriptors', () => {
 });
 
 describe('configureIndex', () => {
+  useFakeTimers();
+
   it('sends settings and the embedder together', async () => {
     const { client, calls } = createMockMeili();
 
-    await configureIndex(ENV, MESSAGES_INDEX, client);
+    await settle(configureIndex(ENV, MESSAGES_INDEX, client));
 
     const [call] = calls;
     expect(call.index).toBe('messages');
@@ -94,7 +125,7 @@ describe('configureIndex', () => {
   it('passes the OpenAI key to the embedder', async () => {
     const { client, calls } = createMockMeili();
 
-    await configureIndex({ ...ENV, OPENAI_API_KEY: 'sk-test' }, MESSAGES_INDEX, client);
+    await settle(configureIndex({ ...ENV, OPENAI_API_KEY: 'sk-test' }, MESSAGES_INDEX, client));
 
     expect(calls[0].args.embedders.default.apiKey).toBe('sk-test');
   });
@@ -185,14 +216,18 @@ describe('hybridSearch', () => {
 });
 
 describe('addDocuments', () => {
+  useFakeTimers();
+
   it('maps rows through the descriptor and sends the primary key', async () => {
     const { client, calls } = createMockMeili();
 
-    await addDocuments(
-      ENV,
-      MESSAGES_INDEX,
-      [{ id: 'm1', user_id: USER_ID, subject: 'Roof', body_text: 'tiles', labels: [] }],
-      client,
+    await settle(
+      addDocuments(
+        ENV,
+        MESSAGES_INDEX,
+        [{ id: 'm1', user_id: USER_ID, subject: 'Roof', body_text: 'tiles', labels: [] }],
+        client,
+      ),
     );
 
     expect(calls[0].args.opts).toEqual({ primaryKey: 'id' });
@@ -207,6 +242,17 @@ describe('deleteDocuments', () => {
     await deleteDocuments(ENV, MESSAGES_INDEX, ['m1'], client);
 
     expect(calls[0]).toMatchObject({ index: 'messages', method: 'deleteDocuments', args: ['m1'] });
+  });
+
+  // Nothing is stamped on a delete, so it does not poll the task.
+  it('resolves once Meilisearch accepts the delete', async () => {
+    const { client } = createMockMeili({ task: { uid: 3, status: 'failed' } });
+
+    await expect(deleteDocuments(ENV, MESSAGES_INDEX, ['m1'], client)).resolves.toEqual({
+      taskUid: 3,
+      status: 'enqueued',
+    });
+    expect(client.tasks.getTask).not.toHaveBeenCalled();
   });
 });
 
@@ -564,30 +610,48 @@ describe('federatedSearch', () => {
 });
 
 describe('index acknowledgement', () => {
+  useFakeTimers();
+
   it.each(['failed', 'canceled'])(
     'rejects a %s task after enqueue acknowledgement',
     async (status) => {
       const { client } = createMockMeili({ task: { uid: 2, status } });
-      await expect(addDocuments(ENV, MESSAGES_INDEX, [], client)).rejects.toThrow(status);
-      await expect(deleteDocuments(ENV, MESSAGES_INDEX, ['m1'], client)).rejects.toThrow(status);
+      await expect(settle(addDocuments(ENV, MESSAGES_INDEX, [], client))).rejects.toThrow(status);
     },
   );
 
   it('does not resolve a write until the engine finishes the task', async () => {
-    let complete;
-    const completion = new Promise((resolve) => {
-      complete = resolve;
+    const statuses = ['enqueued', 'processing', 'succeeded'];
+    const getTask = vi.fn(async (uid) => ({ uid, status: statuses.shift() }));
+    const client = /** @type {any} */ ({
+      index: () => ({ addDocuments: () => Promise.resolve({ taskUid: 7 }) }),
+      tasks: { getTask },
     });
-    const pending = Object.assign(Promise.resolve({ taskUid: 7 }), { waitTask: () => completion });
-    const client = /** @type {any} */ ({ index: () => ({ addDocuments: () => pending }) });
     let finished = false;
     const write = addDocuments(ENV, MESSAGES_INDEX, [], client).then(() => {
       finished = true;
     });
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(getTask).toHaveBeenCalledTimes(1);
     expect(finished).toBe(false);
-    complete({ uid: 7, status: 'succeeded' });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(getTask).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2000);
     await write;
+    expect(getTask).toHaveBeenCalledTimes(3);
     expect(finished).toBe(true);
+  });
+
+  it('backs off between polls and gives up after 20s', async () => {
+    const getTask = vi.fn(async (uid) => ({ uid, status: 'processing' }));
+    const client = /** @type {any} */ ({
+      index: () => ({ addDocuments: () => Promise.resolve({ taskUid: 7 }) }),
+      tasks: { getTask },
+    });
+    await expect(settle(addDocuments(ENV, MESSAGES_INDEX, [], client))).rejects.toThrow(
+      'not finished',
+    );
+    // 500ms, 1s, then every 2s: far fewer requests than a fixed 250ms poll.
+    expect(getTask).toHaveBeenCalledTimes(11);
   });
 });

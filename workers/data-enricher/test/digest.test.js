@@ -405,7 +405,8 @@ describe('fetchDigestMessages', () => {
 
     const { text, values } = calls[0];
     expect(text).not.toContain('messages.is_unread');
-    expect(text).toContain("interval '1 day'");
+    expect(text).toContain("messages.created_at > now() - interval '1 day'");
+    expect(text).not.toContain("messages.sent_at > now() - interval '1 day'");
     expect(text).toContain('messages.envelope_to');
     expect(text).toContain('messages.scheduled_for IS NULL');
     expect(text).toContain('NOT messages.is_sent');

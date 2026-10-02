@@ -69,9 +69,9 @@ const DIGEST_SCHEMA = {
 };
 
 /**
- * Recent inbox mail, whether read or unread. The triage skill explicitly uses
- * a time window instead of unread state because casually opening a message is
- * not evidence that it no longer needs action. Mirrors the app's inbox
+ * Mail that arrived in the last 24 hours, whether read or unread. The triage
+ * skill explicitly uses a time window instead of unread state because casually
+ * opening a message is not evidence that it no longer needs action. Mirrors the app's inbox
  * predicate so archived, sent, deleted, spam, and snoozed mail stay out.
  *
  * @param {import('postgres').Sql} sql
@@ -94,7 +94,9 @@ export async function fetchDigestMessages(sql, userId) {
       AND messages.screening_status = 'allowed'
       AND coalesce(message_ai.spam_verdict, 'inbox') <> 'spam'
       AND (messages.scheduled_for IS NULL OR messages.scheduled_for <= now())
-      AND messages.sent_at > now() - interval '1 day'
+      -- Arrival time, not the sender's Date header: a back-dated or
+      -- delayed message still counts on the day it reached the inbox.
+      AND messages.created_at > now() - interval '1 day'
     ORDER BY messages.sent_at DESC
     LIMIT ${DIGEST_MESSAGE_LIMIT}
   `

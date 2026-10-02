@@ -1,9 +1,9 @@
 import * as Sentry from '@sentry/cloudflare';
-import postgres from 'postgres';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
+import { createSql, endSql } from '../../../shared/db.js';
 import { isEnrichmentDue } from '../../../shared/enrichmentSettings.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
-import { isTransientDbError } from '../../../shared/transient-db.js';
+import { isTransientDbError, retryWithFreshClient } from '../../../shared/transient-db.js';
 import { buildDigest, fetchDigestMessages } from './digest.js';
 import { buildNews } from './news.js';
 import { captureHandledException, createSentryOptions, redact, tagTrigger } from './sentry.js';
@@ -11,22 +11,27 @@ import {
   fetchEnrichmentSettings,
   fetchGithubPersonalisation,
   fetchInterests,
+  hasNewsForUkToday,
   lookupUserId,
   storeDigest,
   storeNews,
 } from './store.js';
 
 import { configureOpenAi } from '../../../shared/openai.js';
-/** @param {string} databaseUrl */
-export function createSql(databaseUrl) {
-  // No ssl option: Hyperdrive terminates TLS to the origin database itself;
-  // asking the driver for TLS makes every connect fail (see mail-app-ingest).
-  return postgres(databaseUrl, {
-    prepare: false,
-    max: 1,
-    idle_timeout: 20,
-    connect_timeout: 10,
-  });
+
+/**
+ * Runs a store on a fresh client, with another go on a new one if the socket
+ * drops. It follows minutes of OpenAI calls, long enough for the run's own
+ * connection to have gone stale. Each store replaces the previous row inside
+ * one transaction, so a retry cannot duplicate anything.
+ *
+ * @template T
+ * @param {{HYPERDRIVE: {connectionString: string}}} env
+ * @param {(sql: import('postgres').Sql) => Promise<T>} store
+ * @returns {Promise<T>}
+ */
+function storeWithRetry(env, store) {
+  return retryWithFreshClient(() => createSql(env.HYPERDRIVE.connectionString), store);
 }
 
 /**
@@ -45,12 +50,14 @@ async function buildDailyTriage(sql, env, userId) {
   const triage = messages.length
     ? await buildDigest(messages, apiKey, env.AI_MODEL)
     : { overview: '', topics: [], noise: { count: 0, categories: [] } };
-  await storeDigest(
-    sql,
-    userId,
-    triage,
-    env.AI_MODEL,
-    messages.map((message) => message.id),
+  await storeWithRetry(env, (fresh) =>
+    storeDigest(
+      fresh,
+      userId,
+      triage,
+      env.AI_MODEL,
+      messages.map((message) => message.id),
+    ),
   );
   console.log(
     JSON.stringify({
@@ -66,14 +73,22 @@ async function buildDailyTriage(sql, env, userId) {
  * Generates and stores the daily news round-up (GitHub repos, Product Hunt,
  * UK headlines). Uses the GitHub token when available to avoid rate limits.
  *
+ * Scheduled runs build it once per UK day; a manual refresh always rebuilds.
+ * An empty round-up is never stored, so a bad hour keeps the previous card.
+ *
  * @param {import('postgres').Sql} sql
  * @param {Env & {OPENAI_API_KEY?: string, GITHUB_API_TOKEN?: string, PRODUCT_HUNT_TOKEN?: string}} env
  * @param {string} userId
+ * @param {RunOptions} [options]
  */
-async function buildNewsPhase(sql, env, userId) {
+async function buildNewsPhase(sql, env, userId, options = {}) {
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
     console.log(JSON.stringify({ event: 'news_skipped', reason: 'OPENAI_API_KEY not configured' }));
+    return;
+  }
+  if (options.scheduledAt && (await hasNewsForUkToday(sql, userId))) {
+    console.log(JSON.stringify({ event: 'news_skipped', reason: 'already built today' }));
     return;
   }
   const settings = await fetchEnrichmentSettings(sql, userId, env.AI_MODEL);
@@ -90,7 +105,11 @@ async function buildNewsPhase(sql, env, userId) {
     productHuntToken: env.PRODUCT_HUNT_TOKEN,
     env,
   });
-  await storeNews(sql, userId, { sections }, settings.model);
+  if (sections.length === 0) {
+    console.log(JSON.stringify({ event: 'news_skipped', reason: 'no sections' }));
+    return;
+  }
+  await storeWithRetry(env, (fresh) => storeNews(fresh, userId, { sections }, settings.model));
   console.log(
     JSON.stringify({
       event: 'news_built',
@@ -99,6 +118,13 @@ async function buildNewsPhase(sql, env, userId) {
   );
 }
 
+/** @typedef {{scheduledAt?: Date}} RunOptions */
+
+/**
+ * @param {Env} env
+ * @param {Array<(sql: import('postgres').Sql, env: any, userId: string, options: RunOptions) => Promise<void>>} phases
+ * @param {RunOptions} [options]
+ */
 async function runPhases(env, phases, options = {}) {
   let sql = createSql(env.HYPERDRIVE.connectionString);
   /** @type {Error[]} */
@@ -110,7 +136,7 @@ async function runPhases(env, phases, options = {}) {
     const { userId, settings } = await retryWithBackoff(
       async (attempt) => {
         if (attempt > 1) {
-          await sql.end({ timeout: 2 }).catch(() => undefined);
+          await endSql(sql);
           sql = createSql(env.HYPERDRIVE.connectionString);
         }
         const userId = await lookupUserId(sql, env.OWNER_EMAIL);
@@ -127,7 +153,7 @@ async function runPhases(env, phases, options = {}) {
     // The phases are independent; one failing must not starve the others.
     for (const phase of phases) {
       try {
-        await phase(sql, runtimeEnv, userId);
+        await phase(sql, runtimeEnv, userId, options);
       } catch (error) {
         failures.push(/** @type {Error} */ (error));
         console.log(

@@ -424,6 +424,24 @@ describe('email handler', () => {
     expect(sql.end).toHaveBeenCalled();
   });
 
+  // The MTA retry after a transient forward error finds a duplicate, so it
+  // would never index or classify the message: both are scheduled first.
+  test('schedules indexing and classification before a transient forward failure', async () => {
+    syncMessageToMeili.mockClear();
+    postgres.mockReturnValue(sqlReturning());
+    const message = fakeMessage(simpleFixture);
+    message.forward.mockRejectedValueOnce(new Error('transient error (421)'));
+    const context = ctx();
+
+    await expect(worker.email(message, env({ OPENAI_API_KEY: 'key' }), context)).rejects.toThrow(
+      'transient error (421)',
+    );
+
+    expect(context.waitUntil).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(mockedFetch()).toHaveBeenCalledTimes(1));
+    expect(syncMessageToMeili).toHaveBeenCalled();
+  });
+
   test('logs transient forward failures before rethrowing for MTA retry', async () => {
     postgres.mockReturnValue(sqlReturning());
     const message = fakeMessage(simpleFixture);
@@ -519,6 +537,34 @@ describe('email handler', () => {
     expect(mockedFetch()).not.toHaveBeenCalled();
   });
 
+  test('re-indexes after classification only when classification wrote something', async () => {
+    syncMessageToMeili.mockClear();
+    postgres.mockReturnValue(sqlReturning());
+    const pending = [];
+    const context = /** @type {any} */ ({ waitUntil: (promise) => pending.push(promise) });
+
+    await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), context);
+    await Promise.all(pending);
+    // Once at ingest, once after classification changed labels/verdict.
+    expect(syncMessageToMeili).toHaveBeenCalledTimes(2);
+
+    syncMessageToMeili.mockClear();
+    pending.length = 0;
+    const completed = sqlReturning();
+    const respond = completed.getMockImplementation();
+    completed.mockImplementation(async (strings, ...values) =>
+      strings.join('?').includes('LEFT JOIN message_ai')
+        ? [{ status: 'completed', spam_verdict: 'inbox', user_id: 'u' }]
+        : respond(strings, ...values),
+    );
+    postgres.mockReturnValue(completed);
+
+    await worker.email(fakeMessage(simpleFixture), env({ OPENAI_API_KEY: 'key' }), context);
+    await Promise.all(pending);
+    // Already classified: the ingest push is still current.
+    expect(syncMessageToMeili).toHaveBeenCalledOnce();
+  });
+
   test('AI enrichment failures are swallowed inside waitUntil', async () => {
     mockedFetch().mockRejectedValueOnce(new Error('classification broke'));
     postgres.mockReturnValue(sqlReturning());
@@ -549,9 +595,10 @@ describe('scheduled recovery', () => {
     await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
     // Recovery of classification, search drift, spam retention, and the
     // notification-event purge run independently, so one failure cannot stop
-    // another.
-    expect(context.waitUntil).toHaveBeenCalledTimes(4);
-    await vi.waitFor(() => expect(sql.end).toHaveBeenCalled());
+    // another — but under one waitUntil the handler itself awaits, so the
+    // cron invocation outlives them.
+    expect(context.waitUntil).toHaveBeenCalledOnce();
+    expect(sql.end).toHaveBeenCalled();
     const recoveryQuery = sql.mock.calls
       .map((call) => call[0].join('?'))
       .find((query) => query.includes('FROM message_ai'));

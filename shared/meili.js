@@ -150,8 +150,10 @@ function clientFor(env, client) {
  * @param {any} [client] injected by tests
  */
 export async function configureIndex(env, descriptor, client) {
-  const index = clientFor(env, client).index(descriptor.name);
+  const meili = clientFor(env, client);
+  const index = meili.index(descriptor.name);
   await completedTask(
+    meili,
     index.updateSettings({
       searchableAttributes: descriptor.searchable,
       filterableAttributes: descriptor.filterable,
@@ -165,11 +167,36 @@ export async function configureIndex(env, descriptor, client) {
   );
 }
 
-/** @param {import('meilisearch').EnqueuedTaskPromise} pending */
-async function completedTask(pending) {
-  const task = await pending.waitTask({ timeout: 20_000, interval: 250 });
-  if (task.status !== 'succeeded') throw new Error(`Meilisearch task ${task.uid} ${task.status}`);
-  return { taskUid: task.uid, status: task.status };
+// Polling a task costs a request each time, and a write that embeds through
+// OpenAI rarely finishes in under a second, so wait 500ms, then 1s, then
+// every 2s up to TASK_TIMEOUT_MS.
+const TASK_POLL_DELAYS_MS = [500, 1000, 2000];
+const TASK_TIMEOUT_MS = 20_000;
+
+/**
+ * Waits for an enqueued write to finish and rejects unless it succeeded.
+ * Only writes whose caller acts on the outcome go through here: configureIndex
+ * (documents pushed before the embedder exists never get a vector) and
+ * addDocuments (callers stamp search_indexed_at, and a task Meilisearch fails
+ * after accepting it must stay unstamped for the drift sweep).
+ *
+ * @param {Meilisearch} meili
+ * @param {import('meilisearch').EnqueuedTaskPromise} pending
+ */
+async function completedTask(meili, pending) {
+  const { taskUid } = await pending;
+  const deadline = Date.now() + TASK_TIMEOUT_MS;
+  for (let attempt = 0; ; attempt++) {
+    const delay = TASK_POLL_DELAYS_MS[Math.min(attempt, TASK_POLL_DELAYS_MS.length - 1)];
+    if (Date.now() + delay > deadline) {
+      throw new Error(`Meilisearch task ${taskUid} not finished after ${TASK_TIMEOUT_MS}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    const task = await meili.tasks.getTask(taskUid);
+    if (task.status === 'enqueued' || task.status === 'processing') continue;
+    if (task.status !== 'succeeded') throw new Error(`Meilisearch task ${taskUid} ${task.status}`);
+    return { taskUid, status: task.status };
+  }
 }
 
 /**
@@ -181,8 +208,10 @@ async function completedTask(pending) {
  * @param {any} [client]
  */
 export function addDocuments(env, descriptor, rows, client) {
-  const index = clientFor(env, client).index(descriptor.name);
+  const meili = clientFor(env, client);
+  const index = meili.index(descriptor.name);
   return completedTask(
+    meili,
     index.addDocuments(rows.map(descriptor.toDocument), {
       primaryKey: descriptor.primaryKey,
     }),
@@ -190,13 +219,20 @@ export function addDocuments(env, descriptor, rows, client) {
 }
 
 /**
+ * Resolves once Meilisearch has accepted the delete, without waiting for it to
+ * run: nothing is stamped on a delete, and search hydrates hits from Postgres
+ * by id, so a stale id that outlives a failed task is dropped there anyway.
+ *
  * @param {any} env
  * @param {any} descriptor
  * @param {string[]} ids
  * @param {any} [client]
  */
-export function deleteDocuments(env, descriptor, ids, client) {
-  return completedTask(clientFor(env, client).index(descriptor.name).deleteDocuments(ids));
+export async function deleteDocuments(env, descriptor, ids, client) {
+  const { taskUid, status } = await clientFor(env, client)
+    .index(descriptor.name)
+    .deleteDocuments(ids);
+  return { taskUid, status };
 }
 
 /**

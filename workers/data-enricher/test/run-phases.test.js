@@ -9,10 +9,6 @@ vi.mock('postgres', () => ({
     return sql;
   },
 }));
-vi.mock('../src/analyze.js', () => ({
-  fetchImportantMessages: vi.fn(async () => []),
-  analyzeEmail: vi.fn(),
-}));
 vi.mock('../src/digest.js', () => ({
   fetchDigestMessages: vi.fn(async () => [{ id: 'msg-1' }]),
   buildDigest: vi.fn(async () => ({
@@ -25,7 +21,7 @@ vi.mock('../src/digest.js', () => ({
   TRIAGE_POLICY_SOURCE: 'ericporres/email-triage-plugin',
 }));
 vi.mock('../src/news.js', () => ({
-  buildNews: vi.fn(async () => ({ sections: [] })),
+  buildNews: vi.fn(async () => ({ sections: [{ title: 'GitHub', items: [{ url: 'u' }] }] })),
   NEWS_KIND: 'daily_news',
   NEWS_PROMPT_VERSION: 'daily-news-v1',
 }));
@@ -42,18 +38,17 @@ vi.mock('../src/store.js', () => ({
       timezone: 'Europe/London',
     },
   })),
-  storeEmailAnalysis: vi.fn(async () => undefined),
   storeDigest: vi.fn(async () => 'digest-1'),
   storeNews: vi.fn(async () => 'news-1'),
   fetchInterests: vi.fn(async () => []),
   fetchGithubPersonalisation: vi.fn(async () => false),
+  hasNewsForUkToday: vi.fn(async () => false),
 }));
 
 import worker, { runDigestOnly, runScheduledEnrichment } from '../src/worker.js';
-import { fetchImportantMessages } from '../src/analyze.js';
 import { buildDigest } from '../src/digest.js';
 import { buildNews } from '../src/news.js';
-import { lookupUserId, storeDigest, storeNews } from '../src/store.js';
+import { hasNewsForUkToday, lookupUserId, storeDigest, storeNews } from '../src/store.js';
 
 const TOKEN = 'test-trigger-token';
 const env = /** @type {any} */ ({
@@ -91,7 +86,6 @@ describe('POST /run phase routing', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: 'ok', phase: 'all' });
-    expect(fetchImportantMessages).not.toHaveBeenCalled();
     expect(storeDigest).toHaveBeenCalled();
     expect(storeNews).toHaveBeenCalled();
     expect(buildNews).toHaveBeenCalled();
@@ -107,7 +101,6 @@ describe('POST /run phase routing', () => {
     expect(buildDigest).toHaveBeenCalled();
     expect(storeDigest).toHaveBeenCalled();
     expect(buildNews).not.toHaveBeenCalled();
-    expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 
   test('rebuilds inbox triage and news for ?phase=today', async () => {
@@ -118,7 +111,6 @@ describe('POST /run phase routing', () => {
     expect(storeDigest).toHaveBeenCalled();
     expect(storeNews).toHaveBeenCalled();
     expect(buildNews).toHaveBeenCalled();
-    expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 
   test('rejects an unknown phase without running anything', async () => {
@@ -147,6 +139,45 @@ describe('POST /run phase routing', () => {
     expect(storeDigest).toHaveBeenCalled();
   });
 
+  // Triage and news are stored after minutes of OpenAI calls; a dropped
+  // socket then must not throw the whole build away.
+  test('retries a store on a fresh client when the connection drops', async () => {
+    vi.useFakeTimers();
+    vi.mocked(storeDigest).mockRejectedValueOnce(
+      Object.assign(new Error('Network connection lost.'), { code: 'CONNECTION_CLOSED' }),
+    );
+
+    const enrichment = runDigestOnly(env);
+    await vi.advanceTimersByTimeAsync(1000);
+    await enrichment;
+
+    expect(storeDigest).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(storeDigest).mock.calls[1][0]).not.toBe(
+      vi.mocked(storeDigest).mock.calls[0][0],
+    );
+  });
+
+  test('never replaces the news card with an empty round-up', async () => {
+    vi.mocked(buildNews).mockResolvedValueOnce({ sections: [] });
+
+    const response = await run('?phase=today');
+
+    expect(response.status).toBe(200);
+    expect(buildNews).toHaveBeenCalled();
+    expect(storeNews).not.toHaveBeenCalled();
+  });
+
+  // The refresh button is an explicit request for a new card.
+  test('rebuilds news on a manual refresh even when today is already built', async () => {
+    vi.mocked(hasNewsForUkToday).mockResolvedValue(true);
+
+    await run('?phase=today');
+
+    expect(buildNews).toHaveBeenCalled();
+    expect(storeNews).toHaveBeenCalled();
+    vi.mocked(hasNewsForUkToday).mockResolvedValue(false);
+  });
+
   test('reports a generic failure when a phase throws', async () => {
     vi.mocked(buildDigest).mockRejectedValueOnce(new Error('openai exploded'));
 
@@ -166,7 +197,19 @@ describe('scheduled enrichment', () => {
     expect(storeDigest).toHaveBeenCalled();
     expect(buildNews).toHaveBeenCalled();
     expect(storeNews).toHaveBeenCalled();
-    expect(fetchImportantMessages).not.toHaveBeenCalled();
+  });
+
+  // News sources cover the previous UK day, so an hourly rebuild only
+  // re-spends OpenAI calls on the same card.
+  test('builds news once per UK day', async () => {
+    vi.mocked(hasNewsForUkToday).mockResolvedValueOnce(true);
+
+    await runScheduledEnrichment(env, new Date('2026-07-06T08:00:00Z'));
+
+    expect(hasNewsForUkToday).toHaveBeenCalledWith(expect.anything(), 'user-1');
+    expect(storeDigest).toHaveBeenCalled();
+    expect(buildNews).not.toHaveBeenCalled();
+    expect(storeNews).not.toHaveBeenCalled();
   });
 
   test('does no AI work outside the saved schedule', async () => {
@@ -175,6 +218,5 @@ describe('scheduled enrichment', () => {
     });
     expect(buildDigest).not.toHaveBeenCalled();
     expect(buildNews).not.toHaveBeenCalled();
-    expect(fetchImportantMessages).not.toHaveBeenCalled();
   });
 });

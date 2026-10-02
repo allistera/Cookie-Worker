@@ -37,4 +37,26 @@ describe('request performance metrics', () => {
       log.mockRestore();
     }
   });
+
+  it('keeps headers the handler already exposed', async () => {
+    const expose = async (value) => {
+      const worker = withRequestMetrics(
+        {
+          async fetch() {
+            const headers = new Headers();
+            if (value) headers.set('Access-Control-Expose-Headers', value);
+            return new Response(null, { status: 429, headers });
+          },
+        },
+        'notifications',
+      );
+      const response = await worker.fetch(new Request('https://x.invalid/'), {
+        PERFORMANCE_SAMPLE_RATE: 0,
+      });
+      return response.headers.get('Access-Control-Expose-Headers');
+    };
+    expect(await expose('Retry-After')).toBe('Retry-After, Server-Timing');
+    expect(await expose('server-timing, Retry-After')).toBe('server-timing, Retry-After');
+    expect(await expose(null)).toBe('Server-Timing');
+  });
 });

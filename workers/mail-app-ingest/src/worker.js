@@ -1,5 +1,4 @@
 import * as Sentry from '@sentry/cloudflare';
-import postgres from 'postgres';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage, MAX_ENRICHMENT_ATTEMPTS } from './enrich.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
@@ -7,6 +6,7 @@ import { MimePartLimitError, parseEmail } from './parse.js';
 import { sweepSearchDrift } from './searchDriftSweep.js';
 import { purgeExpiredSpam } from './spamRetentionSweep.js';
 import { purgeExpiredNotificationEvents } from './notificationEventsSweep.js';
+import { createSql, endSql } from '../../../shared/db.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import {
@@ -176,6 +176,38 @@ const worker = {
       }
     }
 
+    if (
+      sql &&
+      !sqlOwnedByWaitUntil &&
+      record &&
+      storeResult?.outcome === 'inserted' &&
+      storeResult.messageUuid
+    ) {
+      // Scheduled before forwarding: a transient forward error rethrows so
+      // the MTA retries, and that retry finds the message already stored (a
+      // duplicate) and would schedule neither step again.
+      //
+      // No OPENAI_API_KEY condition here: search indexing is not AI work, and
+      // gating it on the classification credential meant a rotated or missing
+      // key silently stopped all new mail from being searchable. That was
+      // survivable when Meilisearch was one leg of a three-leg search; it is
+      // the whole product now. runAiEnrichment guards the key itself.
+      //
+      // Classification stays after the sync rather than beside it, so an
+      // unclassified document can never land in the index after the
+      // classified one. If the invocation's waitUntil budget runs out first,
+      // the message_ai row stays pending for the recovery cron.
+      sqlOwnedByWaitUntil = true;
+      const ingestSql = sql;
+      const enrichRecord = record;
+      const messageUuid = storeResult.messageUuid;
+      ctx.waitUntil(
+        syncMessageToMeili(ingestSql, env, messageUuid)
+          .then(() => endSql(ingestSql))
+          .then(() => runAiEnrichment(env, enrichRecord, messageUuid, false)),
+      );
+    }
+
     try {
       await message.forward(env.FORWARD_TO);
     } catch (err) {
@@ -215,34 +247,7 @@ const worker = {
       }
     }
 
-    if (
-      sql &&
-      !sqlOwnedByWaitUntil &&
-      record &&
-      storeResult?.outcome === 'inserted' &&
-      storeResult.messageUuid
-    ) {
-      // No OPENAI_API_KEY condition here: search indexing is not AI work, and
-      // gating it on the classification credential meant a rotated or missing
-      // key silently stopped all new mail from being searchable. That was
-      // survivable when Meilisearch was one leg of a three-leg search; it is
-      // the whole product now. runAiEnrichment guards the key itself.
-      //
-      // Keep the ownership invariant symmetric with the store-timeout path above:
-      // any waitUntil that takes sql sets this flag, even where nothing reads it back.
-      // eslint-disable-next-line no-useless-assignment
-      sqlOwnedByWaitUntil = true;
-      const ingestSql = sql;
-      const enrichRecord = record;
-      const messageUuid = storeResult.messageUuid;
-      ctx.waitUntil(
-        syncMessageToMeili(ingestSql, env, messageUuid)
-          .then(() => endSql(ingestSql))
-          .then(() => runAiEnrichment(env, enrichRecord, messageUuid, false)),
-      );
-    } else if (sql && !sqlOwnedByWaitUntil) {
-      ctx.waitUntil(endSql(sql));
-    }
+    if (sql && !sqlOwnedByWaitUntil) ctx.waitUntil(endSql(sql));
   },
 
   /**
@@ -253,10 +258,22 @@ const worker = {
    */
   async scheduled(_controller, env, ctx) {
     configureOpenAi(env);
-    ctx.waitUntil(recoverPendingEnrichment(env));
-    ctx.waitUntil(sweepSearchDrift(env, { createSql }));
-    ctx.waitUntil(purgeExpiredSpam(env, { createSql }));
-    ctx.waitUntil(purgeExpiredNotificationEvents(env, { createSql }));
+    // The sweeps run side by side so one failure cannot stop another, and the
+    // handler awaits them all so the cron invocation lives until they finish
+    // rather than ending at return with the work cut short.
+    const sweeps = Promise.allSettled([
+      recoverPendingEnrichment(env),
+      sweepSearchDrift(env, { createSql }),
+      purgeExpiredSpam(env, { createSql }),
+      purgeExpiredNotificationEvents(env, { createSql }),
+    ]);
+    ctx.waitUntil(sweeps);
+    for (const result of await sweeps) {
+      // Each sweep reports its own failures; this only catches one that escaped.
+      if (result.status === 'rejected') {
+        captureHandledException('scheduled', result.reason, [env.HYPERDRIVE.connectionString]);
+      }
+    }
   },
 };
 
@@ -272,8 +289,16 @@ async function runAiEnrichment(env, record, messageUuid, late) {
   if (!env.OPENAI_API_KEY) return;
   const sql = createSql(env.HYPERDRIVE.connectionString);
   try {
-    await enrichMessage(sql, record, messageUuid, env.OPENAI_API_KEY, env.AI_MODEL || AI_MODEL);
-    await syncMessageToMeili(sql, env, messageUuid);
+    const { changed } = await enrichMessage(
+      sql,
+      record,
+      messageUuid,
+      env.OPENAI_API_KEY,
+      env.AI_MODEL || AI_MODEL,
+    );
+    // Nothing indexed moved (already classified, user verdict, budget
+    // deferral), so the document the ingest sync pushed is still current.
+    if (changed) await syncMessageToMeili(sql, env, messageUuid);
   } catch (err) {
     console.log(
       JSON.stringify({
@@ -439,35 +464,6 @@ export function isStoreTimeout(err) {
 
 // Shared with cookie-web-messages, which retries reads on the same errors.
 export { isTransientDbError };
-
-/**
- * @param {string} databaseUrl
- */
-export function createSql(databaseUrl) {
-  try {
-    // No ssl option: the Hyperdrive endpoint does not speak TLS itself —
-    // Hyperdrive terminates TLS to the origin database. Asking the driver
-    // for TLS here makes every connect fail and retry until the invocation
-    // dies with "Too many subrequests".
-    return postgres(databaseUrl, {
-      prepare: false,
-      max: 1,
-      idle_timeout: 10,
-      connect_timeout: 10,
-    });
-  } catch {
-    throw new Error('database connection string is not valid');
-  }
-}
-
-/**
- * Best-effort client teardown so isolate reuse does not leave sockets open.
- * @param {import('postgres').Sql | null | undefined} sql
- */
-export function endSql(sql) {
-  if (!sql) return Promise.resolve();
-  return sql.end({ timeout: 2 }).catch(() => undefined);
-}
 
 /**
  * @template T

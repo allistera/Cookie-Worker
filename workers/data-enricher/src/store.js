@@ -11,20 +11,6 @@ import { normalizeEnrichmentSettings } from '../../../shared/enrichmentSettings.
 // (this is what broke AI Today's digest/news raw.topics / raw.sections).
 
 /**
- * @typedef {{
- *   source: 'email',
- *   externalId: string,
- *   content: string,
- *   description?: string | null,
- *   dueDate?: string | null,
- *   priority?: number | null,
- *   url?: string | null,
- *   messageId?: string | null,
- *   raw?: unknown,
- * }} TaskRecord
- */
-
-/**
  * @param {SqlClient} sql
  * @param {string} ownerEmail
  * @returns {Promise<string>}
@@ -38,91 +24,6 @@ export async function lookupUserId(sql, ownerEmail) {
   `;
   if (!rows[0]) throw new Error('no users row matches OWNER_EMAIL; nothing stored');
   return rows[0].id;
-}
-
-/**
- * Upsert gathered tasks so the daily cron stays idempotent: re-gathering the
- * same task refreshes its fields and gathered_at instead of duplicating it.
- *
- * @param {SqlClient} sql
- * @param {string} userId
- * @param {TaskRecord[]} tasks
- * @returns {Promise<number>}
- */
-export async function storeTasks(sql, userId, tasks) {
-  if (tasks.length === 0) return 0;
-
-  const rows = tasks.map((task) => ({
-    source: task.source,
-    external_id: task.externalId,
-    content: task.content,
-    description: task.description ?? null,
-    due_date: task.dueDate ?? null,
-    priority: task.priority ?? null,
-    url: task.url ?? null,
-    message_id: task.messageId ?? null,
-    raw: task.raw ?? {},
-  }));
-
-  await sql`
-    INSERT INTO tasks (
-      user_id, source, external_id, content, description,
-      due_date, priority, url, message_id, raw
-    )
-    SELECT ${userId}::uuid, row.source, row.external_id, row.content, row.description,
-           row.due_date::date, row.priority::smallint, row.url, row.message_id::uuid, row.raw
-    FROM jsonb_to_recordset(${sql.json(/** @type {any} */ (rows))}) AS row(
-      source text, external_id text, content text, description text,
-      due_date text, priority smallint, url text, message_id text, raw jsonb
-    )
-    ON CONFLICT (user_id, source, external_id) DO UPDATE SET
-      content = EXCLUDED.content,
-      description = EXCLUDED.description,
-      due_date = EXCLUDED.due_date,
-      priority = EXCLUDED.priority,
-      url = EXCLUDED.url,
-      message_id = EXCLUDED.message_id,
-      raw = EXCLUDED.raw,
-      gathered_at = now()
-  `;
-  return tasks.length;
-}
-
-/**
- * @param {SqlClient} sql
- * @param {string} userId
- * @param {{messageId: string, summary: string, kind?: string, model?: string | null, raw?: unknown}} record
- */
-export async function storeSummary(sql, userId, record) {
-  await sql`
-    INSERT INTO summaries (user_id, message_id, kind, summary, model, raw)
-    VALUES (
-      ${userId}, ${record.messageId}, ${record.kind ?? 'email_tasks'},
-      ${record.summary}, ${record.model ?? null}, ${sql.json(/** @type {any} */ (record.raw ?? {}))}
-    )
-    ON CONFLICT (user_id, message_id, kind) WHERE message_id IS NOT NULL
-    DO UPDATE SET
-      summary = EXCLUDED.summary,
-      model = EXCLUDED.model,
-      raw = EXCLUDED.raw
-  `;
-}
-
-/**
- * Store every artifact derived from one email as a unit. The summary is the
- * marker used by fetchImportantMessages to skip completed analysis, so it is
- * deliberately written last and committed only with all task upserts.
- *
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- * @param {{messageId: string, summary: string, kind?: string, model?: string | null, raw?: unknown}} summary
- * @param {TaskRecord[]} tasks
- */
-export async function storeEmailAnalysis(sql, userId, summary, tasks) {
-  return sql.begin(async (tx) => {
-    await storeTasks(tx, userId, tasks);
-    await storeSummary(tx, userId, summary);
-  });
 }
 
 /**
@@ -185,6 +86,31 @@ async function replaceSingletonSummary(sql, userId, kind, summary, model, raw) {
     `;
     return row.id;
   });
+}
+
+/**
+ * Whether today's round-up (UK day) is already stored with something in it.
+ * Its sources cover the previous UK day, so rebuilding it on every hourly run
+ * would only spend OpenAI calls to produce the same card again.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @returns {Promise<boolean>}
+ */
+export async function hasNewsForUkToday(sql, userId) {
+  const rows = await sql`
+    SELECT EXISTS (
+      SELECT 1 FROM summaries
+      WHERE user_id = ${userId}
+        AND kind = ${NEWS_KIND}
+        AND message_id IS NULL
+        AND (created_at AT TIME ZONE 'Europe/London')::date
+          = (now() AT TIME ZONE 'Europe/London')::date
+        AND jsonb_typeof(raw -> 'sections') = 'array'
+        AND jsonb_array_length(raw -> 'sections') > 0
+    ) AS fresh
+  `;
+  return rows[0]?.fresh === true;
 }
 
 /**

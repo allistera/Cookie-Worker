@@ -200,6 +200,10 @@ export async function classifyEmail(
 }
 
 /**
+ * `changed` is true only when this run wrote a classification, so the caller
+ * re-syncs search only when an indexed field (labels, spam verdict) may have
+ * moved.
+ *
  * @param {import('postgres').Sql} sql
  * @param {any} record
  * @param {string} messageUuid
@@ -288,7 +292,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
   // itself once the message is indexed, so this function never re-runs for
   // that reason).
   if (state.status === 'completed' || state.provider === 'user') {
-    return { verdict, selectedLabels, matchedRules };
+    return { verdict, selectedLabels, matchedRules, changed: false };
   }
 
   try {
@@ -453,7 +457,12 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       console.log(
         JSON.stringify({ event: 'ai_enrichment_superseded', message_id: record.messageId }),
       );
-      return { verdict: state.spam_verdict || 'inbox', selectedLabels: 0, matchedRules: 0 };
+      return {
+        verdict: state.spam_verdict || 'inbox',
+        selectedLabels: 0,
+        matchedRules: 0,
+        changed: false,
+      };
     }
     console.log(
       JSON.stringify({
@@ -464,10 +473,10 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       }),
     );
 
-    return { verdict, selectedLabels, matchedRules };
+    return { verdict, selectedLabels, matchedRules, changed: true };
   } catch (error) {
     if (error instanceof InboundAiQuotaExceeded) {
-      return { verdict, selectedLabels, matchedRules, deferred: true };
+      return { verdict, selectedLabels, matchedRules, changed: false, deferred: true };
     }
     // Same guard as the success path: a user's verdict is complete and must
     // not be flipped to 'failed', or the recovery sweep would retry it on

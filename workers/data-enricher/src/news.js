@@ -187,6 +187,7 @@ export async function buildNews({
       label: '',
       personalise: false,
       headline: true,
+      limit: LOCAL_HEADLINE_PICKS,
       fetch: () => fetchWestLothianHeadlines(LOCAL_HEADLINE_PICKS),
     },
     {
@@ -195,6 +196,7 @@ export async function buildNews({
       label: '',
       personalise: false,
       headline: true,
+      limit: HEADLINE_PICKS,
       fetch: () => fetchUkHeadlines(HEADLINE_PICKS),
     },
   ];
@@ -202,7 +204,11 @@ export async function buildNews({
   const settled = await Promise.allSettled(
     sources.map(async (source) => {
       const candidates = await source.fetch();
-      let items = candidates.map((c) => ({ ...c, note: '' }));
+      // Unranked sources still contribute only their share: GitHub's pool is
+      // 20 repos, but the round-up shows GITHUB_PICKS of them.
+      let items = candidates
+        .slice(0, source.limit ?? MAX_PICKS_PER_SOURCE)
+        .map((c) => ({ ...c, note: '' }));
       if (source.personalise) {
         try {
           items = await rankForInterests(

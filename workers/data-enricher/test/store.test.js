@@ -1,12 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import {
   fetchInterests,
+  hasNewsForUkToday,
   lookupUserId,
   storeDigest,
-  storeEmailAnalysis,
   storeNews,
-  storeTasks,
-  storeSummary,
 } from '../src/store.js';
 
 function mockSql(rows = []) {
@@ -37,92 +35,6 @@ describe('lookupUserId', () => {
     await expect(lookupUserId(mockSql([]), 'owner@example.com')).rejects.toThrow(
       'no users row matches OWNER_EMAIL',
     );
-  });
-});
-
-describe('storeTasks', () => {
-  test('upserts all tasks in a single batched statement, keyed by source and external id', async () => {
-    const sql = mockSql();
-    const stored = await storeTasks(sql, 'user-1', [
-      {
-        source: 'email',
-        externalId: 'msg-9:reply',
-        content: 'Reply to accountant',
-        dueDate: '2026-07-18',
-        messageId: 'msg-9',
-        raw: { importance: 'high' },
-      },
-      { source: 'email', externalId: 'msg-9', content: 'Reply to accountant', messageId: 'msg-9' },
-    ]);
-    expect(stored).toBe(2);
-    expect(sql.calls).toHaveLength(1);
-    expect(sql.calls[0].text).toContain('INSERT INTO tasks');
-    expect(sql.calls[0].text).toContain('FROM jsonb_to_recordset');
-    expect(sql.calls[0].text).toContain('ON CONFLICT (user_id, source, external_id)');
-    expect(sql.calls[0].values).toContain('user-1');
-    expect(sql.calls[0].values).toContainEqual({
-      __pgJson: [
-        {
-          source: 'email',
-          external_id: 'msg-9:reply',
-          content: 'Reply to accountant',
-          description: null,
-          due_date: '2026-07-18',
-          priority: null,
-          url: null,
-          message_id: 'msg-9',
-          raw: { importance: 'high' },
-        },
-        {
-          source: 'email',
-          external_id: 'msg-9',
-          content: 'Reply to accountant',
-          description: null,
-          due_date: null,
-          priority: null,
-          url: null,
-          message_id: 'msg-9',
-          raw: {},
-        },
-      ],
-    });
-  });
-
-  test('writes nothing for an empty gather', async () => {
-    const sql = mockSql();
-    await expect(storeTasks(sql, 'user-1', [])).resolves.toBe(0);
-    expect(sql.calls).toHaveLength(0);
-  });
-});
-
-describe('storeSummary', () => {
-  test('upserts a per-message summary', async () => {
-    const sql = mockSql();
-    await storeSummary(sql, 'user-1', {
-      messageId: 'msg-9',
-      summary: 'Accountant needs the VAT receipts by Friday.',
-      model: 'gpt-5.6-luna',
-      raw: { importance: 'high' },
-    });
-    expect(sql.calls[0].text).toContain('INSERT INTO summaries');
-    expect(sql.calls[0].text).toContain('ON CONFLICT (user_id, message_id, kind)');
-    expect(sql.calls[0].values).toEqual(
-      expect.arrayContaining(['msg-9', 'email_tasks', 'gpt-5.6-luna']),
-    );
-    expect(sql.calls[0].values).toContainEqual({ __pgJson: { importance: 'high' } });
-  });
-});
-
-describe('storeEmailAnalysis', () => {
-  test('writes tasks before the completion summary in one transaction', async () => {
-    const sql = mockSql();
-    await storeEmailAnalysis(sql, 'user-1', { messageId: 'msg-9', summary: 'Reply needed.' }, [
-      { source: 'email', externalId: 'msg-9:reply', content: 'Reply', messageId: 'msg-9' },
-    ]);
-
-    expect(sql.calls).toHaveLength(2);
-    expect(sql.calls[0].text).toContain('INSERT INTO tasks');
-    expect(sql.calls[1].text).toContain('INSERT INTO summaries');
   });
 });
 
@@ -216,5 +128,19 @@ describe('storeNews', () => {
     });
     expect(sql.calls[2].text).toContain('DELETE FROM summaries');
     expect(sql.calls[2].values).toEqual(expect.arrayContaining(['user-1', 'daily_news', 'news-2']));
+  });
+});
+
+describe('hasNewsForUkToday', () => {
+  test("checks for a non-empty round-up stored on today's UK date", async () => {
+    const sql = mockSql([{ fresh: true }]);
+    await expect(hasNewsForUkToday(sql, 'user-1')).resolves.toBe(true);
+    expect(sql.calls[0].text).toContain("AT TIME ZONE 'Europe/London'");
+    expect(sql.calls[0].text).toContain("jsonb_array_length(raw -> 'sections') > 0");
+    expect(sql.calls[0].values).toEqual(expect.arrayContaining(['user-1', 'daily_news']));
+  });
+
+  test('is false when nothing matches', async () => {
+    await expect(hasNewsForUkToday(mockSql([{ fresh: false }]), 'user-1')).resolves.toBe(false);
   });
 });

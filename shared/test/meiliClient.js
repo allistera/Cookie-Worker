@@ -9,10 +9,7 @@ import { vi } from 'vitest';
  */
 export function createMockMeili(responses = {}) {
   const calls = [];
-  const task = (uid) =>
-    Object.assign(Promise.resolve({ taskUid: uid, status: 'enqueued' }), {
-      waitTask: async () => responses.task ?? { uid, status: 'succeeded' },
-    });
+  const task = (uid) => Promise.resolve({ taskUid: uid, status: 'enqueued' });
   const index = (name) => ({
     updateSettings: vi.fn((args) => {
       calls.push({ index: name, method: 'updateSettings', args });
@@ -31,5 +28,8 @@ export function createMockMeili(responses = {}) {
       return responses.search ?? { hits: [] };
     }),
   });
-  return { client: { index }, calls };
+  const tasks = {
+    getTask: vi.fn(async (uid) => responses.task ?? { uid, status: 'succeeded' }),
+  };
+  return { client: { index, tasks }, calls };
 }

@@ -32,7 +32,10 @@ export function withRequestMetrics(worker, service) {
         'Server-Timing',
         `${stages ? `${stages}, ` : ''}total;dur=${duration.toFixed(2)}`,
       );
-      headers.set('Access-Control-Expose-Headers', 'Server-Timing');
+      headers.set(
+        'Access-Control-Expose-Headers',
+        appendHeaderToken(headers.get('Access-Control-Expose-Headers'), 'Server-Timing'),
+      );
       const rate = Number(env.PERFORMANCE_SAMPLE_RATE ?? 0.05);
       if (Number.isFinite(rate) && Math.random() < Math.max(0, Math.min(1, rate))) {
         console.log(
@@ -52,4 +55,15 @@ export function withRequestMetrics(worker, service) {
       });
     },
   };
+}
+
+// Adds `token` to a comma-separated header list unless it is already there, so
+// headers a handler exposed itself (such as Retry-After) stay readable.
+function appendHeaderToken(value, token) {
+  const tokens = (value ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!tokens.some((part) => part.toLowerCase() === token.toLowerCase())) tokens.push(token);
+  return tokens.join(', ');
 }

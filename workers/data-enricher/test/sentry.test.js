@@ -12,10 +12,6 @@ vi.mock('postgres', () => ({
     return sql;
   },
 }));
-vi.mock('../src/analyze.js', () => ({
-  fetchImportantMessages: vi.fn(async () => []),
-  analyzeEmail: vi.fn(),
-}));
 vi.mock('../src/digest.js', () => ({
   fetchDigestMessages: vi.fn(async () => [{ id: 'msg-1' }]),
   buildDigest: vi.fn(),
@@ -34,11 +30,11 @@ vi.mock('../src/store.js', () => ({
       timezone: 'Europe/London',
     },
   })),
-  storeEmailAnalysis: vi.fn(),
   storeDigest: vi.fn(),
   storeNews: vi.fn(),
   fetchInterests: vi.fn(async () => []),
   fetchGithubPersonalisation: vi.fn(async () => false),
+  hasNewsForUkToday: vi.fn(async () => false),
 }));
 
 /** @type {any} */

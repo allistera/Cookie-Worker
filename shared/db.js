@@ -5,14 +5,31 @@ import { isTransientDbError } from './transient-db.js';
 
 /** @param {string} databaseUrl */
 export function createSql(databaseUrl) {
-  // No ssl option: Hyperdrive terminates TLS to the origin database itself;
-  // asking the driver for TLS makes every connect fail (see data-enricher).
-  return postgres(databaseUrl, {
-    prepare: false,
-    max: 1,
-    idle_timeout: 20,
-    connect_timeout: 10,
-  });
+  try {
+    // No ssl option: Hyperdrive terminates TLS to the origin database itself;
+    // asking the driver for TLS makes every connect fail and retry until the
+    // invocation dies with "Too many subrequests".
+    return postgres(databaseUrl, {
+      prepare: false,
+      max: 1,
+      idle_timeout: 20,
+      connect_timeout: 10,
+    });
+  } catch {
+    // The driver's parse error can quote the URL, credentials included.
+    throw new Error('database connection string is not valid');
+  }
+}
+
+/**
+ * Best-effort client teardown for cron and email handlers, which own their
+ * clients outright: never throws, so it is safe in finally blocks and waitUntil.
+ *
+ * @param {import('postgres').Sql | null | undefined} sql
+ */
+export function endSql(sql) {
+  if (!sql) return Promise.resolve();
+  return sql.end({ timeout: 2 }).catch(() => undefined);
 }
 
 /**

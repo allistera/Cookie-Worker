@@ -199,8 +199,10 @@ describe('buildNews', () => {
     productHuntToken: 'ph',
   };
 
-  test('keeps every GitHub candidate without ranking by default, even with interests', async () => {
-    const candidates = Array.from({ length: 15 }, (_, i) => ({
+  test('takes the top GitHub candidates without ranking by default, even with interests', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const candidates = Array.from({ length: 20 }, (_, i) => ({
       ...CANDIDATES[0],
       url: `https://github.com/acme/${i}`,
     }));
@@ -208,8 +210,9 @@ describe('buildNews', () => {
     vi.mocked(fetchUkHeadlines).mockResolvedValue([]);
     const { sections } = await buildNews({ interests: ['Rust'], apiKey: 'key', model: 'model' });
     expect(sections.find((section) => section.title === 'GitHub').items).toEqual(
-      candidates.map((item) => ({ ...item, note: '' })),
+      candidates.slice(0, GITHUB_PICKS).map((item) => ({ ...item, note: '' })),
     );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test.each(['incomplete', 'http', 'timeout'])(

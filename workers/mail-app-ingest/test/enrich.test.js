@@ -453,6 +453,7 @@ describe('AI enrichment', () => {
     );
 
     expect(result.verdict).toBe('review');
+    expect(result.changed).toBe(true);
     const statements = sql.transactions[0].map((query) => query.text).join('\n');
     expect(statements).not.toContain("SELECT m.user_id, 'Spam'");
     expect(statements).toContain('INSERT INTO message_ai');
@@ -493,7 +494,12 @@ describe('AI enrichment', () => {
     const statements = sql.transactions[0].map((query) => query.text);
     expect(statements[0]).toContain('FOR UPDATE');
     expect(statements).toHaveLength(1);
-    expect(result).toEqual({ verdict: 'inbox', selectedLabels: 0, matchedRules: 0 });
+    expect(result).toEqual({
+      verdict: 'inbox',
+      selectedLabels: 0,
+      matchedRules: 0,
+      changed: false,
+    });
     expect(log).toHaveBeenCalledWith(
       JSON.stringify({ event: 'ai_enrichment_superseded', message_id: '<id>' }),
     );
@@ -513,6 +519,7 @@ describe('AI enrichment', () => {
     );
 
     expect(result.verdict).toBe('spam');
+    expect(result.changed).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
     expect(sql.transactions).toHaveLength(0);
   });
@@ -651,7 +658,7 @@ describe('AI enrichment', () => {
       'key',
     );
 
-    expect(result).toMatchObject({ verdict: 'inbox' });
+    expect(result).toMatchObject({ verdict: 'inbox', changed: false });
     expect(mockedFetch()).not.toHaveBeenCalled();
     expect(sql.transactions).toHaveLength(0);
   });
@@ -668,6 +675,7 @@ test('defers classification without provider calls or failure state when the own
     'key',
   );
   expect(result.deferred).toBe(true);
+  expect(result.changed).toBe(false);
   expect(claimInboundAiRequest).toHaveBeenCalledWith(sql, 'owner-1');
   expect(fetch).not.toHaveBeenCalled();
   expect(sql.transactions).toHaveLength(0);
