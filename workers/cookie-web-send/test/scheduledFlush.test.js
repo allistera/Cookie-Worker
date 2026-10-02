@@ -118,3 +118,154 @@ describe('orphaned-upload sweep', () => {
     );
   });
 });
+
+/**
+ * Like createMockSql, but an Error in the script rejects that query, so a
+ * test can drop the connection under one specific statement.
+ *
+ * @param {unknown[]} script
+ * @returns {any}
+ */
+function scriptedSql(script) {
+  const queue = [...script];
+  /** @type {{text: string, values: unknown[]}[]} */
+  const calls = [];
+  /** @type {any} */
+  const sql = vi.fn((/** @type {string[]} */ strings, /** @type {unknown[]} */ ...values) => {
+    calls.push({ text: strings.join('?'), values });
+    const next = queue.length ? queue.shift() : [];
+    return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+  });
+  sql.begin = vi.fn(async (/** @type {(sql: any) => unknown} */ callback) => callback(sql));
+  sql.calls = calls;
+  return sql;
+}
+
+/** @param {{data: unknown, error: unknown}} result */
+function deliveryServices(result = { data: { id: 'resend-9' }, error: null }) {
+  const send = vi.fn(async () => result);
+  return /** @type {any} */ ({
+    env: { RESEND_API_KEY: 'key', EMAIL_FROM: 'Cookie <mail@example.com>' },
+    createResend: () => ({ emails: { send } }),
+    readBlob: vi.fn(),
+    indexSentMessages: vi.fn(),
+    send,
+  });
+}
+
+const dueRow = (/** @type {Record<string, unknown>} */ overrides = {}) => ({
+  id: 'sched-1',
+  user_id: 'user-1',
+  toAddresses: 'recipient@example.com',
+  subject: 'Hello',
+  text: 'Plain text',
+  html: null,
+  replyToMessageId: null,
+  attempts: 0,
+  attachments: [],
+  followUpAt: '2099-01-01T09:00:00.000Z',
+  ...overrides,
+});
+
+const dropped = () => new Error('Network connection lost.');
+
+/** @param {{text: string}[]} calls */
+function quotaQueries(calls) {
+  return calls.filter((call) => call.text.includes('outbound_email_quotas'));
+}
+
+describe('a scheduled send the provider accepted', () => {
+  test('repairs a sent copy that failed to store and records the row sent', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = scriptedSql([
+      [{ exists: 1 }], // owner
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      dropped(), // deliverMail's sent-copy lookup
+      [{ thread_id: null, existing_message_id: null }], // repair lookup
+      [], // insert thread
+      [{ id: 'stored' }], // insert message
+      [], // mark sent
+    ]);
+    const svc = deliveryServices();
+
+    const result = await deliverScheduledSend(sql, dueRow(), svc);
+
+    expect(result.status).toBe('sent');
+    expect(result.storedMessageUuid).toEqual(expect.any(String));
+    expect(svc.send).toHaveBeenCalledTimes(1);
+    const markSent = sql.calls.at(-1);
+    expect(markSent.text).toContain("SET status = 'sent'");
+    expect(markSent.values).toContain(result.storedMessageUuid);
+    // The repaired copy still carries the follow-up reminder.
+    const insert = sql.calls.find((/** @type {{text: string}} */ call) =>
+      call.text.includes('INSERT INTO messages'),
+    );
+    expect(insert.values).toContain('2099-01-01T09:00:00.000Z');
+  });
+
+  test('is recorded sent, not left leased, when the sent copy cannot be stored', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = scriptedSql([
+      [{ exists: 1 }],
+      [{ authorized: true, quota_claimed: true }],
+      dropped(), // deliverMail's sent-copy lookup
+      dropped(), // repair attempt 1
+      dropped(), // repair attempt 2
+      [], // mark sent
+    ]);
+    const svc = deliveryServices();
+
+    const result = await deliverScheduledSend(sql, dueRow(), svc);
+
+    expect(result).toEqual({ status: 'sent', storedMessageUuid: null });
+    const markSent = sql.calls.at(-1);
+    expect(markSent.text).toContain("SET status = 'sent'");
+    expect(markSent.values).toContain(
+      'Sent as provider message resend-9, but the sent copy could not be saved',
+    );
+    // Neither resent nor refunded: the mail went out once and its slot stands.
+    expect(svc.send).toHaveBeenCalledTimes(1);
+    expect(quotaQueries(sql.calls)).toHaveLength(1);
+    expect(
+      sql.calls.some((/** @type {{text: string}} */ call) => call.text.includes("'pending'")),
+    ).toBe(false);
+  });
+});
+
+describe('a reclaimed lease', () => {
+  test('claims as an expired lease and reports it as reclaimed', async () => {
+    const sql = createMockSql();
+    await handleFlush(sql, services());
+    expect(sql.calls[0].text).toContain("status = 'sending' AS reclaimed");
+    expect(sql.calls[0].text).toContain('due.reclaimed');
+  });
+
+  test('redelivers without claiming another quota slot', async () => {
+    const sql = scriptedSql([
+      [{ exists: 1 }], // owner
+      [{ thread_id: null, existing_message_id: 'already-stored' }], // replayed copy lookup
+      [], // follow-up repair on the existing copy
+      [], // mark sent
+    ]);
+    const svc = deliveryServices();
+
+    const result = await deliverScheduledSend(sql, dueRow({ reclaimed: true, attempts: 1 }), svc);
+
+    expect(result).toEqual({ status: 'sent', storedMessageUuid: null });
+    expect(quotaQueries(sql.calls)).toHaveLength(0);
+    expect(svc.send).toHaveBeenCalledWith(expect.any(Object), {
+      idempotencyKey: 'scheduled-send/sched-1',
+    });
+  });
+
+  test('gives back no slot it did not claim when the provider fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = scriptedSql([[{ exists: 1 }], []]);
+    const svc = deliveryServices({ data: null, error: { message: 'bounced' } });
+
+    const result = await deliverScheduledSend(sql, dueRow({ reclaimed: true, attempts: 1 }), svc);
+
+    expect(result.status).toBe('retried');
+    expect(quotaQueries(sql.calls)).toHaveLength(0);
+  });
+});

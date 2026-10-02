@@ -11,6 +11,8 @@ import {
   buildReadReceiptUrl,
   claimOutboundEmailQuota,
   immediateSendIdempotencyKey,
+  loadProviderAttachments,
+  MAX_OUTBOUND_ATTACHMENT_BYTES,
   parseAttachmentIds,
   parseRecipients,
   replyThreadingHeaders,
@@ -370,5 +372,44 @@ describe('reply threading headers', () => {
       References: '<parent@example.com>',
     });
     expect(payloads[1]).not.toHaveProperty('headers');
+  });
+});
+
+describe('loadProviderAttachments', () => {
+  /** @param {number} index */
+  const attachment = (index) => ({
+    id: `a-${index}`,
+    filename: `file-${index}.txt`,
+    content_type: 'text/plain',
+    blob_url: `https://blob.example/${index}`,
+  });
+
+  it('reads a few blobs at a time and keeps the given order', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const readBlob = async (/** @type {string} */ url) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      const index = Number(url.split('/').at(-1));
+      // Later attachments finish first, so order cannot come from timing.
+      await new Promise((resolve) => setTimeout(resolve, (10 - index) * 2));
+      inFlight -= 1;
+      return { stream: new Response(`body-${index}`).body };
+    };
+    const attachments = Array.from({ length: 10 }, (_, index) => attachment(index));
+
+    const loaded = await loadProviderAttachments(attachments, readBlob);
+
+    expect(peak).toBe(4);
+    expect(loaded.map((item) => item.filename)).toEqual(attachments.map((a) => a.filename));
+    expect(atob(loaded[3].content)).toBe('body-3');
+  });
+
+  it('enforces the size limit across reads running together', async () => {
+    const half = new Uint8Array(Math.floor(MAX_OUTBOUND_ATTACHMENT_BYTES / 2) + 1);
+    const readBlob = async () => ({ stream: new Response(half).body });
+    await expect(loadProviderAttachments([attachment(1), attachment(2)], readBlob)).rejects.toThrow(
+      'Outbound attachments exceed the provider size limit',
+    );
   });
 });

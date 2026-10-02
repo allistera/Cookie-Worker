@@ -167,8 +167,140 @@ describe('updateDraft', () => {
     expect(response.status).toBe(200);
     const inserts = sql.calls.filter((call) => /INSERT INTO draft_attachments/.test(call.text));
     expect(inserts).toHaveLength(1);
-    expect(inserts[0].values).toContain(ATTACHMENT_ID);
-    expect(inserts[0].values).not.toContain(foreignId);
+    expect(inserts[0].values).toContainEqual([ATTACHMENT_ID]);
+    expect(inserts[0].values).toContainEqual(['upload']);
+    expect(JSON.stringify(inserts[0].values)).not.toContain(foreignId);
+  });
+
+  test('writes the whole attachment list in one ordered statement', async () => {
+    const second = '44444444-4444-4444-8444-444444444444';
+    const sql = createMockSql([
+      [{ id: DRAFT_ID, updatedAt: 'now', attachmentIds: [] }],
+      [
+        { id: second, source: 'inbound' },
+        { id: ATTACHMENT_ID, source: 'upload' },
+      ],
+      [],
+    ]);
+    await updateDraft(sql, USER_ID, DRAFT_ID, draft({ attachmentIds: [ATTACHMENT_ID, second] }));
+    const inserts = sql.calls.filter((call) => /INSERT INTO draft_attachments/.test(call.text));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0].text).toMatch(/unnest\(\?::uuid\[\], \?::text\[\]\) WITH ORDINALITY/);
+    // The composer's order, not the ownership lookup's.
+    expect(inserts[0].values).toContainEqual([ATTACHMENT_ID, second]);
+    expect(inserts[0].values).toContainEqual(['upload', 'inbound']);
+    // The draft had no attachments, so there was nothing to delete.
+    expect(sql.calls.some((call) => /DELETE FROM draft_attachments/.test(call.text))).toBe(false);
+  });
+
+  test('leaves an unchanged attachment list alone on autosave', async () => {
+    const sql = createMockSql([
+      [{ id: DRAFT_ID, updatedAt: 'now', attachmentIds: [ATTACHMENT_ID] }],
+    ]);
+    const response = await updateDraft(
+      sql,
+      USER_ID,
+      DRAFT_ID,
+      draft({ attachmentIds: [ATTACHMENT_ID.toUpperCase()] }),
+    );
+    expect(response.status).toBe(200);
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  test('replaces the list when an attachment is removed', async () => {
+    const sql = createMockSql([
+      [{ id: DRAFT_ID, updatedAt: 'now', attachmentIds: [ATTACHMENT_ID] }],
+      [], // DELETE draft_attachments
+    ]);
+    await updateDraft(sql, USER_ID, DRAFT_ID, draft({ attachmentIds: [] }));
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[1].text).toMatch(/DELETE FROM draft_attachments/);
+  });
+});
+
+describe('updateDraft version check', () => {
+  const SAVED_AT = '2026-10-02T10:00:00.123Z';
+
+  test('without expectedUpdatedAt the write is unconditional, as before', async () => {
+    const sql = createMockSql([[{ id: DRAFT_ID, updatedAt: SAVED_AT, attachmentIds: [] }]]);
+    const response = await updateDraft(sql, USER_ID, DRAFT_ID, draft());
+    expect(response.status).toBe(200);
+    expect(sql.calls[0].text).toMatch(/\?::timestamptz IS NULL/);
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  test('writes when the client saw the stored version, compared as a timestamp', async () => {
+    const sql = createMockSql([
+      [{ id: DRAFT_ID, updatedAt: '2026-10-02T10:00:05.000Z', attachmentIds: [] }],
+    ]);
+    const response = await updateDraft(
+      sql,
+      USER_ID,
+      DRAFT_ID,
+      // Same instant with an offset and microseconds: normalised before SQL.
+      draft({ expectedUpdatedAt: '2026-10-02T12:00:00.123456+02:00' }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      draft: { id: DRAFT_ID, updatedAt: '2026-10-02T10:00:05.000Z' },
+    });
+    expect(sql.calls[0].text).toMatch(/date_trunc\('milliseconds', updated_at\) = \?::timestamptz/);
+    expect(sql.calls[0].values).toContain(SAVED_AT);
+  });
+
+  test('409s with the current draft, without writing, when it changed elsewhere', async () => {
+    const current = { id: DRAFT_ID, to: 'a@b.com', subject: 'Theirs', updatedAt: SAVED_AT };
+    const sql = createMockSql([
+      [], // conditional UPDATE matched nothing
+      [current], // current draft, GET shape
+    ]);
+    const response = await updateDraft(
+      sql,
+      USER_ID,
+      DRAFT_ID,
+      draft({ expectedUpdatedAt: '2026-10-02T09:59:00.000Z', attachmentIds: [ATTACHMENT_ID] }),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Draft changed elsewhere', draft: current });
+    expect(sql.calls[1].text).toMatch(/jsonb_agg/);
+    expect(sql.calls.some((call) => /INSERT INTO draft_attachments/.test(call.text))).toBe(false);
+    expect(sql.calls.some((call) => /DELETE FROM draft_attachments/.test(call.text))).toBe(false);
+  });
+
+  test('404s when the draft is gone rather than changed', async () => {
+    const sql = createMockSql([[], []]);
+    const response = await updateDraft(
+      sql,
+      USER_ID,
+      DRAFT_ID,
+      draft({ expectedUpdatedAt: SAVED_AT }),
+    );
+    expect(response.status).toBe(404);
+  });
+
+  test('a stale tab clearing its composer does not discard newer content', async () => {
+    const current = { id: DRAFT_ID, subject: 'Newer', updatedAt: SAVED_AT };
+    const sql = createMockSql([[], [current]]);
+    const response = await updateDraft(sql, USER_ID, DRAFT_ID, {
+      to: '',
+      subject: '',
+      text: '',
+      expectedUpdatedAt: '2026-10-02T09:59:00.000Z',
+    });
+    expect(response.status).toBe(409);
+    expect(sql.calls[0].text).toMatch(/DELETE FROM drafts[\s\S]*date_trunc/);
+  });
+
+  test('rejects an expectedUpdatedAt that is not a timestamp', async () => {
+    const sql = createMockSql();
+    const response = await updateDraft(
+      sql,
+      USER_ID,
+      DRAFT_ID,
+      draft({ expectedUpdatedAt: 'yesterday-ish' }),
+    );
+    expect(response.status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
   });
 });
 

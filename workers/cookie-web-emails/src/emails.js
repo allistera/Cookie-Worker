@@ -1,4 +1,5 @@
 import { createTimings } from '../../../shared/performance.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 // Ported from Cookie-Web's api/emails.js. Behaviorally identical (same
 // queries, same validation, same response shapes/status codes) — only the
 // (req, res) mutation style becomes returning a Response, and the
@@ -294,6 +295,9 @@ export async function handleState(sql, userId) {
       userId,
     });
   } catch (err) {
+    // A dropped connection is the worker's to retry on a fresh client, not
+    // this handler's to turn into a 500.
+    if (isTransientDbError(err)) throw err;
     console.error('GET /emails/state failed:', err);
     return Response.json({ error: 'Failed to load inbox state' }, { status: 500 });
   }
@@ -383,6 +387,7 @@ export async function handleList(sql, userId, url) {
     }
     return timing.response(Response.json(payload));
   } catch (err) {
+    if (isTransientDbError(err)) throw err;
     console.error('GET /emails failed:', err);
     return Response.json({ error: 'Failed to load emails' }, { status: 500 });
   }

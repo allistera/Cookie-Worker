@@ -39,3 +39,22 @@ test('continues to support clients without a request id', async () => {
     'legacy-1',
   );
 });
+
+test('links every attachment in one ordered statement', async () => {
+  const upload = '22222222-2222-4222-8222-222222222222';
+  const inbound = '33333333-3333-4333-8333-333333333333';
+  const sql = createMockSql([[], [{ id: 'scheduled-1' }], []]);
+  await createScheduledSend(sql, 'owner', {
+    ...send,
+    requestId: null,
+    attachments: [
+      { id: upload, source: 'upload' },
+      { id: inbound, source: 'inbound' },
+    ],
+  });
+  const links = sql.calls.filter((call) => call.text.includes('scheduled_send_attachments'));
+  expect(links).toHaveLength(1);
+  expect(links[0].text).toMatch(/WITH ORDINALITY/);
+  expect(links[0].values).toContainEqual([upload, inbound]);
+  expect(links[0].values).toContainEqual(['upload', 'inbound']);
+});

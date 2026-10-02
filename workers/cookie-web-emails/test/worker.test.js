@@ -309,6 +309,15 @@ describe('a dropped connection', () => {
     expect(sqlEnd).toHaveBeenCalledTimes(2);
   });
 
+  test('retries inbox state, which used to swallow the drop as a 500', async () => {
+    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([{ unread: 3 }]);
+    const state = await worker.fetch(request('/emails/state'), env, ctx);
+    expect(state.status).toBe(200);
+    expect((await state.json()).unreadCount).toBe(3);
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
   test('does not retry a write', async () => {
     mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([{ days: 60 }]);
     const response = await worker.fetch(

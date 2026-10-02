@@ -104,6 +104,15 @@ describe('handleList', () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'Failed to load emails' });
   });
+
+  test('rethrows a dropped connection so the worker can retry it on a fresh client', async () => {
+    const sql = () => {
+      throw new Error('Network connection lost.');
+    };
+    await expect(handleList(/** @type {any} */ (sql), USER_ID, listUrl())).rejects.toThrow(
+      'Network connection lost.',
+    );
+  });
 });
 
 describe('handleState', () => {
@@ -165,6 +174,16 @@ describe('handleState', () => {
 
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'Failed to load inbox state' });
+  });
+
+  test('rethrows a dropped connection so the worker can retry it on a fresh client', async () => {
+    const sql = () =>
+      Promise.reject(
+        Object.assign(new Error('write CONNECTION_CLOSED'), { code: 'CONNECTION_CLOSED' }),
+      );
+    await expect(handleState(/** @type {any} */ (sql), USER_ID)).rejects.toMatchObject({
+      code: 'CONNECTION_CLOSED',
+    });
   });
 });
 

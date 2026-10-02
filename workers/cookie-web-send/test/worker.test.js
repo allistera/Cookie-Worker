@@ -1030,6 +1030,23 @@ describe('search indexing of sent mail', () => {
     expect(syncMessagesToMeili).not.toHaveBeenCalled();
     // No sync means no second connection was opened either.
     expect(clients).toHaveLength(1);
+    // The provider deduplicated the replay, so its quota slot goes back.
+    const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
+    expect(queries.at(-1)).toContain('GREATEST(send_count - 1, 0)');
+  });
+
+  test('keeps the quota slot of a first send whose copy could not be stored', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    responses = [
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      new Error('database unavailable'), // storeSentMessage lookup
+    ];
+    resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+
+    expect(response.status).toBe(200);
+    const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
+    expect(queries.some((query) => query.includes('GREATEST(send_count - 1, 0)'))).toBe(false);
   });
 
   test('leaves the send response untouched when indexing fails', async () => {

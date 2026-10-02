@@ -349,23 +349,31 @@ export async function resolveOwnedAttachments(sql, userId, attachmentIds) {
   return { attachments: rows };
 }
 
+// Blob reads for one send run this many at a time: a forward with several
+// attachments no longer waits on each round trip in turn, and the shared byte
+// budget below still bounds what is buffered across all of them.
+const ATTACHMENT_READ_CONCURRENCY = 4;
+
 /**
  * @param {any} attachment
  * @param {SendServices['readBlob']} readBlob
+ * @param {{bytes: number, failed: boolean}} budget Shared by every read of
+ *   one send, so concurrent reads together never buffer past the limit.
  */
-async function readAttachmentContent(attachment, readBlob) {
+async function readAttachmentContent(attachment, readBlob, budget) {
   const result = await readBlob(attachment.blob_url);
   if (!result?.stream) throw new Error(`Attachment blob is unavailable: ${attachment.id}`);
   const reader = result.stream.getReader();
   const chunks = [];
-  let bytes = 0;
   try {
     while (true) {
+      // A sibling read already failed the send; stop buffering for nothing.
+      if (budget.failed) throw new Error('Attachment loading was abandoned');
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = Buffer.from(value);
-      bytes += chunk.byteLength;
-      if (bytes > MAX_OUTBOUND_ATTACHMENT_BYTES) {
+      budget.bytes += chunk.byteLength;
+      if (budget.bytes > MAX_OUTBOUND_ATTACHMENT_BYTES) {
         throw new Error('Outbound attachments exceed the provider size limit');
       }
       chunks.push(chunk);
@@ -374,27 +382,40 @@ async function readAttachmentContent(attachment, readBlob) {
     reader.releaseLock();
   }
   return {
-    byteLength: bytes,
-    providerAttachment: {
-      content: Buffer.concat(chunks).toString('base64'),
-      filename: attachment.filename || 'attachment',
-      contentType: attachment.content_type || 'application/octet-stream',
-    },
+    content: Buffer.concat(chunks).toString('base64'),
+    filename: attachment.filename || 'attachment',
+    contentType: attachment.content_type || 'application/octet-stream',
   };
 }
 
-/** @param {any[]} attachments @param {SendServices['readBlob']} readBlob */
-async function loadProviderAttachments(attachments, readBlob) {
-  const loaded = [];
-  let totalBytes = 0;
-  for (const attachment of attachments) {
-    const loadedAttachment = await readAttachmentContent(attachment, readBlob);
-    totalBytes += loadedAttachment.byteLength;
-    if (totalBytes > MAX_OUTBOUND_ATTACHMENT_BYTES) {
-      throw new Error('Outbound attachments exceed the provider size limit');
-    }
-    loaded.push(loadedAttachment.providerAttachment);
-  }
+/**
+ * Reads every attachment's bytes, a few at a time, into provider attachments
+ * in the order given.
+ *
+ * @param {any[]} attachments
+ * @param {SendServices['readBlob']} readBlob
+ */
+export async function loadProviderAttachments(attachments, readBlob) {
+  /** @type {Awaited<ReturnType<typeof readAttachmentContent>>[]} */
+  const loaded = Array.from({ length: attachments.length });
+  const budget = { bytes: 0, failed: false };
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(ATTACHMENT_READ_CONCURRENCY, attachments.length) },
+    async () => {
+      while (!budget.failed && nextIndex < attachments.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        try {
+          loaded[index] = await readAttachmentContent(attachments[index], readBlob, budget);
+        } catch (err) {
+          budget.failed = true;
+          throw err;
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
   return loaded;
 }
 
@@ -496,15 +517,20 @@ export async function storeSentMessage(
         const result = await statement(sql);
         if (index === messagesStatement) inserted = result.length > 0;
       }
-      if (inserted) {
-        for (const attachment of attachments) {
-          await sql`
-            INSERT INTO attachments (message_id, filename, content_type, size_bytes, blob_url)
-            VALUES (${messageUuid}, ${attachment.filename ?? null},
-                    ${attachment.content_type ?? null}, ${attachment.size_bytes ?? null},
-                    ${attachment.blob_url})
-          `;
-        }
+      if (inserted && attachments.length) {
+        // One statement for the whole list, inserted in the order given.
+        // attachments has no position column; readers order by filename.
+        await sql`
+          INSERT INTO attachments (message_id, filename, content_type, size_bytes, blob_url)
+          SELECT ${messageUuid}, copy.filename, copy.content_type, copy.size_bytes, copy.blob_url
+          FROM unnest(
+            ${attachments.map((attachment) => attachment.filename ?? null)}::text[],
+            ${attachments.map((attachment) => attachment.content_type ?? null)}::text[],
+            ${attachments.map((attachment) => ((attachment.size_bytes ?? null) === null ? null : String(attachment.size_bytes)))}::bigint[],
+            ${attachments.map((attachment) => attachment.blob_url)}::text[]
+          ) WITH ORDINALITY AS copy(filename, content_type, size_bytes, blob_url, ord)
+          ORDER BY copy.ord
+        `;
       }
     });
   }

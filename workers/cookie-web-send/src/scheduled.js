@@ -4,11 +4,14 @@
 // (req, res) mutation style becomes returning a Response.
 
 import { retryWithBackoff } from '../../../shared/retry.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 import {
+  buildReadReceiptUrl,
   claimOutboundEmailQuota,
   deliverMail,
   parseRecipients,
   refundOutboundEmailQuota,
+  storeSentMessage,
 } from './outbound.js';
 
 export const MAX_PENDING_SCHEDULED_SENDS = 50;
@@ -33,6 +36,10 @@ const ORPHAN_UPLOAD_RETENTION_HOURS = 24;
 const ORPHAN_UPLOAD_SWEEP_LIMIT = 50;
 const FLUSH_CLAIM_ATTEMPTS = 3;
 const FLUSH_CLAIM_BASE_DELAY_MS = 500;
+// deliverMail already tried to store the sent copy once; these are the
+// further tries before the row is recorded as sent without one.
+const SENT_COPY_REPAIR_ATTEMPTS = 2;
+const SENT_COPY_REPAIR_BASE_DELAY_MS = 250;
 const TRANSIENT_DB_ERROR_CODES = new Set([
   'CONNECT_TIMEOUT',
   '08006',
@@ -134,13 +141,19 @@ export async function createScheduledSend(
                 follow_up_at AS "followUpAt"
     `;
     if (!row) return null;
-    for (const [position, attachment] of attachments.entries()) {
-      const isUpload = attachment.source === 'upload';
+    if (attachments.length) {
+      // One statement for the whole list; ORDINALITY keeps the given order.
       await tx`
         INSERT INTO scheduled_send_attachments
           (scheduled_send_id, attachment_id, outbound_attachment_id, position)
-        VALUES (${row.id}, ${isUpload ? null : attachment.id}::uuid,
-                ${isUpload ? attachment.id : null}::uuid, ${position})
+        SELECT ${row.id},
+               CASE WHEN picked.source = 'upload' THEN NULL ELSE picked.id END,
+               CASE WHEN picked.source = 'upload' THEN picked.id END,
+               (picked.ord - 1)::smallint
+        FROM unnest(
+          ${attachments.map((attachment) => attachment.id)}::uuid[],
+          ${attachments.map((attachment) => (attachment.source === 'upload' ? 'upload' : 'inbound'))}::text[]
+        ) WITH ORDINALITY AS picked(id, source, ord)
       `;
     }
     return row;
@@ -244,7 +257,8 @@ export async function cancelScheduledSend(sql, userId, id) {
 // Reclaiming an expired 'sending' lease counts as an attempt: the previous
 // delivery never resolved the row (the isolate died mid-send, or the result
 // could not be recorded), and without counting it a row that reliably kills
-// its isolate would be reclaimed forever.
+// its isolate would be reclaimed forever. `reclaimed` tells the delivery that
+// an earlier attempt already holds this row's quota slot.
 /**
  * @param {import('postgres').Sql} sql
  * @param {number} limit
@@ -256,7 +270,7 @@ async function claimDueScheduledSends(sql, limit) {
       SET status = 'sending', claimed_at = now(),
           attempts = s.attempts + CASE WHEN s.status = 'sending' THEN 1 ELSE 0 END
       FROM (
-        SELECT id FROM scheduled_sends
+        SELECT id, status = 'sending' AS reclaimed FROM scheduled_sends
         WHERE (status = 'pending' AND scheduled_for <= now())
            OR (status = 'sending'
                AND claimed_at < now() - make_interval(mins => ${SCHEDULED_SEND_LEASE_MINUTES}))
@@ -265,7 +279,7 @@ async function claimDueScheduledSends(sql, limit) {
         FOR UPDATE SKIP LOCKED
       ) due
       WHERE s.id = due.id
-      RETURNING s.id, s.user_id, s.to_addresses AS "toAddresses", s.subject,
+      RETURNING s.id, s.user_id, due.reclaimed, s.to_addresses AS "toAddresses", s.subject,
                 s.body_text AS "text", s.body_html AS "html",
                 s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", s.attempts,
                 COALESCE((
@@ -289,7 +303,7 @@ async function claimDueScheduledSends(sql, limit) {
       SET status = 'sending', claimed_at = now(),
           attempts = s.attempts + CASE WHEN s.status = 'sending' THEN 1 ELSE 0 END
       FROM (
-        SELECT id FROM scheduled_sends
+        SELECT id, status = 'sending' AS reclaimed FROM scheduled_sends
         WHERE (status = 'pending' AND scheduled_for <= now())
            OR (status = 'sending'
                AND claimed_at < now() - make_interval(mins => ${SCHEDULED_SEND_LEASE_MINUTES}))
@@ -298,7 +312,7 @@ async function claimDueScheduledSends(sql, limit) {
         FOR UPDATE SKIP LOCKED
       ) due
       WHERE s.id = due.id
-      RETURNING s.id, s.user_id, s.to_addresses AS "toAddresses", s.subject,
+      RETURNING s.id, s.user_id, due.reclaimed, s.to_addresses AS "toAddresses", s.subject,
                 s.body_text AS "text", s.body_html AS "html",
                 s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", s.attempts,
                 '[]'::jsonb AS attachments
@@ -344,11 +358,18 @@ async function markScheduledSendFailed(sql, id, error, attempts = null) {
 }
 
 // Delivers one claimed row. Never leaves a row claimed ('sending' status)
-// without resolving it to 'pending' (retry), 'sent', or 'failed'. Reports the
-// sent copy's id alongside the outcome, but only when this attempt is the one
-// that inserted it, so handleFlush can index the batch in one go and a replay
-// (an expired lease redelivered under the same idempotency key) indexes
-// nothing new.
+// without resolving it to 'pending' (retry), 'sent', or 'failed', unless the
+// database refuses that last write. Reports the sent copy's id alongside the
+// outcome, but only when this attempt is the one that inserted it, so
+// handleFlush can index the batch in one go and a replay (an expired lease
+// redelivered under the same idempotency key) indexes nothing new.
+//
+// Once the provider has accepted the mail the row is recorded as sent, even
+// when the sent copy cannot be stored: leaving it leased would have the flush
+// reclaim it, spend another attempt and quota slot on every lease expiry, and
+// finally mark failed a message that went out. The copy is repaired in place
+// instead (storeSentMessage is idempotent on the provider id), and a copy that
+// still cannot be stored is noted in last_error with that id.
 /**
  * @param {import('postgres').Sql} sql
  * @param {any} row
@@ -368,77 +389,118 @@ export async function deliverScheduledSend(sql, row, services) {
     return { status: 'failed', storedMessageUuid: null };
   }
 
-  const quota = await claimOutboundEmailQuota(sql, row.user_id);
-  if (!quota.authorized) {
-    await markScheduledSendFailed(sql, row.id, 'Mailbox access is not provisioned');
-    return { status: 'failed', storedMessageUuid: null };
-  }
-  if (!quota.quota_claimed) {
-    // Rate-limited, not the message's fault — leave it pending for the next
-    // flush instead of spending a retry attempt.
-    await sql`UPDATE scheduled_sends SET status = 'pending', claimed_at = NULL WHERE id = ${row.id}`;
-    return { status: 'retried', storedMessageUuid: null };
+  // An expired lease was claimed by an attempt that never resolved it, and
+  // nothing gives a slot back without resolving the row, so that attempt's
+  // slot still stands for this message. Its redelivery reuses the stable
+  // idempotency key, so the provider sends nothing new if the first one
+  // landed; claiming again would charge the user twice for one email.
+  const quotaHeld = row.reclaimed !== true;
+  if (quotaHeld) {
+    const quota = await claimOutboundEmailQuota(sql, row.user_id);
+    if (!quota.authorized) {
+      await markScheduledSendFailed(sql, row.id, 'Mailbox access is not provisioned');
+      return { status: 'failed', storedMessageUuid: null };
+    }
+    if (!quota.quota_claimed) {
+      // Rate-limited, not the message's fault — leave it pending for the next
+      // flush instead of spending a retry attempt.
+      await sql`UPDATE scheduled_sends SET status = 'pending', claimed_at = NULL WHERE id = ${row.id}`;
+      return { status: 'retried', storedMessageUuid: null };
+    }
   }
 
   const recipients = parseRecipients(row.toAddresses);
+  const message = {
+    recipients,
+    subject: row.subject,
+    text: row.text,
+    html: row.html,
+    replyToMessageId: row.replyToMessageId,
+    attachments: row.attachments ?? [],
+    followUpAt: row.followUpAt,
+  };
   let delivered;
   try {
     delivered = await deliverMail(
       sql,
       row.user_id,
       {
-        recipients,
-        subject: row.subject,
-        text: row.text,
-        html: row.html,
-        replyToMessageId: row.replyToMessageId,
+        ...message,
         idempotencyKey: `scheduled-send/${row.id}`,
         // The receipt URL is part of the provider payload, so it must remain
         // stable when an expired lease retries with the same idempotency key.
         readReceiptToken: row.id,
-        attachments: row.attachments ?? [],
-        followUpAt: row.followUpAt,
       },
       services,
     );
   } catch (err) {
     const attempts = row.attempts + 1;
-    const message = /** @type {Error} */ (err).message;
-    console.error(`scheduled send ${row.id} delivery failed (attempt ${attempts}):`, message);
+    const errorMessage = /** @type {Error} */ (err).message;
+    console.error(`scheduled send ${row.id} delivery failed (attempt ${attempts}):`, errorMessage);
     // Nothing went out, so give the minute's quota back instead of letting a
-    // provider outage consume the user's allowance through retries.
-    await refundOutboundEmailQuota(sql, row.user_id);
+    // provider outage consume the user's allowance through retries. A
+    // reclaimed lease claimed nothing this time, so it has nothing to return.
+    if (quotaHeld) await refundOutboundEmailQuota(sql, row.user_id);
     if (attempts >= MAX_SCHEDULED_SEND_ATTEMPTS) {
-      await markScheduledSendFailed(sql, row.id, message, attempts);
+      await markScheduledSendFailed(sql, row.id, errorMessage, attempts);
       return { status: 'failed', storedMessageUuid: null };
     }
     await sql`
       UPDATE scheduled_sends
-      SET status = 'pending', attempts = ${attempts}, last_error = ${message}, claimed_at = NULL
+      SET status = 'pending', attempts = ${attempts}, last_error = ${errorMessage}, claimed_at = NULL
       WHERE id = ${row.id}
     `;
     return { status: 'retried', storedMessageUuid: null };
   }
 
-  if (row.followUpAt && !delivered.messageUuid) {
-    return { status: 'unconfirmed', storedMessageUuid: null };
+  let { messageUuid, inserted } = delivered;
+  /** @type {string | null} */
+  let note = null;
+  if (!messageUuid) {
+    try {
+      ({ messageUuid, inserted } = await retryWithBackoff(
+        () =>
+          storeSentMessage(
+            sql,
+            row.user_id,
+            {
+              ...message,
+              resendId: delivered.resendId,
+              readReceiptToken: buildReadReceiptUrl(row.id) ? row.id : null,
+            },
+            services,
+          ),
+        {
+          attempts: SENT_COPY_REPAIR_ATTEMPTS,
+          baseDelayMs: SENT_COPY_REPAIR_BASE_DELAY_MS,
+          isRetryable: isTransientDbError,
+        },
+      ));
+    } catch (err) {
+      console.error(
+        `scheduled send ${row.id} delivered but its sent copy could not be stored:`,
+        /** @type {Error} */ (err).message,
+      );
+      note = `Sent as provider message ${delivered.resendId}, but the sent copy could not be saved`;
+    }
   }
 
   // Independent of how the bookkeeping below goes: the copy is in Postgres, so
   // it belongs in the index even if the row cannot be marked sent.
-  const storedMessageUuid = delivered.inserted ? delivered.messageUuid : null;
+  const storedMessageUuid = inserted ? messageUuid : null;
   try {
     await sql`
       UPDATE scheduled_sends
-      SET status = 'sent', sent_at = now(), sent_message_id = ${delivered.messageUuid},
-          claimed_at = NULL, last_error = NULL
+      SET status = 'sent', sent_at = now(), sent_message_id = ${messageUuid ?? null},
+          claimed_at = NULL, last_error = ${note}
       WHERE id = ${row.id}
     `;
     return { status: 'sent', storedMessageUuid };
   } catch (err) {
     // Delivery is irreversible and succeeded. Leave the row leased as
     // `sending`: a later flush can safely reclaim it because the provider call
-    // uses the stable scheduled-send idempotency key.
+    // uses the stable scheduled-send idempotency key, and the reclaim neither
+    // claims quota again nor stores a second copy.
     console.error(
       `scheduled send ${row.id} delivered but could not be marked sent:`,
       /** @type {Error} */ (err).message,

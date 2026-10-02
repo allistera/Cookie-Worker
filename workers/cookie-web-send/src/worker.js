@@ -310,6 +310,12 @@ async function handleSend(sql, userId, request, services) {
     // seconds, and a Meilisearch outage only leaves search_indexed_at NULL for
     // the background drift sweep to repair.
     if (inserted && messageUuid) services.indexSentMessage(messageUuid);
+    // The Resend id already had a stored copy: this was a replay (a retried
+    // request, or a double-click that lost the race) that the provider
+    // deduplicated under the idempotency key, so no new mail went out and
+    // the slot claimed above goes back. A copy that failed to store leaves
+    // messageUuid null and keeps the slot: that mail did go out.
+    if (!inserted && messageUuid) await refundOutboundEmailQuota(sql, userId);
     return Response.json({
       id: resendId,
       messageId: messageUuid,
