@@ -16,6 +16,40 @@ function errorText(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Meilisearch is self-hosted behind a Cloudflare Tunnel, and a tunnel blip
+// answers 502-504 or 520-530 for a single request (Sentry COOKIE-WEB-1E).
+export const TRANSIENT_RETRY_DELAY_MS = 1000;
+
+/**
+ * A failure worth one quick retry: no response at all, or a gateway status
+ * from the proxy rather than a verdict from Meilisearch itself.
+ *
+ * @param {unknown} err
+ */
+export function isTransientMeiliError(err) {
+  const error = /** @type {any} */ (err);
+  if (error?.name === 'MeilisearchRequestError') return true;
+  const status = error?.response?.status;
+  return (
+    typeof status === 'number' &&
+    ((status >= 502 && status <= 504) || (status >= 520 && status <= 530))
+  );
+}
+
+/**
+ * @param {any} env
+ * @param {any[]} chunk
+ */
+async function addChunk(env, chunk) {
+  try {
+    return await addDocuments(env, MESSAGES_INDEX, chunk);
+  } catch (err) {
+    if (!isTransientMeiliError(err)) throw err;
+    await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS));
+    return addDocuments(env, MESSAGES_INDEX, chunk);
+  }
+}
+
 /**
  * Best-effort sync of one message to Meilisearch. Reads the authoritative row
  * from Postgres (including labels and, via a LEFT JOIN message_ai, the spam
@@ -26,12 +60,13 @@ function errorText(err) {
  * Never throws: callers run this inside ctx.waitUntil on paths where a
  * rejection would break mail delivery. It reports what happened through its
  * return value instead — `indexed` counts documents Meilisearch accepted,
- * `failed` counts documents it did not.
+ * `failed` counts documents it did not, and `error` carries the last failure's
+ * message when there was one.
  *
  * @param {import('postgres').Sql} sql
  * @param {any} env
  * @param {string} messageUuid
- * @returns {Promise<{indexed: number, failed: number}>}
+ * @returns {Promise<{indexed: number, failed: number, error?: string}>}
  */
 export async function syncMessageToMeili(sql, env, messageUuid) {
   if (!meiliAvailable(env)) return { indexed: 0, failed: 0 };
@@ -75,7 +110,7 @@ export async function syncMessageToMeili(sql, env, messageUuid) {
       return { indexed: 0, failed: 0 };
     }
 
-    const result = await addDocuments(env, MESSAGES_INDEX, [row]);
+    const result = await addChunk(env, [row]);
     await stampIndexed(sql, [String(row.id)], [String(row.row_version)]);
     console.log(
       JSON.stringify({
@@ -93,7 +128,7 @@ export async function syncMessageToMeili(sql, env, messageUuid) {
         error: errorText(err),
       }),
     );
-    return { indexed: 0, failed: 1 };
+    return { indexed: 0, failed: 1, error: errorText(err) };
   }
 }
 
@@ -114,7 +149,7 @@ export async function syncMessageToMeili(sql, env, messageUuid) {
  * @param {import('postgres').Sql} sql
  * @param {any} env
  * @param {string[]} messageUuids
- * @returns {Promise<{indexed: number, failed: number}>}
+ * @returns {Promise<{indexed: number, failed: number, error?: string}>}
  */
 export async function syncMessagesToMeili(sql, env, messageUuids) {
   if (!messageUuids.length || !meiliAvailable(env)) return { indexed: 0, failed: 0 };
@@ -162,7 +197,7 @@ export async function syncMessagesToMeili(sql, env, messageUuids) {
         error: errorText(err),
       }),
     );
-    return { indexed: 0, failed: messageUuids.length };
+    return { indexed: 0, failed: messageUuids.length, error: errorText(err) };
   }
 
   if (!rows.length) return { indexed: 0, failed: 0 };
@@ -172,13 +207,15 @@ export async function syncMessagesToMeili(sql, env, messageUuids) {
   /** @type {string[]} */
   const syncedVersions = [];
   let failed = 0;
+  /** @type {string | undefined} */
+  let lastError;
   /** @type {any} */
   let taskUid;
 
   for (let i = 0; i < rows.length; i += MEILI_CHUNK_SIZE) {
     const chunk = rows.slice(i, i + MEILI_CHUNK_SIZE);
     try {
-      const result = await addDocuments(env, MESSAGES_INDEX, chunk);
+      const result = await addChunk(env, chunk);
       taskUid = result?.taskUid;
       for (const row of chunk) {
         syncedIds.push(String(row.id));
@@ -187,6 +224,7 @@ export async function syncMessagesToMeili(sql, env, messageUuids) {
     } catch (err) {
       // Only this chunk's ids stay NULL; the sweep picks them up again.
       failed += chunk.length;
+      lastError = errorText(err);
       console.log(
         JSON.stringify({
           event: 'meili_sync_failed',
@@ -197,7 +235,7 @@ export async function syncMessagesToMeili(sql, env, messageUuids) {
     }
   }
 
-  if (!syncedIds.length) return { indexed: 0, failed };
+  if (!syncedIds.length) return { indexed: 0, failed, error: lastError };
 
   try {
     await stampIndexed(sql, syncedIds, syncedVersions);
@@ -220,7 +258,7 @@ export async function syncMessagesToMeili(sql, env, messageUuids) {
     );
   }
 
-  return { indexed: syncedIds.length, failed };
+  return { indexed: syncedIds.length, failed, error: lastError };
 }
 
 /**

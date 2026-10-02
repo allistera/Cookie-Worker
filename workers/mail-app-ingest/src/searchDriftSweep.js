@@ -61,26 +61,28 @@ export async function sweepSearchDrift(env, deps = {}) {
         // syncMessagesToMeili swallows its own errors and resolves either
         // way, so the returned counts — not the absence of a throw — are
         // what say whether this tick actually repaired anything.
-        const { indexed, failed } = await sync(
+        const { indexed, failed, error } = await sync(
           sql,
           env,
           rows.map((row) => String(row.id)),
         );
-        return { selected: rows.length, indexed, failed };
+        return { selected: rows.length, indexed, failed, error };
       },
     );
     if (!swept) return;
 
-    const { selected, indexed, failed } = swept;
-    console.log(JSON.stringify({ event: 'search_drift_swept', selected, indexed, failed }));
+    const { selected, indexed, failed, error } = swept;
+    console.log(JSON.stringify({ event: 'search_drift_swept', selected, indexed, failed, error }));
     if (failed > 0) {
       // The sweep is the last line of defence for rows nothing else can
       // repair. A silent partial failure here is how an index rots unnoticed.
+      // The message stays fixed so every tick groups into one issue; the
+      // underlying error (a 530 from the tunnel, say) rides along as extra.
       captureHandledException(
         'search_drift_sweep',
         new Error(`${failed} of ${selected} drifted messages failed to reindex`),
         [env.HYPERDRIVE.connectionString, env.MEILISEARCH_API_KEY],
-        { selected, indexed, failed },
+        { selected, indexed, failed, error },
       );
     }
   } catch (err) {

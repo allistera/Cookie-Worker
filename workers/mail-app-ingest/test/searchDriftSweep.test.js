@@ -116,12 +116,20 @@ describe('sweepSearchDrift', () => {
   it('reports and alerts when rows could not be reindexed', async () => {
     captureHandledException.mockClear();
     const sql = createMockSql([[{ id: ID_1 }, { id: ID_2 }]]);
-    const sync = vi.fn().mockResolvedValue({ indexed: 1, failed: 1 });
+    const sync = vi
+      .fn()
+      .mockResolvedValue({ indexed: 1, failed: 1, error: 'Request failed with status 530' });
 
     await sweepSearchDrift(ENV, { createSql: () => sql, sync });
 
     expect(captureHandledException).toHaveBeenCalledOnce();
-    expect(captureHandledException.mock.calls[0][3]).toMatchObject({ indexed: 1, failed: 1 });
+    // The underlying cause travels with the alert, so it can be diagnosed
+    // from Sentry alone.
+    expect(captureHandledException.mock.calls[0][3]).toMatchObject({
+      indexed: 1,
+      failed: 1,
+      error: 'Request failed with status 530',
+    });
   });
 
   it('does not alert when every drifted row was reindexed', async () => {

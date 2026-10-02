@@ -6,7 +6,7 @@ vi.mock('./meili.js', async (importOriginal) => {
   return { ...actual, addDocuments: (...args) => addDocuments(...args) };
 });
 
-const { MEILI_CHUNK_SIZE, syncMessageToMeili, syncMessagesToMeili } =
+const { MEILI_CHUNK_SIZE, isTransientMeiliError, syncMessageToMeili, syncMessagesToMeili } =
   await import('./meiliSync.js');
 
 const ENV = { MEILISEARCH_URL: 'https://meili.test', MEILISEARCH_API_KEY: 'key' };
@@ -129,6 +129,7 @@ describe('syncMessageToMeili', () => {
     await expect(syncMessageToMeili(sql, ENV, MESSAGE_ID)).resolves.toEqual({
       indexed: 0,
       failed: 1,
+      error: 'payload too large',
     });
     // SELECT only: nothing may be stamped for a document Meilisearch refused.
     expect(sql).toHaveBeenCalledTimes(1);
@@ -248,7 +249,7 @@ describe('syncMessagesToMeili', () => {
     );
 
     expect(addDocuments).toHaveBeenCalledTimes(3);
-    expect(result).toEqual({ indexed: 70, failed: 50 });
+    expect(result).toEqual({ indexed: 70, failed: 50, error: 'document too large' });
 
     const stampedIds = sql.mock.calls[1][1];
     const stampedVersions = sql.mock.calls[1][2];
@@ -273,7 +274,7 @@ describe('syncMessagesToMeili', () => {
     );
 
     expect(addDocuments).toHaveBeenCalledTimes(2);
-    expect(result).toEqual({ indexed: 0, failed: 60 });
+    expect(result).toEqual({ indexed: 0, failed: 60, error: 'meilisearch unreachable' });
     // SELECT only — no stamp at all.
     expect(sql).toHaveBeenCalledTimes(1);
   });
@@ -285,6 +286,7 @@ describe('syncMessagesToMeili', () => {
     await expect(syncMessagesToMeili(sql, ENV, [MESSAGE_ID, MESSAGE_ID_2])).resolves.toEqual({
       indexed: 0,
       failed: 2,
+      error: 'connection lost',
     });
     expect(addDocuments).not.toHaveBeenCalled();
   });
@@ -305,5 +307,76 @@ describe('syncMessagesToMeili', () => {
         rows.map((row) => row.id),
       ),
     ).resolves.toEqual({ indexed: 2, failed: 0 });
+  });
+});
+
+// Meilisearch sits behind a Cloudflare Tunnel; a single blip answers 530 and
+// used to cost the whole sweep tick (Sentry COOKIE-WEB-1E).
+describe('transient Meilisearch failures', () => {
+  /** @param {number} status */
+  function apiError(status) {
+    return Object.assign(new Error(`Request failed with status ${status}`), {
+      name: 'MeilisearchApiError',
+      response: { status },
+    });
+  }
+
+  it('classifies gateway statuses and network failures as transient, and Meilisearch verdicts as not', () => {
+    expect(isTransientMeiliError(apiError(502))).toBe(true);
+    expect(isTransientMeiliError(apiError(530))).toBe(true);
+    expect(
+      isTransientMeiliError(
+        Object.assign(new Error('fetch failed'), { name: 'MeilisearchRequestError' }),
+      ),
+    ).toBe(true);
+    expect(isTransientMeiliError(apiError(400))).toBe(false);
+    expect(isTransientMeiliError(apiError(413))).toBe(false);
+    expect(isTransientMeiliError(new Error('Meilisearch task 7 failed'))).toBe(false);
+  });
+
+  it('retries a chunk once after a tunnel error and stamps it when the retry lands', async () => {
+    vi.useFakeTimers();
+    try {
+      addDocuments.mockRejectedValueOnce(apiError(530));
+      const sql = createMockSql([manyRows(2), []]);
+
+      const pending = syncMessagesToMeili(sql, ENV, ['row-0', 'row-1']);
+      await vi.runAllTimersAsync();
+
+      await expect(pending).resolves.toEqual({ indexed: 2, failed: 0, error: undefined });
+      expect(addDocuments).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry a document Meilisearch itself rejected', async () => {
+    addDocuments.mockRejectedValueOnce(apiError(400));
+    const sql = createMockSql([manyRows(1), []]);
+
+    const result = await syncMessagesToMeili(sql, ENV, ['row-0']);
+
+    expect(result).toEqual({ indexed: 0, failed: 1, error: 'Request failed with status 400' });
+    expect(addDocuments).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after one retry and reports the underlying error', async () => {
+    vi.useFakeTimers();
+    try {
+      addDocuments.mockRejectedValue(apiError(530));
+      const sql = createMockSql([manyRows(1), []]);
+
+      const pending = syncMessagesToMeili(sql, ENV, ['row-0']);
+      await vi.runAllTimersAsync();
+
+      await expect(pending).resolves.toEqual({
+        indexed: 0,
+        failed: 1,
+        error: 'Request failed with status 530',
+      });
+      expect(addDocuments).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
