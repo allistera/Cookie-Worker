@@ -639,6 +639,37 @@ describe('AI enrichment', () => {
     expect(mockedFetch()).toHaveBeenCalledTimes(1);
   });
 
+  // COOKIE-WEB-1C: a bare 403 could be a revoked key or a blocked region;
+  // the code in OpenAI's error body is what tells them apart.
+  test("names OpenAI's error code without the rest of the body", async () => {
+    const sql = createMockSql();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 403,
+        json: async () => ({
+          error: {
+            code: 'unsupported_country_region_territory',
+            message: 'Country, region, or territory not supported',
+          },
+        }),
+      })),
+    );
+
+    const failure = enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    await expect(failure).rejects.toThrow(
+      'OpenAI Responses API responded 403 (unsupported_country_region_territory)',
+    );
+    await expect(failure).rejects.not.toThrow('not supported');
+  });
+
   test('skips classification for a message already completed', async () => {
     const sql = createMockSql({
       enrichmentStateRows: [{ status: 'completed', spam_verdict: 'inbox' }],

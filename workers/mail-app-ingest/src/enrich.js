@@ -19,11 +19,35 @@ export const AI_RETRY_BASE_DELAY_MS = 500;
 export const MAX_ENRICHMENT_ATTEMPTS = 3;
 
 export class ResponsesApiError extends Error {
-  /** @param {number} status */
-  constructor(status) {
-    super(`OpenAI Responses API responded ${status}`);
+  /**
+   * @param {number} status
+   * @param {string | null} [code] OpenAI's error code, e.g.
+   *   `unsupported_country_region_territory` for a 403 from a blocked region
+   */
+  constructor(status, code = null) {
+    super(`OpenAI Responses API responded ${status}${code ? ` (${code})` : ''}`);
     this.name = 'ResponsesApiError';
     this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * OpenAI's machine-readable error code, without any of the body's prose. A
+ * bare 403 can mean a revoked key or a request from a region OpenAI does not
+ * serve (Sentry COOKIE-WEB-1C, which later attempts got past), and only the
+ * code says which.
+ *
+ * @param {Response} response
+ * @returns {Promise<string | null>}
+ */
+export async function openAiErrorCode(response) {
+  try {
+    const body = /** @type {any} */ (await response.json());
+    const code = body?.error?.code ?? body?.error?.type;
+    return typeof code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : null;
+  } catch {
+    return null;
   }
 }
 
@@ -183,7 +207,9 @@ export async function classifyEmail(
       }),
     },
     async (response) => {
-      if (!response.ok) throw new ResponsesApiError(response.status);
+      if (!response.ok) {
+        throw new ResponsesApiError(response.status, await openAiErrorCode(response));
+      }
       const result = parseOutputJson(await response.json());
       if (
         !Array.isArray(result.labels) ||
