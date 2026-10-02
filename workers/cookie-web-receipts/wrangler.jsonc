@@ -11,7 +11,14 @@
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
   "upload_source_maps": true,
-  "observability": { "enabled": true, "head_sampling_rate": 0.2 },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.2,
+    // Export Cloudflare automatic traces over OTLP to Honeycomb (EU). The
+    // endpoint and API key live in the "honeycomb-traces" destination in the
+    // Cloudflare dashboard, not in this repo.
+    "traces": { "enabled": true, "destinations": ["honeycomb-traces"], "head_sampling_rate": 0.2 },
+  },
   // Every request opens a Hyperdrive connection before any route work, so
   // run the isolate near the database rather than near the browser.
   "placement": { "mode": "smart" },
