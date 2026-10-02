@@ -20,18 +20,20 @@ import {
 import { configureOpenAi } from '../../../shared/openai.js';
 
 /**
- * Runs a store on a fresh client, with another go on a new one if the socket
- * drops. It follows minutes of OpenAI calls, long enough for the run's own
- * connection to have gone stale. Each store replaces the previous row inside
- * one transaction, so a retry cannot duplicate anything.
+ * Runs idempotent database work on a fresh client, with another go on a new
+ * one if the socket drops. Anything after the first phase follows minutes of
+ * OpenAI calls, long enough for the run's own connection to have gone stale
+ * (Sentry COOKIE-WEB-1D). Stores replace the previous row inside one
+ * transaction and reads have no side effects, so a retry cannot duplicate
+ * anything.
  *
  * @template T
  * @param {{HYPERDRIVE: {connectionString: string}}} env
- * @param {(sql: import('postgres').Sql) => Promise<T>} store
+ * @param {(sql: import('postgres').Sql) => Promise<T>} work
  * @returns {Promise<T>}
  */
-function storeWithRetry(env, store) {
-  return retryWithFreshClient(() => createSql(env.HYPERDRIVE.connectionString), store);
+function withFreshClient(env, work) {
+  return retryWithFreshClient(() => createSql(env.HYPERDRIVE.connectionString), work);
 }
 
 /**
@@ -50,7 +52,7 @@ async function buildDailyTriage(sql, env, userId) {
   const triage = messages.length
     ? await buildDigest(messages, apiKey, env.AI_MODEL)
     : { overview: '', topics: [], noise: { count: 0, categories: [] } };
-  await storeWithRetry(env, (fresh) =>
+  await withFreshClient(env, (fresh) =>
     storeDigest(
       fresh,
       userId,
@@ -76,29 +78,35 @@ async function buildDailyTriage(sql, env, userId) {
  * Scheduled runs build it once per UK day; a manual refresh always rebuilds.
  * An empty round-up is never stored, so a bad hour keeps the previous card.
  *
- * @param {import('postgres').Sql} sql
+ * @param {import('postgres').Sql} _sql the run's client, unused: by now it may be stale
  * @param {Env & {OPENAI_API_KEY?: string, GITHUB_API_TOKEN?: string, PRODUCT_HUNT_TOKEN?: string}} env
  * @param {string} userId
  * @param {RunOptions} [options]
  */
-async function buildNewsPhase(sql, env, userId, options = {}) {
+async function buildNewsPhase(_sql, env, userId, options = {}) {
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
     console.log(JSON.stringify({ event: 'news_skipped', reason: 'OPENAI_API_KEY not configured' }));
     return;
   }
-  if (options.scheduledAt && (await hasNewsForUkToday(sql, userId))) {
+  // runPhases already resolved the model from the user's settings into
+  // env.AI_MODEL, so only the news-specific reads remain.
+  const inputs = await withFreshClient(env, async (fresh) => {
+    if (options.scheduledAt && (await hasNewsForUkToday(fresh, userId))) return null;
+    const interests = (await fetchInterests(fresh, userId)).filter((i) => typeof i === 'string');
+    const personaliseGithub = await fetchGithubPersonalisation(fresh, userId);
+    return { interests, personaliseGithub };
+  });
+  if (!inputs) {
     console.log(JSON.stringify({ event: 'news_skipped', reason: 'already built today' }));
     return;
   }
-  const settings = await fetchEnrichmentSettings(sql, userId, env.AI_MODEL);
-  const interests = (await fetchInterests(sql, userId)).filter((i) => typeof i === 'string');
-  const personaliseGithub = await fetchGithubPersonalisation(sql, userId);
+  const { interests, personaliseGithub } = inputs;
   const { sections } = await buildNews({
     interests,
     personaliseGithub,
     apiKey,
-    model: settings.model,
+    model: env.AI_MODEL,
     // Actions reserves GITHUB_TOKEN, so the durable Worker secret uses a name
     // that can also be configured through the deployment repository.
     githubToken: env.GITHUB_API_TOKEN,
@@ -109,7 +117,7 @@ async function buildNewsPhase(sql, env, userId, options = {}) {
     console.log(JSON.stringify({ event: 'news_skipped', reason: 'no sections' }));
     return;
   }
-  await storeWithRetry(env, (fresh) => storeNews(fresh, userId, { sections }, settings.model));
+  await withFreshClient(env, (fresh) => storeNews(fresh, userId, { sections }, env.AI_MODEL));
   console.log(
     JSON.stringify({
       event: 'news_built',
@@ -216,7 +224,16 @@ const worker = {
   async scheduled(controller, env, _ctx) {
     configureOpenAi(env);
     tagTrigger('scheduled');
-    await runScheduledEnrichment(env, new Date(controller.scheduledTime));
+    try {
+      await runScheduledEnrichment(env, new Date(controller.scheduledTime));
+    } catch (error) {
+      // runPhases already captured every failure inside an AggregateError;
+      // rethrowing it made withSentry report the same failure a second time
+      // (COOKIE-WEB-1D had two events per run). Anything else failed before
+      // the phases ran, so let it propagate to withSentry.
+      if (!(error instanceof AggregateError)) throw error;
+      console.log(JSON.stringify({ event: 'scheduled_run_failed', failures: error.errors.length }));
+    }
   },
 
   /**

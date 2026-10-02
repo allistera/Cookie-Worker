@@ -48,7 +48,13 @@ vi.mock('../src/store.js', () => ({
 import worker, { runDigestOnly, runScheduledEnrichment } from '../src/worker.js';
 import { buildDigest } from '../src/digest.js';
 import { buildNews } from '../src/news.js';
-import { hasNewsForUkToday, lookupUserId, storeDigest, storeNews } from '../src/store.js';
+import {
+  fetchInterests,
+  hasNewsForUkToday,
+  lookupUserId,
+  storeDigest,
+  storeNews,
+} from '../src/store.js';
 
 const TOKEN = 'test-trigger-token';
 const env = /** @type {any} */ ({
@@ -218,5 +224,38 @@ describe('scheduled enrichment', () => {
     });
     expect(buildDigest).not.toHaveBeenCalled();
     expect(buildNews).not.toHaveBeenCalled();
+  });
+});
+
+// COOKIE-WEB-1D: the news phase runs after minutes of triage OpenAI calls, by
+// which time the run's own connection can have dropped.
+describe('stale connections and reporting', () => {
+  test('retries the news reads on a fresh client when the socket has dropped', async () => {
+    vi.mocked(fetchInterests).mockRejectedValueOnce(
+      Object.assign(new Error('write CONNECTION_CLOSED hyperdrive.local:5432'), {
+        code: 'CONNECTION_CLOSED',
+      }),
+    );
+
+    await expect(
+      runScheduledEnrichment(env, new Date('2026-07-06T08:00:00Z')),
+    ).resolves.toBeUndefined();
+
+    expect(fetchInterests).toHaveBeenCalledTimes(2);
+    expect(buildNews).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5-nano' }));
+    expect(storeNews).toHaveBeenCalled();
+  });
+
+  test('a scheduled run with a failed phase does not rethrow the already-reported aggregate', async () => {
+    vi.mocked(buildNews).mockRejectedValueOnce(new Error('news down'));
+
+    await expect(
+      worker.scheduled(
+        /** @type {any} */ ({ scheduledTime: Date.parse('2026-07-06T08:00:00Z') }),
+        env,
+        ctx,
+      ),
+    ).resolves.toBeUndefined();
+    expect(storeDigest).toHaveBeenCalled();
   });
 });
