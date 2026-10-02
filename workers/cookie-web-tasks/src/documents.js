@@ -509,36 +509,29 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
 
   // content_text is derived from the document's *effective* post-save
   // title+blocks, so a save that only touches one of them still needs the
-  // other's current value.
+  // other's current value. That read, and the previous blocks the Daily note
+  // event diff compares against, happen inside the transaction under FOR
+  // UPDATE: read outside it, a concurrent save could land in between and
+  // this write would index (or diff against) a body that no longer exists.
   const touchesTitle = Object.hasOwn(body, 'title');
   const touchesBlocks = Object.hasOwn(body, 'blocks');
-  if (touchesTitle || touchesBlocks) {
-    // newBlocks defaults to null (not undefined) when blocks aren't touched,
-    // so effective-value resolution is driven by touchesTitle/touchesBlocks
-    // rather than a value comparison that null would also satisfy.
-    /** @type {any} */
-    let effectiveTitle = touchesTitle ? updates.title : undefined;
-    /** @type {any} */
-    let effectiveBlocks = touchesBlocks ? newBlocks : undefined;
-    if (!touchesTitle || !touchesBlocks) {
-      const [current] =
-        await sql`SELECT title, blocks FROM documents WHERE id = ${body.id} AND user_id = ${userId}`;
-      if (!current) return Response.json({ error: 'Document not found' }, { status: 404 });
-      if (!touchesTitle) effectiveTitle = current.title;
-      if (!touchesBlocks) effectiveBlocks = current.blocks;
-    }
-    updates.content_text = computeSearchFields(effectiveTitle, effectiveBlocks).content_text;
-  }
 
   const [document] = await sql.begin(
     async (/** @type {import('postgres').TransactionSql<any>} */ sql) => {
-      // Only needed to diff against the post-update blocks below; skip the
-      // extra round trip when this save doesn't touch blocks at all.
-      const previous = newBlocks
-        ? (
-            await sql`SELECT folder_id, title, blocks FROM documents WHERE id = ${body.id} AND user_id = ${userId}`
-          )[0]
-        : null;
+      /** @type {any} */
+      let previous = null;
+      if (touchesTitle || touchesBlocks) {
+        [previous] = await sql`
+          SELECT title, blocks FROM documents
+          WHERE id = ${body.id} AND user_id = ${userId}
+          FOR UPDATE
+        `;
+        if (!previous) return [];
+        updates.content_text = computeSearchFields(
+          touchesTitle ? updates.title : previous.title,
+          touchesBlocks ? newBlocks : previous.blocks,
+        ).content_text;
+      }
 
       // Compared at millisecond precision on both sides: updated_at is a
       // microsecond-precision timestamptz, but the only value a client can
@@ -558,7 +551,7 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
         RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
       `;
       const updated = rows[0];
-      if (updated && previous) {
+      if (updated && newBlocks && previous) {
         const eventDate = await resolveDailyNoteEventDate(
           sql,
           userId,

@@ -138,7 +138,9 @@ describe('routing — /tasks', () => {
 
 describe('routing — /tasks/refresh', () => {
   test('POST /tasks/refresh dispatches to postRefresh', async () => {
-    mockQuery.mockResolvedValueOnce([{ allowed: true }]);
+    mockQuery
+      .mockResolvedValueOnce([{ email: 'owner@example.com' }])
+      .mockResolvedValueOnce([{ allowed: true }]);
     const response = await worker.fetch(request('/tasks/refresh', { method: 'POST' }), env, ctx);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
@@ -153,8 +155,12 @@ describe('routing — /tasks/refresh', () => {
   // provisioned non-owner must not be able to spend that owner's budget.
   test('POST /tasks/refresh from a non-owner account returns 403', async () => {
     verifyAccessToken.mockResolvedValue({ userId: 'user-2', email: 'guest@example.com' });
+    mockQuery.mockResolvedValueOnce([{ email: 'guest@example.com' }]);
     const response = await worker.fetch(request('/tasks/refresh', { method: 'POST' }), env, ctx);
     expect(response.status).toBe(403);
+    // The owner check reads the caller's own users row, by id.
+    expect(mockQuery.mock.calls[0][0].join('?')).toContain('FROM users WHERE id = ?');
+    expect(mockQuery.mock.calls[0].slice(1)).toEqual(['user-2']);
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
@@ -165,6 +171,7 @@ describe('routing — /tasks/refresh', () => {
       ctx,
     );
     expect(response.status).toBe(403);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });
 
@@ -194,7 +201,9 @@ describe('routing — /tasks/interests', () => {
 
 describe('routing — /tasks/enrichment-settings', () => {
   test('GET returns owner settings with defaults when none are stored', async () => {
-    mockQuery.mockResolvedValueOnce([{ enrichment_settings: null }]);
+    mockQuery
+      .mockResolvedValueOnce([{ email: 'owner@example.com' }])
+      .mockResolvedValueOnce([{ enrichment_settings: null }]);
     const response = await worker.fetch(request('/tasks/enrichment-settings'), env, ctx);
     expect(response.status).toBe(200);
     expect((await response.json()).enrichmentSettings.model).toBe('gpt-5-nano');
@@ -212,7 +221,9 @@ describe('routing — /tasks/enrichment-settings', () => {
         timezone: 'Europe/London',
       },
     };
-    mockQuery.mockResolvedValueOnce([{ enrichment_settings: enrichmentSettings }]);
+    mockQuery
+      .mockResolvedValueOnce([{ email: 'owner@example.com' }])
+      .mockResolvedValueOnce([{ enrichment_settings: enrichmentSettings }]);
     const response = await worker.fetch(
       request('/tasks/enrichment-settings', {
         method: 'PUT',
@@ -226,9 +237,11 @@ describe('routing — /tasks/enrichment-settings', () => {
 
   test('rejects a non-owner before reading or writing settings', async () => {
     verifyAccessToken.mockResolvedValue({ userId: 'user-2', email: 'guest@example.com' });
+    mockQuery.mockResolvedValueOnce([{ email: 'guest@example.com' }]);
     const response = await worker.fetch(request('/tasks/enrichment-settings'), env, ctx);
     expect(response.status).toBe(403);
-    expect(mockQuery).not.toHaveBeenCalled();
+    // Only the owner lookup ran: settings were neither read nor written.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
   test('rejects unsupported methods', async () => {
@@ -411,6 +424,31 @@ describe('cleanup and error reporting', () => {
     expect(response.status).toBe(500);
     expect(captureHandledException).toHaveBeenCalledOnce();
     expect(sqlEnd).toHaveBeenCalledOnce();
+  });
+
+  test('retries a GET once on a fresh client when the connection drops', async () => {
+    mockQuery.mockRejectedValueOnce(
+      Object.assign(new Error('Network connection lost'), { code: 'CONNECTION_CLOSED' }),
+    );
+    const response = await worker.fetch(request('/tasks/interests'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(verifyAccessToken).toHaveBeenCalledTimes(2);
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
+  test('does not retry a write when the connection drops', async () => {
+    mockQuery.mockRejectedValueOnce(
+      Object.assign(new Error('Network connection lost'), { code: 'CONNECTION_CLOSED' }),
+    );
+    const response = await worker.fetch(
+      request('/tasks/interests', { method: 'PUT', body: JSON.stringify({ interests: ['Vue'] }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(500);
+    expect(verifyAccessToken).toHaveBeenCalledOnce();
+    expect(mockQuery).toHaveBeenCalledOnce();
   });
 });
 

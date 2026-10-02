@@ -105,16 +105,19 @@ export async function getTaskDetail(sql, userId, url) {
   } catch {
     return Response.json({ error: 'Invalid subtask cursor' }, { status: 400 });
   }
-  const [item] =
-    await sql`SELECT ${columns(sql, true)} FROM task_items t WHERE t.user_id = ${userId} AND t.id = ${id}`;
-  if (!item) return Response.json({ error: 'Task not found' }, { status: 404 });
-  const rows = await sql`SELECT ${columns(sql, true)} FROM task_items t
+  // Three independent reads, none inside a transaction: issued together so
+  // postgres.js pipelines them on its one connection instead of paying three
+  // round trips. A missing task makes the other two harmless empty reads.
+  const [[item], rows, [counts]] = await Promise.all([
+    sql`SELECT ${columns(sql, true)} FROM task_items t WHERE t.user_id = ${userId} AND t.id = ${id}`,
+    sql`SELECT ${columns(sql, true)} FROM task_items t
     WHERE t.user_id = ${userId} AND t.parent_id = ${id}
       ${cursor ? sql`AND (t.position, t.created_at, t.id) > (${cursor[0]}::float8, ${cursor[1]}::text::timestamptz, ${cursor[2]}::uuid)` : sql``}
-    ORDER BY t.position, t.created_at, t.id LIMIT 101`;
-  const [counts] =
-    await sql`SELECT count(*)::int AS total, count(*) FILTER (WHERE completed_at IS NOT NULL)::int AS done
-    FROM task_items WHERE user_id = ${userId} AND parent_id = ${id}`;
+    ORDER BY t.position, t.created_at, t.id LIMIT 101`,
+    sql`SELECT count(*)::int AS total, count(*) FILTER (WHERE completed_at IS NOT NULL)::int AS done
+    FROM task_items WHERE user_id = ${userId} AND parent_id = ${id}`,
+  ]);
+  if (!item) return Response.json({ error: 'Task not found' }, { status: 404 });
   const last = rows.slice(0, 100).at(-1);
   const subtasks = rows.slice(0, 100).map(({ cursor_time: _cursorTime, ...row }) => row);
   delete item.cursor_time;

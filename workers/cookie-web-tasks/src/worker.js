@@ -1,8 +1,7 @@
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { issueSignedToken, presignUrl, put } from '@vercel/blob';
-import postgres from 'postgres';
-import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
+import { createSql, withUserSql } from '../../../shared/db.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { hybridSearch } from '../../../shared/meili.js';
 import { validId } from '../../../shared/pagination.js';
@@ -33,16 +32,41 @@ import { configureOpenAi } from '../../../shared/openai.js';
 // smaller default for the ordinary command endpoints this Worker serves.
 const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
 
-/** @param {string} databaseUrl */
-export function createSql(databaseUrl) {
-  // No ssl option: Hyperdrive terminates TLS to the origin database itself;
-  // asking the driver for TLS makes every connect fail (see data-enricher).
-  return postgres(databaseUrl, {
-    prepare: false,
-    max: 1,
-    idle_timeout: 20,
-    connect_timeout: 10,
-  });
+/**
+ * Reads the JSON body and hands it to `handle`. A body that is too large, not
+ * JSON, or otherwise refused by readJsonBody becomes its 4xx response; any
+ * other failure propagates to the 500 handler.
+ *
+ * @param {Request} request
+ * @param {(body: any) => Promise<Response> | Response} handle
+ * @param {{maxBytes?: number}} [options]
+ */
+async function withJsonBody(request, handle, options) {
+  let body;
+  try {
+    body = await readJsonBody(request, options);
+  } catch (error) {
+    const errorResponse = bodyErrorResponse(error);
+    if (errorResponse) return errorResponse;
+    throw error;
+  }
+  return handle(body);
+}
+
+/**
+ * Whether the caller is the OWNER_EMAIL mailbox. withUserSql resolves only the
+ * caller's id, so the two owner-only routes look the email up themselves; with
+ * no OWNER_EMAIL configured nobody is the owner and nothing is read.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {import('./sentry.js').TasksEnv} env
+ */
+async function isMailboxOwner(sql, userId, env) {
+  const ownerEmail = String(env.OWNER_EMAIL ?? '').toLowerCase();
+  if (!ownerEmail) return false;
+  const [user] = await sql`SELECT lower(email) AS email FROM users WHERE id = ${userId}`;
+  return user?.email === ownerEmail;
 }
 
 /**
@@ -62,9 +86,8 @@ export function createSql(databaseUrl) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {import('./sentry.js').TasksEnv} env
- * @param {string} [email] The verified caller's email (lowercased).
  */
-async function route(url, request, sql, userId, env, email) {
+async function route(url, request, sql, userId, env) {
   const segments = url.pathname.split('/').filter(Boolean);
 
   if (segments[0] === 'task-items') {
@@ -87,20 +110,14 @@ async function route(url, request, sql, userId, env, email) {
         { status: 405, headers: { Allow: 'GET, POST, PATCH, DELETE' } },
       );
     }
-    let body;
-    try {
-      body = await readJsonBody(request);
-    } catch (error) {
-      const errorResponse = bodyErrorResponse(error);
-      if (errorResponse) return errorResponse;
-      throw error;
-    }
-    if (generate) return createAiTask(sql, userId, body, env);
-    if (interpret) return interpretTask(sql, userId, body, env);
-    if (reorder) return reorderTaskItems(sql, userId, body);
-    if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
-    if (request.method === 'PATCH') return updateTaskItem(sql, userId, body, env);
-    return deleteTaskItem(sql, userId, body, env);
+    return withJsonBody(request, (body) => {
+      if (generate) return createAiTask(sql, userId, body, env);
+      if (interpret) return interpretTask(sql, userId, body, env);
+      if (reorder) return reorderTaskItems(sql, userId, body);
+      if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
+      if (request.method === 'PATCH') return updateTaskItem(sql, userId, body, env);
+      return deleteTaskItem(sql, userId, body, env);
+    });
   }
 
   if (segments[0] === 'projects') {
@@ -112,17 +129,11 @@ async function route(url, request, sql, userId, env, email) {
         { status: 405, headers: { Allow: 'GET, POST, PATCH, DELETE' } },
       );
     }
-    let body;
-    try {
-      body = await readJsonBody(request);
-    } catch (error) {
-      const errorResponse = bodyErrorResponse(error);
-      if (errorResponse) return errorResponse;
-      throw error;
-    }
-    if (request.method === 'POST') return createProject(sql, userId, body);
-    if (request.method === 'PATCH') return updateProject(sql, userId, body);
-    return deleteProject(sql, userId, body);
+    return withJsonBody(request, (body) => {
+      if (request.method === 'POST') return createProject(sql, userId, body);
+      if (request.method === 'PATCH') return updateProject(sql, userId, body);
+      return deleteProject(sql, userId, body);
+    });
   }
 
   if (segments[0] === 'task-labels') {
@@ -134,17 +145,11 @@ async function route(url, request, sql, userId, env, email) {
         { status: 405, headers: { Allow: 'GET, POST, PATCH, DELETE' } },
       );
     }
-    let body;
-    try {
-      body = await readJsonBody(request);
-    } catch (error) {
-      const errorResponse = bodyErrorResponse(error);
-      if (errorResponse) return errorResponse;
-      throw error;
-    }
-    if (request.method === 'POST') return createTaskLabel(sql, userId, body);
-    if (request.method === 'PATCH') return updateTaskLabel(sql, userId, body);
-    return deleteTaskLabel(sql, userId, body);
+    return withJsonBody(request, (body) => {
+      if (request.method === 'POST') return createTaskLabel(sql, userId, body);
+      if (request.method === 'PATCH') return updateTaskLabel(sql, userId, body);
+      return deleteTaskLabel(sql, userId, body);
+    });
   }
 
   if (segments[0] === 'files') {
@@ -180,15 +185,7 @@ async function route(url, request, sql, userId, env, email) {
         { error: 'Method not allowed' },
         { status: 405, headers: { Allow: 'GET, PATCH, DELETE' } },
       );
-    let body;
-    try {
-      body = await readJsonBody(request);
-    } catch (error) {
-      const errorResponse = bodyErrorResponse(error);
-      if (errorResponse) return errorResponse;
-      throw error;
-    }
-    return updateFile(sql, userId, id, body);
+    return withJsonBody(request, (body) => updateFile(sql, userId, id, body));
   }
 
   if (segments[0] === 'documents') {
@@ -201,17 +198,15 @@ async function route(url, request, sql, userId, env, email) {
         { status: 405, headers: { Allow: 'GET, POST, PATCH, DELETE' } },
       );
     }
-    let body;
-    try {
-      body = await readJsonBody(request, { maxBytes: MAX_BODY_BYTES });
-    } catch (error) {
-      const errorResponse = bodyErrorResponse(error);
-      if (errorResponse) return errorResponse;
-      throw error;
-    }
-    if (request.method === 'POST') return createDocument(sql, userId, body, deps, env);
-    if (request.method === 'PATCH') return updateDocument(sql, userId, body, deps, env);
-    return deleteDocument(sql, userId, body, env);
+    return withJsonBody(
+      request,
+      (body) => {
+        if (request.method === 'POST') return createDocument(sql, userId, body, deps, env);
+        if (request.method === 'PATCH') return updateDocument(sql, userId, body, deps, env);
+        return deleteDocument(sql, userId, body, env);
+      },
+      { maxBytes: MAX_BODY_BYTES },
+    );
   }
 
   if (segments[0] !== 'tasks' || segments.length > 2) {
@@ -241,8 +236,7 @@ async function route(url, request, sql, userId, env, email) {
     // The enricher rebuilds state for the fixed OWNER_EMAIL mailbox, so only
     // that owner may trigger it — any other provisioned account would be
     // spending the owner's AI budget and racing the owner's generated state.
-    const ownerEmail = String(env.OWNER_EMAIL ?? '').toLowerCase();
-    if (!ownerEmail || !email || email.toLowerCase() !== ownerEmail) {
+    if (!(await isMailboxOwner(sql, userId, env))) {
       return Response.json({ error: 'Refresh is limited to the mailbox owner' }, { status: 403 });
     }
     return postRefresh(sql, userId, env.ENRICHER, env.ENRICHER_TRIGGER_TOKEN);
@@ -255,23 +249,14 @@ async function route(url, request, sql, userId, env, email) {
         { status: 405, headers: { Allow: 'GET, PUT' } },
       );
     }
-    const ownerEmail = String(env.OWNER_EMAIL ?? '').toLowerCase();
-    if (!ownerEmail || !email || email.toLowerCase() !== ownerEmail) {
+    if (!(await isMailboxOwner(sql, userId, env))) {
       return Response.json(
         { error: 'AI Today settings are limited to the mailbox owner' },
         { status: 403 },
       );
     }
     if (request.method === 'GET') return getEnrichmentSettings(sql, userId);
-    let body;
-    try {
-      body = await readJsonBody(request);
-    } catch (error) {
-      const errorResponse = bodyErrorResponse(error);
-      if (errorResponse) return errorResponse;
-      throw error;
-    }
-    return putEnrichmentSettings(sql, userId, body);
+    return withJsonBody(request, (body) => putEnrichmentSettings(sql, userId, body));
   }
 
   if (sub === 'image-upload') {
@@ -313,15 +298,7 @@ async function route(url, request, sql, userId, env, email) {
         { error: 'Method not allowed' },
         { status: 405, headers: { Allow: 'GET, PUT' } },
       );
-    let body;
-    try {
-      body = await readJsonBody(request);
-    } catch (error) {
-      const errorResponse = bodyErrorResponse(error);
-      if (errorResponse) return errorResponse;
-      throw error;
-    }
-    return putInterests(sql, userId, body);
+    return withJsonBody(request, (body) => putInterests(sql, userId, body));
   }
 
   if (sub === 'daily-note-seed') {
@@ -331,15 +308,7 @@ async function route(url, request, sql, userId, env, email) {
         { error: 'Method not allowed' },
         { status: 405, headers: { Allow: 'GET, PUT' } },
       );
-    let body;
-    try {
-      body = await readJsonBody(request);
-    } catch (error) {
-      const errorResponse = bodyErrorResponse(error);
-      if (errorResponse) return errorResponse;
-      throw error;
-    }
-    return putDailyNoteSeed(sql, userId, body);
+    return withJsonBody(request, (body) => putDailyNoteSeed(sql, userId, body));
   }
 
   // /tasks itself
@@ -349,15 +318,7 @@ async function route(url, request, sql, userId, env, email) {
       { error: 'Method not allowed' },
       { status: 405, headers: { Allow: 'GET, POST' } },
     );
-  let body;
-  try {
-    body = await readJsonBody(request);
-  } catch (error) {
-    const errorResponse = bodyErrorResponse(error);
-    if (errorResponse) return errorResponse;
-    throw error;
-  }
-  return postTasks(sql, userId, body, env);
+  return withJsonBody(request, (body) => postTasks(sql, userId, body, env));
 }
 
 const worker = {
@@ -375,41 +336,41 @@ const worker = {
     }
 
     const url = new URL(request.url);
-    const sql = createSql(env.HYPERDRIVE.connectionString);
     try {
-      let userId;
-      let email;
-      try {
-        ({ userId, email } = await verifyAccessToken(request, env, sql));
-      } catch (error) {
-        return withCors(
-          authFailureResponse(error),
-          origin,
-          env.ALLOWED_ORIGIN,
-          env.SENTRY_ENVIRONMENT,
-        );
-      }
-
-      /** @type {Array<(sql: import('postgres').Sql) => Promise<unknown>>} */
-      const indexing = [];
-      const requestEnv = {
-        ...env,
-        deferSearchSync: (/** @type {(sql: import('postgres').Sql) => Promise<unknown>} */ job) =>
-          indexing.push(job),
-      };
-      const response = await route(url, request, sql, userId, requestEnv, email);
-      if (indexing.length) {
-        ctx.waitUntil(
-          (async () => {
-            const backgroundSql = createSql(env.HYPERDRIVE.connectionString);
-            try {
-              for (const job of indexing) await job(backgroundSql);
-            } finally {
-              await backgroundSql.end({ timeout: 2 }).catch(() => undefined);
-            }
-          })().catch((error) => captureHandledException('search_sync', error, env)),
-        );
-      }
+      // Reads are idempotent, so a dropped Hyperdrive connection gets one more
+      // go on a fresh client (caller lookup included). Writes are not retried.
+      const response = await withUserSql(
+        request,
+        env,
+        ctx,
+        { retryable: request.method === 'GET' || request.method === 'HEAD' },
+        async (sql, userId) => {
+          // Per attempt: a retried read starts with an empty queue rather than
+          // replaying jobs a dropped attempt had queued.
+          /** @type {Array<(sql: import('postgres').Sql) => Promise<unknown>>} */
+          const indexing = [];
+          const requestEnv = {
+            ...env,
+            deferSearchSync: (
+              /** @type {(sql: import('postgres').Sql) => Promise<unknown>} */ job,
+            ) => indexing.push(job),
+          };
+          const routed = await route(url, request, sql, userId, requestEnv);
+          if (indexing.length) {
+            ctx.waitUntil(
+              (async () => {
+                const backgroundSql = createSql(env.HYPERDRIVE.connectionString);
+                try {
+                  for (const job of indexing) await job(backgroundSql);
+                } finally {
+                  await backgroundSql.end({ timeout: 2 }).catch(() => undefined);
+                }
+              })().catch((error) => captureHandledException('search_sync', error, env)),
+            );
+          }
+          return routed;
+        },
+      );
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
       console.log(
@@ -422,8 +383,6 @@ const worker = {
         env.ALLOWED_ORIGIN,
         env.SENTRY_ENVIRONMENT,
       );
-    } finally {
-      ctx.waitUntil(sql.end({ timeout: 2 }).catch(() => undefined));
     }
   },
 };

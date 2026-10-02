@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildDigest,
   buildNews,
@@ -482,6 +482,7 @@ describe('postTasks', () => {
   it('completes a task_items row via the fallback path when the gathered table has no match', async () => {
     const sql = createMockSql([
       [],
+      [{ recurrence: null, dueDate: null }],
       [{ id: TASK_ID, parentId: null }],
       [
         {
@@ -517,6 +518,94 @@ describe('postTasks', () => {
       ok: true,
       task: { id: TASK_ID, due_date: '2026-08-25' },
     });
+  });
+
+  it('rejects an impossible calendar due_date before touching the database', async () => {
+    const sql = createMockSql();
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: TASK_ID, action: 'reschedule', due_date: '2026-02-31' },
+      undefined,
+    );
+    expect(response.status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it("advances a recurring task_items row using the caller's today and its stored occurrence", async () => {
+    const existing = {
+      id: TASK_ID,
+      kind: 'task',
+      projectId: null,
+      parentId: null,
+      recurrence: 'every day',
+      dueDate: '2026-08-24',
+      completedAt: null,
+      dueTime: null,
+      timeZone: null,
+      labels: [],
+    };
+    const sql = createMockSql([
+      [],
+      [{ recurrence: 'every day', dueDate: '2026-08-24' }],
+      [existing],
+      [{ ...existing, dueDate: '2026-08-26' }],
+    ]);
+    const response = await postTasks(
+      sql,
+      USER_ID,
+      { id: TASK_ID, action: 'complete', today: '2026-08-25' },
+      undefined,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(sql.calls[1].text).toContain('FROM task_items t');
+    expect(sql.calls[1].values).toEqual([TASK_ID, USER_ID]);
+    const update = sql.calls.find((/** @type {any} */ call) =>
+      call.text.includes('UPDATE task_items'),
+    );
+    // The next occurrence after both the stored due date and the caller's day.
+    expect(update.values).toContain('2026-08-26');
+  });
+
+  it('falls back to the UTC date when completing a recurring task without today', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-27T12:00:00Z'));
+    try {
+      const existing = {
+        id: TASK_ID,
+        kind: 'task',
+        projectId: null,
+        parentId: null,
+        recurrence: 'every day',
+        dueDate: '2026-08-24',
+        completedAt: null,
+        dueTime: null,
+        timeZone: null,
+        labels: [],
+      };
+      const sql = createMockSql([
+        [],
+        [{ recurrence: 'every day', dueDate: '2026-08-24' }],
+        [existing],
+        [{ ...existing, dueDate: '2026-08-28' }],
+      ]);
+      const response = await postTasks(
+        sql,
+        USER_ID,
+        { id: TASK_ID, action: 'complete' },
+        undefined,
+      );
+
+      expect(response.status).toBe(200);
+      const update = sql.calls.find((/** @type {any} */ call) =>
+        call.text.includes('UPDATE task_items'),
+      );
+      expect(update.values).toContain('2026-08-28');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('404s when neither the gathered table nor task_items owns the id', async () => {

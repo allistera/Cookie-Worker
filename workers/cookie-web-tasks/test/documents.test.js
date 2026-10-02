@@ -378,7 +378,6 @@ describe('PATCH /documents', () => {
   it('saves blocks through sql.json and bumps updated_at', async () => {
     const sql = createMockSql([
       [{ title: 'Notes', blocks: [] }],
-      [{ folder_id: null, title: 'Notes', blocks: [] }],
       [{ id: DOC_ID, title: 'Notes', folder_id: null }],
     ]);
     const response = await updateDocument(
@@ -389,15 +388,14 @@ describe('PATCH /documents', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(sql.calls[1].text).toContain('folder_id');
-    expect(sql.calls[2].text).toBe('SET(blocks,content_text)');
-    expect(sql.calls[3].text).toContain('updated_at = now()');
+    expect(sql.calls[0].text).toContain('FOR UPDATE');
+    expect(sql.calls[1].text).toBe('SET(blocks,content_text)');
+    expect(sql.calls[2].text).toContain('updated_at = now()');
   });
 
   it('syncs a Daily note time-range line into a linked calendar event', async () => {
     const sql = createMockSql([
       [{ title: '14-08-26', blocks: [] }],
-      [{ folder_id: FOLDER_ID, title: '14-08-26', blocks: [] }],
       [{ id: DOC_ID, title: '14-08-26', folder_id: FOLDER_ID }],
       [{ title: 'Daily' }],
       [{ id: 'cal-personal' }],
@@ -414,16 +412,15 @@ describe('PATCH /documents', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(sql.calls).toHaveLength(7);
-    expect(sql.calls[4].text).toContain('ancestry');
-    expect(sql.calls[5].text).toContain('FROM calendars');
-    expect(sql.calls[6].text).toContain('ON CONFLICT (source_document_id, source_block_id)');
+    expect(sql.calls).toHaveLength(6);
+    expect(sql.calls[3].text).toContain('ancestry');
+    expect(sql.calls[4].text).toContain('FROM calendars');
+    expect(sql.calls[5].text).toContain('ON CONFLICT (source_document_id, source_block_id)');
   });
 
   it('syncs a time-range line inside a bulleted/checklist list item', async () => {
     const sql = createMockSql([
       [{ title: '14-08-26', blocks: [] }],
-      [{ folder_id: FOLDER_ID, title: '14-08-26', blocks: [] }],
       [{ id: DOC_ID, title: '14-08-26', folder_id: FOLDER_ID }],
       [{ title: 'Daily' }],
       [{ id: 'cal-personal' }],
@@ -452,14 +449,13 @@ describe('PATCH /documents', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(sql.calls).toHaveLength(7);
-    expect(sql.calls[6].text).toContain('ON CONFLICT (source_document_id, source_block_id)');
+    expect(sql.calls).toHaveLength(6);
+    expect(sql.calls[5].text).toContain('ON CONFLICT (source_document_id, source_block_id)');
   });
 
   it("does not touch calendar_events for a non-Daily document's blocks", async () => {
     const sql = createMockSql([
       [{ title: 'Notes', blocks: [] }],
-      [{ folder_id: FOLDER_ID, title: 'Notes', blocks: [] }],
       [{ id: DOC_ID, title: 'Notes', folder_id: FOLDER_ID }],
     ]);
     const response = await updateDocument(
@@ -473,7 +469,7 @@ describe('PATCH /documents', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(sql.calls).toHaveLength(4);
+    expect(sql.calls).toHaveLength(3);
   });
 
   it('fetches the current blocks to compute content_text for a title-only rename', async () => {
@@ -486,6 +482,28 @@ describe('PATCH /documents', () => {
     expect(response.status).toBe(200);
     expect(sql.calls[0].text).toContain('SELECT title, blocks');
     expect(sql.calls[1].text).toBe('SET(title,content_text)');
+  });
+
+  it('reads the current row inside the transaction, locked, before deriving content_text', async () => {
+    const sql = createMockSql([
+      [{ title: 'Old title', blocks: [{ type: 'paragraph', data: { text: 'Locked body' } }] }],
+      [{ id: DOC_ID, title: 'New title' }],
+    ]);
+    /** @type {number[]} */
+    const queriesBeforeBegin = [];
+    const begin = sql.begin;
+    sql.begin = vi.fn(async (/** @type {any} */ callback) => {
+      queriesBeforeBegin.push(sql.calls.length);
+      return begin(callback);
+    });
+    const response = await updateDocument(sql, USER_ID, { id: DOC_ID, title: 'New title' }, deps());
+
+    expect(response.status).toBe(200);
+    expect(queriesBeforeBegin).toEqual([0]);
+    expect(sql.calls[0].text).toContain('FOR UPDATE');
+    const set = sql.mock.calls.find((/** @type {any[]} */ call) => !Array.isArray(call[0]))[0];
+    expect(set.content_text).toContain('New title');
+    expect(set.content_text).toContain('Locked body');
   });
 
   it('404s a title/blocks-touching patch for a document the caller does not own', async () => {

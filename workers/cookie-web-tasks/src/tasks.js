@@ -5,7 +5,6 @@ import { isCalendarDate, updateTaskItem } from './taskItems.js';
 import { validId } from '../../../shared/pagination.js';
 
 const RESULTS = 25;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // The authenticated user's gathered tasks, most-pressing first: soonest due,
 // then highest priority. Two sources are unioned: AI-extracted email action
@@ -212,6 +211,17 @@ export function fetchOwnedTask(sql, id, userId) {
   `;
 }
 
+// The schedule of one of the caller's own task_items rows: what completing it
+// from AI Today has to hand updateTaskItem when it repeats.
+/** @param {import('postgres').Sql} sql @param {string} id @param {string} userId */
+export function fetchOwnedTaskItemSchedule(sql, id, userId) {
+  return sql`
+    SELECT t.recurrence, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate"
+    FROM task_items t
+    WHERE t.id = ${id} AND t.user_id = ${userId}
+  `;
+}
+
 // Completing a gathered task removes it from the gathered set; there is no
 // done column.
 /** @param {import('postgres').Sql} sql @param {string} id @param {string} userId */
@@ -251,8 +261,9 @@ async function rescheduleTask(sql, userId, task, dueDate) {
   return Response.json({ ok: true, task: updated });
 }
 
-// POST /tasks — { id, action: 'complete' } marks a task done; { id, action:
-// 'reschedule', due_date } moves it to another day. The id may belong to
+// POST /tasks — { id, action: 'complete', today? } marks a task done (a
+// repeating task_items row moves on to its next occurrence instead); { id,
+// action: 'reschedule', due_date } moves it to another day. The id may belong to
 // either source: a gathered `tasks` row is tried first, and a miss there
 // falls back to `task_items` via updateTaskItem, which owns that table's
 // validation, ownership check and Meilisearch sync.
@@ -275,7 +286,9 @@ export async function postTasks(sql, userId, body, env) {
   /** @type {string | null} */
   let dueDate = null;
   if (action === 'reschedule') {
-    dueDate = DATE_RE.test(String(body.due_date ?? '')) ? String(body.due_date) : null;
+    // A real calendar date, not just the shape: 2026-02-31 would otherwise
+    // reach the ::date cast and come back a 500.
+    dueDate = isCalendarDate(body.due_date) ? String(body.due_date) : null;
     if (!dueDate) {
       return Response.json({ error: 'A valid due_date (YYYY-MM-DD) is required' }, { status: 400 });
     }
@@ -288,7 +301,25 @@ export async function postTasks(sql, userId, body, env) {
       : rescheduleTask(sql, userId, task, /** @type {string} */ (dueDate));
   }
 
-  const itemBody = action === 'complete' ? { id, completed: true } : { id, dueDate };
+  /** @type {Record<string, unknown>} */
+  let itemBody = { id, dueDate };
+  if (action === 'complete') {
+    const [item] = await fetchOwnedTaskItemSchedule(sql, id, userId);
+    if (!item) return Response.json({ error: 'Task not found' }, { status: 404 });
+    itemBody = { id, completed: true };
+    // A recurring task advances to its next occurrence rather than closing,
+    // and updateTaskItem needs the caller's day and the occurrence being
+    // completed to do that safely. AI Today has only ever sent { id, action },
+    // so the occurrence is the one stored now, and the day is the caller's
+    // `today` (the same YYYY-MM-DD GET /tasks takes as `date`) when sent,
+    // falling back to UTC like GET /tasks falls back to CURRENT_DATE.
+    if (item.recurrence) {
+      itemBody.expectedDueDate = item.dueDate;
+      itemBody.today = isCalendarDate(body.today)
+        ? String(body.today)
+        : new Date().toISOString().slice(0, 10);
+    }
+  }
   const response = await updateTaskItem(sql, userId, itemBody, env);
   if (!response.ok) return response;
   const { item } = /** @type {any} */ (await response.json());
