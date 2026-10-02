@@ -118,12 +118,20 @@ const worker = {
           raw_size: record?.rawSize ?? rawSize,
         }),
       );
-      captureHandledException('store', err, [env.HYPERDRIVE.connectionString], {
-        message_id: record?.messageId,
-        raw_size: record?.rawSize ?? rawSize,
-      });
+      // A store that only ran past the budget keeps going in waitUntil below
+      // and usually commits seconds later (Sentry COOKIE-WEB-Q: every event
+      // was stored exactly once). Its outcome is what matters, so a timeout
+      // reports only if that late store fails (store_late); the MTA retry
+      // covers a store that never settles.
+      const lateStore = Boolean(storePromise && record && isStoreTimeout(err) && sql);
+      if (!lateStore) {
+        captureHandledException('store', err, [env.HYPERDRIVE.connectionString], {
+          message_id: record?.messageId,
+          raw_size: record?.rawSize ?? rawSize,
+        });
+      }
       // Only keep the store running past the budget; hard failures are already done.
-      if (storePromise && record && isStoreTimeout(err) && sql) {
+      if (lateStore && storePromise && record && sql) {
         sqlOwnedByWaitUntil = true;
         const lateSql = sql;
         const lateRecord = record;

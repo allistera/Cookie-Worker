@@ -363,6 +363,47 @@ describe('email handler', () => {
     vi.useRealTimers();
   });
 
+  // COOKIE-WEB-Q: a slow store commits moments later in waitUntil, so the
+  // timeout alone is not worth an alert; only a late store that fails is.
+  test('reports a store timeout only when the late store fails', async () => {
+    vi.useFakeTimers();
+    for (const lateOutcome of ['commits', 'fails']) {
+      vi.mocked(sentry.captureException).mockClear();
+      const late = new Promise((resolve, reject) =>
+        setTimeout(
+          () => (lateOutcome === 'commits' ? resolve([]) : reject(new Error('late boom'))),
+          6000,
+        ),
+      );
+      late.catch(() => undefined);
+      /** @type {any} */
+      const sql = vi.fn(async (strings) => {
+        if (strings.join('?').includes('INSERT INTO api_rate_limits')) return [{ allowed: true }];
+        if (strings.join('?').includes('SELECT'))
+          return [{ user_id: 'u', is_duplicate: false, thread_id: null }];
+        return [];
+      });
+      sql.begin = vi.fn(() => late);
+      sql.end = vi.fn(async () => undefined);
+      postgres.mockReturnValue(sql);
+      const context = ctx();
+      const run = worker.email(fakeMessage(simpleFixture), env(), context);
+      const settled = expect(run).rejects.toThrow('store timed out');
+      await vi.advanceTimersByTimeAsync(5000);
+      await settled;
+      expect(sentry.captureException).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.allSettled(context.waitUntil.mock.calls.map(([p]) => p));
+      if (lateOutcome === 'commits') {
+        expect(sentry.captureException).not.toHaveBeenCalled();
+      } else {
+        expect(sentry.captureException).toHaveBeenCalledOnce();
+      }
+    }
+    vi.useRealTimers();
+  });
+
   test('runs AI enrichment after a late store insert when OPENAI_API_KEY is set', async () => {
     vi.useFakeTimers();
     /** @type {(value?: unknown) => void} */
