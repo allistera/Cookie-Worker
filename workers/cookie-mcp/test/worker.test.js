@@ -11,9 +11,12 @@ vi.mock('../src/sentry.js', () => ({
 }));
 
 const worker = (await import('../src/worker.js')).default;
+const { captureHandledException } = await import('../src/sentry.js');
+const labelsCall = vi.fn();
 const env = /** @type {any} */ ({
   MCP_RESOURCE: 'https://mcp.infinitywave.online/mcp',
   AUTH0_DOMAIN: 'auth.infinitywave.online',
+  LABELS: { call: labelsCall },
 });
 const ctx = /** @type {any} */ ({ waitUntil: () => undefined });
 
@@ -51,10 +54,74 @@ async function readJsonRpc(response) {
   return JSON.parse(String(data).slice('data:'.length));
 }
 
+const EXPECTED_TOOLS = [
+  'cookie_ask_mail',
+  'cookie_cancel_scheduled',
+  'cookie_create_document',
+  'cookie_create_event',
+  'cookie_create_label',
+  'cookie_create_task',
+  'cookie_delete_document',
+  'cookie_delete_draft',
+  'cookie_delete_event',
+  'cookie_delete_label',
+  'cookie_delete_task',
+  'cookie_get_document',
+  'cookie_get_draft',
+  'cookie_get_message',
+  'cookie_list_calendars',
+  'cookie_list_contacts',
+  'cookie_list_documents',
+  'cookie_list_drafts',
+  'cookie_list_emails',
+  'cookie_list_events',
+  'cookie_list_labels',
+  'cookie_list_projects',
+  'cookie_list_scheduled',
+  'cookie_list_tasks',
+  'cookie_save_draft',
+  'cookie_search_documents',
+  'cookie_search_mail',
+  'cookie_send_email',
+  'cookie_update_document',
+  'cookie_update_event',
+  'cookie_update_label',
+  'cookie_update_message',
+  'cookie_update_task',
+];
+
+/** @param {string} method @param {Record<string, unknown>} [params] */
+async function rpc(method, params = {}) {
+  authenticate.mockResolvedValue({ userId: 'u-1', email: 'a@example.com' });
+  const response = await worker.fetch(
+    new Request('https://mcp.example/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'MCP-Protocol-Version': PROTOCOL_VERSION,
+        'Mcp-Method': method,
+        ...(typeof params.name === 'string' ? { 'Mcp-Name': params.name } : {}),
+      },
+      body: JSON.stringify({
+        ...TOOLS_LIST_REQUEST,
+        method,
+        params: { ...TOOLS_LIST_REQUEST.params, ...params },
+      }),
+    }),
+    env,
+    ctx,
+  );
+  if (response.status !== 200) throw new Error(await response.clone().text());
+  return (await readJsonRpc(response)).result;
+}
+
 // A block body: an arrow returning the mock would hand it to vitest as a
 // teardown, which then calls it after each test.
 beforeEach(() => {
   authenticate.mockReset();
+  labelsCall.mockReset();
+  vi.mocked(captureHandledException).mockReset();
 });
 
 describe('routing', () => {
@@ -105,5 +172,47 @@ describe('routing', () => {
     const payload = await readJsonRpc(response);
     expect(Array.isArray(payload.result.tools)).toBe(true);
     expect(payload.result.tools.every((tool) => tool.name.startsWith('cookie_'))).toBe(true);
+  });
+});
+
+describe('tools', () => {
+  test('lists exactly the expected tools with the right annotations', async () => {
+    const { tools } = await rpc('tools/list');
+    expect(tools.map((tool) => tool.name).sort()).toEqual(EXPECTED_TOOLS);
+    for (const { name, annotations } of tools) {
+      const readOnly = /^cookie_(list|get|search)_/.test(name) || name === 'cookie_ask_mail';
+      const destructive =
+        name.startsWith('cookie_delete_') ||
+        name === 'cookie_cancel_scheduled' ||
+        name === 'cookie_send_email';
+      expect(annotations.readOnlyHint === true, `${name} readOnlyHint`).toBe(readOnly);
+      expect(annotations.destructiveHint === true, `${name} destructiveHint`).toBe(destructive);
+    }
+  });
+
+  test('tools/call returns structured content from the bound Worker', async () => {
+    labelsCall.mockResolvedValue({ status: 200, body: { labels: [] } });
+    const result = await rpc('tools/call', { name: 'cookie_list_labels', arguments: {} });
+    expect(result.structuredContent).toEqual({ labels: [] });
+    expect(result.isError).toBeFalsy();
+    expect(labelsCall.mock.calls[0][0]).toEqual({ userId: 'u-1', email: 'a@example.com' });
+  });
+
+  test('an API error becomes an isError result without being captured', async () => {
+    labelsCall.mockResolvedValue({ status: 404, body: { error: 'x' } });
+    const result = await rpc('tools/call', { name: 'cookie_list_labels', arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
+  test('an unexpected failure is captured with the tool name and returns isError', async () => {
+    labelsCall.mockRejectedValue(new Error('boom'));
+    const result = await rpc('tools/call', { name: 'cookie_list_labels', arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(captureHandledException).toHaveBeenCalledWith(
+      'cookie_list_labels',
+      expect.any(Error),
+      env,
+    );
   });
 });

@@ -263,6 +263,22 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
 
+      - name: Deploy cookie-mcp and synchronize its secrets
+        if: inputs.worker == 'all' || inputs.worker == 'cookie-mcp'
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/cookie-mcp
+          command: deploy
+          # `all` deploys alphabetically, so cookie-mcp would go out before the
+          # cookie-web-* Workers whose Internal entrypoint it binds. Deploy
+          # those first and cookie-mcp last, one at a time.
+          secrets: |
+            SENTRY_DSN
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
       - name: Deploy mail-app-ingest and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'mail-app-ingest'
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
@@ -323,6 +339,7 @@ jobs:
       - name: Deploy selected Worker
         if: >-
           inputs.worker != 'all' &&
+          inputs.worker != 'cookie-mcp' &&
           inputs.worker != 'cookie-web-ai' &&
           inputs.worker != 'cookie-web-calendar' &&
           inputs.worker != 'cookie-web-drafts' &&

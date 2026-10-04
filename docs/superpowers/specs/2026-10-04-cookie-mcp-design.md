@@ -85,42 +85,45 @@ All names carry the `cookie_` prefix. Each maps to one existing route; exact
 input schemas are derived from that route's current validation during
 planning.
 
-| Area            | Tool               | Route                                    |
-| --------------- | ------------------ | ---------------------------------------- |
-| Mail read       | `list_emails`      | `GET /emails` (folder or label, cursor)  |
-|                 | `get_message`      | `GET /messages`                          |
-|                 | `search_mail`      | `GET /search` (hybrid or keyword)        |
-|                 | `ask_mail`         | `POST /ask`                              |
-|                 | `list_contacts`    | `GET /messages/contacts`                 |
-| Organise        | `update_message`   | `PATCH /messages`                        |
-|                 | `list_labels`      | `GET /labels`                            |
-|                 | `create_label`     | `POST /labels`                           |
-|                 | `update_label`     | `PATCH /labels`                          |
-|                 | `delete_label`     | `DELETE /labels`                         |
-| Drafts and send | `list_drafts`      | `GET /drafts`                            |
-|                 | `get_draft`        | `GET /drafts/:id`                        |
-|                 | `save_draft`       | `POST /drafts`, `PATCH /drafts/:id`      |
-|                 | `delete_draft`     | `DELETE /drafts/:id`                     |
-|                 | `send_email`       | `POST /send` (optional `sendAt`)         |
-|                 | `list_scheduled`   | `GET /send/scheduled`                    |
-|                 | `cancel_scheduled` | `DELETE /send/scheduled`                 |
-| Calendar        | `list_calendars`   | `GET /calendars`                         |
-|                 | `list_events`      | `GET /calendar-events` (date range)      |
-|                 | `create_event`     | `POST /calendar-events`                  |
-|                 | `update_event`     | `PATCH /calendar-events`                 |
-|                 | `delete_event`     | `DELETE /calendar-events`                |
-| Tasks           | `list_tasks`       | `GET /task-items`                        |
-|                 | `create_task`      | `POST /task-items`                       |
-|                 | `update_task`      | `PATCH /task-items` (including complete) |
-|                 | `delete_task`      | `DELETE /task-items`                     |
-| Documents       | `search_documents` | `GET /documents` (search and list)       |
-|                 | `get_document`     | `GET /documents`                         |
-|                 | `create_document`  | `POST /documents`                        |
-|                 | `update_document`  | `PATCH /documents`                       |
-|                 | `delete_document`  | `DELETE /documents`                      |
+| Area            | Tool               | Route                                                         |
+| --------------- | ------------------ | ------------------------------------------------------------- |
+| Mail read       | `list_emails`      | `GET /emails` (folder or label, cursor)                       |
+|                 | `get_message`      | `GET /messages`                                               |
+|                 | `search_mail`      | `GET /search` (hybrid or keyword)                             |
+|                 | `ask_mail`         | `POST /ask`                                                   |
+|                 | `list_contacts`    | `GET /messages/contacts`                                      |
+| Organise        | `update_message`   | `PATCH /messages` (flags, archive), `POST /messages` (labels) |
+|                 | `list_labels`      | `GET /labels`                                                 |
+|                 | `create_label`     | `POST /labels`                                                |
+|                 | `update_label`     | `PATCH /labels`                                               |
+|                 | `delete_label`     | `DELETE /labels`                                              |
+| Drafts and send | `list_drafts`      | `GET /drafts`                                                 |
+|                 | `get_draft`        | `GET /drafts/:id`                                             |
+|                 | `save_draft`       | `POST /drafts`, `PATCH /drafts/:id` (merged over the draft)   |
+|                 | `delete_draft`     | `DELETE /drafts/:id`                                          |
+|                 | `send_email`       | `POST /send` (optional `sendAt`)                              |
+|                 | `list_scheduled`   | `GET /send/scheduled`                                         |
+|                 | `cancel_scheduled` | `DELETE /send/scheduled`                                      |
+| Calendar        | `list_calendars`   | `GET /calendars`                                              |
+|                 | `list_events`      | `GET /calendar-events` (date range)                           |
+|                 | `create_event`     | `POST /calendar-events`                                       |
+|                 | `update_event`     | `PATCH /calendar-events` (full replace, whole series)         |
+|                 | `delete_event`     | `DELETE /calendar-events` (whole series)                      |
+| Tasks           | `list_projects`    | `GET /projects`                                               |
+|                 | `list_tasks`       | `GET /task-items`                                             |
+|                 | `create_task`      | `POST /task-items`                                            |
+|                 | `update_task`      | `PATCH /task-items` (including complete)                      |
+|                 | `delete_task`      | `DELETE /task-items`                                          |
+| Documents       | `list_documents`   | `GET /documents` (folder listing)                             |
+|                 | `search_documents` | `GET /documents` (search)                                     |
+|                 | `get_document`     | `GET /documents`                                              |
+|                 | `create_document`  | `POST /documents`, then `PATCH /documents` for content        |
+|                 | `update_document`  | `PATCH /documents`                                            |
+|                 | `delete_document`  | `DELETE /documents`                                           |
 
-Routes in this table are the intended targets; the plan confirms each path,
-method and parameter against the Worker source.
+Routes in this table are the implemented targets, confirmed against the Worker
+source. `list_projects` and `list_documents` were added during planning because
+tasks need a project id and document search alone cannot browse folders.
 
 Out of v1: label rules, files and attachments, AI compose and summarise,
 enrichment settings.
