@@ -136,11 +136,13 @@ Reads carry `readOnlyHint`; deletes, `cancel_scheduled` and `send_email` carry `
 
 **Logs.** Each tool call writes one `mcp_tool` line with the tool name, outcome (`ok`, `input_error`, `api_error` with its status, or `error`) and duration, and SDK-level failures write an `mcp_handler_error` line with the error name. Arguments and results are never logged.
 
-**Auth0 setup.** Clients cannot sign in until this is done. As of 2026-10-04 the Worker is deployed and answers unauthenticated requests with the `401` challenge, but these steps have not been completed.
+**Auth0 setup.** In the Cookie tenant (the one behind `auth.infinitywave.online`), as configured on 2026-10-04:
 
-1. Create an API with identifier `https://mcp.infinitywave.online/mcp` and two permissions, `cookie:read` and `cookie:write`.
-2. Enable Client ID Metadata Document (CIMD) client registration, which lets Claude, Codex and Hermes identify themselves without a per-client setup. Third-party clients receive the scopes set as the API's default permissions for third-party applications, so select both there (or only `cookie:read` for a read-only setup). Alternatively pre-register one application per client and give its client id to the client (each section under [Connect a client](#connect-a-client) shows where it goes). Dynamic client registration stays off.
-3. Verify with `curl https://auth.infinitywave.online/.well-known/oauth-authorization-server` that `client_id_metadata_document_supported` is `true`.
+- API `Cookie MCP`, identifier `https://mcp.infinitywave.online/mcp`, RS256, with permissions `cookie:read` and `cookie:write`, RBAC off, and per-app authorization for user-delegated access.
+- Application `Cookie MCP Clients` (Native, public, client id `rTBvArPhtT8s9dGwT8mODMphNrngYlHb`), shared by every MCP client and granted both permissions on the API. The client id is not a secret. Its allowed callback URLs are `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback` (Claude), `http://localhost:8765/callback` and `http://127.0.0.1:8765/callback` (Claude Code), `http://localhost:8766/callback` and `http://127.0.0.1:8766/callback` (Codex), and `/callback` on ports `27890` to `27894` of both `127.0.0.1` and `localhost` (Hermes).
+- Client ID Metadata Documents and dynamic client registration are not enabled, so every client uses that client id. For a read-only client, create a second application granted only `cookie:read`.
+
+MCP clients ask for the server with the OAuth `resource` parameter. If a sign-in succeeds but the server then answers `401`, Auth0 issued a token for its default audience: turn on the tenant's resource parameter compatibility setting (Settings, Advanced) or set the tenant's default audience so `resource` selects this API.
 
 **Deploy order.** `cookie-mcp` binds the `Internal` entrypoint of eight Workers (`cookie-web-emails`, `cookie-web-messages`, `cookie-web-labels`, `cookie-web-search`, `cookie-web-drafts`, `cookie-web-send`, `cookie-web-calendar`, `cookie-web-tasks`), which must be deployed before it. The `Deploy` workflow's `cookie-mcp` step is deliberately placed after every `cookie-web-*` step, and a failed step stops the job, so `Deploy` with `all` already deploys in a safe order. Locally, `npm run deploy -- --all` is refused; deploy those Workers before `cookie-mcp` when deploying individually. It needs the `SENTRY_DSN` repository secret, already synchronized by the workflow.
 
@@ -156,7 +158,7 @@ Custom connectors are added in the app, not in `claude_desktop_config.json` (tha
 
 1. Open Settings, then Connectors, and choose **Add custom connector**.
 2. Name it `Cookie` and enter the URL `https://mcp.infinitywave.online/mcp`.
-3. If Auth0 uses a pre-registered application instead of CIMD, open **Advanced settings** and enter its OAuth client id.
+3. Open **Advanced settings** and enter the OAuth client id `rTBvArPhtT8s9dGwT8mODMphNrngYlHb` (no secret).
 4. Choose **Add**, then **Connect**, and sign in.
 
 Claude connects from Anthropic's servers, not from your machine, so the endpoint must stay publicly reachable.
@@ -164,15 +166,15 @@ Claude connects from Anthropic's servers, not from your machine, so the endpoint
 #### Claude Code
 
 ```sh
-claude mcp add --transport http --scope user cookie https://mcp.infinitywave.online/mcp
+claude mcp add --transport http --scope user --client-id rTBvArPhtT8s9dGwT8mODMphNrngYlHb --callback-port 8765 cookie https://mcp.infinitywave.online/mcp
 ```
 
-Then run `/mcp` inside Claude Code, select `cookie` and choose **Authenticate**. `--scope user` makes the server available in every project; leave it out to add it to the current project only. With a pre-registered Auth0 application, add `--client-id <id>` (and `--callback-port <port>` if the application's callback URL uses a fixed port).
+Then run `/mcp` inside Claude Code, select `cookie` and choose **Authenticate**. `--scope user` makes the server available in every project; leave it out to add it to the current project only. The client id and port are the ones registered in Auth0.
 
 #### Codex
 
 ```sh
-codex mcp add cookie --url https://mcp.infinitywave.online/mcp
+codex mcp add cookie --url https://mcp.infinitywave.online/mcp --oauth-client-id rTBvArPhtT8s9dGwT8mODMphNrngYlHb
 codex mcp login cookie
 ```
 
@@ -183,7 +185,7 @@ codex mcp login cookie
 url = "https://mcp.infinitywave.online/mcp"
 ```
 
-With a pre-registered Auth0 application, add `--oauth-client-id <id>` to `codex mcp add`. `codex mcp login --no-browser` prints the login URL for a machine without a browser. `codex mcp list` shows whether the server is authenticated.
+Auth0 only accepts the registered callback port, so also set `mcp_oauth_callback_port = 8766` at the top level of `~/.codex/config.toml`. `codex mcp login --no-browser` prints the login URL for a machine without a browser. `codex mcp list` shows whether the server is authenticated.
 
 #### Hermes
 
@@ -194,6 +196,8 @@ mcp_servers:
   cookie:
     url: 'https://mcp.infinitywave.online/mcp'
     auth: oauth
+    oauth:
+      client_id: 'rTBvArPhtT8s9dGwT8mODMphNrngYlHb'
 ```
 
 Then sign in and reload:
@@ -202,12 +206,7 @@ Then sign in and reload:
 hermes mcp login cookie
 ```
 
-Run `/reload-mcp` in an open Hermes session to pick up the change. Tokens are stored in `~/.hermes/mcp-tokens/cookie.json`. Hermes exposes the tools as `mcp__cookie__<tool>`, for example `mcp__cookie__cookie_list_labels`. With a pre-registered Auth0 application, set it under the server entry:
-
-```yaml
-oauth:
-  client_id: '<id>'
-```
+Run `/reload-mcp` in an open Hermes session to pick up the change. Tokens are stored in `~/.hermes/mcp-tokens/cookie.json`. Hermes exposes the tools as `mcp__cookie__<tool>`, for example `mcp__cookie__cookie_list_labels`.
 
 ## Mail app ingest
 
