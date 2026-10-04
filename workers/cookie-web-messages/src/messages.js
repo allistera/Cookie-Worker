@@ -31,7 +31,7 @@ const UNSUBSCRIBE_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
  */
 export function fetchOwnedMessageBody(sql, id, userId) {
   return sql`
-    SELECT m.id, m.thread_id, m.body_html, m.body_text, m.headers, m.screening_status,
+    SELECT m.id, m.thread_id, m.subject, m.body_html, m.body_text, m.headers, m.screening_status,
            CASE WHEN t.ai_summary_message_id = latest.id
                 THEN t.ai_summary ELSE NULL END AS thread_summary,
            latest.id AS thread_latest_message_id,
@@ -354,6 +354,91 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
   return Response.json({ labels });
 }
 
+const MAX_LABELS_PER_UPDATE = 20;
+
+/** @param {any} value */
+function validIdList(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_LABELS_PER_UPDATE) return null;
+  if (!value.every((entry) => validId(entry))) return null;
+  return [...new Set(value.map(String))];
+}
+
+/**
+ * Add and remove several user labels on one owned message in a single
+ * transaction, with one search-drift mark and one reindex for the lot.
+ * cookie-mcp's cookie_update_message uses it so a multi-label change is one
+ * request rather than one per label. Like add_label/remove_label it is
+ * idempotent: labels already attached, or already absent, are left alone.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} messageId
+ * @param {any} rawAdd
+ * @param {any} rawRemove
+ * @param {ReindexDeps} deps
+ */
+async function updateMessageLabels(sql, userId, messageId, rawAdd, rawRemove, deps) {
+  const addIds = validIdList(rawAdd);
+  const removeIds = validIdList(rawRemove);
+  if (!addIds || !removeIds || addIds.length + removeIds.length === 0) {
+    return Response.json(
+      {
+        error: `add_label_ids or remove_label_ids (max ${MAX_LABELS_PER_UPDATE} valid ids each) is required`,
+      },
+      { status: 400 },
+    );
+  }
+
+  const outcome = await sql.begin(async (tx) => {
+    const [owned] = await tx`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM messages m WHERE m.id = ${messageId} AND m.user_id = ${userId}
+        ) AS message,
+        (
+          SELECT count(*)::int FROM labels l
+          WHERE l.id = ANY(${addIds}::uuid[]) AND l.user_id = ${userId} AND l.kind = 'user'
+        ) AS labels
+    `;
+    if (!owned?.message) return { error: 'Message not found' };
+    // Checked before any write so a bad id changes nothing.
+    if (owned.labels !== addIds.length) return { error: 'Label not found' };
+
+    const added = addIds.length
+      ? await tx`
+          INSERT INTO message_labels (message_id, label_id)
+          SELECT ${messageId}, label_id FROM unnest(${addIds}::uuid[]) AS label_id
+          ON CONFLICT DO NOTHING
+          RETURNING label_id
+        `
+      : [];
+    const removed = removeIds.length
+      ? await tx`
+          DELETE FROM message_labels
+          WHERE message_id = ${messageId} AND label_id = ANY(${removeIds}::uuid[])
+          RETURNING label_id
+        `
+      : [];
+    const changed = added.length + removed.length > 0;
+    if (changed) {
+      await tx`UPDATE messages SET search_indexed_at = NULL WHERE id = ${messageId}`;
+    }
+    return { changed };
+  });
+  if (outcome.error) return Response.json({ error: outcome.error }, { status: 404 });
+
+  const labels = await sql`
+    SELECT l.name, l.color, l.kind
+    FROM message_labels ml
+    JOIN labels l ON l.id = ml.label_id
+    WHERE ml.message_id = ${messageId}
+    ORDER BY l.name
+  `;
+  if (outcome.changed) deps.onMessageChanged?.(messageId);
+  return Response.json({ labels });
+}
+
 /**
  * Replace or clear the one Category attached to an owned message. Categories
  * are deliberately not part of the Meilisearch document, so this updates the
@@ -629,6 +714,10 @@ export async function postMessage(sql, userId, body, deps) {
 
   if (action === 'add_label' || action === 'remove_label') {
     return mutateMessageLabel(sql, userId, id, action, body.label_id, deps);
+  }
+
+  if (action === 'update_labels') {
+    return updateMessageLabels(sql, userId, id, body.add_label_ids, body.remove_label_ids, deps);
   }
 
   if (action === 'set_category') {
