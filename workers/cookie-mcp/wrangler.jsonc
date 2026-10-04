@@ -1,0 +1,40 @@
+{
+  "name": "cookie-mcp",
+  "main": "src/index.js",
+  // Remote MCP server for claude.ai and Claude Code. An OAuth resource server
+  // for Auth0 tokens issued to its own audience; it never forwards them. Tools
+  // reach the API Workers through their service-binding-only Internal
+  // entrypoint (shared/internal-entrypoint.js).
+  "workers_dev": true,
+  "routes": [{ "pattern": "mcp.infinitywave.online", "custom_domain": true }],
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.2,
+    "traces": { "enabled": true, "destinations": ["honeycomb-traces"], "head_sampling_rate": 0.2 },
+  },
+  "placement": { "mode": "smart" },
+  // Only for verifyAccessToken's users lookup; tools reach data through the
+  // API Workers below.
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
+  "services": [
+    { "binding": "EMAILS", "service": "cookie-web-emails", "entrypoint": "Internal" },
+    { "binding": "MESSAGES", "service": "cookie-web-messages", "entrypoint": "Internal" },
+    { "binding": "LABELS", "service": "cookie-web-labels", "entrypoint": "Internal" },
+    { "binding": "SEARCH", "service": "cookie-web-search", "entrypoint": "Internal" },
+    { "binding": "DRAFTS", "service": "cookie-web-drafts", "entrypoint": "Internal" },
+    { "binding": "SEND", "service": "cookie-web-send", "entrypoint": "Internal" },
+    { "binding": "CALENDAR", "service": "cookie-web-calendar", "entrypoint": "Internal" },
+    { "binding": "TASKS", "service": "cookie-web-tasks", "entrypoint": "Internal" },
+  ],
+  "vars": {
+    // Public identifiers, not secrets. Only the custom domain issues tokens
+    // for this new audience, so the tenant domain is not listed.
+    "AUTH0_DOMAIN": "auth.infinitywave.online",
+    "AUTH0_AUDIENCE": "https://mcp.infinitywave.online/mcp",
+    "MCP_RESOURCE": "https://mcp.infinitywave.online/mcp",
+    "SENTRY_ENVIRONMENT": "production",
+  },
+}
