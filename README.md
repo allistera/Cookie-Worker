@@ -17,7 +17,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | [`cookie-web-tasks`](workers/cookie-web-tasks)                 | HTTP (browser)                | AI Today's task list, digest, and news (`GET/POST /tasks`), on-demand triage refresh (`/tasks/refresh`), owner-only model/schedule preferences (`/tasks/enrichment-settings`), news personalization and daily-note defaults (`/tasks/interests`, `/tasks/daily-note-seed`), document image uploads (`/tasks/image-upload`), and the full Documents feature — folders, documents, templates, and Meilisearch hybrid search over the `documents` index (`GET/POST/PATCH/DELETE /documents`), plus uploaded files in the same folder tree (`GET/POST /files`, `GET/PATCH/DELETE /files/:id`, `GET /files/:id/content`; bytes in the private `cookie-files` R2 bucket, served only through the Worker). Previously multiplexed behind `api/tasks.js?resource=...` for the same Vercel Hobby function-cap reason as `cookie-web-labels`; this is the largest of the three multiplexing-removal Workers. Its image upload was also redesigned to use the Web-standard `Request.formData()` instead of Cookie-Web's original hand-rolled multipart parser. |
 | [`cookie-web-notifications`](workers/cookie-web-notifications) | HTTP (browser)                | Browser-notification event claim/ack for Cookie-Web's SPA — `POST /notification-event`. A 30-second lease (`claim`) guarantees exactly one tab shows a new-mail notification, and `ack` deletes the event once shown. Replaces Cookie-Web's `api/notification-event.js`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | [`cookie-web-receipts`](workers/cookie-web-receipts)           | HTTP (browser, email clients) | Read receipts — `GET /read-receipts`. Serves the unauthenticated 1×1 tracking pixel embedded in sent mail (`?token=`, per-IP flood-guarded, response identical for any token so mailbox state never leaks) and the SPA's authenticated receipt-status read (`?messageIds=`). Replaces Cookie-Web's `api/read-receipts.js`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| [`cookie-mcp`](workers/cookie-mcp)                             | HTTP (MCP clients)            | Remote MCP server for claude.ai and Claude Code at `https://mcp.infinitywave.online/mcp`: 33 `cookie_` tools over mail, labels, drafts and sending, calendar, tasks and documents. See [Cookie MCP server](#cookie-mcp-server).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| [`cookie-mcp`](workers/cookie-mcp)                             | HTTP (MCP clients)            | Remote MCP server for Claude, Codex, Hermes and other MCP clients at `https://mcp.infinitywave.online/mcp`: 33 `cookie_` tools over mail, labels, drafts and sending, calendar, tasks and documents. See [Cookie MCP server](#cookie-mcp-server).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | [`mail-app-ingest`](workers/mail-app-ingest)                   | Email, scheduled              | Parse and store inbound mail, forward the original, and enrich the stored copy.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | [`data-enricher`](workers/data-enricher)                       | Scheduled (hourly), manual    | Stores three-tier inbox triage only. News generation and per-email task extraction do not run. The hourly trigger runs only in the owner-configured Europe/London slots (default every day, 09:00–19:00 inclusive) and defaults to `gpt-5-nano`. Feeds Cookie-Web's AI Today page.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | [`scheduled-send-flusher`](workers/scheduled-send-flusher)     | Scheduled (every 15 minutes)  | Safety net behind cookie-web-send's `ScheduledSendClock` alarm: calls `POST /send/flush` so retries, expired leases and a lost alarm still go out, and runs the housekeeping sweeps; owns no mail-sending logic itself.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -117,7 +117,7 @@ Each is on its own custom domain (`ai-api` / `calendar-api` / `emails-api` / `se
 
 ## Cookie MCP server
 
-`cookie-mcp` is a remote MCP server (streamable HTTP, protocol 2026-07-28 with stateless fallback) at `https://mcp.infinitywave.online/mcp`, for claude.ai and Claude Code.
+`cookie-mcp` is a remote MCP server (streamable HTTP, protocol 2026-07-28 with stateless fallback) at `https://mcp.infinitywave.online/mcp`. Any MCP client that supports remote servers with OAuth can use it; setup for Claude Desktop, Claude Code, Codex and Hermes is under [Connect a client](#connect-a-client).
 
 **Auth model.** It is an OAuth resource server for Auth0 tokens issued to its own audience, `https://mcp.infinitywave.online/mcp`; tokens for Cookie-Web's API audience are rejected. Protected resource metadata is served at `/.well-known/oauth-protected-resource/mcp` and `/.well-known/oauth-protected-resource`. It never forwards the client's token. After verifying it, the Worker calls the API Workers over service bindings to their `Internal` entrypoint, passing the verified identity as plain RPC data; the receiving Worker carries it in `AsyncLocalStorage` and `verifyAccessToken` honours it first. Any Worker in the same Cloudflare account could bind `Internal` and act as any user, so deploy rights on that account are the trust boundary.
 
@@ -132,18 +132,78 @@ Each is on its own custom domain (`ai-api` / `calendar-api` / `emails-api` / `se
 
 Reads carry `readOnlyHint`; deletes, `cancel_scheduled` and `send_email` carry `destructiveHint`. Email and document text is untrusted content written by third parties: the server instructions and tool descriptions tell the model to treat it as data and never follow instructions inside it. Bodies are capped at 20,000 characters with a `truncated` flag.
 
-**Auth0 setup.**
+**Auth0 setup.** Clients cannot sign in until this is done. As of 2026-10-04 the Worker is deployed and answers unauthenticated requests with the `401` challenge, but these steps have not been completed.
 
 1. Create an API with identifier `https://mcp.infinitywave.online/mcp`.
-2. Enable Client ID Metadata Document (CIMD) client registration and register claude.ai and Claude Code. Alternatively pre-register an application and enter its client id in the client. Dynamic client registration stays off.
+2. Enable Client ID Metadata Document (CIMD) client registration, which lets Claude, Codex and Hermes identify themselves without a per-client setup. Alternatively pre-register one application per client and give its client id to the client (each section under [Connect a client](#connect-a-client) shows where it goes). Dynamic client registration stays off.
 3. Verify with `curl https://auth.infinitywave.online/.well-known/oauth-authorization-server` that `client_id_metadata_document_supported` is `true`.
 
 **Deploy order.** `cookie-mcp` binds the `Internal` entrypoint of eight Workers (`cookie-web-emails`, `cookie-web-messages`, `cookie-web-labels`, `cookie-web-search`, `cookie-web-drafts`, `cookie-web-send`, `cookie-web-calendar`, `cookie-web-tasks`), which must be deployed before it. The `Deploy` workflow's `cookie-mcp` step is deliberately placed after every `cookie-web-*` step, and a failed step stops the job, so `Deploy` with `all` already deploys in a safe order. Locally, `npm run deploy -- --all` is refused; deploy those Workers before `cookie-mcp` when deploying individually. It needs the `SENTRY_DSN` repository secret, already synchronized by the workflow.
 
-**Connect.**
+### Connect a client
 
-- claude.ai: Settings, Connectors, Add custom connector, with the URL `https://mcp.infinitywave.online/mcp`.
-- Claude Code: `claude mcp add --transport http cookie https://mcp.infinitywave.online/mcp`
+Every client uses the same URL, `https://mcp.infinitywave.online/mcp`, and signs in through Auth0 in a browser with the account that owns the Cookie mailbox. No API key or token is pasted anywhere. The first request returns `401` with a pointer to the server's OAuth metadata, the client opens the Auth0 login, and it stores and refreshes the resulting token itself. An account without a provisioned mailbox gets `403`.
+
+To check a connection, ask the client to list your Cookie labels (`cookie_list_labels`), which is read-only.
+
+#### Claude Desktop and claude.ai
+
+Custom connectors are added in the app, not in `claude_desktop_config.json` (that file is for local stdio servers). A connector added here is shared by claude.ai, Claude Desktop and the mobile apps on the same account.
+
+1. Open Settings, then Connectors, and choose **Add custom connector**.
+2. Name it `Cookie` and enter the URL `https://mcp.infinitywave.online/mcp`.
+3. If Auth0 uses a pre-registered application instead of CIMD, open **Advanced settings** and enter its OAuth client id.
+4. Choose **Add**, then **Connect**, and sign in.
+
+Claude connects from Anthropic's servers, not from your machine, so the endpoint must stay publicly reachable.
+
+#### Claude Code
+
+```sh
+claude mcp add --transport http --scope user cookie https://mcp.infinitywave.online/mcp
+```
+
+Then run `/mcp` inside Claude Code, select `cookie` and choose **Authenticate**. `--scope user` makes the server available in every project; leave it out to add it to the current project only. With a pre-registered Auth0 application, add `--client-id <id>` (and `--callback-port <port>` if the application's callback URL uses a fixed port).
+
+#### Codex
+
+```sh
+codex mcp add cookie --url https://mcp.infinitywave.online/mcp
+codex mcp login cookie
+```
+
+`codex mcp add` writes the entry to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.cookie]
+url = "https://mcp.infinitywave.online/mcp"
+```
+
+With a pre-registered Auth0 application, add `--oauth-client-id <id>` to `codex mcp add`. `codex mcp login --no-browser` prints the login URL for a machine without a browser. `codex mcp list` shows whether the server is authenticated.
+
+#### Hermes
+
+Add the server to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  cookie:
+    url: 'https://mcp.infinitywave.online/mcp'
+    auth: oauth
+```
+
+Then sign in and reload:
+
+```sh
+hermes mcp login cookie
+```
+
+Run `/reload-mcp` in an open Hermes session to pick up the change. Tokens are stored in `~/.hermes/mcp-tokens/cookie.json`. Hermes exposes the tools as `mcp__cookie__<tool>`, for example `mcp__cookie__cookie_list_labels`. With a pre-registered Auth0 application, set it under the server entry:
+
+```yaml
+oauth:
+  client_id: '<id>'
+```
 
 ## Mail app ingest
 
