@@ -65,12 +65,9 @@ describe('organise tools', () => {
     expect(api.messages.patch).toHaveBeenCalledWith('/messages', { id: ID, scheduled_for: null });
   });
 
-  test('cookie_update_message omits the patch when only labels change, add before remove', async () => {
+  test('cookie_update_message omits the patch when only labels change and sends them in one request', async () => {
     const api = fakeApi();
-    api.messages.post
-      .mockResolvedValueOnce({ labels: [{ name: 'A', color: '#000000', kind: 'user' }] })
-      .mockResolvedValueOnce({ labels: [{ name: 'A', color: '#000000', kind: 'user' }] })
-      .mockResolvedValueOnce({ labels: [] });
+    api.messages.post.mockResolvedValueOnce({ labels: [] });
     const result = await call(
       'cookie_update_message',
       { id: ID, addLabelIds: [L1, L2], removeLabelIds: [L3] },
@@ -78,9 +75,10 @@ describe('organise tools', () => {
     );
     expect(api.messages.patch).not.toHaveBeenCalled();
     expect(api.messages.post.mock.calls).toEqual([
-      ['/messages', { id: ID, action: 'add_label', label_id: L1 }],
-      ['/messages', { id: ID, action: 'add_label', label_id: L2 }],
-      ['/messages', { id: ID, action: 'remove_label', label_id: L3 }],
+      [
+        '/messages',
+        { id: ID, action: 'update_labels', add_label_ids: [L1, L2], remove_label_ids: [L3] },
+      ],
     ]);
     expect(result).toEqual({ message: { id: ID }, labels: [] });
   });

@@ -94,6 +94,7 @@ describe('mail tools', () => {
   const message = {
     id: ID,
     thread_id: 'th1',
+    subject: 'Quarterly numbers',
     body_text: 'Hello there',
     body_html: '<p>Hello</p>',
     thread_summary: 'sum',
@@ -110,6 +111,7 @@ describe('mail tools', () => {
     expect(result).toEqual({
       id: ID,
       threadId: 'th1',
+      subject: 'Quarterly numbers',
       from: { name: 'Ann', address: 'ann@example.com' },
       sentAt: '2026-10-01T10:00:00Z',
       text: 'Hello there',
@@ -139,9 +141,6 @@ describe('mail tools', () => {
     });
     const schema = byName(tools, 'cookie_get_message').outputSchema;
     expect(schema.parse(result)).toEqual(result);
-    // The messages API never returns a subject for the message or its thread.
-    expect(result).not.toHaveProperty('subject');
-    expect(Object.keys(schema.shape)).not.toContain('subject');
   });
 
   test('cookie_get_message falls back to HTML text when body_text is null', async () => {

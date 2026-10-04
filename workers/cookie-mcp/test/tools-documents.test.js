@@ -102,6 +102,33 @@ describe('documents tools', () => {
     });
     const rich = await call('cookie_get_document', { id: DOC, includeBlocks: true }, api);
     expect(rich.blocks).toEqual(blocks);
+    expect(rich).not.toHaveProperty('blocksLossy');
+  });
+
+  test('cookie_get_document leaves embedded data out of the raw blocks and says so', async () => {
+    const api = fakeApi();
+    const image = { type: 'image', data: { url: `data:image/png;base64,${'A'.repeat(5000)}` } };
+    const paragraph = { type: 'paragraph', data: { text: 'kept' } };
+    api.tasks.get.mockResolvedValue({ document: { ...row, blocks: [paragraph, image] } });
+    const result = await call('cookie_get_document', { id: DOC, includeBlocks: true }, api);
+    expect(result.blocksLossy).toBe(true);
+    expect(result.blocks).toEqual([
+      paragraph,
+      { type: 'image', data: { url: '[embedded data omitted]' } },
+    ]);
+  });
+
+  test('cookie_get_document omits raw blocks that are still too large', async () => {
+    const api = fakeApi();
+    const blocks = Array.from({ length: 60 }, () => ({
+      type: 'paragraph',
+      data: { text: 'y'.repeat(2000) },
+    }));
+    api.tasks.get.mockResolvedValue({ document: { ...row, blocks } });
+    const result = await call('cookie_get_document', { id: DOC, includeBlocks: true }, api);
+    expect(result).not.toHaveProperty('blocks');
+    expect(result.blocksLossy).toBe(true);
+    expect(result.truncated).toBe(true);
   });
 
   test('cookie_get_document truncates long text', async () => {

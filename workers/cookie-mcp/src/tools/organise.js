@@ -1,17 +1,10 @@
 import * as z from 'zod';
 import { ToolInputError } from '../results.js';
+import { provided, READ_ONLY } from './common.js';
 
 const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
 
 const labelRow = z.object({ id: z.string() }).passthrough();
-
-/**
- * Builds a body from `entries`, keeping only the keys whose value was provided.
- * @param {Record<string, unknown>} entries
- */
-function provided(entries) {
-  return Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined));
-}
 
 /** @type {import('./types.js').ToolDefinition[]} */
 export const tools = [
@@ -21,7 +14,8 @@ export const tools = [
     description:
       'Changes an email’s state and labels: done = archive out of the inbox; trashed = move to trash; ' +
       'spam records the owner’s verdict; snoozeUntil (ISO datetime) hides it until then, null clears the snooze. ' +
-      'Label ids come from cookie_list_labels (user labels only).',
+      'Label ids come from cookie_list_labels (user labels only). Flags are applied before labels; ' +
+      'every change is safe to repeat, so retry the same call if it fails part-way.',
     inputSchema: z.object({
       id: z.string().uuid().describe('Message id'),
       unread: z.boolean().optional(),
@@ -55,22 +49,17 @@ export const tools = [
 
       const patchResult = hasFlags ? await api.messages.patch('/messages', { id, ...flags }) : null;
 
-      // Sequential on purpose: each label action rewrites the message's search
-      // document, so concurrent calls could index a stale label set.
-      /** @type {any} */
-      let labelResult = null;
-      for (const [action, ids] of [
-        ['add_label', addLabelIds],
-        ['remove_label', removeLabelIds],
-      ]) {
-        for (const labelId of ids) {
-          labelResult = await api.messages.post('/messages', {
-            id,
-            action,
-            label_id: labelId,
-          });
-        }
-      }
+      // One request and one search reindex for every label change, after the
+      // flags so both writes never rewrite the search document at once.
+      const labelResult =
+        addLabelIds.length + removeLabelIds.length > 0
+          ? await api.messages.post('/messages', {
+              id,
+              action: 'update_labels',
+              add_label_ids: addLabelIds,
+              remove_label_ids: removeLabelIds,
+            })
+          : null;
 
       return {
         message: patchResult?.message ?? { id },
@@ -84,7 +73,7 @@ export const tools = [
     description: 'Lists the owner’s labels with their ids, colours and message counts.',
     inputSchema: z.object({}),
     outputSchema: z.object({ labels: z.array(z.record(z.string(), z.unknown())) }),
-    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    annotations: READ_ONLY,
     async run(_args, api) {
       const body = await api.labels.get('/labels');
       return {

@@ -1,7 +1,6 @@
 import * as z from 'zod';
 import { ToolInputError } from '../results.js';
-
-const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+import { provided, READ_ONLY } from './common.js';
 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
 const id = z.string().uuid();
@@ -53,14 +52,6 @@ const taskFields = {
   recurrence: z.string().max(100).nullable().optional().describe('Repeat rule, e.g. "every week"'),
   today: date.optional().describe('The owner’s current date, YYYY-MM-DD'),
 };
-
-/**
- * Keeps provided keys (explicit nulls are meaningful to the API) and drops undefined.
- * @param {Record<string, unknown>} entries
- */
-function provided(entries) {
-  return Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined));
-}
 
 /** @type {import('./types.js').ToolDefinition[]} */
 export const tools = [

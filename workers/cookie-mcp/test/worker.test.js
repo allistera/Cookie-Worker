@@ -90,9 +90,12 @@ const EXPECTED_TOOLS = [
   'cookie_update_task',
 ];
 
+// What authenticate resolves with; a test narrows it to a read-only caller.
+let caller = { userId: 'u-1', email: 'a@example.com', canWrite: true };
+
 /** @param {string} method @param {Record<string, unknown>} [params] */
 async function rpc(method, params = {}) {
-  authenticate.mockResolvedValue({ userId: 'u-1', email: 'a@example.com' });
+  authenticate.mockResolvedValue(caller);
   const response = await worker.fetch(
     new Request('https://mcp.example/mcp', {
       method: 'POST',
@@ -119,6 +122,9 @@ async function rpc(method, params = {}) {
 // A block body: an arrow returning the mock would hand it to vitest as a
 // teardown, which then calls it after each test.
 beforeEach(() => {
+  caller = { userId: 'u-1', email: 'a@example.com', canWrite: true };
+  // The Worker logs one line per tool call; keep the test output clean.
+  vi.spyOn(console, 'log').mockImplementation(() => undefined);
   authenticate.mockReset();
   labelsCall.mockReset();
   vi.mocked(captureHandledException).mockReset();
@@ -153,7 +159,7 @@ describe('routing', () => {
   });
 
   test('an authenticated tools/list lists every cookie_ tool', async () => {
-    authenticate.mockResolvedValue({ userId: 'u-1', email: 'a@example.com' });
+    authenticate.mockResolvedValue(caller);
     const response = await worker.fetch(
       new Request('https://mcp.example/mcp', {
         method: 'POST',
@@ -198,6 +204,87 @@ describe('tools', () => {
     expect(labelsCall.mock.calls[0][0]).toEqual({ userId: 'u-1', email: 'a@example.com' });
   });
 
+  test('a read-only caller is offered only the read-only tools and cannot call the rest', async () => {
+    caller = { userId: 'u-1', email: 'a@example.com', canWrite: false };
+    const { tools } = await rpc('tools/list');
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.every((tool) => tool.annotations.readOnlyHint === true)).toBe(true);
+    expect(tools.map((tool) => tool.name)).not.toContain('cookie_send_email');
+
+    const sendCall = vi.fn();
+    const sendRequest = () =>
+      new Request('https://mcp.example/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'MCP-Protocol-Version': PROTOCOL_VERSION,
+          'Mcp-Method': 'tools/call',
+          'Mcp-Name': 'cookie_send_email',
+        },
+        body: JSON.stringify({
+          ...TOOLS_LIST_REQUEST,
+          method: 'tools/call',
+          params: {
+            ...TOOLS_LIST_REQUEST.params,
+            name: 'cookie_send_email',
+            arguments: { to: ['a@example.com'], subject: 's', text: 't' },
+          },
+        }),
+      });
+    const refused = await worker
+      .fetch(sendRequest(), { ...env, SEND: { call: sendCall } }, ctx)
+      .then(readJsonRpc);
+    expect(refused.error ?? refused.result?.isError).toBeTruthy();
+    expect(JSON.stringify(refused)).toMatch(/cookie_send_email/);
+    expect(sendCall).not.toHaveBeenCalled();
+
+    // The same call goes through for a caller allowed to write, so the
+    // refusal above was the scope and not a broken request.
+    caller = { userId: 'u-1', email: 'a@example.com', canWrite: true };
+    sendCall.mockResolvedValue({ status: 200, body: { id: 'p-1', messageId: null } });
+    authenticate.mockResolvedValue(caller);
+    const allowed = await worker
+      .fetch(sendRequest(), { ...env, SEND: { call: sendCall } }, ctx)
+      .then(readJsonRpc);
+    expect(allowed.result.structuredContent).toEqual({
+      status: 'sent',
+      providerId: 'p-1',
+      messageId: null,
+    });
+  });
+
+  test('the shared handler serves each request as its own caller', async () => {
+    labelsCall.mockResolvedValue({ status: 200, body: { labels: [] } });
+    caller = { userId: 'u-1', email: 'a@example.com', canWrite: true };
+    const first = rpc('tools/call', { name: 'cookie_list_labels', arguments: {} });
+    await first;
+    caller = { userId: 'u-2', email: 'b@example.com', canWrite: false };
+    await rpc('tools/call', { name: 'cookie_list_labels', arguments: {} });
+    expect(labelsCall.mock.calls.map(([identity]) => identity)).toEqual([
+      { userId: 'u-1', email: 'a@example.com' },
+      { userId: 'u-2', email: 'b@example.com' },
+    ]);
+  });
+
+  test('each tool call is logged with its name, outcome and duration, and nothing else', async () => {
+    labelsCall.mockResolvedValue({ status: 404, body: { error: 'x' } });
+    await rpc('tools/call', { name: 'cookie_list_labels', arguments: {} });
+    const lines = vi
+      .mocked(console.log)
+      .mock.calls.map(([line]) => JSON.parse(String(line)))
+      .filter((line) => line.event === 'mcp_tool');
+    expect(lines).toEqual([
+      {
+        event: 'mcp_tool',
+        tool: 'cookie_list_labels',
+        outcome: 'api_error',
+        status: 404,
+        ms: expect.any(Number),
+      },
+    ]);
+  });
+
   test('an API error becomes an isError result without being captured', async () => {
     labelsCall.mockResolvedValue({ status: 404, body: { error: 'x' } });
     const result = await rpc('tools/call', { name: 'cookie_list_labels', arguments: {} });
@@ -226,7 +313,7 @@ describe('legacy (2025-era) protocol', () => {
 
   /** @param {number} id @param {string} method @param {Record<string, unknown>} params */
   async function legacyRpc(id, method, params) {
-    authenticate.mockResolvedValue({ userId: 'u-1', email: 'a@example.com' });
+    authenticate.mockResolvedValue(caller);
     const response = await worker.fetch(
       new Request('https://mcp.example/mcp', {
         method: 'POST',
@@ -260,6 +347,8 @@ describe('legacy (2025-era) protocol', () => {
 
     labelsCall.mockResolvedValue({ status: 200, body: { labels: [] } });
     const result = await legacyRpc(3, 'tools/call', { name: 'cookie_list_labels', arguments: {} });
+    // The caller reaches the tool on the legacy path too.
+    expect(labelsCall.mock.calls[0][0]).toEqual({ userId: 'u-1', email: 'a@example.com' });
     expect(result.structuredContent).toEqual({ labels: [] });
     expect(result.isError).toBeFalsy();
     expect(labelsCall.mock.calls[0][0]).toEqual({ userId: 'u-1', email: 'a@example.com' });

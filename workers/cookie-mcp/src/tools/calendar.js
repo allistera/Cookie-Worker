@@ -1,7 +1,6 @@
 import * as z from 'zod';
 import { ToolInputError } from '../results.js';
-
-const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+import { provided, READ_ONLY } from './common.js';
 
 const MAX_SPAN_DAYS = 1095;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -33,27 +32,33 @@ const eventFields = z.object({
   description: z.string().max(2000).optional(),
   location: z.string().max(200).optional(),
   repeat: z.enum(REPEATS).default('none'),
-  repeatUntil: date.optional().describe('Last date of the series, YYYY-MM-DD'),
+  repeatUntil: date.nullable().optional().describe('Last date of the series, YYYY-MM-DD'),
   repeatDays: z
     .array(z.enum(WEEKDAYS))
     .min(1)
+    .nullable()
     .optional()
     .describe('Weekdays for a weekly repeat; only valid with repeat "weekly"'),
 });
 
 /**
  * Maps tool input to the calendar API body (`durationMinutes` is `duration` there),
- * omitting fields the caller did not provide.
+ * omitting fields the caller did not provide. cookie_list_events reports an
+ * absent repeatUntil/repeatDays as null, so null means "none" for those two
+ * and a listed event can be resent as it was read.
  * @param {z.infer<typeof eventFields>} fields
  */
 function toEventBody(fields) {
   if (fields.repeatDays && fields.repeat !== 'weekly') {
     throw new ToolInputError('repeatDays can only be used with repeat "weekly"');
   }
-  const { durationMinutes, ...rest } = fields;
-  return Object.fromEntries(
-    Object.entries({ ...rest, duration: durationMinutes }).filter(([, v]) => v !== undefined),
-  );
+  const { durationMinutes, repeatUntil, repeatDays, ...rest } = fields;
+  return provided({
+    ...rest,
+    duration: durationMinutes,
+    repeatUntil: repeatUntil ?? undefined,
+    repeatDays: repeatDays ?? undefined,
+  });
 }
 
 /**
@@ -130,12 +135,14 @@ export const tools = [
   {
     name: 'cookie_list_events',
     title: 'List calendar events',
-    description: `Lists events between two dates (at most 1095 days apart), with recurring events expanded into occurrences. ${TIMES}`,
+    description: `Lists events between two dates (at most 1095 days apart), 50 by default, with recurring events expanded into occurrences; truncated is true when more matched, so narrow the dates or raise limit. ${TIMES}`,
     inputSchema: z.object({
       from: date.describe('First date, YYYY-MM-DD'),
       to: date.describe('Last date, YYYY-MM-DD'),
       calendar: z.string().optional().describe('Only events in this calendar id'),
-      limit: z.number().int().min(1).max(1000).default(300),
+      // Each event can carry a 2,000-character description, which update needs
+      // back in full, so the page is kept small instead of trimming the rows.
+      limit: z.number().int().min(1).max(500).default(50),
     }),
     outputSchema: z.object({
       events: z.array(
@@ -217,11 +224,12 @@ export const tools = [
       id: z.string().describe('Event id, or an occurrence id (<seriesId>:<YYYY-MM-DD>)'),
       // Required here: a default would silently strip recurrence from a series.
       repeat: z.enum(REPEATS).describe('Resend the event’s current repeat to keep it'),
+      // Required for the same reason: the API replaces every field, so an
+      // omitted tone would silently reset the event's colour.
       tone: z
         .enum(TONES)
         .nullable()
-        .optional()
-        .describe('Event colour tone; resend the current one to keep it'),
+        .describe('Event colour tone from cookie_list_events; null for none'),
     }),
     outputSchema: z.object({ event: eventOut }),
     annotations: {

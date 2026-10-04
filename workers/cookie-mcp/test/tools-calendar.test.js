@@ -258,7 +258,7 @@ describe('calendar tools', () => {
     const api = fakeApi();
     const run = call(
       'cookie_update_event',
-      { ...fields, id: `${SERIES}:2026-10-12`, date: '2026-10-12', repeat: 'weekly' },
+      { ...fields, id: `${SERIES}:2026-10-12`, date: '2026-10-12', repeat: 'weekly', tone: null },
       api,
     );
     await expect(run).rejects.toThrow(ToolInputError);
@@ -268,17 +268,67 @@ describe('calendar tools', () => {
     expect(api.calendar.patch).not.toHaveBeenCalled();
   });
 
-  test('cookie_update_event requires repeat, while create defaults it to none', () => {
+  test('cookie_update_event requires repeat and tone, while create defaults repeat to none', () => {
     const update = byName(tools, 'cookie_update_event').inputSchema;
-    expect(update.safeParse({ ...fields, id: SERIES }).success).toBe(false);
-    expect(update.safeParse({ ...fields, id: SERIES, repeat: 'none' }).success).toBe(true);
+    expect(update.safeParse({ ...fields, id: SERIES, tone: null }).success).toBe(false);
+    expect(update.safeParse({ ...fields, id: SERIES, repeat: 'none' }).success).toBe(false);
+    expect(update.safeParse({ ...fields, id: SERIES, repeat: 'none', tone: null }).success).toBe(
+      true,
+    );
     expect(byName(tools, 'cookie_create_event').inputSchema.parse(fields).repeat).toBe('none');
+  });
+
+  test('cookie_update_event accepts a listed event resent as it was read', async () => {
+    const api = fakeApi();
+    api.calendar.get.mockResolvedValue({ events: [eventRow], truncated: false });
+    const [listed] = (
+      await call('cookie_list_events', { from: '2026-10-01', to: '2026-10-31' }, api)
+    ).events;
+    api.calendar.patch.mockResolvedValue({ event: eventRow });
+    await call(
+      'cookie_update_event',
+      {
+        id: listed.id,
+        title: listed.title,
+        date: listed.date,
+        start: listed.start,
+        durationMinutes: listed.durationMinutes,
+        calendar: listed.calendar,
+        repeat: listed.repeat,
+        // Both are null for a non-repeating event, and tone is null when unset.
+        repeatUntil: listed.repeatUntil,
+        repeatDays: listed.repeatDays,
+        tone: listed.tone,
+      },
+      api,
+    );
+    expect(api.calendar.patch).toHaveBeenCalledWith('/calendar-events', {
+      id: SERIES,
+      title: 'Standup',
+      date: '2026-10-05',
+      start: '09:30',
+      duration: 15,
+      calendar: CAL,
+      repeat: 'none',
+      tone: null,
+    });
+  });
+
+  test('cookie_list_events returns 50 events by default and flags the rest', async () => {
+    const api = fakeApi();
+    api.calendar.get.mockResolvedValue({
+      events: Array.from({ length: 51 }, () => eventRow),
+      truncated: false,
+    });
+    const result = await call('cookie_list_events', { from: '2026-10-01', to: '2026-10-31' }, api);
+    expect(result.events).toHaveLength(50);
+    expect(result.truncated).toBe(true);
   });
 
   test('cookie_update_event and cookie_delete_event reject non-UUID ids', async () => {
     const api = fakeApi();
     await expect(
-      call('cookie_update_event', { ...fields, id: 'abc', repeat: 'none' }, api),
+      call('cookie_update_event', { ...fields, id: 'abc', repeat: 'none', tone: null }, api),
     ).rejects.toThrow(ToolInputError);
     await expect(call('cookie_delete_event', { id: 'abc:2026-10-01' }, api)).rejects.toThrow(
       ToolInputError,

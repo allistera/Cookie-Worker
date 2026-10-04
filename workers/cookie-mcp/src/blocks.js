@@ -85,3 +85,32 @@ export function blocksToText(blocks) {
     .filter(Boolean)
     .join('\n\n');
 }
+
+const BLOCKS_LIMIT = 100_000;
+const EMBEDDED_DATA_LIMIT = 200;
+export const EMBEDDED_DATA_OMITTED = '[embedded data omitted]';
+
+/**
+ * Raw blocks sized for an agent's context. Documents hold up to 4 MiB of
+ * blocks, mostly base64 images, so embedded `data:` values are replaced with a
+ * marker and blocks still over the limit are left out. Either makes the result
+ * lossy: writing it back would destroy what was omitted.
+ * @param {any[]} blocks
+ * @returns {{blocks?: any[], blocksLossy?: true}}
+ */
+export function boundBlocks(blocks) {
+  let lossy = false;
+  const text = JSON.stringify(blocks, (_key, value) => {
+    if (
+      typeof value === 'string' &&
+      value.length > EMBEDDED_DATA_LIMIT &&
+      value.startsWith('data:')
+    ) {
+      lossy = true;
+      return EMBEDDED_DATA_OMITTED;
+    }
+    return value;
+  });
+  if (text.length > BLOCKS_LIMIT) return { blocksLossy: true };
+  return lossy ? { blocks: JSON.parse(text), blocksLossy: true } : { blocks };
+}

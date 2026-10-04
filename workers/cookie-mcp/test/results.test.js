@@ -22,6 +22,16 @@ describe('results', () => {
     ).toBe('Hi there & you');
   });
 
+  test('htmlToText decodes numeric character references without double-decoding', () => {
+    expect(htmlToText('<p>It&#8217;s &#x201C;fine&#x201d; &#39;ok&apos; &#x1F600;</p>')).toBe(
+      "It\u2019s \u201Cfine\u201D 'ok' \u{1F600}",
+    );
+    // An escaped reference is text, not a reference.
+    expect(htmlToText('&amp;#39; &amp;lt;b&amp;gt;')).toBe('&#39; &lt;b&gt;');
+    // Out-of-range references are dropped rather than throwing.
+    expect(htmlToText('a&#9999999;b&#0;c')).toBe('abc');
+  });
+
   test('toolError explains API failures with actionable text', () => {
     expect(toolError(new ApiError('labels', 409, 'A label with that name already exists'))).toEqual(
       {

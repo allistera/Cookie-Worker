@@ -254,10 +254,24 @@ describe('drafts tools', () => {
 
   test('cookie_cancel_scheduled deletes with the id in the body', async () => {
     const api = fakeApi();
-    const scheduledSend = { id: ID, subject: 'S' };
-    api.send.delete.mockResolvedValue({ scheduledSend });
+    // The API hands back the whole cancelled email for the SPA's composer.
+    api.send.delete.mockResolvedValue({
+      scheduledSend: {
+        id: ID,
+        toAddresses: 'ann@example.com',
+        subject: 'S',
+        text: 'x'.repeat(100_000),
+        html: '<p>big</p>',
+        followUpAt: null,
+        replyToMessageId: null,
+        attachments: [],
+      },
+    });
     const result = await call('cookie_cancel_scheduled', { id: ID }, api);
     expect(api.send.delete).toHaveBeenCalledWith('/send/scheduled', { id: ID });
-    expect(result).toEqual({ cancelled: true, scheduledSend });
+    expect(result).toEqual({
+      cancelled: true,
+      scheduledSend: { id: ID, toAddresses: 'ann@example.com', subject: 'S', followUpAt: null },
+    });
   });
 });

@@ -53,19 +53,30 @@ const ENTITIES = /** @type {Record<string, string>} */ ({
   lt: '<',
   gt: '>',
   quot: '"',
-  '#39': "'",
+  apos: "'",
   nbsp: ' ',
 });
 
+/** @param {number} code */
+function fromCodePoint(code) {
+  // Out-of-range references are left as nothing rather than thrown on.
+  return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+}
+
 /** @param {string | null | undefined} html */
 export function htmlToText(html) {
-  return (html ?? '')
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_, name) => ENTITIES[name])
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n+/g, '\n\n')
-    .trim();
+  return (
+    (html ?? '')
+      .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&#(\d{1,7});/g, (_, digits) => fromCodePoint(Number(digits)))
+      .replace(/&#x([0-9a-f]{1,6});/gi, (_, hex) => fromCodePoint(parseInt(hex, 16)))
+      // Named entities last, &amp; among them, so "&amp;lt;" stays the text "&lt;".
+      .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, name) => ENTITIES[name])
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s*\n+/g, '\n\n')
+      .trim()
+  );
 }
