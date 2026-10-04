@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { ApiError } from '../src/api.js';
 import { ToolInputError } from '../src/results.js';
 import { tools } from '../src/tools/documents.js';
 import { byName, fakeApi } from './helpers.js';
@@ -168,6 +169,28 @@ describe('documents tools', () => {
     await expect(
       tool.run(tool.inputSchema.parse({ text: 'a', blocks }), fakeApi()),
     ).rejects.toThrow(ToolInputError);
+  });
+
+  test('cookie_create_document removes the blank document when the content write fails', async () => {
+    const api = fakeApi();
+    const failure = new ApiError('tasks', 500, 'boom');
+    api.tasks.post.mockResolvedValue({ document: { ...row, blocks: [] } });
+    api.tasks.patch.mockRejectedValue(failure);
+    api.tasks.delete.mockResolvedValue({ ok: true });
+    const tool = byName(tools, 'cookie_create_document');
+    await expect(tool.run(tool.inputSchema.parse({ text: 'hi' }), api)).rejects.toBe(failure);
+    expect(api.tasks.delete).toHaveBeenCalledWith('/documents', { id: DOC });
+  });
+
+  test('cookie_create_document names the document when cleanup also fails', async () => {
+    const api = fakeApi();
+    api.tasks.post.mockResolvedValue({ document: { ...row, blocks: [] } });
+    api.tasks.patch.mockRejectedValue(new ApiError('tasks', 500, 'boom'));
+    api.tasks.delete.mockRejectedValue(new ApiError('tasks', 500, 'nope'));
+    const tool = byName(tools, 'cookie_create_document');
+    const error = await tool.run(tool.inputSchema.parse({ text: 'hi' }), api).catch((e) => e);
+    expect(error).toBeInstanceOf(ToolInputError);
+    expect(error.message).toContain(DOC);
   });
 
   test('cookie_update_document sends only provided keys and maps names', async () => {

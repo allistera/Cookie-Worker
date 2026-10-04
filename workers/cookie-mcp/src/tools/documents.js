@@ -31,7 +31,8 @@ export const tools = [
     title: 'List documents',
     description:
       'Lists documents (id, title, folder, tags, starred, timestamps; no body) one page at a time, ' +
-      'newest first. The first page also returns the folder tree and tag counts.',
+      'newest first. The first page also returns the folder tree and tag counts. ' +
+      UNTRUSTED,
     inputSchema: z.object({
       folder: z.string().optional().describe('Folder id, or "root" for documents outside folders'),
       starred: z.boolean().default(false),
@@ -68,7 +69,8 @@ export const tools = [
     title: 'Search documents',
     description:
       'Searches documents by meaning and keywords (up to 20 results, no paging). ' +
-      'The query supports `tag:<name>` and `is:starred`.',
+      'The query supports `tag:<name>` and `is:starred`. ' +
+      UNTRUSTED,
     inputSchema: z.object({
       query: z.string().min(1).max(500),
       mode: z.enum(['hybrid', 'keyword']).default('hybrid'),
@@ -123,7 +125,8 @@ export const tools = [
     title: 'Create a document',
     description:
       'Creates a document, optionally from a template and with initial content. `text` accepts ' +
-      'plain text with `#` headings and `- ` bullets; pass `blocks` instead for rich content.',
+      'plain text with `#` headings and `- ` bullets; pass `blocks` instead for rich content. ' +
+      'Content is written in a second step; if that write fails the new document is removed.',
     inputSchema: z.object({
       title: z.string().max(300).optional(),
       folderId: id.nullable().optional(),
@@ -149,10 +152,26 @@ export const tools = [
       );
       const created = await api.tasks.post('/documents', body);
       // The create route ignores blocks, so content is written with a follow-up patch.
-      const { document } =
-        content === undefined
-          ? created
-          : await api.tasks.patch('/documents', { id: created.document.id, blocks: content });
+      let document = created.document;
+      if (content !== undefined) {
+        try {
+          ({ document } = await api.tasks.patch('/documents', {
+            id: created.document.id,
+            blocks: content,
+          }));
+        } catch (error) {
+          // Do not leave a blank document behind for a retry to duplicate.
+          try {
+            await api.tasks.delete('/documents', { id: created.document.id });
+          } catch {
+            throw new ToolInputError(
+              'Document was created but its content could not be written; update or delete document ' +
+                created.document.id,
+            );
+          }
+          throw error;
+        }
+      }
       return {
         document: {
           id: document.id,
