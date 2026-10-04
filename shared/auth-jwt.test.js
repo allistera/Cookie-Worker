@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { verifyAccessToken } from './auth-jwt.js';
+import { runAsInternalCaller } from './internal-identity.js';
 
 const env = { AUTH0_DOMAIN: 'tenant.example.auth0.com', AUTH0_AUDIENCE: 'https://cookie-web/api' };
 const request = new Request('https://cookie-web-api.example/labels', {
@@ -168,5 +169,34 @@ describe('verifyAccessToken identity binding', () => {
     const sql = fakeSql(() => undefined);
     await expect(verifyAccessToken(request, {}, sql)).rejects.toThrow(/AUTH0_DOMAIN/);
     expect(sql).not.toHaveBeenCalled();
+  });
+});
+
+describe('internal callers', () => {
+  test('an internal caller skips JWT verification and the users lookup', async () => {
+    const sql = vi.fn();
+    const internalRequest = new Request('https://internal.cookie/emails');
+    const result = await runAsInternalCaller({ userId: 'u-1', email: 'a@example.com' }, () =>
+      verifyAccessToken(
+        internalRequest,
+        { AUTH0_DOMAIN: 'x.example', AUTH0_AUDIENCE: 'aud' },
+        /** @type {any} */ (sql),
+      ),
+    );
+    expect(result).toMatchObject({ userId: 'u-1', email: 'a@example.com', internal: true });
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  test('no header can claim an internal identity outside the scope', async () => {
+    const spoofed = new Request('https://emails-api.example/emails', {
+      headers: { 'X-Cookie-Internal-User': 'u-1', 'X-Internal-User': 'u-1' },
+    });
+    await expect(
+      verifyAccessToken(
+        spoofed,
+        { AUTH0_DOMAIN: 'x.example', AUTH0_AUDIENCE: 'aud' },
+        /** @type {any} */ (vi.fn()),
+      ),
+    ).rejects.toMatchObject({ status: 401 });
   });
 });

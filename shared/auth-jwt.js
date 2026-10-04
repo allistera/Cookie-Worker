@@ -10,6 +10,7 @@
 // than server-to-server over a bearer token) needs the exact same check.
 
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { internalCaller } from './internal-identity.js';
 
 // Bounded in-memory cache for issuer JWKS endpoints. Auth0 is the only
 // supported issuer in practice; the cap protects against a misconfiguration or
@@ -60,6 +61,14 @@ export function authFailureResponse(error) {
  * @param {{jwks?: ReturnType<typeof createRemoteJWKSet>, jwtVerify?: typeof jwtVerify}} [overrides]
  */
 export async function verifyAccessToken(request, env, sql, overrides = {}) {
+  // A request served through the Internal service-binding entrypoint carries
+  // an identity the calling Worker already verified (see
+  // shared/internal-identity.js); it has no bearer token of its own.
+  const internal = internalCaller();
+  if (internal) {
+    return { sub: 'internal', userId: internal.userId, email: internal.email, internal: true };
+  }
+
   const domain = env.AUTH0_DOMAIN;
   const audience = env.AUTH0_AUDIENCE;
   if (!domain || !audience) {
