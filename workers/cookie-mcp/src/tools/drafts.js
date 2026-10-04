@@ -144,8 +144,8 @@ export const tools = [
     }),
     outputSchema: z.object({
       status: z.enum(['sent', 'scheduled']),
-      providerId: z.string().optional(),
-      messageId: z.string().optional(),
+      providerId: z.string().nullable().optional(),
+      messageId: z.string().nullable().optional(),
       followUpScheduled: z.boolean().optional(),
       scheduledSend: row.optional(),
     }),

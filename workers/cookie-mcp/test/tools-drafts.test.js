@@ -172,6 +172,18 @@ describe('drafts tools', () => {
     });
   });
 
+  test('cookie_send_email accepts a null stored message id on a delivered send', async () => {
+    const api = fakeApi();
+    // The send worker returns messageId null when the sent copy fails to store.
+    api.send.post.mockResolvedValue({ id: 'prov', messageId: null });
+    const result = await call(
+      'cookie_send_email',
+      { to: ['a@example.com'], subject: 'S', text: 'T' },
+      api,
+    );
+    expect(result).toEqual({ status: 'sent', providerId: 'prov', messageId: null });
+  });
+
   test('cookie_send_email with sendAt returns the scheduled send', async () => {
     const api = fakeApi();
     const scheduledSend = {
