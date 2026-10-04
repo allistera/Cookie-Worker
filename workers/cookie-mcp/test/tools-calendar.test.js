@@ -71,9 +71,9 @@ describe('calendar tools', () => {
 
   test('cookie_list_events queries the range, filters by calendar and applies limit', async () => {
     const api = fakeApi();
-    const other = { ...eventRow, id: `${SERIES}:2026-10-06`, calendar: 'work', seriesId: SERIES };
+    const other = { ...eventRow, calendar: 'work', seriesId: SERIES };
     api.calendar.get.mockResolvedValue({
-      events: [eventRow, other, { ...other, id: `${SERIES}:2026-10-07` }],
+      events: [{ ...eventRow, seriesId: SERIES }, other, { ...other, id: 'x' }],
       truncated: false,
     });
     const result = await call(
@@ -87,7 +87,7 @@ describe('calendar tools', () => {
     });
     expect(result.events).toEqual([
       {
-        id: `${SERIES}:2026-10-06`,
+        id: SERIES,
         seriesId: SERIES,
         title: 'Standup',
         date: '2026-10-05',
@@ -96,11 +96,53 @@ describe('calendar tools', () => {
         calendar: 'work',
         location: null,
         description: null,
+        tone: null,
         recurrenceRule: null,
+        repeat: 'none',
+        repeatUntil: null,
+        repeatDays: null,
         allDay: false,
       },
     ]);
     expect(result.truncated).toBe(true);
+  });
+
+  test('cookie_list_events decodes the recurrence rule and passes seriesDate and tone', async () => {
+    const api = fakeApi();
+    // An occurrence row as recurrence.js emits it: its own date, plus the series start.
+    api.calendar.get.mockResolvedValue({
+      events: [
+        {
+          ...eventRow,
+          id: `${SERIES}:2026-10-07`,
+          seriesId: SERIES,
+          seriesDate: '2026-10-05',
+          date: '2026-10-07',
+          tone: 'accepted',
+          recurrenceRule: 'WEEKLY;BYDAY=MO,WE;UNTIL=2026-12-31',
+        },
+        { ...eventRow, id: 'x', seriesId: 'x', recurrenceRule: 'MONTHLY' },
+      ],
+      truncated: false,
+    });
+    const result = await call('cookie_list_events', { from: '2026-10-01', to: '2026-10-31' }, api);
+    expect(result.events[0]).toMatchObject({
+      id: `${SERIES}:2026-10-07`,
+      seriesId: SERIES,
+      seriesDate: '2026-10-05',
+      date: '2026-10-07',
+      tone: 'accepted',
+      recurrenceRule: 'WEEKLY;BYDAY=MO,WE;UNTIL=2026-12-31',
+      repeat: 'weekly',
+      repeatDays: ['MO', 'WE'],
+      repeatUntil: '2026-12-31',
+    });
+    expect(result.events[1]).toMatchObject({
+      repeat: 'monthly',
+      repeatDays: null,
+      repeatUntil: null,
+    });
+    expect(result.events[1]).not.toHaveProperty('seriesDate');
   });
 
   test('cookie_list_events passes through the API truncated flag and null-valued rows', async () => {
@@ -143,7 +185,7 @@ describe('calendar tools', () => {
   test('cookie_create_event sends recurrence fields', async () => {
     const api = fakeApi();
     api.calendar.post.mockResolvedValue({
-      event: { ...eventRow, recurrenceRule: 'FREQ=WEEKLY;BYDAY=MO,WE' },
+      event: { ...eventRow, recurrenceRule: 'WEEKLY;BYDAY=MO,WE' },
     });
     await call(
       'cookie_create_event',
@@ -182,12 +224,19 @@ describe('calendar tools', () => {
     expect(api.calendar.post).not.toHaveBeenCalled();
   });
 
-  test('cookie_update_event reduces an occurrence id to the series id', async () => {
+  test('cookie_update_event with the seriesDate targets the series and sends tone and repeat', async () => {
     const api = fakeApi();
     api.calendar.patch.mockResolvedValue({ event: eventRow });
     const result = await call(
       'cookie_update_event',
-      { ...fields, id: `${SERIES}:2026-10-12` },
+      {
+        ...fields,
+        id: `${SERIES}:2026-10-12`,
+        repeat: 'weekly',
+        repeatDays: ['MO', 'WE'],
+        repeatUntil: '2026-12-31',
+        tone: 'accepted',
+      },
       api,
     );
     expect(api.calendar.patch).toHaveBeenCalledWith('/calendar-events', {
@@ -197,16 +246,40 @@ describe('calendar tools', () => {
       start: '09:30',
       duration: 15,
       calendar: CAL,
-      repeat: 'none',
+      repeat: 'weekly',
+      repeatUntil: '2026-12-31',
+      repeatDays: ['MO', 'WE'],
+      tone: 'accepted',
     });
     expect(result).toEqual({ event: eventRow });
   });
 
+  test('cookie_update_event refuses an occurrence id paired with its own occurrence date', async () => {
+    const api = fakeApi();
+    const run = call(
+      'cookie_update_event',
+      { ...fields, id: `${SERIES}:2026-10-12`, date: '2026-10-12', repeat: 'weekly' },
+      api,
+    );
+    await expect(run).rejects.toThrow(ToolInputError);
+    await expect(run).rejects.toThrow(
+      'For a recurring event, pass its seriesDate as date; editing changes the whole series',
+    );
+    expect(api.calendar.patch).not.toHaveBeenCalled();
+  });
+
+  test('cookie_update_event requires repeat, while create defaults it to none', () => {
+    const update = byName(tools, 'cookie_update_event').inputSchema;
+    expect(update.safeParse({ ...fields, id: SERIES }).success).toBe(false);
+    expect(update.safeParse({ ...fields, id: SERIES, repeat: 'none' }).success).toBe(true);
+    expect(byName(tools, 'cookie_create_event').inputSchema.parse(fields).repeat).toBe('none');
+  });
+
   test('cookie_update_event and cookie_delete_event reject non-UUID ids', async () => {
     const api = fakeApi();
-    await expect(call('cookie_update_event', { ...fields, id: 'abc' }, api)).rejects.toThrow(
-      ToolInputError,
-    );
+    await expect(
+      call('cookie_update_event', { ...fields, id: 'abc', repeat: 'none' }, api),
+    ).rejects.toThrow(ToolInputError);
     await expect(call('cookie_delete_event', { id: 'abc:2026-10-01' }, api)).rejects.toThrow(
       ToolInputError,
     );
@@ -225,6 +298,9 @@ describe('calendar tools', () => {
   test('descriptions state local time, full replace and series scope', () => {
     expect(byName(tools, 'cookie_create_event').description).toMatch(/local/i);
     expect(byName(tools, 'cookie_update_event').description).toMatch(/cookie_list_events/);
+    expect(byName(tools, 'cookie_update_event').description).toContain(
+      'for a recurring event, pass the seriesDate from cookie_list_events as date (the series start), not the occurrence date',
+    );
     expect(byName(tools, 'cookie_delete_event').description).toMatch(/series/i);
   });
 });

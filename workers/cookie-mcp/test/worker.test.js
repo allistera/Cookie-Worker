@@ -216,3 +216,52 @@ describe('tools', () => {
     );
   });
 });
+
+// A 2025-era client: initialize first, then tools/list and tools/call as
+// independent POSTs with no _meta claim. The SDK's stateless legacy fallback
+// serves these (usually over SSE), so this guards clients that have not moved
+// to the modern envelope yet.
+describe('legacy (2025-era) protocol', () => {
+  const LEGACY_VERSION = '2025-06-18';
+
+  /** @param {number} id @param {string} method @param {Record<string, unknown>} params */
+  async function legacyRpc(id, method, params) {
+    authenticate.mockResolvedValue({ userId: 'u-1', email: 'a@example.com' });
+    const response = await worker.fetch(
+      new Request('https://mcp.example/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          ...(method === 'initialize' ? {} : { 'MCP-Protocol-Version': LEGACY_VERSION }),
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+      }),
+      env,
+      ctx,
+    );
+    if (response.status !== 200) throw new Error(await response.clone().text());
+    const payload = await readJsonRpc(response);
+    expect(payload.id).toBe(id);
+    return payload.result;
+  }
+
+  test('initialize, tools/list and tools/call cookie_list_labels', async () => {
+    const init = await legacyRpc(1, 'initialize', {
+      protocolVersion: LEGACY_VERSION,
+      capabilities: {},
+      clientInfo: { name: 'cookie-mcp-legacy-test', version: '1.0.0' },
+    });
+    expect(init.protocolVersion).toBe(LEGACY_VERSION);
+    expect(init.capabilities.tools).toBeDefined();
+
+    const { tools } = await legacyRpc(2, 'tools/list', {});
+    expect(tools.map((/** @type {any} */ tool) => tool.name).sort()).toEqual(EXPECTED_TOOLS);
+
+    labelsCall.mockResolvedValue({ status: 200, body: { labels: [] } });
+    const result = await legacyRpc(3, 'tools/call', { name: 'cookie_list_labels', arguments: {} });
+    expect(result.structuredContent).toEqual({ labels: [] });
+    expect(result.isError).toBeFalsy();
+    expect(labelsCall.mock.calls[0][0]).toEqual({ userId: 'u-1', email: 'a@example.com' });
+  });
+});

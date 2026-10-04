@@ -271,9 +271,9 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers/cookie-mcp
           command: deploy
-          # `all` deploys alphabetically, so cookie-mcp would go out before the
-          # cookie-web-* Workers whose Internal entrypoint it binds. Deploy
-          # those first and cookie-mcp last, one at a time.
+          # Deliberately placed after every cookie-web-* step: cookie-mcp binds
+          # their Internal entrypoint, and a failed step stops the job, so `all`
+          # never deploys cookie-mcp ahead of a Worker it depends on.
           secrets: |
             SENTRY_DSN
         env:

@@ -8,6 +8,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+const OCCURRENCE_ID = /^[^:]+:(\d{4}-\d{2}-\d{2})$/;
+// The stored rule is the calendar API's own small format (see
+// cookie-web-calendar/src/recurrence.js), not RFC 5545.
+const RECURRENCE_RULE =
+  /^(DAILY|WEEKLY|MONTHLY|YEARLY)(?:;BYDAY=([A-Z,]+))?(?:;UNTIL=(\d{4}-\d{2}-\d{2}))?$/;
+const REPEATS = /** @type {const} */ (['none', 'daily', 'weekly', 'monthly', 'yearly']);
+const WEEKDAYS = /** @type {const} */ (['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA']);
+const TONES = /** @type {const} */ (['default', 'dark', 'conflict', 'accepted', 'suggested']);
 
 const TIMES =
   'Times are local wall-clock times with no timezone. ' +
@@ -24,10 +32,10 @@ const eventFields = z.object({
   calendar: z.string().describe('Calendar id from cookie_list_calendars (or a legacy slug)'),
   description: z.string().max(2000).optional(),
   location: z.string().max(200).optional(),
-  repeat: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).default('none'),
+  repeat: z.enum(REPEATS).default('none'),
   repeatUntil: date.optional().describe('Last date of the series, YYYY-MM-DD'),
   repeatDays: z
-    .array(z.enum(['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA']))
+    .array(z.enum(WEEKDAYS))
     .min(1)
     .optional()
     .describe('Weekdays for a weekly repeat; only valid with repeat "weekly"'),
@@ -46,6 +54,21 @@ function toEventBody(fields) {
   return Object.fromEntries(
     Object.entries({ ...rest, duration: durationMinutes }).filter(([, v]) => v !== undefined),
   );
+}
+
+/**
+ * Decodes a stored recurrence rule into the repeat fields the write tools take,
+ * so a caller can resend them unchanged.
+ * @param {unknown} rule
+ */
+function decodeRecurrence(rule) {
+  const match = typeof rule === 'string' ? rule.match(RECURRENCE_RULE) : null;
+  if (!match) return { repeat: 'none', repeatUntil: null, repeatDays: null };
+  return {
+    repeat: match[1].toLowerCase(),
+    repeatUntil: match[3] ?? null,
+    repeatDays: match[2] ? match[2].split(',') : null,
+  };
 }
 
 /**
@@ -127,7 +150,12 @@ export const tools = [
             calendar: z.string(),
             location: z.string().nullable().optional(),
             description: z.string().nullable().optional(),
+            seriesDate: z.string().optional(),
+            tone: z.string().nullable().optional(),
             recurrenceRule: z.string().nullable().optional(),
+            repeat: z.enum(REPEATS),
+            repeatUntil: z.string().nullable(),
+            repeatDays: z.array(z.string()).nullable(),
             allDay: z.boolean().optional(),
           })
           .passthrough(),
@@ -145,6 +173,9 @@ export const tools = [
         events: all.slice(0, limit).map((/** @type {any} */ e) => ({
           id: e.id,
           seriesId: e.seriesId,
+          // Only occurrences of a recurring series carry it: the series start
+          // that cookie_update_event needs as date.
+          ...(e.seriesDate === undefined ? {} : { seriesDate: e.seriesDate }),
           title: e.title,
           date: e.date,
           start: e.start,
@@ -152,7 +183,9 @@ export const tools = [
           calendar: e.calendar,
           location: e.location,
           description: e.description,
+          tone: e.tone,
           recurrenceRule: e.recurrenceRule,
+          ...decodeRecurrence(e.recurrenceRule),
           allDay: e.allDay,
         })),
         truncated: Boolean(body.truncated) || all.length > limit,
@@ -175,11 +208,20 @@ export const tools = [
     name: 'cookie_update_event',
     title: 'Update a calendar event',
     description:
-      'Replaces every field of an event, so first read its current values with cookie_list_events ' +
-      'and resend the ones you keep. Accepts an event or occurrence id. ' +
+      'Replaces every field of an event (including repeat and tone), so first read its current ' +
+      'values with cookie_list_events and resend the ones you keep. Accepts an event or occurrence ' +
+      'id; for a recurring event, pass the seriesDate from cookie_list_events as date (the series ' +
+      'start), not the occurrence date (for the first occurrence, pass its seriesId as id). ' +
       TIMES,
     inputSchema: eventFields.extend({
       id: z.string().describe('Event id, or an occurrence id (<seriesId>:<YYYY-MM-DD>)'),
+      // Required here: a default would silently strip recurrence from a series.
+      repeat: z.enum(REPEATS).describe('Resend the event’s current repeat to keep it'),
+      tone: z
+        .enum(TONES)
+        .nullable()
+        .optional()
+        .describe('Event colour tone; resend the current one to keep it'),
     }),
     outputSchema: z.object({ event: eventOut }),
     annotations: {
@@ -189,6 +231,13 @@ export const tools = [
       openWorldHint: false,
     },
     async run({ id, ...fields }, api) {
+      // The API moves the whole series to the given date, so an occurrence's
+      // own date would silently shift the series start.
+      if (OCCURRENCE_ID.exec(id)?.[1] === fields.date) {
+        throw new ToolInputError(
+          'For a recurring event, pass its seriesDate as date; editing changes the whole series',
+        );
+      }
       const body = await api.calendar.patch('/calendar-events', {
         id: seriesIdOf(id),
         ...toEventBody(/** @type {any} */ (fields)),

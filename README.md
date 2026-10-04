@@ -119,14 +119,14 @@ Each is on its own custom domain (`ai-api` / `calendar-api` / `emails-api` / `se
 
 `cookie-mcp` is a remote MCP server (streamable HTTP, protocol 2026-07-28 with stateless fallback) at `https://mcp.infinitywave.online/mcp`, for claude.ai and Claude Code.
 
-**Auth model.** It is an OAuth resource server for Auth0 tokens issued to its own audience, `https://mcp.infinitywave.online/mcp`; tokens for Cookie-Web's API audience are rejected. Protected resource metadata is served at `/.well-known/oauth-protected-resource/mcp` and `/.well-known/oauth-protected-resource`. It never forwards the client's token. After verifying it, the Worker calls the API Workers over service bindings to their `Internal` entrypoint, passing the verified identity as plain RPC data; the receiving Worker carries it in `AsyncLocalStorage` and `verifyAccessToken` honours it first.
+**Auth model.** It is an OAuth resource server for Auth0 tokens issued to its own audience, `https://mcp.infinitywave.online/mcp`; tokens for Cookie-Web's API audience are rejected. Protected resource metadata is served at `/.well-known/oauth-protected-resource/mcp` and `/.well-known/oauth-protected-resource`. It never forwards the client's token. After verifying it, the Worker calls the API Workers over service bindings to their `Internal` entrypoint, passing the verified identity as plain RPC data; the receiving Worker carries it in `AsyncLocalStorage` and `verifyAccessToken` honours it first. Any Worker in the same Cloudflare account could bind `Internal` and act as any user, so deploy rights on that account are the trust boundary.
 
 **Tools** (all prefixed `cookie_`):
 
 - Mail: `list_emails`, `get_message`, `search_mail`, `ask_mail`, `list_contacts`
 - Organise: `update_message` (flags, archive, snooze, labels), `list_labels`, `create_label`, `update_label`, `delete_label`
-- Drafts and send: `list_drafts`, `get_draft`, `save_draft` (partial updates are merged over the stored draft), `delete_draft`, `send_email` (optionally scheduled; no guard beyond the send quota), `list_scheduled`, `cancel_scheduled`
-- Calendar: `list_calendars`, `list_events`, `create_event`, `update_event` (replaces every field and edits the whole series), `delete_event` (deletes the whole series)
+- Drafts and send: `list_drafts`, `get_draft`, `save_draft` (partial updates are merged over the stored draft; changing text without html clears the formatted body), `delete_draft`, `send_email` (optionally scheduled; no guard beyond the send quota), `list_scheduled`, `cancel_scheduled`
+- Calendar: `list_calendars`, `list_events`, `create_event`, `update_event` (replaces every field and edits the whole series; `repeat` is required and `date` must be the series start, which `list_events` returns as `seriesDate`), `delete_event` (deletes the whole series)
 - Tasks: `list_projects`, `list_tasks`, `create_task`, `update_task`, `delete_task`
 - Documents: `list_documents`, `search_documents`, `get_document`, `create_document` (content is written in a second step; the document is removed if that fails), `update_document`, `delete_document`
 
@@ -138,7 +138,7 @@ Reads carry `readOnlyHint`; deletes, `cancel_scheduled` and `send_email` carry `
 2. Enable Client ID Metadata Document (CIMD) client registration and register claude.ai and Claude Code. Alternatively pre-register an application and enter its client id in the client. Dynamic client registration stays off.
 3. Verify with `curl https://auth.infinitywave.online/.well-known/oauth-authorization-server` that `client_id_metadata_document_supported` is `true`.
 
-**Deploy order.** `Deploy` with `all` goes alphabetically, which would put `cookie-mcp` ahead of the Workers whose `Internal` entrypoint it binds. Deploy one at a time instead: the eight bound Workers (`cookie-web-emails`, `cookie-web-messages`, `cookie-web-labels`, `cookie-web-search`, `cookie-web-drafts`, `cookie-web-send`, `cookie-web-calendar`, `cookie-web-tasks`) first, then `cookie-mcp`. It needs the `SENTRY_DSN` repository secret, already synchronized by the workflow.
+**Deploy order.** `cookie-mcp` binds the `Internal` entrypoint of eight Workers (`cookie-web-emails`, `cookie-web-messages`, `cookie-web-labels`, `cookie-web-search`, `cookie-web-drafts`, `cookie-web-send`, `cookie-web-calendar`, `cookie-web-tasks`), which must be deployed before it. The `Deploy` workflow's `cookie-mcp` step is deliberately placed after every `cookie-web-*` step, and a failed step stops the job, so `Deploy` with `all` already deploys in a safe order. Locally, `npm run deploy -- --all` is refused; deploy those Workers before `cookie-mcp` when deploying individually. It needs the `SENTRY_DSN` repository secret, already synchronized by the workflow.
 
 **Connect.**
 

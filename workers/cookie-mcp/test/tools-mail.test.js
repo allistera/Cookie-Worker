@@ -84,10 +84,8 @@ describe('mail tools', () => {
     { id: 'other', from_name: 'X', from_address: 'x@e.com', snippet: 's', sent_at: 't0' },
     {
       id: ID,
-      from: { name: 'Ann', address: 'ann@example.com' },
       from_name: 'Ann',
       from_address: 'ann@example.com',
-      subject: 'Hi',
       snippet: 'snip',
       sent_at: '2026-10-01T10:00:00Z',
       is_sent: false,
@@ -113,7 +111,6 @@ describe('mail tools', () => {
       id: ID,
       threadId: 'th1',
       from: { name: 'Ann', address: 'ann@example.com' },
-      subject: 'Hi',
       sentAt: '2026-10-01T10:00:00Z',
       text: 'Hello there',
       truncated: false,
@@ -140,6 +137,11 @@ describe('mail tools', () => {
       attachments: [{ id: 'a1', filename: 'f.pdf', contentType: 'application/pdf', sizeBytes: 5 }],
       canUnsubscribe: true,
     });
+    const schema = byName(tools, 'cookie_get_message').outputSchema;
+    expect(schema.parse(result)).toEqual(result);
+    // The messages API never returns a subject for the message or its thread.
+    expect(result).not.toHaveProperty('subject');
+    expect(Object.keys(schema.shape)).not.toContain('subject');
   });
 
   test('cookie_get_message falls back to HTML text when body_text is null', async () => {
@@ -169,7 +171,6 @@ describe('mail tools', () => {
     expect(result.text).toHaveLength(20_000);
     expect(result.hasHtml).toBe(false);
     expect(result.from).toBeUndefined();
-    expect(result.subject).toBeUndefined();
   });
 
   test('cookie_search_mail uses hybrid by default and paginates', async () => {

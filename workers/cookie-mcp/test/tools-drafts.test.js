@@ -122,6 +122,31 @@ describe('drafts tools', () => {
     });
   });
 
+  test('cookie_save_draft clears the stored html when only text changes', async () => {
+    const api = fakeApi();
+    api.drafts.get.mockResolvedValue({ draft: fullDraft });
+    api.drafts.patch.mockResolvedValue({ draft: { id: ID, updatedAt: 'u2' } });
+    await call('cookie_save_draft', { id: ID, text: 'New body' }, api);
+    expect(api.drafts.patch.mock.calls[0][1]).toMatchObject({ text: 'New body', html: null });
+  });
+
+  test('cookie_save_draft keeps a provided html alongside new text', async () => {
+    const api = fakeApi();
+    api.drafts.get.mockResolvedValue({ draft: fullDraft });
+    api.drafts.patch.mockResolvedValue({ draft: { id: ID, updatedAt: 'u2' } });
+    await call('cookie_save_draft', { id: ID, text: 'New body', html: '<p>New body</p>' }, api);
+    expect(api.drafts.patch.mock.calls[0][1]).toMatchObject({
+      text: 'New body',
+      html: '<p>New body</p>',
+    });
+  });
+
+  test('cookie_save_draft description says text without html clears the formatted body', () => {
+    expect(byName(tools, 'cookie_save_draft').description).toMatch(
+      /changing text without html clears the formatted body/i,
+    );
+  });
+
   test('cookie_save_draft refuses a merge that would empty (and so delete) the draft', async () => {
     const api = fakeApi();
     api.drafts.get.mockResolvedValue({

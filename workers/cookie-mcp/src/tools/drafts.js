@@ -56,7 +56,8 @@ export const tools = [
     title: 'Save a draft',
     description:
       'Creates a draft, or with id updates one: fields you omit keep their current value and ' +
-      'attachments are kept. Fails with a conflict if the draft changed since it was read.',
+      'attachments are kept; changing text without html clears the formatted body. Fails with a ' +
+      'conflict if the draft changed since it was read.',
     inputSchema: z.object({
       id: z.string().uuid().optional().describe('Existing draft id; omit to create a new draft'),
       to: recipients.optional(),
@@ -88,6 +89,9 @@ export const tools = [
         replyToMessageId: draft.replyToMessageId,
         followUpAt: draft.followUpAt,
         attachmentIds: (draft.attachments ?? []).map((/** @type {any} */ a) => a.id),
+        // Cookie-Web loads html into the composer when present, so html kept
+        // from before a text-only edit would show (and send) the old body.
+        ...(changes.text !== undefined && changes.html === undefined ? { html: null } : {}),
         ...changes,
       };
       // The API deletes a draft that PATCH leaves empty; deleting is a separate tool.

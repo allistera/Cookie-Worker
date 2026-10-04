@@ -153,7 +153,7 @@ export const tools = [
   {
     name: 'cookie_delete_task',
     title: 'Delete a task',
-    description: 'Permanently deletes a task; this cannot be undone.',
+    description: 'Permanently deletes a task and its sub-tasks.',
     inputSchema: z.object({ id: id.describe('Task id') }),
     outputSchema: z.object({ deleted: z.literal(true), id: z.string() }),
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
