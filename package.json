@@ -17,6 +17,7 @@
     "deploy": "node scripts/workers.mjs deploy"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.0",
     "@sentry/cloudflare": "^11.0.0",
     "@vercel/blob": "^2.8.0",
     "jose": "^6.2.12",
@@ -24,7 +25,8 @@
     "node-ical": "^0.27.2",
     "postal-mime": "^3.0.1",
     "postgres": "^3.4.9",
-    "resend": "^6.30.0"
+    "resend": "^6.30.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260926.1",
