@@ -4,6 +4,25 @@ import { syntheticMessageId } from './synthetic-id.js';
 export const BODY_CAP_BYTES = 512 * 1024;
 export const SNIPPET_LENGTH = 100;
 export const MAX_HEADERS = 100;
+// Headers past MAX_HEADERS that out-of-office suppression (shared/outOfOffice.js
+// autoReplySuppression) reads from the stored copy. Dropping them would let an
+// auto-reply answer a list or another auto-responder that put them late, so
+// they are kept beyond the cap, up to MAX_LOOP_HEADERS more.
+export const MAX_LOOP_HEADERS = 20;
+const LOOP_HEADERS = new Set([
+  'auto-submitted',
+  'precedence',
+  'x-auto-response-suppress',
+  'x-loop',
+  'return-path',
+  'content-type',
+  'mailing-list',
+  'x-mailing-list',
+  'x-autoreply',
+  'x-autorespond',
+  'x-auto-reply',
+  'x-autoreply-from',
+]);
 export const MAX_HEADER_VALUE = 2048;
 export const MAX_ATTACHMENTS_META = 100;
 export const MAX_REFERENCES = 50;
@@ -230,10 +249,21 @@ function normalizeHeaders(headers) {
   } else if (headers && typeof headers === 'object') {
     for (const [key, value] of Object.entries(headers)) entries.push({ key, value });
   }
-  return entries.slice(0, MAX_HEADERS).map((entry) => ({
+  const kept = entries.slice(0, MAX_HEADERS);
+  for (const entry of entries.slice(MAX_HEADERS)) {
+    if (kept.length >= MAX_HEADERS + MAX_LOOP_HEADERS) break;
+    if (isLoopHeader(stripNul('key' in entry ? entry.key : entry.name))) kept.push(entry);
+  }
+  return kept.map((entry) => ({
     key: stripNul('key' in entry ? entry.key : entry.name).slice(0, MAX_HEADER_VALUE),
     value: stripNul('value' in entry ? entry.value : '').slice(0, MAX_HEADER_VALUE),
   }));
+}
+
+/** @param {string} key */
+function isLoopHeader(key) {
+  const lower = key.trim().toLowerCase();
+  return lower.startsWith('list-') || LOOP_HEADERS.has(lower);
 }
 
 /**

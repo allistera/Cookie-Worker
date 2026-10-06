@@ -208,13 +208,24 @@ describe('status', () => {
     expect(sql.calls).toHaveLength(0);
   });
 
-  test('answers with an empty list when the query fails, keeping Sent usable', async () => {
+  test('answers with an empty list while the table does not exist yet, keeping Sent usable', async () => {
     const sql = createMockSql();
-    sql.mockImplementationOnce(() => Promise.reject(new Error('connection reset')));
+    sql.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error('relation does not exist'), { code: '42P01' })),
+    );
 
     const response = await handleStatus(sql, USER_ID, url(MESSAGE_ID));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ receipts: [] });
+  });
+
+  // An empty list reads as "nothing opened"; any other failure must reach
+  // withUserSql so a dropped connection is retried and a real fault surfaces.
+  test('rethrows any other query failure', async () => {
+    const sql = createMockSql();
+    sql.mockImplementationOnce(() => Promise.reject(new Error('connection reset')));
+
+    await expect(handleStatus(sql, USER_ID, url(MESSAGE_ID))).rejects.toThrow('connection reset');
   });
 });

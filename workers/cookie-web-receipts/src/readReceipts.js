@@ -162,9 +162,10 @@ export async function handleStatus(sql, userId, url) {
   } catch (err) {
     // During a rolling deploy the new table may not exist yet. Sent mail stays
     // usable and simply shows the conservative, unopened state until it does.
-    if (/** @type {{code?: string}} */ (err)?.code !== '42P01') {
-      console.error('GET /read-receipts (status) failed:', err);
-    }
+    // Anything else propagates: withUserSql retries a dropped connection on a
+    // fresh client, and a real failure must surface rather than read as
+    // "nothing opened".
+    if (/** @type {{code?: string}} */ (err)?.code !== '42P01') throw err;
     return Response.json({ receipts: [] });
   }
 }

@@ -321,6 +321,38 @@ async function route(url, request, sql, userId, env) {
   return withJsonBody(request, (body) => postTasks(sql, userId, body, env));
 }
 
+/**
+ * A request's deferred search jobs. Keyed, so a request that touches one task
+ * or document several times (a task created with sub-tasks, say) queues one
+ * job for it. The jobs read state committed before they start, so they run
+ * together and their task polling overlaps instead of stacking; syncedRoots lets sibling sub-task
+ * jobs share their root's push. Rejects with the first failure once all have
+ * settled.
+ */
+export function createSearchSyncQueue() {
+  /** @type {Map<unknown, (sql: import('postgres').Sql) => Promise<unknown>>} */
+  const jobs = new Map();
+  return {
+    /** @type {Set<string>} */
+    syncedRoots: new Set(),
+    /**
+     * @param {(sql: import('postgres').Sql) => Promise<unknown>} job
+     * @param {string} [key]
+     */
+    defer(job, key) {
+      const slot = key ?? Symbol('search-sync');
+      if (!jobs.has(slot)) jobs.set(slot, job);
+    },
+    size: () => jobs.size,
+    /** @param {import('postgres').Sql} sql */
+    async run(sql) {
+      const results = await Promise.allSettled([...jobs.values()].map((job) => job(sql)));
+      const failure = results.find((result) => result.status === 'rejected');
+      if (failure) throw /** @type {PromiseRejectedResult} */ (failure).reason;
+    },
+  };
+}
+
 const worker = {
   /**
    * @param {Request} request
@@ -347,21 +379,19 @@ const worker = {
         async (sql, userId) => {
           // Per attempt: a retried read starts with an empty queue rather than
           // replaying jobs a dropped attempt had queued.
-          /** @type {Array<(sql: import('postgres').Sql) => Promise<unknown>>} */
-          const indexing = [];
+          const indexing = createSearchSyncQueue();
           const requestEnv = {
             ...env,
-            deferSearchSync: (
-              /** @type {(sql: import('postgres').Sql) => Promise<unknown>} */ job,
-            ) => indexing.push(job),
+            searchSyncedRoots: indexing.syncedRoots,
+            deferSearchSync: indexing.defer,
           };
           const routed = await route(url, request, sql, userId, requestEnv);
-          if (indexing.length) {
+          if (indexing.size()) {
             ctx.waitUntil(
               (async () => {
                 const backgroundSql = createSql(env.HYPERDRIVE.connectionString);
                 try {
-                  for (const job of indexing) await job(backgroundSql);
+                  await indexing.run(backgroundSql);
                 } finally {
                   await backgroundSql.end({ timeout: 2 }).catch(() => undefined);
                 }

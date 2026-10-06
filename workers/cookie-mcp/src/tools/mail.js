@@ -2,6 +2,10 @@ import * as z from 'zod';
 import { htmlToText, ToolInputError, truncateText } from '../results.js';
 import { READ_ONLY, UNTRUSTED } from './common.js';
 
+// cookie-web-search's verified mail pagination scans only this many raw hits
+// (VERIFIED_MAIL_SCAN_CAP there) and rejects an offset at or beyond it.
+const VERIFIED_SCAN_CAP = 1000;
+
 const address = z.object({ name: z.string().nullable().optional(), address: z.string() });
 
 const emailSummary = z.object({
@@ -154,19 +158,33 @@ export const tools = [
     }),
     annotations: READ_ONLY,
     async run({ query, mode, limit, offset }, api) {
+      // offset counts raw index hits, and hits whose message is gone are
+      // dropped when rows are hydrated, so the cursor can never advance by the
+      // rows returned (a page that hydrates nothing would repeat forever).
+      // Keyword mode can use the search worker's verified pagination, which
+      // returns the exact raw-hit cursor of the next live row; it only scans
+      // the first 1,000 hits, so a scan that reaches that bound hands over to
+      // paging by raw hits from there.
+      const verified = mode === 'keyword' && offset < VERIFIED_SCAN_CAP;
       const body = await api.search.get('/search', {
         q: query,
         scope: 'mail',
         mode: mode === 'keyword' ? 'keyword' : undefined,
+        pagination: verified ? 'verified' : undefined,
         limit,
         offset,
       });
       const rows = body.results ?? [];
       const total = body.estimatedTotalHits ?? 0;
+      const next = verified
+        ? (body.nextOffset ?? (body.scanLimitReached ? VERIFIED_SCAN_CAP : null))
+        : offset + limit < total
+          ? offset + limit
+          : null;
       return {
         results: rows.map(summariseEmail),
         estimatedTotalHits: total,
-        nextOffset: offset + rows.length < total ? offset + rows.length : null,
+        nextOffset: typeof next === 'number' && next > offset ? next : null,
       };
     },
   },

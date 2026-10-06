@@ -10,6 +10,7 @@ import { timingSafeEqualStrings } from '../../../shared/auth.js';
 import { syncMessageToMeili, syncMessagesToMeili } from '../../../shared/meiliSync.js';
 import { validId } from '../../../shared/pagination.js';
 import {
+  AttachmentSlotBusyError,
   deliverMail,
   parseFollowUpAt,
   immediateSendIdempotencyKey,
@@ -326,6 +327,12 @@ async function handleSend(sql, userId, request, services) {
     // The quota was claimed but no email was delivered — refund it so a
     // provider outage doesn't lock the user out of sending for the minute.
     await refundOutboundEmailQuota(sql, userId);
+    if (err instanceof AttachmentSlotBusyError) {
+      return Response.json(
+        { error: 'Another attachment send is in progress, try again shortly' },
+        { status: 503, headers: { 'Retry-After': '5' } },
+      );
+    }
     return Response.json({ error: 'Failed to send email' }, { status: 502 });
   }
 }

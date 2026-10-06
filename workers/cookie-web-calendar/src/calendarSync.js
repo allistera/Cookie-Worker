@@ -20,8 +20,19 @@ const MAX_DESCRIPTION = 2000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const EXPAND_PAST_DAYS = 365;
 const EXPAND_FUTURE_DAYS = 730;
+// The caps are spent separately on each side of "now": counted from the
+// start of the past window, a daily series older than a year (or a busy
+// feed's history) used to exhaust them before reaching any future
+// occurrence. The past gets its own allowance: a daily series' whole year
+// per event, but a smaller share of the feed-wide cap.
 const MAX_OCCURRENCES_PER_EVENT = 366;
+const MAX_PAST_OCCURRENCES_PER_EVENT = 366;
 const MAX_EVENTS_PER_SYNC = 1000;
+const MAX_PAST_EVENTS_PER_SYNC = 500;
+// Stored in subscription_error on an otherwise successful sync, so the
+// sidebar shows that the feed was only partly imported.
+const TRUNCATED_SYNC_WARNING =
+  'Some events were not imported because this calendar has too many occurrences';
 const TIME_RE = /^\d{2}:\d{2}$/;
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -255,25 +266,33 @@ const isCancelled = (event) => String(event?.status ?? '').toUpperCase() === 'CA
 // instance whose own VEVENT (the override, else the master) is
 // STATUS:CANCELLED is skipped. expandRecurringEvent enumerates every RRULE
 // date in its range without a cap, so a capped iteration first finds where
-// the MAX_OCCURRENCES_PER_EVENT-th start falls and the expansion stops there.
+// the max-th start falls and the expansion stops there; asking for one more
+// than max tells a cut-off series apart from one that ends exactly at it.
+// expandOngoing also yields an instance that started before windowStart but
+// is still running (an all-day span crossing into today).
 /**
  * @param {any} event
  * @param {Date} windowStart
  * @param {Date} windowEnd
- * @returns {{start: Date, end: Date}[]}
+ * @param {number} max
+ * @param {boolean} [expandOngoing]
+ * @returns {{spans: {start: Date, end: Date}[], truncated: boolean}}
  */
-function occurrenceSpans(event, windowStart, windowEnd) {
+function occurrenceSpans(event, windowStart, windowEnd, max, expandOngoing = false) {
   if (!event.rrule) {
-    return isCancelled(event) ? [] : [{ start: event.start, end: event.end }];
+    return {
+      spans: isCancelled(event) ? [] : [{ start: event.start, end: event.end }],
+      truncated: false,
+    };
   }
-  const capped = rruleOccurrences(event.rrule, windowStart, windowEnd, MAX_OCCURRENCES_PER_EVENT);
-  const to =
-    capped.length >= MAX_OCCURRENCES_PER_EVENT ? new Date(capped[capped.length - 1]) : windowEnd;
-  return ical
-    .expandRecurringEvent(event, { from: windowStart, to })
+  const capped = rruleOccurrences(event.rrule, windowStart, windowEnd, max + 1);
+  const truncated = capped.length > max;
+  const to = truncated ? new Date(capped[max - 1]) : windowEnd;
+  const spans = ical
+    .expandRecurringEvent(event, { from: windowStart, to, expandOngoing })
     .filter((instance) => !isCancelled(instance.event ?? event))
-    .slice(0, MAX_OCCURRENCES_PER_EVENT)
     .map((instance) => ({ start: instance.start, end: instance.end }));
+  return { spans: spans.slice(0, max), truncated: truncated || spans.length > max };
 }
 
 // A timed (non-all-day) occurrence: one row, positioned by its actual
@@ -282,14 +301,14 @@ function occurrenceSpans(event, windowStart, windowEnd) {
  * @param {any} event
  * @param {Date} windowStart
  * @param {Date} windowEnd
+ * @param {number} max
  * @param {Map<string, Intl.DateTimeFormat>} formatters
  */
-function timedOccurrences(event, windowStart, windowEnd, formatters) {
-  const spans = occurrenceSpans(event, windowStart, windowEnd).filter(
-    ({ start }) => start >= windowStart && start <= windowEnd,
-  );
+function timedOccurrences(event, windowStart, windowEnd, max, formatters) {
+  const { spans: all, truncated } = occurrenceSpans(event, windowStart, windowEnd, max);
+  const spans = all.filter(({ start }) => start >= windowStart && start <= windowEnd);
 
-  return spans.map(({ start, end }) => {
+  const rows = spans.map(({ start, end }) => {
     const durationMs = Math.max(new Date(end).getTime() - new Date(start).getTime(), 60_000);
     // An override carries its own TZID (copied onto its start by node-ical);
     // plain RRULE instances carry the master's.
@@ -302,6 +321,7 @@ function timedOccurrences(event, windowStart, windowEnd, formatters) {
       allDay: false,
     };
   });
+  return { rows, truncated };
 }
 
 // An all-day occurrence is expanded into one row per calendar day it spans,
@@ -313,12 +333,14 @@ function timedOccurrences(event, windowStart, windowEnd, formatters) {
  * @param {any} event
  * @param {Date} windowStart
  * @param {Date} windowEnd
+ * @param {number} [max]
  */
-export function allDayOccurrences(event, windowStart, windowEnd) {
+export function allDayOccurrences(event, windowStart, windowEnd, max = MAX_OCCURRENCES_PER_EVENT) {
   const rows = [];
   const firstWindowDay = startOfLocalDay(windowStart);
   const afterLastWindowDay = addDaysLocal(startOfLocalDay(windowEnd), 1);
-  for (const { start, end } of occurrenceSpans(event, windowStart, windowEnd)) {
+  const { spans, truncated } = occurrenceSpans(event, windowStart, windowEnd, max, true);
+  for (const { start, end } of spans) {
     const firstOccurrenceDay = startOfLocalDay(new Date(start));
     const spanDays = Math.max(
       Math.round(
@@ -332,11 +354,11 @@ export function allDayOccurrences(event, windowStart, windowEnd) {
       afterLastOccurrenceDay > afterLastWindowDay ? afterLastWindowDay : afterLastOccurrenceDay;
 
     for (let day = firstDay; day < afterLastDay; day = addDaysLocal(day, 1)) {
+      if (rows.length >= max) return { rows, truncated: true };
       rows.push({ date: toDateKeyLocal(day), time: '00:00', durationMinutes: 1440, allDay: true });
-      if (rows.length >= MAX_OCCURRENCES_PER_EVENT) return rows;
     }
   }
-  return rows;
+  return { rows, truncated };
 }
 
 // Occurrences are materialized as plain rows rather than stored as our own
@@ -344,27 +366,36 @@ export function allDayOccurrences(event, windowStart, windowEnd) {
 // doesn't map onto the app's own small daily/weekly/monthly/yearly model, and
 // these events are sync-managed and never hand-edited, so there's no need to
 // keep them re-expandable.
+// The window is split at `now` (at today's midnight for all-day rows, which
+// are per day) so the past and the future each spend their own caps.
 /**
  * @param {any} event
  * @param {Date} windowStart
  * @param {Date} windowEnd
+ * @param {number} max
  * @param {Map<string, Intl.DateTimeFormat>} formatters
  */
-function eventOccurrences(event, windowStart, windowEnd, formatters) {
+function eventOccurrences(event, windowStart, windowEnd, max, formatters) {
   return event.datetype === 'date'
-    ? allDayOccurrences(event, windowStart, windowEnd)
-    : timedOccurrences(event, windowStart, windowEnd, formatters);
+    ? allDayOccurrences(event, windowStart, windowEnd, max)
+    : timedOccurrences(event, windowStart, windowEnd, max, formatters);
 }
 
 /**
  * @param {string} icsText
  * @param {Date} windowStart
+ * @param {Date} now
  * @param {Date} windowEnd
+ * @returns {{rows: any[], truncated: boolean}}
  */
-function parseEvents(icsText, windowStart, windowEnd) {
+function parseEvents(icsText, windowStart, now, windowEnd) {
   const parsed = ical.parseICS(icsText);
   const formatters = new Map();
+  const today = startOfLocalDay(now);
   const rows = [];
+  let pastCount = 0;
+  let futureCount = 0;
+  let truncated = false;
   for (const value of /** @type {any[]} */ (Object.values(parsed))) {
     if (value.type !== 'VEVENT' || !value.start) continue;
     const title =
@@ -376,21 +407,59 @@ function parseEvents(icsText, windowStart, windowEnd) {
       : null;
     const location = value.location ? String(value.location).slice(0, MAX_LOCATION) : null;
 
-    for (const occurrence of eventOccurrences(value, windowStart, windowEnd, formatters)) {
-      if (!TIME_RE.test(occurrence.time)) continue;
-      rows.push({
-        title,
-        description,
-        location,
-        date: occurrence.date,
-        start: occurrence.time,
-        duration: occurrence.durationMinutes,
-        all_day: occurrence.allDay,
-      });
-      if (rows.length >= MAX_EVENTS_PER_SYNC) return rows;
+    const split = value.datetype === 'date' ? today : now;
+    const sides = [
+      {
+        from: windowStart,
+        to: new Date(split.getTime() - 1),
+        max: MAX_PAST_OCCURRENCES_PER_EVENT,
+        room: MAX_PAST_EVENTS_PER_SYNC - pastCount,
+        past: true,
+      },
+      {
+        from: split,
+        to: windowEnd,
+        max: MAX_OCCURRENCES_PER_EVENT,
+        room: MAX_EVENTS_PER_SYNC - futureCount,
+        past: false,
+      },
+    ];
+    for (const side of sides) {
+      if (side.room <= 0) {
+        // Only a side that still had occurrences to give is truncated.
+        if (eventOccurrences(value, side.from, side.to, 1, formatters).rows.length > 0) {
+          truncated = true;
+        }
+        continue;
+      }
+      const occurrences = eventOccurrences(value, side.from, side.to, side.max, formatters);
+      if (occurrences.truncated) truncated = true;
+      let added = 0;
+      for (const occurrence of occurrences.rows) {
+        if (!TIME_RE.test(occurrence.time)) continue;
+        if (added >= side.room) {
+          truncated = true;
+          break;
+        }
+        rows.push({
+          title,
+          description,
+          location,
+          date: occurrence.date,
+          start: occurrence.time,
+          duration: occurrence.durationMinutes,
+          all_day: occurrence.allDay,
+        });
+        added += 1;
+      }
+      if (side.past) pastCount += added;
+      else futureCount += added;
+    }
+    if (truncated && pastCount >= MAX_PAST_EVENTS_PER_SYNC && futureCount >= MAX_EVENTS_PER_SYNC) {
+      break;
     }
   }
-  return rows;
+  return { rows, truncated };
 }
 
 /**
@@ -438,12 +507,19 @@ export async function syncCalendarSubscription(
   const windowEnd = new Date(now.getTime() + EXPAND_FUTURE_DAYS * MS_PER_DAY);
 
   let rows;
+  let truncated;
   try {
     const icsText = await fetchIcs(url, request);
-    rows = parseEvents(icsText, windowStart, windowEnd);
+    ({ rows, truncated } = parseEvents(icsText, windowStart, now, windowEnd));
   } catch (error) {
     return recordSyncError(sql, calendarId, error);
   }
+  if (truncated) {
+    console.log(
+      JSON.stringify({ event: 'calendar_sync_truncated', calendarId, count: rows.length }),
+    );
+  }
+  const warning = truncated ? TRUNCATED_SYNC_WARNING : null;
 
   try {
     await sql.begin(async (tx) => {
@@ -466,10 +542,12 @@ export async function syncCalendarSubscription(
           FROM json_to_recordset(${rows}::json) AS row(title text, description text, location text, date text, start text, duration int, all_day boolean)
         `;
       }
-      await tx`UPDATE calendars SET subscription_synced_at = now(), subscription_error = null WHERE id = ${calendarId}`;
+      await tx`UPDATE calendars SET subscription_synced_at = now(), subscription_error = ${warning} WHERE id = ${calendarId}`;
     });
   } catch (error) {
     return recordSyncError(sql, calendarId, error);
   }
-  return { ok: true, count: rows.length };
+  return truncated
+    ? { ok: true, count: rows.length, truncated: true, warning: TRUNCATED_SYNC_WARNING }
+    : { ok: true, count: rows.length };
 }

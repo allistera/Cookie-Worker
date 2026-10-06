@@ -251,6 +251,8 @@ export function fetchScheduledCount(sql, userId) {
 // hold. The sidebar lists each only while it has something, so the counts
 // travel with the others. Same predicates as folderPredicate for those
 // folders, plus the list's NOT is_deleted (and starred's allowed-only rule).
+// The WHERE restates NOT is_sent on the screening side so the planner can use
+// the partial index messages_screening_queue_idx; the FILTERs imply it anyway.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -263,7 +265,7 @@ export function fetchPresenceCounts(sql, userId) {
       count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'blocked')::int AS blocked
     FROM messages m
     WHERE m.user_id = ${userId} AND NOT m.is_deleted
-      AND (m.is_starred OR m.screening_status <> 'allowed')
+      AND (m.is_starred OR (NOT m.is_sent AND m.screening_status <> 'allowed'))
   `;
 }
 

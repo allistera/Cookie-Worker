@@ -191,11 +191,38 @@ describe('cleanup', () => {
   });
 });
 
-// The socket to Hyperdrive drops under a query now and then. handleStatus
-// already degrades its own query failures to an empty list, so the retry's
-// work here is the caller lookup: one more go on a fresh connection rather
-// than a spurious 503.
+// The socket to Hyperdrive drops under a query now and then: the caller
+// lookup or the status query itself gets one more go on a fresh connection
+// rather than a spurious 503 (or, for the query, an "unopened" empty list).
 describe('a dropped connection', () => {
+  test('retries a dropped status query on a fresh connection', async () => {
+    const receipt = { message_id: MESSAGE_ID, opened_at: '2026-10-01T09:00:00Z' };
+    verifyAccessToken.mockResolvedValue({ userId: 'user-1' });
+    mockQuery
+      .mockRejectedValueOnce(new Error('Network connection lost.'))
+      .mockResolvedValueOnce(/** @type {any} */ ([receipt]));
+    const response = await worker.fetch(
+      request(`/read-receipts?messageIds=${MESSAGE_ID}`),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
+  test('surfaces a non-transient status query failure instead of an empty list', async () => {
+    verifyAccessToken.mockResolvedValue({ userId: 'user-1' });
+    mockQuery.mockRejectedValueOnce(Object.assign(new Error('syntax error'), { code: '42601' }));
+    const response = await worker.fetch(
+      request(`/read-receipts?messageIds=${MESSAGE_ID}`),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(500);
+    expect(captureHandledException).toHaveBeenCalledOnce();
+  });
+
   test('retries the caller lookup once on a fresh connection', async () => {
     verifyAccessToken
       .mockRejectedValueOnce(new Error('Network connection lost.'))

@@ -11,20 +11,27 @@ import {
  * must not fail because search indexing did. A miss is repaired by the drift
  * sweep, which is what search_indexed_at exists for.
  *
+ * Deferred, the request's queue runs one job per document however many
+ * times a request saved it, alongside the other jobs rather than after them,
+ * so each push still waits for its task and stamps search_indexed_at.
+ *
  * @param {import('postgres').Sql} sql
  * @param {any} env
  * @param {string} documentId
- * @param {{addDocuments?: Function}} [deps]
+ * @param {{addDocuments?: Function, waitForTask?: boolean}} [deps]
  */
 export async function syncDocumentToMeili(sql, env, documentId, deps = {}) {
   if (env?.deferSearchSync) {
-    env.deferSearchSync((freshSql) =>
-      syncDocumentToMeili(freshSql, { ...env, deferSearchSync: undefined }, documentId, deps),
+    env.deferSearchSync(
+      (/** @type {import('postgres').Sql} */ freshSql) =>
+        syncDocumentToMeili(freshSql, { ...env, deferSearchSync: undefined }, documentId, deps),
+      `document:${documentId}`,
     );
     return;
   }
   if (!meiliAvailable(env)) return;
   const addDocs = deps.addDocuments ?? addDocumentsDefault;
+  const waitForTask = deps.waitForTask ?? true;
 
   try {
     const [row] = await sql`
@@ -33,7 +40,8 @@ export async function syncDocumentToMeili(sql, env, documentId, deps = {}) {
       WHERE d.id = ${documentId}
     `;
     if (!row) return;
-    await addDocs(env, DOCUMENTS_INDEX, [row]);
+    await addDocs(env, DOCUMENTS_INDEX, [row], undefined, { waitForTask });
+    if (!waitForTask) return;
     await sql`UPDATE documents SET search_indexed_at = CASE WHEN xmin::text = ${row.row_version}
       THEN now() ELSE NULL END WHERE id = ${documentId}`;
   } catch (error) {
@@ -54,8 +62,9 @@ export async function syncDocumentToMeili(sql, env, documentId, deps = {}) {
  */
 export async function removeDocumentFromMeili(env, documentId, deps = {}) {
   if (env?.deferSearchSync) {
-    env.deferSearchSync(() =>
-      removeDocumentFromMeili({ ...env, deferSearchSync: undefined }, documentId, deps),
+    env.deferSearchSync(
+      () => removeDocumentFromMeili({ ...env, deferSearchSync: undefined }, documentId, deps),
+      `document-remove:${documentId}`,
     );
     return;
   }

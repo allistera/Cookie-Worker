@@ -135,10 +135,28 @@ export async function resolveDefaultCalendarId(sql, userId) {
 }
 
 /**
+ * @param {{title: string, start: string, durationMinutes: number}} a
+ * @param {{title: string, start: string, durationMinutes: number}} b
+ */
+function sameLine(a, b) {
+  return a.title === b.title && a.start === b.start && a.durationMinutes === b.durationMinutes;
+}
+
+/**
  * Diffs the time-range lines in a Daily note's old vs. new blocks and
  * applies the difference to calendar_events within the caller's
  * transaction. eventDate is the note's own date
  * (resolveDailyNoteEventDate), not "today".
+ *
+ * Only lines that are new or whose text changed are written, in one
+ * statement, and removed lines are deleted in one more: a save runs inside
+ * the document's FOR UPDATE transaction, and rewriting every line on every
+ * keystroke-driven save both held that lock for a round trip per line and
+ * clobbered edits made to the linked events from the calendar side. An
+ * unchanged line leaves its event alone (including one deleted from the
+ * calendar). previousEventDate is the date the note had before this save;
+ * when it differs (a rename or move onto another day, or into Daily), every
+ * line is rewritten so its event follows the note.
  *
  * @param {SqlClient} sql
  * @param {string} userId
@@ -146,6 +164,7 @@ export async function resolveDefaultCalendarId(sql, userId) {
  * @param {string} eventDate
  * @param {any[]} oldBlocks
  * @param {any[]} newBlocks
+ * @param {string | null} [previousEventDate] defaults to eventDate
  */
 export async function syncDailyNoteEvents(
   sql,
@@ -154,43 +173,50 @@ export async function syncDailyNoteEvents(
   eventDate,
   oldBlocks,
   newBlocks,
+  previousEventDate = eventDate,
 ) {
   const oldLines = extractTimeLines(oldBlocks);
   const newLines = extractTimeLines(newBlocks);
 
-  for (const blockId of oldLines.keys()) {
-    if (!newLines.has(blockId)) {
-      await sql`
-        DELETE FROM calendar_events
-        WHERE source_document_id = ${documentId}
-          AND source_block_id = ${blockId}
-          AND user_id = ${userId}
-      `;
-    }
+  const removed = [...oldLines.keys()].filter((blockId) => !newLines.has(blockId));
+  if (removed.length > 0) {
+    await sql`
+      DELETE FROM calendar_events
+      WHERE source_document_id = ${documentId}
+        AND source_block_id = ANY(${removed}::text[])
+        AND user_id = ${userId}
+    `;
   }
 
-  if (newLines.size === 0) return;
+  const dateMoved = previousEventDate !== eventDate;
+  const changed = [...newLines].filter(([blockId, line]) => {
+    const before = oldLines.get(blockId);
+    return dateMoved || !before || !sameLine(before, line);
+  });
+  if (changed.length === 0) return;
 
   const calendarId = await resolveDefaultCalendarId(sql, userId);
   if (!calendarId) return;
 
-  for (const [blockId, line] of newLines) {
-    await sql`
-      INSERT INTO calendar_events (
-        user_id, title, event_date, start_time, duration_minutes, calendar,
-        source_document_id, source_block_id
-      )
-      VALUES (
-        ${userId}, ${line.title}, ${eventDate}, ${line.start}, ${line.durationMinutes}, ${calendarId},
-        ${documentId}, ${blockId}
-      )
-      ON CONFLICT (source_document_id, source_block_id) WHERE source_document_id IS NOT NULL
-      DO UPDATE SET
-        title = EXCLUDED.title,
-        event_date = EXCLUDED.event_date,
-        start_time = EXCLUDED.start_time,
-        duration_minutes = EXCLUDED.duration_minutes,
-        updated_at = now()
-    `;
-  }
+  await sql`
+    INSERT INTO calendar_events (
+      user_id, title, event_date, start_time, duration_minutes, calendar,
+      source_document_id, source_block_id
+    )
+    SELECT ${userId}, l.title, ${eventDate}, l.start_time, l.duration_minutes, ${calendarId},
+           ${documentId}, l.block_id
+    FROM unnest(
+      ${changed.map(([, line]) => line.title)}::text[],
+      ${changed.map(([, line]) => line.start)}::text[],
+      ${changed.map(([, line]) => line.durationMinutes)}::int[],
+      ${changed.map(([blockId]) => blockId)}::text[]
+    ) AS l(title, start_time, duration_minutes, block_id)
+    ON CONFLICT (source_document_id, source_block_id) WHERE source_document_id IS NOT NULL
+    DO UPDATE SET
+      title = EXCLUDED.title,
+      event_date = EXCLUDED.event_date,
+      start_time = EXCLUDED.start_time,
+      duration_minutes = EXCLUDED.duration_minutes,
+      updated_at = now()
+  `;
 }

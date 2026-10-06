@@ -134,8 +134,9 @@ const RANGE_MAX = '9999-12-31';
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {{from: string, to: string} | null} range
+ * @param {string | null} calendar
  */
-async function fetchNormalizedEvents(sql, userId, range) {
+async function fetchNormalizedEvents(sql, userId, range, calendar) {
   return sql`
     SELECT ce.id, ce.title, ce.description, ce.location, ce.event_date AS date,
            ce.start_time AS start, ce.duration_minutes AS duration,
@@ -158,6 +159,7 @@ async function fetchNormalizedEvents(sql, userId, range) {
     WHERE ce.user_id = ${userId}
       AND (ce.recurrence_rule IS NOT NULL
            OR ce.event_date BETWEEN ${range?.from ?? RANGE_MIN} AND ${range?.to ?? RANGE_MAX})
+      AND (${calendar}::text IS NULL OR COALESCE(c.id::text, ce.calendar::text) = ${calendar})
     ORDER BY ce.event_date, ce.start_time
   `;
 }
@@ -169,8 +171,9 @@ async function fetchNormalizedEvents(sql, userId, range) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {{from: string, to: string} | null} range
+ * @param {string | null} calendar
  */
-async function fetchNormalizedEventsWithoutRecurrence(sql, userId, range) {
+async function fetchNormalizedEventsWithoutRecurrence(sql, userId, range, calendar) {
   return sql`
     SELECT ce.id, ce.title, ce.description, ce.location, ce.event_date AS date,
            ce.start_time AS start, ce.duration_minutes AS duration,
@@ -190,21 +193,30 @@ async function fetchNormalizedEventsWithoutRecurrence(sql, userId, range) {
      )
     WHERE ce.user_id = ${userId}
       AND ce.event_date BETWEEN ${range?.from ?? RANGE_MIN} AND ${range?.to ?? RANGE_MAX}
+      AND (${calendar}::text IS NULL OR COALESCE(c.id::text, ce.calendar::text) = ${calendar})
     ORDER BY ce.event_date, ce.start_time
   `;
 }
 
+// The optional calendar filter matches the same normalized id the rows
+// report as `calendar`, and runs in SQL so it applies before expansion: a
+// busy calendar can no longer spend the shared occurrence cap (and set
+// `truncated`) on behalf of the one the caller asked for. It is a plain
+// nullable parameter rather than a nested sql`` fragment, keeping one query
+// per call for createMockSql's FIFO queue.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {{from: string, to: string} | null} [range]
+ * @param {string | null} [calendar]
  */
-export async function fetchEvents(sql, userId, range = null) {
+export async function fetchEvents(sql, userId, range = null, calendar = null) {
   try {
-    return await fetchNormalizedEvents(sql, userId, range);
+    return await fetchNormalizedEvents(sql, userId, range, calendar);
   } catch (error) {
     const code = /** @type {{code?: string}} */ (error)?.code;
-    if (code === '42703') return fetchNormalizedEventsWithoutRecurrence(sql, userId, range);
+    if (code === '42703')
+      return fetchNormalizedEventsWithoutRecurrence(sql, userId, range, calendar);
     if (code !== '42P01') throw error;
     return sql`
       SELECT ce.id, ce.title, ce.description, ce.location, ce.event_date AS date,
@@ -212,6 +224,7 @@ export async function fetchEvents(sql, userId, range = null) {
       FROM calendar_events ce
       WHERE ce.user_id = ${userId}
         AND ce.event_date BETWEEN ${range?.from ?? RANGE_MIN} AND ${range?.to ?? RANGE_MAX}
+        AND (${calendar}::text IS NULL OR ce.calendar::text = ${calendar})
       ORDER BY ce.event_date, ce.start_time
     `;
   }
@@ -249,7 +262,10 @@ export async function listEvents(sql, userId, url) {
   if (error || !range) {
     return Response.json({ error: 'from and to must be a valid YYYY-MM-DD pair' }, { status: 400 });
   }
-  const events = await fetchEvents(sql, userId, range);
+  // Optional: a calendar id (or legacy slug) as the rows report it. It is
+  // only ever a bound parameter, so an unknown value just matches nothing.
+  const calendar = url.searchParams.get('calendar') || null;
+  const events = await fetchEvents(sql, userId, range, calendar);
   const { events: expanded, truncated } = expandEventsPage(events, new Date(), range);
   return Response.json({ events: expanded, truncated });
 }

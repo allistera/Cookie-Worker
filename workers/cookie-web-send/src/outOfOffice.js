@@ -91,18 +91,37 @@ async function finish(tx, row, status, reason) {
   return status;
 }
 
-/** @param {any} tx @param {any} row @param {any} owner @param {string} from @param {Date} now */
-async function currentSuppression(tx, row, owner, from, now) {
+/**
+ * The short claim transaction locks the message and its classification
+ * (NOWAIT, so an in-flight screening or reclassification defers the claim
+ * instead of waiting). Dispatch reads them unlocked: its transaction spans the
+ * provider call, and row locks there would stall every write to that inbound
+ * message (read, archive, delete, reclassify) for up to the provider timeout.
+ * Screening takes the responder lock, which dispatch still holds, so it is
+ * ordered around the send either way; and a write that commits after this
+ * read could not have recalled mail already handed to the provider.
+ * @param {any} tx @param {any} row @param {any} owner @param {string} from @param {Date} now
+ * @param {{lock: boolean}} options
+ */
+async function currentSuppression(tx, row, owner, from, now, { lock }) {
   if (!owner?.auth0_sub) return 'owner_unprovisioned';
   if (row.payload.from !== from) return 'sender_identity_changed';
-  const [message] = await tx`
-    SELECT m.id, m.created_at, m.message_id, m.from_address, m.envelope_from,
-           m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed, m.screening_status,
-           m.out_of_office_revision, ai.status AS ai_status, ai.spam_verdict
-    FROM messages m JOIN message_ai ai ON ai.message_id = m.id
-    WHERE m.id = ${row.message_id} AND m.user_id = ${row.user_id}
-    FOR UPDATE OF m, ai NOWAIT
-  `;
+  const [message] = lock
+    ? await tx`
+      SELECT m.id, m.created_at, m.message_id, m.from_address, m.envelope_from,
+             m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed, m.screening_status,
+             m.out_of_office_revision, ai.status AS ai_status, ai.spam_verdict
+      FROM messages m JOIN message_ai ai ON ai.message_id = m.id
+      WHERE m.id = ${row.message_id} AND m.user_id = ${row.user_id}
+      FOR UPDATE OF m, ai NOWAIT
+    `
+    : await tx`
+      SELECT m.id, m.created_at, m.message_id, m.from_address, m.envelope_from,
+             m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed, m.screening_status,
+             m.out_of_office_revision, ai.status AS ai_status, ai.spam_verdict
+      FROM messages m JOIN message_ai ai ON ai.message_id = m.id
+      WHERE m.id = ${row.message_id} AND m.user_id = ${row.user_id}
+    `;
   if (!message) return 'message_missing';
   return autoReplySuppression(
     { ...message, owner_email: owner.email },
@@ -139,7 +158,7 @@ export async function claimAutoReply(sql, candidate, from) {
       await finish(tx, row, 'uncertain', 'confirmation_window_ended');
       return null;
     }
-    const reason = await currentSuppression(tx, row, owner, from, now);
+    const reason = await currentSuppression(tx, row, owner, from, now, { lock: true });
     if (reason) {
       await finish(tx, row, row.first_attempt_at ? 'uncertain' : 'suppressed', reason);
       return null;
@@ -177,8 +196,9 @@ export async function claimAutoReply(sql, candidate, from) {
 }
 
 /**
- * Only the responder lock spans the <=10s provider call. A plain users read
- * avoids conflicting with KEY SHARE foreign-key checks for new inbound rows.
+ * Only the responder lock and this delivery's own row lock span the <=10s
+ * provider call. Plain users and message reads avoid conflicting with KEY
+ * SHARE foreign-key checks for new inbound rows and with mailbox writes.
  * End now takes the responder lock first, so waiting cannot block ingest.
  * Once committed it prevents later dispatch; it cannot recall underway mail.
  * @param {import('postgres').Sql} sql @param {any} claimed @param {import('./outbound.js').SendServices} services
@@ -198,7 +218,16 @@ export async function dispatchAutoReply(sql, claimed, services, deadline = Infin
     const now = new Date(clock.now);
     if (new Date(row.retry_until).getTime() <= now.getTime())
       return finish(tx, row, 'uncertain', 'confirmation_window_ended');
-    const reason = await currentSuppression(tx, row, owner, configuredEmailFrom(services.env), now);
+    const reason = await currentSuppression(
+      tx,
+      row,
+      owner,
+      configuredEmailFrom(services.env),
+      now,
+      {
+        lock: false,
+      },
+    );
     if (reason) return finish(tx, row, 'uncertain', reason);
     const timeoutMs = Math.min(AUTO_REPLY_PROVIDER_TIMEOUT_MS, deadline - Date.now());
     // Database/lock latency consumes the same budget. An already committed

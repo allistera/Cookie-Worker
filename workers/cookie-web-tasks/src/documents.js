@@ -515,22 +515,25 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
   // this write would index (or diff against) a body that no longer exists.
   const touchesTitle = Object.hasOwn(body, 'title');
   const touchesBlocks = Object.hasOwn(body, 'blocks');
+  const touchesFolder = Object.hasOwn(body, 'folderId');
 
   const [document] = await sql.begin(
     async (/** @type {import('postgres').TransactionSql<any>} */ sql) => {
       /** @type {any} */
       let previous = null;
-      if (touchesTitle || touchesBlocks) {
+      if (touchesTitle || touchesBlocks || touchesFolder) {
         [previous] = await sql`
-          SELECT title, blocks FROM documents
+          SELECT title, folder_id, blocks FROM documents
           WHERE id = ${body.id} AND user_id = ${userId}
           FOR UPDATE
         `;
         if (!previous) return [];
-        updates.content_text = computeSearchFields(
-          touchesTitle ? updates.title : previous.title,
-          touchesBlocks ? newBlocks : previous.blocks,
-        ).content_text;
+        if (touchesTitle || touchesBlocks) {
+          updates.content_text = computeSearchFields(
+            touchesTitle ? updates.title : previous.title,
+            touchesBlocks ? newBlocks : previous.blocks,
+          ).content_text;
+        }
       }
 
       // Compared at millisecond precision on both sides: updated_at is a
@@ -551,7 +554,12 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
         RETURNING d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.created_at, d.updated_at
       `;
       const updated = rows[0];
-      if (updated && newBlocks && previous) {
+      // A rename or move with no blocks in the body can still take a Daily
+      // note to another day; its unchanged lines then follow it there.
+      const moved =
+        Boolean(previous) &&
+        (previous.title !== updated?.title || previous.folder_id !== updated?.folder_id);
+      if (updated && previous && (newBlocks || moved)) {
         const eventDate = await resolveDailyNoteEventDate(
           sql,
           userId,
@@ -559,13 +567,20 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
           updated.title,
         );
         if (eventDate) {
+          // Unchanged lines are only rewritten when the note itself moved to
+          // another day, so the previous date is only looked up on a rename
+          // or move.
+          const previousEventDate = moved
+            ? await resolveDailyNoteEventDate(sql, userId, previous.folder_id, previous.title)
+            : eventDate;
           await syncDailyNoteEvents(
             sql,
             userId,
             updated.id,
             eventDate,
             previous.blocks,
-            /** @type {any[]} */ (newBlocks),
+            /** @type {any[]} */ (newBlocks ?? previous.blocks),
+            previousEventDate,
           );
         }
       }

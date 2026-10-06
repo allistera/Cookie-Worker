@@ -6,6 +6,7 @@ import {
   MAX_FUTURE_MS,
   MAX_HEADER_VALUE,
   MAX_HEADERS,
+  MAX_LOOP_HEADERS,
   MAX_MESSAGE_ID,
   parseEmail,
 } from '../src/parse.js';
@@ -166,7 +167,34 @@ aGVsbG8=
       `${extra}\nContent-Type: text/plain; charset=utf-8`,
     );
     const record = await parseEmail(fakeMessage(raw));
-    expect(record.headers.length).toBeLessThanOrEqual(MAX_HEADERS);
+    expect(record.headers.length).toBeLessThanOrEqual(MAX_HEADERS + MAX_LOOP_HEADERS);
+    // Only the late Content-Type outlives the cap; the late X-Extra-* do not.
+    expect(record.headers.slice(MAX_HEADERS).map((header) => header.key)).toEqual(['content-type']);
     expect(record.headers.every((header) => header.value.length <= MAX_HEADER_VALUE)).toBe(true);
+  });
+
+  // Out-of-office suppression reads the stored headers, so a List-Id or
+  // Auto-Submitted placed after the first MAX_HEADERS must survive the cap or
+  // an auto-reply would answer a list or another auto-responder.
+  test('keeps loop-relevant headers past MAX_HEADERS, within their own bound', async () => {
+    const extra = Array.from({ length: MAX_HEADERS + 5 }, (_, i) => `X-Extra-${i}: v`).join('\n');
+    const late = [
+      'List-Id: <news.example.com>',
+      'Auto-Submitted: auto-replied',
+      'Precedence: bulk',
+      'X-Unrelated: dropped',
+      ...Array.from({ length: MAX_LOOP_HEADERS + 10 }, (_, i) => `List-Extra-${i}: v`),
+    ].join('\n');
+    const raw = simpleFixture.replace(
+      'Content-Type: text/plain; charset=utf-8',
+      `${extra}\n${late}\nContent-Type: text/plain; charset=utf-8`,
+    );
+
+    const record = await parseEmail(fakeMessage(raw));
+    const keys = record.headers.map((header) => header.key);
+
+    expect(keys).toEqual(expect.arrayContaining(['list-id', 'auto-submitted', 'precedence']));
+    expect(keys).not.toContain('x-unrelated');
+    expect(record.headers).toHaveLength(MAX_HEADERS + MAX_LOOP_HEADERS);
   });
 });

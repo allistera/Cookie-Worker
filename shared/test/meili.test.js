@@ -233,6 +233,17 @@ describe('addDocuments', () => {
     expect(calls[0].args.opts).toEqual({ primaryKey: 'id' });
     expect(calls[0].args.docs[0]).toMatchObject({ id: 'm1', subject: 'Roof' });
   });
+
+  // For waitUntil paths that cannot afford to poll: acceptance only, even for
+  // a task that will go on to fail.
+  it('resolves on enqueue without polling when told not to wait', async () => {
+    const { client } = createMockMeili({ task: { uid: 2, status: 'failed' } });
+
+    await expect(
+      addDocuments(ENV, MESSAGES_INDEX, [], client, { waitForTask: false }),
+    ).resolves.toEqual({ taskUid: 2, status: 'enqueued' });
+    expect(client.tasks.getTask).not.toHaveBeenCalled();
+  });
 });
 
 describe('deleteDocuments', () => {

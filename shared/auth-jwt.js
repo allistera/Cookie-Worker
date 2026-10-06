@@ -49,6 +49,27 @@ export function authFailureResponse(error) {
   return Response.json({ error: message }, { status });
 }
 
+// jose's own JWKS-retrieval failures: the fetch timed out (JWKSTimeout), the
+// endpoint answered something other than 200 or unparseable JSON (generic
+// JOSEErrors naming the key set), or it served a malformed key set.
+const JWKS_FAILURE_CODES = new Set(['ERR_JWKS_TIMEOUT', 'ERR_JWKS_INVALID']);
+
+/**
+ * Whether a jwtVerify rejection came from fetching the key set rather than
+ * from the token. fetch itself rejects with a TypeError on a network failure
+ * (jose passes it through) and with an AbortError/TimeoutError when aborted;
+ * jose reports every problem with the token as a JOSEError subclass.
+ *
+ * @param {unknown} error
+ */
+function jwksUnavailable(error) {
+  const err = /** @type {{name?: string, code?: string, message?: string}} */ (error);
+  if (error instanceof TypeError) return true;
+  if (err?.name === 'AbortError' || err?.name === 'TimeoutError') return true;
+  if (err?.code && JWKS_FAILURE_CODES.has(err.code)) return true;
+  return err?.code === 'ERR_JOSE_GENERIC' && /JSON Web Key Set/.test(String(err.message));
+}
+
 /**
  * Validates the request's Bearer token against the Auth0 tenant's JWKS.
  * Resolves the verified issuer + subject to a provisioned local user. Email
@@ -112,7 +133,13 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
       algorithms: ['RS256'],
       clockTolerance: 5,
     }));
-  } catch {
+  } catch (cause) {
+    // Failing to fetch the signing keys says nothing about the token, so the
+    // client gets "try again" (503) rather than a 401 that reads as "sign in
+    // again" and logs a valid session out during an Auth0 or network blip.
+    if (jwksUnavailable(cause)) {
+      throw new AuthFailure('Signing keys unavailable', 503, { cause });
+    }
     throw new AuthFailure('Invalid access token', 401);
   }
 

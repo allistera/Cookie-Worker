@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import worker, {
   MAX_PARSE_BYTES,
+  RECOVERY_BATCH_SIZE,
   isStoreTimeout,
   isTransientDbError,
   recoverPendingEnrichment,
@@ -588,6 +589,10 @@ describe('email handler', () => {
     await Promise.all(pending);
     // Once at ingest, once after classification changed labels/verdict.
     expect(syncMessageToMeili).toHaveBeenCalledTimes(2);
+    // The ingest push only enqueues, so classification is not held behind up
+    // to 20s of task polling; the classified push waits so it can stamp.
+    expect(syncMessageToMeili.mock.calls[0][3]).toEqual({ waitForTask: false });
+    expect(syncMessageToMeili.mock.calls[1][3]).toBeUndefined();
 
     syncMessageToMeili.mockClear();
     pending.length = 0;
@@ -649,6 +654,7 @@ describe('scheduled recovery', () => {
     const recoveryCall = sql.mock.calls.find((call) => call[0].join('?') === recoveryQuery);
     expect(recoveryCall.slice(1)).toContain(MAX_ENRICHMENT_ATTEMPTS);
     expect(recoveryQuery).not.toContain('embedding');
+    expect(recoveryCall.slice(1)).toContain(RECOVERY_BATCH_SIZE);
   });
 
   test('retries a transient connection failure with a fresh client', async () => {

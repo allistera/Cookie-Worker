@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { fetchEmails, fetchSnoozedCount, fetchSpamCount, fetchUnreadCount } from '../src/emails.js';
+import {
+  fetchEmails,
+  fetchPresenceCounts,
+  fetchSnoozedCount,
+  fetchSpamCount,
+  fetchUnreadCount,
+} from '../src/emails.js';
 
 // Ported from Cookie-Web's api/_lib/__tests__/emails-query.test.js — the
 // folder-predicate and query-shape suite, unchanged apart from moving with
@@ -235,5 +241,24 @@ describe('fetchSnoozedCount', () => {
     expect(query).toContain("COALESCE(ai.spam_verdict, 'inbox') <> 'spam'");
     expect(query).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
     expect(query).toContain('count(m.id)::int AS snoozed');
+  });
+});
+
+// The screening half of the WHERE must spell out NOT is_sent so the planner
+// can use the partial index messages_screening_queue_idx (whose predicate
+// includes it); the FILTERs already imply it, so the counts are unchanged.
+describe('fetchPresenceCounts', () => {
+  test('restates NOT is_sent so the screening partial index applies', () => {
+    const capture = captureQuery();
+
+    fetchPresenceCounts(capture.sql, USER_ID);
+
+    const query = capture.query();
+    expect(query).toContain(
+      "AND (m.is_starred OR (NOT m.is_sent AND m.screening_status <> 'allowed'))",
+    );
+    expect(query).toContain(
+      "count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'held')",
+    );
   });
 });

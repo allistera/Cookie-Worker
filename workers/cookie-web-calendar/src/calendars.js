@@ -177,7 +177,7 @@ export async function createCalendar(sql, userId, body, env, sync = syncCalendar
       ...calendar,
       subscriptionUrl,
       subscriptionSyncedAt: result.ok ? new Date().toISOString() : null,
-      subscriptionError: result.ok ? null : result.error,
+      subscriptionError: result.ok ? (result.warning ?? null) : result.error,
     };
   }
   return Response.json({ calendar }, { status: 201 });
@@ -219,7 +219,11 @@ export async function syncCalendar(sql, userId, body, env, sync = syncCalendarSu
   const result = await sync(sql, row.id, row.userId, row.subscriptionUrl);
   return Response.json(
     result.ok
-      ? { ok: true, subscriptionSyncedAt: new Date().toISOString(), subscriptionError: null }
+      ? {
+          ok: true,
+          subscriptionSyncedAt: new Date().toISOString(),
+          subscriptionError: result.warning ?? null,
+        }
       : { ok: false, subscriptionError: result.error },
     { status: result.ok ? 200 : 502 },
   );

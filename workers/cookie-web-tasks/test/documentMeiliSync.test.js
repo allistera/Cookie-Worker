@@ -93,23 +93,23 @@ describe('removeDocumentFromMeili', () => {
   });
 });
 
-it('defers indexing to a fresh connection and waits for completion before stamping', async () => {
+// Deferred jobs run alongside each other in the request's waitUntil queue, so
+// each one still waits for its task and stamps search_indexed_at.
+it('defers indexing to a fresh connection, waits for the task, and stamps', async () => {
   const requestSql = createMockSql([]);
   const backgroundSql = createMockSql([[{ id: DOC_ID, row_version: '42' }], []]);
+  /** @type {any} */
   let job;
-  let complete;
-  const push = vi.fn(
-    () =>
-      new Promise((resolve) => {
-        complete = resolve;
-      }),
-  );
+  /** @type {any} */
+  let key;
+  const push = vi.fn(async () => ({ taskUid: 7, status: 'enqueued' }));
   await syncDocumentToMeili(
     requestSql,
     {
       ...ENV,
-      deferSearchSync: (work) => {
+      deferSearchSync: (/** @type {any} */ work, /** @type {any} */ jobKey) => {
         job = work;
+        key = jobKey;
       },
     },
     DOC_ID,
@@ -117,11 +117,20 @@ it('defers indexing to a fresh connection and waits for completion before stampi
   );
   expect(requestSql.calls).toHaveLength(0);
   expect(push).not.toHaveBeenCalled();
-  const background = job(backgroundSql);
-  await Promise.resolve();
-  expect(backgroundSql.calls).toHaveLength(1);
-  complete({ taskUid: 7, status: 'succeeded' });
-  await background;
-  expect(backgroundSql.calls[1].values).toContain('42');
-  expect(backgroundSql.calls[1].text).toContain('xmin::text');
+  expect(key).toBe(`document:${DOC_ID}`);
+
+  await job(backgroundSql);
+
+  expect(/** @type {any} */ (push).mock.calls[0][4]).toEqual({ waitForTask: true });
+  expect(backgroundSql.calls).toHaveLength(2);
+  expect(backgroundSql.calls[1].text).toContain('search_indexed_at');
+});
+
+it('waits for the task outside the deferred queue', async () => {
+  const sql = createMockSql([[{ id: DOC_ID, user_id: 'u1' }], []]);
+  const push = vi.fn(async () => ({ taskUid: 1 }));
+
+  await syncDocumentToMeili(sql, ENV, DOC_ID, { addDocuments: push });
+
+  expect(/** @type {any} */ (push).mock.calls[0][4]).toEqual({ waitForTask: true });
 });

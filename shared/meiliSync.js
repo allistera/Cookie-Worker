@@ -39,14 +39,15 @@ export function isTransientMeiliError(err) {
 /**
  * @param {any} env
  * @param {any[]} chunk
+ * @param {{waitForTask?: boolean}} [options]
  */
-async function addChunk(env, chunk) {
+async function addChunk(env, chunk, options) {
   try {
-    return await addDocuments(env, MESSAGES_INDEX, chunk);
+    return await addDocuments(env, MESSAGES_INDEX, chunk, undefined, options);
   } catch (err) {
     if (!isTransientMeiliError(err)) throw err;
     await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS));
-    return addDocuments(env, MESSAGES_INDEX, chunk);
+    return addDocuments(env, MESSAGES_INDEX, chunk, undefined, options);
   }
 }
 
@@ -63,12 +64,18 @@ async function addChunk(env, chunk) {
  * `failed` counts documents it did not, and `error` carries the last failure's
  * message when there was one.
  *
+ * `waitForTask: false` (mail-app-ingest's first push of a new message) returns
+ * once Meilisearch has accepted the document instead of polling the task, and
+ * leaves search_indexed_at NULL: acceptance is not success, so the stamp is
+ * left to a later waiting sync (classification's) or the drift sweep.
+ *
  * @param {import('postgres').Sql} sql
  * @param {any} env
  * @param {string} messageUuid
+ * @param {{waitForTask?: boolean}} [options]
  * @returns {Promise<{indexed: number, failed: number, error?: string}>}
  */
-export async function syncMessageToMeili(sql, env, messageUuid) {
+export async function syncMessageToMeili(sql, env, messageUuid, { waitForTask = true } = {}) {
   if (!meiliAvailable(env)) return { indexed: 0, failed: 0 };
 
   try {
@@ -110,11 +117,11 @@ export async function syncMessageToMeili(sql, env, messageUuid) {
       return { indexed: 0, failed: 0 };
     }
 
-    const result = await addChunk(env, [row]);
-    await stampIndexed(sql, [String(row.id)], [String(row.row_version)]);
+    const result = await addChunk(env, [row], { waitForTask });
+    if (waitForTask) await stampIndexed(sql, [String(row.id)], [String(row.row_version)]);
     console.log(
       JSON.stringify({
-        event: 'meili_synced',
+        event: waitForTask ? 'meili_synced' : 'meili_enqueued',
         message_id: messageUuid,
         task_uid: result?.taskUid,
       }),

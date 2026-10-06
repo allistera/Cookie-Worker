@@ -172,7 +172,10 @@ export const tools = [
     annotations: READ_ONLY,
     async run({ from, to, calendar, limit }, api) {
       assertRange(from, to);
-      const body = await api.calendar.get('/calendar-events', { from, to });
+      // The calendar worker filters in SQL before expanding recurrences, so
+      // its occurrence cap (and truncated) apply to this calendar alone; the
+      // local filter below only guards against a worker that predates it.
+      const body = await api.calendar.get('/calendar-events', { from, to, calendar });
       const all = (body.events ?? []).filter(
         (/** @type {any} */ e) => !calendar || e.calendar === calendar,
       );

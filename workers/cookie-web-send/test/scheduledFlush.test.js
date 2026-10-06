@@ -240,11 +240,13 @@ describe('a reclaimed lease', () => {
     expect(sql.calls[0].text).toContain('due.reclaimed');
   });
 
-  test('redelivers without claiming another quota slot', async () => {
+  test('claims a quota slot, then gives it back when the provider deduplicated the redelivery', async () => {
     const sql = scriptedSql([
       [{ exists: 1 }], // owner
+      [{ authorized: true, quota_claimed: true }], // quota claim
       [{ thread_id: null, existing_message_id: 'already-stored' }], // replayed copy lookup
       [], // follow-up repair on the existing copy
+      [], // refund: nothing new went out
       [], // mark sent
     ]);
     const svc = deliveryServices();
@@ -252,20 +254,202 @@ describe('a reclaimed lease', () => {
     const result = await deliverScheduledSend(sql, dueRow({ reclaimed: true, attempts: 1 }), svc);
 
     expect(result).toEqual({ status: 'sent', storedMessageUuid: null });
-    expect(quotaQueries(sql.calls)).toHaveLength(0);
+    const quota = quotaQueries(sql.calls);
+    expect(quota).toHaveLength(2);
+    expect(quota[0].text).toContain('INSERT INTO outbound_email_quotas');
+    expect(quota[1].text).toContain('send_count - 1');
     expect(svc.send).toHaveBeenCalledWith(expect.any(Object), {
       idempotencyKey: 'scheduled-send/sched-1',
     });
   });
 
-  test('gives back no slot it did not claim when the provider fails', async () => {
+  test('charges a reclaimed lease whose earlier attempt never sent, keeping the slot', async () => {
+    // The first attempt died before (or after refunding) its quota claim, so
+    // nothing went out and nothing was stored: this delivery is the real send.
+    const sql = scriptedSql([
+      [{ exists: 1 }], // owner
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ thread_id: null, existing_message_id: null }], // sent-copy lookup
+      [], // insert thread
+      [{ id: 'stored' }], // insert message
+      [], // mark sent
+    ]);
+    const svc = deliveryServices();
+
+    const result = await deliverScheduledSend(sql, dueRow({ reclaimed: true, attempts: 1 }), svc);
+
+    expect(result.status).toBe('sent');
+    expect(result.storedMessageUuid).toEqual(expect.any(String));
+    const quota = quotaQueries(sql.calls);
+    expect(quota).toHaveLength(1);
+    expect(quota[0].text).toContain('INSERT INTO outbound_email_quotas');
+  });
+
+  test('leaves a rate-limited reclaimed lease pending without sending', async () => {
+    const sql = scriptedSql([
+      [{ exists: 1 }],
+      [{ authorized: true, quota_claimed: false }],
+      [], // back to pending
+    ]);
+    const svc = deliveryServices();
+
+    const result = await deliverScheduledSend(sql, dueRow({ reclaimed: true, attempts: 1 }), svc);
+
+    expect(result).toEqual({ status: 'retried', storedMessageUuid: null });
+    expect(svc.send).not.toHaveBeenCalled();
+    expect(sql.calls.at(-1).text).toContain("SET status = 'pending'");
+  });
+
+  test('refunds the slot it claimed when the provider fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const sql = scriptedSql([[{ exists: 1 }], []]);
+    const sql = scriptedSql([
+      [{ exists: 1 }],
+      [{ authorized: true, quota_claimed: true }],
+      [], // refund
+      [], // back to pending
+    ]);
     const svc = deliveryServices({ data: null, error: { message: 'bounced' } });
 
     const result = await deliverScheduledSend(sql, dueRow({ reclaimed: true, attempts: 1 }), svc);
 
     expect(result.status).toBe('retried');
-    expect(quotaQueries(sql.calls)).toHaveLength(0);
+    const quota = quotaQueries(sql.calls);
+    expect(quota).toHaveLength(2);
+    expect(quota[1].text).toContain('send_count - 1');
+  });
+});
+
+/**
+ * Answers by statement rather than call order, for flushes whose rows are
+ * delivered concurrently. `owner` decides each row's owner lookup.
+ *
+ * @param {any[]} claimed
+ * @param {(userId: unknown) => unknown} owner
+ * @returns {any}
+ */
+function flushSql(claimed, owner = () => [{ exists: 1 }]) {
+  /** @type {{text: string, values: unknown[]}[]} */
+  const calls = [];
+  /** @type {any} */
+  const sql = vi.fn(async (/** @type {string[]} */ strings, /** @type {unknown[]} */ ...values) => {
+    const text = strings.join('?');
+    calls.push({ text, values });
+    if (text.includes('UPDATE scheduled_sends s')) return claimed;
+    if (text.includes('WITH claimed AS')) return [{ authorized: true, quota_claimed: true }];
+    if (text.includes('FROM users WHERE id')) {
+      const result = owner(values[0]);
+      if (result instanceof Error) throw result;
+      return result;
+    }
+    if (text.includes('existing_message_id'))
+      return [{ thread_id: null, existing_message_id: null }];
+    if (text.includes('INSERT INTO messages')) return [{ id: values[0] }];
+    return [];
+  });
+  sql.begin = vi.fn(async (/** @type {(sql: any) => unknown} */ callback) => callback(sql));
+  sql.calls = calls;
+  return sql;
+}
+
+/** @param {number} count */
+const attachmentList = (count) =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `att-${index}`,
+    filename: `${index}.pdf`,
+    blob_url: `https://blob.example/${index}.pdf`,
+  }));
+
+describe('a flush whose bookkeeping throws for one row', () => {
+  test('still delivers, indexes and sweeps the rest, and releases that row for a retry', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = flushSql(
+      [dueRow({ id: 'sched-a', user_id: 'user-bad' }), dueRow({ id: 'sched-b' })],
+      (userId) => (userId === 'user-bad' ? new Error('Connection reset') : [{ exists: 1 }]),
+    );
+    const svc = deliveryServices();
+    svc.deleteBlob = vi.fn();
+
+    const response = await handleFlush(sql, svc);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      claimed: 2,
+      sent: 1,
+      retried: 1,
+      failed: 0,
+      unconfirmed: 0,
+    });
+    expect(svc.send).toHaveBeenCalledTimes(1);
+    expect(svc.indexSentMessages).toHaveBeenCalledWith([expect.any(String)]);
+    const release = sql.calls.find((/** @type {{text: string}} */ call) =>
+      call.text.includes('attempts = attempts + 1'),
+    );
+    expect(release.values).toEqual(['Connection reset', 'sched-a']);
+    expect(release.text).toContain("status = 'sending'");
+    orphanSweep(sql);
+  });
+
+  test('answers the flush even when the release write fails too', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = flushSql([dueRow({ id: 'sched-a' })], () => new Error('Connection reset'));
+    const base = sql.getMockImplementation();
+    sql.mockImplementation(async (/** @type {string[]} */ strings, ...values) => {
+      if (strings.join('?').includes('attempts = attempts + 1')) throw new Error('still down');
+      return base(strings, ...values);
+    });
+
+    const response = await handleFlush(sql, deliveryServices());
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).retried).toBe(1);
+  });
+});
+
+describe('the flush subrequest budget', () => {
+  test('claims rows against a running cost of one provider call plus one Blob read each', async () => {
+    const sql = createMockSql();
+    await handleFlush(sql, services());
+    const claim = sql.calls[0];
+    expect(claim.text).toContain('FROM scheduled_send_attachments ssa');
+    expect(claim.text).toContain('sum(cost) OVER (ORDER BY scheduled_for, id) AS running_cost');
+    // The first row always fits; the rest only while the running total does.
+    expect(claim.text).toMatch(/due\.running_cost = due\.cost OR due\.running_cost <= \?/);
+    expect(claim.values).toContain(20);
+  });
+
+  test('a light batch sweeps at most ten orphaned uploads', async () => {
+    const sql = createMockSql();
+    await handleFlush(sql, services());
+    expect(orphanSweep(sql).values.at(-1)).toBe(10);
+  });
+
+  test('a heavy batch shrinks the orphaned-upload sweep to what is left', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 1 provider call + 25 Blob reads leaves 4 of the 30-call budget.
+    const sql = flushSql([dueRow({ attachments: attachmentList(25) })], () => new Error('down'));
+    await handleFlush(sql, deliveryServices());
+    expect(orphanSweep(sql).values.at(-1)).toBe(4);
+  });
+
+  test('a batch that spent the budget skips the orphaned-upload sweep', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 1 provider call + 29 Blob reads: the first row is claimed whatever it
+    // costs, and nothing is left for Blob deletes.
+    const sql = flushSql([dueRow({ attachments: attachmentList(29) })], () => new Error('down'));
+    const svc = deliveryServices();
+    svc.deleteBlob = vi.fn();
+    const response = await handleFlush(sql, svc);
+    expect(response.status).toBe(200);
+    expect(
+      sql.calls.some((/** @type {{text: string}} */ call) =>
+        call.text.includes('DELETE FROM outbound_attachments'),
+      ),
+    ).toBe(false);
+    // The resolved-state sweep is Postgres-only and still runs.
+    expect(
+      sql.calls.some((/** @type {{text: string}} */ call) =>
+        call.text.includes('DELETE FROM scheduled_sends'),
+      ),
+    ).toBe(true);
   });
 });

@@ -22,6 +22,10 @@ export { redact } from './sentry.js';
 
 export const STORE_BUDGET_MS = 5000;
 export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
+// Rows one recovery tick enriches, concurrently. Each still claims a slot of
+// the shared inbound AI budget (exhaustion defers without spending an
+// attempt), so this only bounds how fast a backlog drains, not what it costs.
+export const RECOVERY_BATCH_SIZE = 10;
 
 const worker = {
   /**
@@ -153,7 +157,10 @@ const worker = {
                 await discardUploadedAttachments(lateAttachments, env, lateRecord.messageId);
               }
               if (lateResult.outcome === 'inserted' && lateResult.messageUuid) {
-                await syncMessageToMeili(lateSql, env, lateResult.messageUuid);
+                // No task wait, as on the on-time path below.
+                await syncMessageToMeili(lateSql, env, lateResult.messageUuid, {
+                  waitForTask: false,
+                });
                 if (apiKey) {
                   await runAiEnrichment(env, lateRecord, lateResult.messageUuid, true);
                 }
@@ -203,14 +210,19 @@ const worker = {
       //
       // Classification stays after the sync rather than beside it, so an
       // unclassified document can never land in the index after the
-      // classified one. If the invocation's waitUntil budget runs out first,
-      // the message_ai row stays pending for the recovery cron.
+      // classified one. The sync only waits for Meilisearch to accept the
+      // document, not to finish indexing it: tasks run in enqueue order, so
+      // the classified push still lands last, and polling here could eat up
+      // to 20s of the waitUntil budget before classification even started.
+      // It leaves the row unstamped; the classified sync (or the drift sweep)
+      // stamps it. If the budget still runs out, the message_ai row stays
+      // pending for the recovery cron.
       sqlOwnedByWaitUntil = true;
       const ingestSql = sql;
       const enrichRecord = record;
       const messageUuid = storeResult.messageUuid;
       ctx.waitUntil(
-        syncMessageToMeili(ingestSql, env, messageUuid)
+        syncMessageToMeili(ingestSql, env, messageUuid, { waitForTask: false })
           .then(() => endSql(ingestSql))
           .then(() => runAiEnrichment(env, enrichRecord, messageUuid, false)),
       );
@@ -388,7 +400,7 @@ export async function recoverPendingEnrichment(env) {
                 AND ai.enrichment_attempts < ${MAX_ENRICHMENT_ATTEMPTS}
                 AND ai.updated_at < now() - interval '2 minutes'
               ORDER BY ai.updated_at
-              LIMIT 3
+              LIMIT ${RECOVERY_BATCH_SIZE}
               FOR UPDATE OF ai SKIP LOCKED
             `;
             if (candidates.length > 0) {

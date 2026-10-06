@@ -1,8 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   createNtfySubscription,
+  DELIVERY_CONCURRENCY,
   deliverPendingNtfy,
   encodeHeaderValue,
+  NTFY_FETCH_TIMEOUT_MS,
   NtfyPublishError,
   publishNtfy,
   sendNtfyTest,
@@ -299,6 +301,76 @@ describe('ntfy delivery', () => {
     expect(request.body).toBe('Please confirm by Friday.');
   });
 
+  // A hung ntfy server must fail the attempt, not stall the whole batch.
+  test('aborts a publish that outlives the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(
+        (/** @type {any} */ _url, /** @type {RequestInit} */ init) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      );
+      const publish = publishNtfy(
+        { topic: 'cookie-topic', messageId: 'message-1' },
+        { fetchImpl: /** @type {any} */ (fetchImpl) },
+      );
+      const failure = expect(publish).rejects.toThrow('aborted');
+      await vi.advanceTimersByTimeAsync(NTFY_FETCH_TIMEOUT_MS);
+      await failure;
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('publishes a claimed batch a few at a time rather than one by one', async () => {
+    const rows = Array.from({ length: DELIVERY_CONCURRENCY + 2 }, (_, i) => ({
+      event_id: `event-${i}`,
+      message_id: `message-${i}`,
+      topic: 'cookie-topic',
+      subject: 'Hello',
+      body_text: 'Body',
+      attempts: 1,
+    }));
+    const sql = /** @type {any} */ (
+      vi.fn(async (/** @type {TemplateStringsArray} */ strings) => {
+        const text = strings.join(' ');
+        if (text.includes('WITH pending')) return rows;
+        if (text.includes('AS eligible')) return [{ attempts: 1, eligible: true }];
+        return [];
+      })
+    );
+    let inFlight = 0;
+    let peak = 0;
+    /** @type {Array<() => void>} */
+    const release = [];
+    const fetchImpl = vi.fn(() => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      return new Promise((resolve) => {
+        release.push(() => {
+          inFlight -= 1;
+          resolve(new Response(null, { status: 200 }));
+        });
+      });
+    });
+
+    const delivery = deliverPendingNtfy(sql, { fetchImpl: /** @type {any} */ (fetchImpl) });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(DELIVERY_CONCURRENCY));
+    expect(peak).toBe(DELIVERY_CONCURRENCY);
+    while (release.length || fetchImpl.mock.calls.length < rows.length) {
+      release.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await expect(delivery).resolves.toEqual({
+      attempted: rows.length,
+      delivered: rows.length,
+      failed: 0,
+    });
+    expect(peak).toBe(DELIVERY_CONCURRENCY);
+  });
+
   test('updates queued events only from the rows selected by the pending CTE', async () => {
     const sql = /** @type {any} */ (vi.fn().mockResolvedValueOnce([]));
 
@@ -309,6 +381,9 @@ describe('ntfy delivery', () => {
     expect(query).not.toContain('FROM pending JOIN');
     expect(query).toContain('RETURNING pending.event_id, pending.message_id, pending.topic');
     expect(query).toContain('pending.body_text');
+    // Only enough of the body for the truncated notification leaves Postgres.
+    expect(query).toContain('left(message.body_text, ) AS body_text');
+    expect(sql.mock.calls[0].slice(1)).toContain(4000);
     expect(query).toContain("ai.status IS DISTINCT FROM 'pending'");
     expect(query).toContain("ai.updated_at <= now() - interval '5 minutes'");
     expect(query).toContain('LEFT JOIN email_categories category');

@@ -2,8 +2,13 @@
 // recurrence and fetch halves, unchanged.
 import { describe, expect, it } from 'vitest';
 
-import { buildRecurrenceRule, expandEvents, parseRangeParams } from '../src/recurrence.js';
-import { fetchEvents } from '../src/calendarEvents.js';
+import {
+  buildRecurrenceRule,
+  expandEvents,
+  expandEventsPage,
+  parseRangeParams,
+} from '../src/recurrence.js';
+import { fetchEvents, listEvents } from '../src/calendarEvents.js';
 
 describe('buildRecurrenceRule', () => {
   it('returns null for "none"', () => {
@@ -50,8 +55,9 @@ describe('fetchEvents', () => {
     expect(query).toContain('ce.all_day AS "allDay"');
     expect(query).toContain('ce.is_auto_scheduled AS "autoScheduled"');
     expect(query).toContain('ORDER BY ce.event_date, ce.start_time');
-    // No range binds the full date domain — the return-everything contract.
-    expect(values).toEqual([USER_ID, '0001-01-01', '9999-12-31']);
+    // No range binds the full date domain — the return-everything contract;
+    // no calendar binds a null filter.
+    expect(values).toEqual([USER_ID, '0001-01-01', '9999-12-31', null, null]);
   });
 
   it('windows non-recurring rows by event_date but keeps recurring masters', async () => {
@@ -67,7 +73,39 @@ describe('fetchEvents', () => {
 
     expect(query).toContain('ce.recurrence_rule IS NOT NULL');
     expect(query).toContain('OR ce.event_date BETWEEN');
-    expect(values).toEqual([USER_ID, '2026-08-01', '2026-09-30']);
+    expect(values).toEqual([USER_ID, '2026-08-01', '2026-09-30', null, null]);
+  });
+
+  it('filters by calendar in SQL, on the normalized calendar id, before expansion', async () => {
+    let query = '';
+    const values = [];
+    /** @type {any} */ const sql = (strings, ...vals) => {
+      query = strings.join('?');
+      values.push(...vals);
+      return [];
+    };
+
+    await fetchEvents(sql, USER_ID, { from: '2026-08-01', to: '2026-09-30' }, 'cal-1');
+
+    expect(query).toContain('IS NULL OR COALESCE(c.id::text, ce.calendar::text) =');
+    expect(values).toEqual([USER_ID, '2026-08-01', '2026-09-30', 'cal-1', 'cal-1']);
+  });
+
+  it('keeps the calendar filter on both migration-window fallbacks', async () => {
+    for (const code of ['42703', '42P01']) {
+      const calls = [];
+      /** @type {any} */ const sql = (strings, ...vals) => {
+        calls.push({ query: strings.join('?'), values: vals });
+        if (calls.length === 1) return Promise.reject(Object.assign(new Error(code), { code }));
+        return [];
+      };
+
+      await fetchEvents(sql, USER_ID, null, 'work');
+
+      expect(calls).toHaveLength(2);
+      expect(calls[1].query).toContain('IS NULL OR');
+      expect(calls[1].values.filter((value) => value === 'work')).toHaveLength(2);
+    }
   });
 
   it('falls back to legacy event reads before the expand migration', async () => {
@@ -311,6 +349,83 @@ describe('expandEvents', () => {
       '2026-08-04',
       '2026-08-05',
     ]);
+  });
+});
+
+describe('expandEventsPage', () => {
+  const now = new Date('2026-07-28T00:00:00Z');
+
+  it('fits a daily series whole in the widest accepted range', () => {
+    const event = { id: 'abc', date: '2020-01-01', start: '09:00', recurrenceRule: 'DAILY' };
+    const range = { from: '2025-01-01', to: '2027-12-31' }; // 1094 days, both ends inclusive
+
+    const page = expandEventsPage([event], now, range);
+
+    expect(page.events).toHaveLength(1095);
+    expect(page.events.at(-1).date).toBe('2027-12-31');
+    expect(page.truncated).toBe(false);
+  });
+
+  it('reports truncated when a series stops at its own occurrence cap', () => {
+    const event = { id: 'abc', date: '2020-01-01', start: '09:00', recurrenceRule: 'DAILY' };
+
+    const page = expandEventsPage([event], now, { from: '2024-01-01', to: '2029-12-31' });
+
+    expect(page.events).toHaveLength(1096);
+    expect(page.truncated).toBe(true);
+  });
+
+  it('does not report truncated when a series ends exactly at the window', () => {
+    const event = {
+      id: 'abc',
+      date: '2026-08-01',
+      start: '09:00',
+      recurrenceRule: 'DAILY;UNTIL=2026-08-03',
+    };
+
+    const page = expandEventsPage([event], now, { from: '2026-08-01', to: '2026-08-03' });
+
+    expect(page.events.map((occurrence) => occurrence.date)).toEqual([
+      '2026-08-01',
+      '2026-08-02',
+      '2026-08-03',
+    ]);
+    expect(page.truncated).toBe(false);
+  });
+});
+
+describe('listEvents', () => {
+  const CALENDAR_ID = '11111111-1111-1111-1111-111111111111';
+
+  it('passes a calendar query parameter through to the SQL filter', async () => {
+    const values = [];
+    /** @type {any} */ const sql = (_strings, ...vals) => {
+      values.push(...vals);
+      return [];
+    };
+    const url = new URL(
+      `/calendar-events?from=2026-08-01&to=2026-08-31&calendar=${CALENDAR_ID}`,
+      'http://localhost',
+    );
+
+    const response = await listEvents(sql, USER_ID, url);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ events: [], truncated: false });
+    expect(values).toEqual([USER_ID, '2026-08-01', '2026-08-31', CALENDAR_ID, CALENDAR_ID]);
+  });
+
+  it('binds a null calendar filter when the parameter is absent', async () => {
+    const values = [];
+    /** @type {any} */ const sql = (_strings, ...vals) => {
+      values.push(...vals);
+      return [];
+    };
+    const url = new URL('/calendar-events?from=2026-08-01&to=2026-08-31', 'http://localhost');
+
+    await listEvents(sql, USER_ID, url);
+
+    expect(values).toEqual([USER_ID, '2026-08-01', '2026-08-31', null, null]);
   });
 });
 
