@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { errors } from 'jose';
 import { verifyAccessToken } from './auth-jwt.js';
 import { runAsInternalCaller } from './internal-identity.js';
 
@@ -156,6 +157,48 @@ describe('verifyAccessToken identity binding', () => {
       verifyAccessToken(request, env, sql, fakeJoseOverrides(jwtVerify)),
     ).rejects.toThrow(/no subject/i);
     expect(sql).not.toHaveBeenCalled();
+  });
+
+  // A key-set outage says nothing about the token: a 401 would sign a valid
+  // session out, so the client is told to retry instead.
+  test.each([
+    ['a JWKS timeout', new errors.JWKSTimeout()],
+    ['a network failure', new TypeError('fetch failed')],
+    [
+      'a non-200 JWKS response',
+      new errors.JOSEError('Expected 200 OK from the JSON Web Key Set HTTP response'),
+    ],
+    ['a malformed key set', new errors.JWKSInvalid('JSON Web Key Set malformed')],
+  ])('answers 503 for %s', async (_name, failure) => {
+    const jwtVerify = vi.fn(async () => {
+      throw failure;
+    });
+    const sql = fakeSql(() => undefined);
+
+    await expect(
+      verifyAccessToken(request, env, sql, fakeJoseOverrides(jwtVerify)),
+    ).rejects.toMatchObject({ status: 503, cause: failure });
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['an expired token', new errors.JWTExpired('"exp" claim timestamp check failed', {})],
+    ['a bad signature', new errors.JWSSignatureVerificationFailed()],
+    ['an unknown key id', new errors.JWKSNoMatchingKey()],
+    ['a malformed token', new errors.JWSInvalid('Invalid Compact JWS')],
+  ])('keeps 401 for %s', async (_name, failure) => {
+    const jwtVerify = vi.fn(async () => {
+      throw failure;
+    });
+
+    await expect(
+      verifyAccessToken(
+        request,
+        env,
+        fakeSql(() => undefined),
+        fakeJoseOverrides(jwtVerify),
+      ),
+    ).rejects.toMatchObject({ status: 401, message: 'Invalid access token' });
   });
 
   test('rejects a missing bearer token before any lookup', async () => {

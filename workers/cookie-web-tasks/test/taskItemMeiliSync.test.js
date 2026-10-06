@@ -127,3 +127,58 @@ it('reads only task rows, so a divider is never pushed', async () => {
   expect(sql.calls[1].text).toContain("t.kind = 'task'");
   expect(push).not.toHaveBeenCalled();
 });
+
+describe('deferred task sync', () => {
+  it('queues one keyed job that waits for the task and stamps', async () => {
+    const requestSql = createMockSql([]);
+    const backgroundSql = createMockSql([[{ id: TASK_ID }], [{ id: TASK_ID, user_id: 'u1' }], []]);
+    const deferred = /** @type {any[]} */ ([]);
+    const push = vi.fn(async () => ({ taskUid: 1, status: 'enqueued' }));
+
+    await syncTaskItemToMeili(
+      requestSql,
+      { ...ENV, deferSearchSync: (/** @type {any[]} */ ...args) => deferred.push(args) },
+      SUBTASK_ID,
+      { addDocuments: push },
+    );
+    expect(requestSql.calls).toHaveLength(0);
+    expect(deferred[0][1]).toBe(`task:${SUBTASK_ID}`);
+
+    await deferred[0][0](backgroundSql);
+
+    expect(/** @type {any} */ (push).mock.calls[0][4]).toEqual({ waitForTask: true });
+    // Root walk, row read, then the stamp.
+    expect(backgroundSql.calls).toHaveLength(3);
+    expect(backgroundSql.calls[2].text).toContain('search_indexed_at');
+  });
+
+  // Two sub-tasks of one parent written in the same request resolve to the
+  // same root document; the second job must not push it again.
+  it('pushes a root once per request however many of its sub-tasks were written', async () => {
+    const roots = new Set();
+    const sql = createMockSql([
+      [{ id: TASK_ID }],
+      [{ id: TASK_ID, user_id: 'u1' }],
+      [{ id: TASK_ID }],
+    ]);
+    const push = vi.fn(async () => ({ taskUid: 1 }));
+    const env = { ...ENV, searchSyncedRoots: roots };
+
+    await syncTaskItemToMeili(sql, env, SUBTASK_ID, { addDocuments: push, waitForTask: false });
+    await syncTaskItemToMeili(sql, env, TASK_ID, { addDocuments: push, waitForTask: false });
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(roots.has(TASK_ID)).toBe(true);
+  });
+
+  it('keys removals apart from syncs', async () => {
+    const deferred = /** @type {any[]} */ ([]);
+
+    await removeTaskItemFromMeili(
+      { ...ENV, deferSearchSync: (/** @type {any[]} */ ...args) => deferred.push(args) },
+      TASK_ID,
+    );
+
+    expect(deferred[0][1]).toBe(`task-remove:${TASK_ID}`);
+  });
+});

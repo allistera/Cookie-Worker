@@ -19,6 +19,19 @@ export const MAX_PENDING_SCHEDULED_SENDS = 50;
 // composer has even finished closing — matches ScheduleMenu's own minimum.
 const MIN_SCHEDULE_LEAD_MS = 60_000;
 const FLUSH_BATCH_SIZE = 20;
+// Workers cap the subrequests one invocation may make (50 on the free plan),
+// and the flush route's invocation also carries its waitUntil legs: the
+// out-of-office pass (up to AUTO_REPLY_SEND_LIMIT provider calls), the
+// Meilisearch sync, and a Hyperdrive connection per SQL client. So deliveries
+// are claimed against a rough budget of outbound calls rather than a row
+// count: each row costs one provider call plus one Blob read per attachment.
+// A batch of plain rows still fills FLUSH_BATCH_SIZE; a forward-heavy one
+// claims fewer rows and leaves the rest for the next tick. The first row is
+// always claimed, whatever it costs, so a large forward cannot starve.
+const FLUSH_DELIVERY_SUBREQUEST_BUDGET = 20;
+// Delivery plus the orphaned-upload sweep's Blob deletes stay under this; the
+// sweep only gets what the batch left over.
+const FLUSH_SUBREQUEST_BUDGET = 30;
 const FLUSH_CONCURRENCY = 4;
 const ATTACHMENT_FLUSH_CONCURRENCY = 1;
 const SCHEDULED_SEND_LEASE_MINUTES = 15;
@@ -33,7 +46,7 @@ const RESOLVED_STATE_RETENTION_DAYS = 30;
 // An upload the composer never sent is only reclaimable once it is old enough
 // that no in-progress compose could still be holding it.
 const ORPHAN_UPLOAD_RETENTION_HOURS = 24;
-const ORPHAN_UPLOAD_SWEEP_LIMIT = 50;
+const ORPHAN_UPLOAD_SWEEP_LIMIT = 10;
 const FLUSH_CLAIM_ATTEMPTS = 3;
 const FLUSH_CLAIM_BASE_DELAY_MS = 500;
 // deliverMail already tried to store the sent copy once; these are the
@@ -257,28 +270,41 @@ export async function cancelScheduledSend(sql, userId, id) {
 // Reclaiming an expired 'sending' lease counts as an attempt: the previous
 // delivery never resolved the row (the isolate died mid-send, or the result
 // could not be recorded), and without counting it a row that reliably kills
-// its isolate would be reclaimed forever. `reclaimed` tells the delivery that
-// an earlier attempt already holds this row's quota slot.
+// its isolate would be reclaimed forever. `reclaimed` marks such a row in the
+// delivery's logs; it is charged quota like any other (see
+// deliverScheduledSend).
 /**
  * @param {import('postgres').Sql} sql
  * @param {number} limit
  */
 async function claimDueScheduledSends(sql, limit) {
   try {
+    // Window functions cannot share a query level with FOR UPDATE, so the
+    // running cost is summed over the locked rows one level up. Rows locked
+    // here but over budget are simply not updated and stay due.
     return await sql`
-      UPDATE scheduled_sends s
-      SET status = 'sending', claimed_at = now(),
-          attempts = s.attempts + CASE WHEN s.status = 'sending' THEN 1 ELSE 0 END
-      FROM (
-        SELECT id, status = 'sending' AS reclaimed FROM scheduled_sends
+      WITH locked AS (
+        SELECT id, scheduled_for, status = 'sending' AS reclaimed,
+               1 + (SELECT count(*) FROM scheduled_send_attachments ssa
+                    WHERE ssa.scheduled_send_id = scheduled_sends.id) AS cost
+        FROM scheduled_sends
         WHERE (status = 'pending' AND scheduled_for <= now())
            OR (status = 'sending'
                AND claimed_at < now() - make_interval(mins => ${SCHEDULED_SEND_LEASE_MINUTES}))
         ORDER BY scheduled_for
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED
-      ) due
+      ), costed AS (
+        SELECT id, reclaimed, cost,
+               sum(cost) OVER (ORDER BY scheduled_for, id) AS running_cost
+        FROM locked
+      )
+      UPDATE scheduled_sends s
+      SET status = 'sending', claimed_at = now(),
+          attempts = s.attempts + CASE WHEN s.status = 'sending' THEN 1 ELSE 0 END
+      FROM costed due
       WHERE s.id = due.id
+        AND (due.running_cost = due.cost OR due.running_cost <= ${FLUSH_DELIVERY_SUBREQUEST_BUDGET})
       RETURNING s.id, s.user_id, due.reclaimed, s.to_addresses AS "toAddresses", s.subject,
                 s.body_text AS "text", s.body_html AS "html",
                 s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", s.attempts,
@@ -389,24 +415,25 @@ export async function deliverScheduledSend(sql, row, services) {
     return { status: 'failed', storedMessageUuid: null };
   }
 
-  // An expired lease was claimed by an attempt that never resolved it, and
-  // nothing gives a slot back without resolving the row, so that attempt's
-  // slot still stands for this message. Its redelivery reuses the stable
-  // idempotency key, so the provider sends nothing new if the first one
-  // landed; claiming again would charge the user twice for one email.
-  const quotaHeld = row.reclaimed !== true;
-  if (quotaHeld) {
-    const quota = await claimOutboundEmailQuota(sql, row.user_id);
-    if (!quota.authorized) {
-      await markScheduledSendFailed(sql, row.id, 'Mailbox access is not provisioned');
-      return { status: 'failed', storedMessageUuid: null };
-    }
-    if (!quota.quota_claimed) {
-      // Rate-limited, not the message's fault — leave it pending for the next
-      // flush instead of spending a retry attempt.
-      await sql`UPDATE scheduled_sends SET status = 'pending', claimed_at = NULL WHERE id = ${row.id}`;
-      return { status: 'retried', storedMessageUuid: null };
-    }
+  // A reclaimed lease claims a slot like any other attempt. Nothing records
+  // whether the attempt that let its lease expire got as far as claiming one
+  // (it may have died on the owner lookup, or after refunding a provider
+  // failure), so skipping the claim would let such a row go out unmetered.
+  // Nor can it double-charge a slot that still counts: the quota is a
+  // per-minute window, and a lease only expires after
+  // SCHEDULED_SEND_LEASE_MINUTES, so any earlier claim is in a window that
+  // has already rolled over. A redelivery the provider deduplicates gives its
+  // slot back below.
+  const quota = await claimOutboundEmailQuota(sql, row.user_id);
+  if (!quota.authorized) {
+    await markScheduledSendFailed(sql, row.id, 'Mailbox access is not provisioned');
+    return { status: 'failed', storedMessageUuid: null };
+  }
+  if (!quota.quota_claimed) {
+    // Rate-limited, not the message's fault — leave it pending for the next
+    // flush instead of spending a retry attempt.
+    await sql`UPDATE scheduled_sends SET status = 'pending', claimed_at = NULL WHERE id = ${row.id}`;
+    return { status: 'retried', storedMessageUuid: null };
   }
 
   const recipients = parseRecipients(row.toAddresses);
@@ -438,9 +465,8 @@ export async function deliverScheduledSend(sql, row, services) {
     const errorMessage = /** @type {Error} */ (err).message;
     console.error(`scheduled send ${row.id} delivery failed (attempt ${attempts}):`, errorMessage);
     // Nothing went out, so give the minute's quota back instead of letting a
-    // provider outage consume the user's allowance through retries. A
-    // reclaimed lease claimed nothing this time, so it has nothing to return.
-    if (quotaHeld) await refundOutboundEmailQuota(sql, row.user_id);
+    // provider outage consume the user's allowance through retries.
+    await refundOutboundEmailQuota(sql, row.user_id);
     if (attempts >= MAX_SCHEDULED_SEND_ATTEMPTS) {
       await markScheduledSendFailed(sql, row.id, errorMessage, attempts);
       return { status: 'failed', storedMessageUuid: null };
@@ -485,6 +511,11 @@ export async function deliverScheduledSend(sql, row, services) {
     }
   }
 
+  // The provider id already had a stored copy: an expired lease redelivered
+  // mail that went out the first time, the provider sent nothing new under the
+  // stable idempotency key, and the slot claimed above goes back.
+  if (messageUuid && !inserted) await refundOutboundEmailQuota(sql, row.user_id);
+
   // Independent of how the bookkeeping below goes: the copy is in Postgres, so
   // it belongs in the index even if the row cannot be marked sent.
   const storedMessageUuid = inserted ? messageUuid : null;
@@ -499,8 +530,8 @@ export async function deliverScheduledSend(sql, row, services) {
   } catch (err) {
     // Delivery is irreversible and succeeded. Leave the row leased as
     // `sending`: a later flush can safely reclaim it because the provider call
-    // uses the stable scheduled-send idempotency key, and the reclaim neither
-    // claims quota again nor stores a second copy.
+    // uses the stable scheduled-send idempotency key, and a reclaim that finds
+    // the stored copy stores no second one and returns its quota slot.
     console.error(
       `scheduled send ${row.id} delivered but could not be marked sent:`,
       /** @type {Error} */ (err).message,
@@ -535,8 +566,9 @@ async function mapWithConcurrency(items, concurrency, operation) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {import('./outbound.js').SendServices} services
+ * @param {number} blobDeleteBudget Subrequests the delivery batch left over.
  */
-async function sweepResolvedState(sql, services) {
+async function sweepResolvedState(sql, services, blobDeleteBudget) {
   try {
     await sql`
       DELETE FROM scheduled_sends
@@ -547,7 +579,7 @@ async function sweepResolvedState(sql, services) {
   } catch (err) {
     console.error('resolved-state sweep failed:', /** @type {Error} */ (err).message);
   }
-  await sweepOrphanedUploads(sql, services);
+  await sweepOrphanedUploads(sql, services, Math.min(ORPHAN_UPLOAD_SWEEP_LIMIT, blobDeleteBudget));
 }
 
 // A composer upload the user never sent (draft abandoned, tab closed) keeps
@@ -559,11 +591,17 @@ async function sweepResolvedState(sql, services) {
 // weeks past this window; and a sent copy may share the same blob_url, since
 // storeSentMessage records it on the sent message's own attachments row —
 // deleting those bytes would empty an attachment still readable in Sent.
+//
+// Each orphan can cost one Blob delete, so a heavy delivery batch shrinks the
+// sweep (or skips it) to keep the invocation inside its subrequest budget;
+// whatever is left waits for a lighter tick.
 /**
  * @param {import('postgres').Sql} sql
  * @param {import('./outbound.js').SendServices} services
+ * @param {number} limit
  */
-async function sweepOrphanedUploads(sql, services) {
+async function sweepOrphanedUploads(sql, services, limit) {
+  if (limit <= 0) return;
   try {
     const orphans = await sql`
       DELETE FROM outbound_attachments oa
@@ -581,7 +619,7 @@ async function sweepOrphanedUploads(sql, services) {
             WHERE da.outbound_attachment_id = candidate.id
           )
         ORDER BY candidate.created_at
-        LIMIT ${ORPHAN_UPLOAD_SWEEP_LIMIT}
+        LIMIT ${limit}
       )
       RETURNING oa.blob_url,
                 NOT EXISTS (
@@ -621,6 +659,53 @@ async function sweepOrphanedUploads(sql, services) {
  * @param {import('./outbound.js').SendServices} services
  */
 export async function flushDueScheduledSends(sql, services) {
+  return (await flushDueBatch(sql, services)).summary;
+}
+
+// deliverScheduledSend resolves its own provider and storage failures, but a
+// database error on its bookkeeping (the owner check, the quota claim, a
+// failed/pending write) would otherwise reject the whole batch and skip the
+// indexing of rows that did go out. Every such throw happens before the
+// provider accepted anything, so the row is released for a retry that counts
+// as an attempt (bounding a row that always throws); if even that write fails
+// the lease expires and the next flush reclaims it.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {any} row
+ * @param {import('./outbound.js').SendServices} services
+ * @returns {Promise<{status: string, storedMessageUuid: string | null}>}
+ */
+async function deliverClaimedRow(sql, row, services) {
+  try {
+    return await deliverScheduledSend(sql, row, services);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error(
+      `scheduled send ${row.id} could not be processed${row.reclaimed ? ' (reclaimed lease)' : ''}:`,
+      errorMessage,
+    );
+    try {
+      await sql`
+        UPDATE scheduled_sends
+        SET status = 'pending', attempts = attempts + 1, last_error = ${errorMessage},
+            claimed_at = NULL
+        WHERE id = ${row.id} AND status = 'sending'
+      `;
+    } catch (releaseErr) {
+      console.error(
+        `scheduled send ${row.id} could not be released for retry:`,
+        /** @type {Error} */ (releaseErr).message,
+      );
+    }
+    return { status: 'retried', storedMessageUuid: null };
+  }
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {import('./outbound.js').SendServices} services
+ */
+async function flushDueBatch(sql, services) {
   const claimed = await claimDueScheduledSendsWithRetry(sql, FLUSH_BATCH_SIZE);
   const attachmentRows = claimed.filter((row) => row.attachments?.length);
   const ordinaryRows = claimed.filter((row) => !row.attachments?.length);
@@ -628,10 +713,10 @@ export async function flushDueScheduledSends(sql, services) {
   // serial so several large forwards cannot exhaust the isolate's memory.
   const [ordinaryResults, attachmentResults] = await Promise.all([
     mapWithConcurrency(ordinaryRows, FLUSH_CONCURRENCY, (row) =>
-      deliverScheduledSend(sql, row, services),
+      deliverClaimedRow(sql, row, services),
     ),
     mapWithConcurrency(attachmentRows, ATTACHMENT_FLUSH_CONCURRENCY, (row) =>
-      deliverScheduledSend(sql, row, services),
+      deliverClaimedRow(sql, row, services),
     ),
   ]);
   const results = [...ordinaryResults, ...attachmentResults];
@@ -642,18 +727,23 @@ export async function flushDueScheduledSends(sql, services) {
     results.flatMap((result) => (result.storedMessageUuid ? [result.storedMessageUuid] : [])),
   );
   return {
-    claimed: claimed.length,
-    sent: results.filter((result) => result.status === 'sent').length,
-    retried: results.filter((result) => result.status === 'retried').length,
-    failed: results.filter((result) => result.status === 'failed').length,
-    unconfirmed: results.filter((result) => result.status === 'unconfirmed').length,
+    summary: {
+      claimed: claimed.length,
+      sent: results.filter((result) => result.status === 'sent').length,
+      retried: results.filter((result) => result.status === 'retried').length,
+      failed: results.filter((result) => result.status === 'failed').length,
+      unconfirmed: results.filter((result) => result.status === 'unconfirmed').length,
+    },
+    // The same estimate the claim budgeted with: a provider call per row plus
+    // a Blob read per attachment.
+    subrequests: claimed.reduce((total, row) => total + 1 + (row.attachments?.length ?? 0), 0),
   };
 }
 
 export async function handleFlush(sql, services) {
   try {
-    const summary = await flushDueScheduledSends(sql, services);
-    await sweepResolvedState(sql, services);
+    const { summary, subrequests } = await flushDueBatch(sql, services);
+    await sweepResolvedState(sql, services, FLUSH_SUBREQUEST_BUDGET - subrequests);
     return Response.json(summary);
   } catch (err) {
     console.error('POST /send/flush failed:', err);

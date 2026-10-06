@@ -177,8 +177,9 @@ const TASK_TIMEOUT_MS = 20_000;
  * Waits for an enqueued write to finish and rejects unless it succeeded.
  * Only writes whose caller acts on the outcome go through here: configureIndex
  * (documents pushed before the embedder exists never get a vector) and
- * addDocuments (callers stamp search_indexed_at, and a task Meilisearch fails
- * after accepting it must stay unstamped for the drift sweep).
+ * addDocuments unless told not to wait (callers stamp search_indexed_at, and a
+ * task Meilisearch fails after accepting it must stay unstamped for the drift
+ * sweep).
  *
  * @param {Meilisearch} meili
  * @param {import('meilisearch').EnqueuedTaskPromise} pending
@@ -202,20 +203,29 @@ async function completedTask(meili, pending) {
 /**
  * Maps rows through the descriptor's toDocument and pushes them to its index.
  *
+ * By default this waits for the task to finish (see completedTask). With
+ * `waitForTask: false` it resolves as soon as Meilisearch has accepted the
+ * write, for paths that cannot spend up to TASK_TIMEOUT_MS polling inside a
+ * waitUntil budget. Such a caller must not stamp search_indexed_at on the
+ * result: a task can still fail after acceptance, and only the drift sweep
+ * will notice. Meilisearch runs an index's tasks in enqueue order, so a later
+ * write still lands after this one.
+ *
  * @param {any} env
  * @param {any} descriptor
  * @param {Record<string, unknown>[]} rows
  * @param {any} [client]
+ * @param {{waitForTask?: boolean}} [options]
  */
-export function addDocuments(env, descriptor, rows, client) {
+export async function addDocuments(env, descriptor, rows, client, { waitForTask = true } = {}) {
   const meili = clientFor(env, client);
   const index = meili.index(descriptor.name);
-  return completedTask(
-    meili,
-    index.addDocuments(rows.map(descriptor.toDocument), {
-      primaryKey: descriptor.primaryKey,
-    }),
-  );
+  const pending = index.addDocuments(rows.map(descriptor.toDocument), {
+    primaryKey: descriptor.primaryKey,
+  });
+  if (waitForTask) return completedTask(meili, pending);
+  const { taskUid, status } = await pending;
+  return { taskUid, status };
 }
 
 /**

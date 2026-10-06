@@ -69,6 +69,29 @@ describe('calendar tools', () => {
     });
   });
 
+  test('cookie_list_events leaves the calendar filter off when none is given', async () => {
+    const api = fakeApi();
+    api.calendar.get.mockResolvedValue({ events: [], truncated: false });
+    await call('cookie_list_events', { from: '2026-10-01', to: '2026-10-31' }, api);
+    expect(api.calendar.get).toHaveBeenCalledWith('/calendar-events', {
+      from: '2026-10-01',
+      to: '2026-10-31',
+      calendar: undefined,
+    });
+  });
+
+  test('cookie_list_events reports the server truncating the filtered calendar', async () => {
+    const api = fakeApi();
+    api.calendar.get.mockResolvedValue({ events: [eventRow], truncated: true });
+    const result = await call(
+      'cookie_list_events',
+      { from: '2026-10-01', to: '2026-10-31', calendar: CAL },
+      api,
+    );
+    expect(result.events).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
   test('cookie_list_events queries the range, filters by calendar and applies limit', async () => {
     const api = fakeApi();
     const other = { ...eventRow, calendar: 'work', seriesId: SERIES };
@@ -81,9 +104,12 @@ describe('calendar tools', () => {
       { from: '2026-10-01', to: '2026-10-31', calendar: 'work', limit: 1 },
       api,
     );
+    // The filter goes to the calendar worker, which applies it before its
+    // recurrence expansion cap.
     expect(api.calendar.get).toHaveBeenCalledWith('/calendar-events', {
       from: '2026-10-01',
       to: '2026-10-31',
+      calendar: 'work',
     });
     expect(result.events).toEqual([
       {

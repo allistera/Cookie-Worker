@@ -185,6 +185,30 @@ describe('durable automatic reply delivery', () => {
       expect(send).not.toHaveBeenCalled();
     }
   });
+  test('holds no message or classification row lock across the provider call', async () => {
+    const { sql, state } = autoReplyDatabase();
+    const claimed = await claimAutoReply(sql, candidate, FROM);
+    const claimQueries = state.queries.length;
+    /** @type {string[]} */
+    let duringSend = [];
+    const send = vi.fn(async () => {
+      duringSend = state.queries.slice(claimQueries);
+      return { status: 'sent', providerId: 'resend-1' };
+    });
+    expect(await dispatchAutoReply(sql, claimed, services(send))).toBe('sent');
+    const recheck = duringSend.filter((q) => q.includes('FROM messages m JOIN message_ai'));
+    // Suppression is still rechecked inside the dispatch, just without locks
+    // that would stall mailbox writes to the inbound message for the call.
+    expect(recheck).toHaveLength(1);
+    expect(recheck[0]).not.toMatch(/FOR (UPDATE|SHARE|NO KEY UPDATE|KEY SHARE)/);
+    // The responder lock and the delivery row lock are what it holds instead.
+    expect(duringSend[0]).toContain('pg_advisory_xact_lock');
+    expect(
+      duringSend.some(
+        (q) => q.startsWith('SELECT * FROM out_of_office_deliveries') && q.includes('FOR UPDATE'),
+      ),
+    ).toBe(true);
+  });
   test('End now waits for an underway dispatch and prevents a later one', async () => {
     const { sql, state } = autoReplyDatabase();
     const claimed = await claimAutoReply(sql, candidate, FROM);

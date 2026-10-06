@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from '../../../shared/fetch.js';
+
 export const DEFAULT_BASE_URL = 'https://ntfy.allisterantosik.com';
 const TOPIC_RE = /^[A-Za-z0-9_-]{8,128}$/;
 const COOKIE_ORIGIN = 'https://mail.infinitywave.online';
@@ -5,6 +7,13 @@ const COOKIE_ORIGIN = 'https://mail.infinitywave.online';
 // <scheme>://inbox?open=<message id> on the email — see InboxDeepLink.swift.
 const IOS_APP_SCHEME = 'com.cookie.ios';
 const MAX_RETRY_DELAY_MS = 5000;
+// One publish attempt; a hung ntfy server must not stall the whole batch.
+export const NTFY_FETCH_TIMEOUT_MS = 10_000;
+// Publishes in flight at once while draining a claimed batch.
+export const DELIVERY_CONCURRENCY = 4;
+// Comfortably above what truncateBody keeps (MAX_BODY_BYTES), so the cut is
+// still made there but a huge body is never pulled out of Postgres for it.
+const BODY_SELECT_CHARS = 4000;
 const MAX_BODY_BYTES = 3500;
 // RFC 2047 caps an encoded word at 75 characters: "=?UTF-8?B?" + "?=" is 12,
 // and 45 bytes of base64 is 60, leaving the word at 72.
@@ -105,20 +114,26 @@ export async function publishNtfy(notification, options = {}) {
     // Check again before every external attempt, including retries after a wait.
     if (options.canPublish && !(await options.canPublish()))
       throw new NotificationSuppressedError();
-    const response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/${notification.topic}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'X-Title': encodeHeaderValue(notification.title || subject),
-        'X-Click': `${COOKIE_ORIGIN}/inbox?open=${encodeURIComponent(notification.messageId)}`,
-        // Tapping the notification opens the web inbox (works for every ntfy
-        // client); this button opens the same email in the iOS app instead.
-        'X-Actions': `view, Open in Cookie app, ${IOS_APP_SCHEME}://inbox?open=${encodeURIComponent(notification.messageId)}, clear=true`,
-        'X-Tags': 'email',
-        'X-Priority': 'default',
+    const response = await fetchWithTimeout(
+      `${baseUrl.replace(/\/$/, '')}/${notification.topic}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'X-Title': encodeHeaderValue(notification.title || subject),
+          'X-Click': `${COOKIE_ORIGIN}/inbox?open=${encodeURIComponent(notification.messageId)}`,
+          // Tapping the notification opens the web inbox (works for every ntfy
+          // client); this button opens the same email in the iOS app instead.
+          'X-Actions': `view, Open in Cookie app, ${IOS_APP_SCHEME}://inbox?open=${encodeURIComponent(notification.messageId)}, clear=true`,
+          'X-Tags': 'email',
+          'X-Priority': 'default',
+        },
+        body,
       },
-      body,
-    });
+      async (published) => published,
+      NTFY_FETCH_TIMEOUT_MS,
+      fetchImpl,
+    );
     if (response.ok) return;
 
     const retryAfter = retryAfterSeconds(response);
@@ -253,7 +268,7 @@ export async function deliverPendingNtfy(sql, options = {}) {
   const rows = await sql`
     WITH pending AS (
       SELECT event.event_id, event.message_id, subscription.topic,
-             message.subject, message.body_text
+             message.subject, left(message.body_text, ${BODY_SELECT_CHARS}) AS body_text
       FROM ntfy_notification_events event
       JOIN ntfy_subscriptions subscription ON subscription.user_id = event.user_id
       JOIN messages message
@@ -295,7 +310,8 @@ export async function deliverPendingNtfy(sql, options = {}) {
   let delivered = 0;
   let suppressed = 0;
   let skipped = 0;
-  for (const row of rows) {
+  /** @param {any} row */
+  const deliver = async (row) => {
     let claimLost = false;
     try {
       await publishNtfy(
@@ -339,12 +355,12 @@ export async function deliverPendingNtfy(sql, options = {}) {
     } catch (error) {
       if (claimLost) {
         skipped += 1;
-        continue;
+        return;
       }
       if (error instanceof NotificationSuppressedError) {
         suppressed += 1;
         await sql`DELETE FROM ntfy_notification_events WHERE event_id = ${row.event_id} AND published_at IS NULL`;
-        continue;
+        return;
       }
       await sql`
         UPDATE ntfy_notification_events
@@ -352,7 +368,15 @@ export async function deliverPendingNtfy(sql, options = {}) {
         WHERE event_id = ${row.event_id} AND attempts = ${row.attempts}
       `;
     }
-  }
+  };
+  // A few publishes at a time: one after another, a batch of slow or retrying
+  // publishes could outlast the next tick, and every row at once would hammer
+  // ntfy. Each row's outcome is independent, so order does not matter.
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(DELIVERY_CONCURRENCY, rows.length) }, async () => {
+    while (next < rows.length) await deliver(rows[next++]);
+  });
+  await Promise.all(lanes);
   return {
     attempted: rows.length,
     delivered,

@@ -134,6 +134,35 @@ describe('syncMessageToMeili', () => {
     // SELECT only: nothing may be stamped for a document Meilisearch refused.
     expect(sql).toHaveBeenCalledTimes(1);
   });
+
+  // The ingest path cannot spend up to 20s polling the task inside its
+  // waitUntil budget before classification starts. Acceptance is not
+  // success, though, so nothing is stamped: the classified sync or the drift
+  // sweep does that once a push is known to have landed.
+  it('only enqueues and leaves the row unstamped when told not to wait', async () => {
+    const sql = createMockSql([
+      [{ id: MESSAGE_ID, row_version: '4242', user_id: 'u1', labels: [] }],
+    ]);
+
+    await expect(syncMessageToMeili(sql, ENV, MESSAGE_ID, { waitForTask: false })).resolves.toEqual(
+      { indexed: 1, failed: 0 },
+    );
+
+    expect(addDocuments.mock.calls[0][4]).toEqual({ waitForTask: false });
+    expect(sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the task by default', async () => {
+    const sql = createMockSql([
+      [{ id: MESSAGE_ID, row_version: '4242', user_id: 'u1', labels: [] }],
+      [],
+    ]);
+
+    await syncMessageToMeili(sql, ENV, MESSAGE_ID);
+
+    expect(addDocuments.mock.calls[0][4]).toEqual({ waitForTask: true });
+    expect(sql).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('syncMessagesToMeili', () => {

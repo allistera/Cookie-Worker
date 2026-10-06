@@ -561,6 +561,125 @@ describe('syncCalendarSubscription', () => {
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 
+  /** @param {Date} date */
+  const icsDate = (date) =>
+    `${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, '0')}${String(date.getUTCDate()).padStart(2, '0')}`;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  function captureSyncQueries() {
+    const inserted = [];
+    const updates = [];
+    /** @type {any} */ const sql = (strings, ...values) => {
+      const text = strings.join('?');
+      if (text.includes('json_to_recordset')) {
+        inserted.push(values.find((value) => Array.isArray(value)));
+      }
+      if (text.includes('UPDATE calendars')) updates.push({ text, values });
+      return Promise.resolve([]);
+    };
+    sql.begin = async (fn) => fn(sql);
+    return { sql, inserted, updates };
+  }
+
+  it('still imports future occurrences of a daily series that began over a year ago', async () => {
+    const start = icsDate(new Date(Date.now() - 800 * DAY_MS));
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:daily@example.com',
+      'DTSTAMP:20200101T000000Z',
+      `DTSTART:${start}T090000Z`,
+      `DTEND:${start}T093000Z`,
+      'SUMMARY:Daily standup',
+      'RRULE:FREQ=DAILY',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    vi.mocked(requestPublicHttps).mockResolvedValue(httpsResponse(ics));
+    const { sql, inserted, updates } = captureSyncQueries();
+
+    const result = await syncCalendarSubscription(
+      sql,
+      'cal-1',
+      'user-1',
+      'https://example.com/feed.ics',
+      requestPublicHttps,
+    );
+
+    const today = new Date().toISOString().slice(0, 10);
+    const dates = inserted[0].map((row) => row.date);
+    expect(result.ok).toBe(true);
+    // The whole past year, plus the future up to its own per-event cap.
+    // (Today's 09:00 falls on either side of "now" depending on the clock.)
+    expect(dates.filter((date) => date < today).length).toBeGreaterThanOrEqual(364);
+    expect(dates.filter((date) => date > today).length).toBeGreaterThanOrEqual(365);
+    expect(new Set(dates).size).toBe(dates.length);
+    // The future was cut at its cap, so the sync says so instead of
+    // reporting a clean import.
+    expect(result.truncated).toBe(true);
+    expect(updates.at(-1).values[0]).toMatch(/not imported/);
+  });
+
+  it('keeps future events of a feed whose history exceeds the per-sync cap, and flags it', async () => {
+    const past = Array.from({ length: 1200 }, (_, index) => {
+      const day = icsDate(new Date(Date.now() - (1 + (index % 300)) * DAY_MS));
+      return [
+        'BEGIN:VEVENT',
+        `UID:past-${index}@example.com`,
+        'DTSTAMP:20200101T000000Z',
+        `DTSTART:${day}T090000Z`,
+        `DTEND:${day}T100000Z`,
+        `SUMMARY:Past ${index}`,
+        'END:VEVENT',
+      ].join('\r\n');
+    });
+    const upcoming = icsDate(new Date(Date.now() + 10 * DAY_MS));
+    const future = [
+      'BEGIN:VEVENT',
+      'UID:future@example.com',
+      'DTSTAMP:20200101T000000Z',
+      `DTSTART:${upcoming}T090000Z`,
+      `DTEND:${upcoming}T100000Z`,
+      'SUMMARY:Upcoming',
+      'END:VEVENT',
+    ].join('\r\n');
+    const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', ...past, future, 'END:VCALENDAR'].join('\r\n');
+    vi.mocked(requestPublicHttps).mockResolvedValue(httpsResponse(ics));
+    const { sql, inserted, updates } = captureSyncQueries();
+
+    const result = await syncCalendarSubscription(
+      sql,
+      'cal-1',
+      'user-1',
+      'https://example.com/feed.ics',
+      requestPublicHttps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.truncated).toBe(true);
+    expect(inserted[0].some((row) => row.title === 'Upcoming')).toBe(true);
+    expect(inserted[0].filter((row) => row.title.startsWith('Past'))).toHaveLength(500);
+    const update = updates.at(-1);
+    expect(update.text).toContain('subscription_error =');
+    expect(update.values[0]).toMatch(/not imported/);
+  });
+
+  it('clears subscription_error on a complete sync', async () => {
+    const { sql, updates } = captureSyncQueries();
+
+    const result = await syncCalendarSubscription(
+      sql,
+      'cal-1',
+      'user-1',
+      'https://example.com/feed.ics',
+      requestPublicHttps,
+    );
+
+    expect(result).toEqual({ ok: true, count: 0 });
+    expect(updates.at(-1).values[0]).toBeNull();
+  });
+
   it('catches a failure inside the replace transaction and records it as a sync error', async () => {
     vi.mocked(requestPublicHttps).mockResolvedValue(
       httpsResponse('BEGIN:VCALENDAR\nEND:VCALENDAR'),

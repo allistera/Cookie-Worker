@@ -180,21 +180,98 @@ describe('mail tools', () => {
       q: 'from:ann',
       scope: 'mail',
       mode: undefined,
+      pagination: undefined,
       limit: 20,
       offset: 0,
     });
-    expect(result).toEqual({ results: [summary], estimatedTotalHits: 5, nextOffset: 1 });
+    // All five raw hits fit in the requested page (four were stale), so
+    // there is no next page even though only one row came back.
+    expect(result).toEqual({ results: [summary], estimatedTotalHits: 5, nextOffset: null });
+  });
+
+  test('cookie_search_mail advances hybrid pages by the requested limit, not hydrated rows', async () => {
+    const api = fakeApi();
+    api.search.get.mockResolvedValue({ results: [row], estimatedTotalHits: 30 });
+    const result = await call('cookie_search_mail', { query: 'x', limit: 10, offset: 10 }, api);
+    expect(result.nextOffset).toBe(20);
+  });
+
+  test('cookie_search_mail moves past a page that hydrates no rows', async () => {
+    const api = fakeApi();
+    api.search.get.mockResolvedValue({ results: [], estimatedTotalHits: 30 });
+    const result = await call('cookie_search_mail', { query: 'x', limit: 10, offset: 10 }, api);
+    expect(result.results).toEqual([]);
+    expect(result.nextOffset).toBe(20);
+  });
+
+  test('cookie_search_mail keyword mode uses verified pagination and its raw-hit cursor', async () => {
+    const api = fakeApi();
+    api.search.get.mockResolvedValue({
+      results: [row, row],
+      estimatedTotalHits: 40,
+      nextOffset: 7,
+    });
+    const result = await call(
+      'cookie_search_mail',
+      { query: 'x', mode: 'keyword', limit: 2, offset: 2 },
+      api,
+    );
+    expect(api.search.get.mock.calls[0][1]).toMatchObject({
+      mode: 'keyword',
+      pagination: 'verified',
+      offset: 2,
+    });
+    expect(result.nextOffset).toBe(7);
   });
 
   test('cookie_search_mail keyword mode and null nextOffset on the last page', async () => {
     const api = fakeApi();
-    api.search.get.mockResolvedValue({ results: [row, row], estimatedTotalHits: 4 });
+    api.search.get.mockResolvedValue({
+      results: [row, row],
+      estimatedTotalHits: 4,
+      nextOffset: null,
+    });
     const result = await call(
       'cookie_search_mail',
       { query: 'x', mode: 'keyword', offset: 2 },
       api,
     );
-    expect(api.search.get.mock.calls[0][1]).toMatchObject({ mode: 'keyword', offset: 2 });
+    expect(result.nextOffset).toBeNull();
+  });
+
+  test('cookie_search_mail hands over to raw-hit paging past the verified scan cap', async () => {
+    const api = fakeApi();
+    api.search.get.mockResolvedValue({
+      results: [],
+      estimatedTotalHits: 5000,
+      nextOffset: null,
+      scanLimitReached: true,
+    });
+    const first = await call(
+      'cookie_search_mail',
+      { query: 'x', mode: 'keyword', offset: 990 },
+      api,
+    );
+    expect(first.nextOffset).toBe(1000);
+
+    api.search.get.mockResolvedValue({ results: [row], estimatedTotalHits: 5000 });
+    const second = await call(
+      'cookie_search_mail',
+      { query: 'x', mode: 'keyword', limit: 20, offset: 1000 },
+      api,
+    );
+    expect(api.search.get.mock.calls[1][1]).toMatchObject({ pagination: undefined, offset: 1000 });
+    expect(second.nextOffset).toBe(1020);
+  });
+
+  test('cookie_search_mail never returns a nextOffset at or before offset', async () => {
+    const api = fakeApi();
+    api.search.get.mockResolvedValue({ results: [], estimatedTotalHits: 40, nextOffset: 5 });
+    const result = await call(
+      'cookie_search_mail',
+      { query: 'x', mode: 'keyword', offset: 5 },
+      api,
+    );
     expect(result.nextOffset).toBeNull();
   });
 

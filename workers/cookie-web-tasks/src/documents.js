@@ -522,7 +522,7 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
       let previous = null;
       if (touchesTitle || touchesBlocks) {
         [previous] = await sql`
-          SELECT title, blocks FROM documents
+          SELECT title, folder_id, blocks FROM documents
           WHERE id = ${body.id} AND user_id = ${userId}
           FOR UPDATE
         `;
@@ -559,6 +559,14 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
           updated.title,
         );
         if (eventDate) {
+          // Unchanged lines are only rewritten when the note itself moved to
+          // another day, so the previous date is only looked up on a rename
+          // or move.
+          const moved =
+            previous.title !== updated.title || previous.folder_id !== updated.folder_id;
+          const previousEventDate = moved
+            ? await resolveDailyNoteEventDate(sql, userId, previous.folder_id, previous.title)
+            : eventDate;
           await syncDailyNoteEvents(
             sql,
             userId,
@@ -566,6 +574,7 @@ export async function updateDocument(sql, userId, body, deps, env = {}) {
             eventDate,
             previous.blocks,
             /** @type {any[]} */ (newBlocks),
+            previousEventDate,
           );
         }
       }

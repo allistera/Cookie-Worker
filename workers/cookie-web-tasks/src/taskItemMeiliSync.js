@@ -17,20 +17,30 @@ import {
  * Dividers (kind = 'divider', migration 0064) have nothing to find and are
  * never pushed.
  *
+ * Deferred (the request's waitUntil queue), jobs run alongside each other
+ * rather than one after another, so a slow Meilisearch task cannot hold up the
+ * jobs queued after it and each push still stamps search_indexed_at. The
+ * queue dedupes by task id, and env.searchSyncedRoots
+ * (one Set per request) skips a root another job already pushed — every job
+ * reads the same committed state, so the second push would be identical.
+ *
  * @param {import('postgres').Sql} sql
  * @param {any} env
  * @param {string} taskId
- * @param {{addDocuments?: Function}} [deps]
+ * @param {{addDocuments?: Function, waitForTask?: boolean}} [deps]
  */
 export async function syncTaskItemToMeili(sql, env, taskId, deps = {}) {
   if (env?.deferSearchSync) {
-    env.deferSearchSync((freshSql) =>
-      syncTaskItemToMeili(freshSql, { ...env, deferSearchSync: undefined }, taskId, deps),
+    env.deferSearchSync(
+      (/** @type {import('postgres').Sql} */ freshSql) =>
+        syncTaskItemToMeili(freshSql, { ...env, deferSearchSync: undefined }, taskId, deps),
+      `task:${taskId}`,
     );
     return;
   }
   if (!env || !meiliAvailable(env)) return;
   const addDocs = deps.addDocuments ?? addDocumentsDefault;
+  const waitForTask = deps.waitForTask ?? true;
 
   try {
     const [root] = await sql`
@@ -42,6 +52,10 @@ export async function syncTaskItemToMeili(sql, env, taskId, deps = {}) {
       SELECT id FROM up WHERE parent_id IS NULL
     `;
     if (!root) return;
+    if (env.searchSyncedRoots) {
+      if (env.searchSyncedRoots.has(root.id)) return;
+      env.searchSyncedRoots.add(root.id);
+    }
 
     const [row] = await sql`
       SELECT t.id, t.xmin::text AS row_version,
@@ -54,7 +68,8 @@ export async function syncTaskItemToMeili(sql, env, taskId, deps = {}) {
       GROUP BY t.id
     `;
     if (!row) return;
-    await addDocs(env, TASKS_INDEX, [row]);
+    await addDocs(env, TASKS_INDEX, [row], undefined, { waitForTask });
+    if (!waitForTask) return;
     await sql`UPDATE task_items SET search_indexed_at = CASE WHEN xmin::text = ${row.row_version}
       AND (SELECT COALESCE(string_agg(child.id::text || ':' || child.xmin::text, ',' ORDER BY child.id), '')
            FROM task_items child WHERE child.parent_id = ${root.id}) = ${row.child_versions}
@@ -77,8 +92,9 @@ export async function syncTaskItemToMeili(sql, env, taskId, deps = {}) {
  */
 export async function removeTaskItemFromMeili(env, taskId, deps = {}) {
   if (env?.deferSearchSync) {
-    env.deferSearchSync(() =>
-      removeTaskItemFromMeili({ ...env, deferSearchSync: undefined }, taskId, deps),
+    env.deferSearchSync(
+      () => removeTaskItemFromMeili({ ...env, deferSearchSync: undefined }, taskId, deps),
+      `task-remove:${taskId}`,
     );
     return;
   }

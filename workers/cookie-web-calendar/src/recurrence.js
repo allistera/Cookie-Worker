@@ -6,7 +6,13 @@
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export const EXPAND_PAST_DAYS = 365;
 export const EXPAND_FUTURE_DAYS = 730;
-const MAX_OCCURRENCES_PER_SERIES = 366;
+// Explicit ranges may span at least the default window so the two contracts
+// cannot drift apart again (the default window used to exceed this cap).
+const MAX_RANGE_DAYS = EXPAND_PAST_DAYS + EXPAND_FUTURE_DAYS;
+// One occurrence per day of the widest window (both ends inclusive), so a
+// daily series fits whole in any range the API accepts; were it ever hit,
+// expandEvent reports it as truncation rather than dropping the tail quietly.
+const MAX_OCCURRENCES_PER_SERIES = MAX_RANGE_DAYS + 1;
 // Global ceiling on occurrences emitted in one response across all series.
 // MAX_OCCURRENCES_PER_SERIES bounds each series individually; without a total
 // cap, N daily series serialize up to 366·N event objects on every load.
@@ -23,9 +29,6 @@ const MAX_STEPS_PER_SERIES = 10_000;
 // beyond what any window of legitimate series needs to emit the 5,000
 // occurrence ceiling.
 const MAX_TOTAL_STEPS = 100_000;
-// Explicit ranges may span at least the default window so the two contracts
-// cannot drift apart again (the default window used to exceed this cap).
-const MAX_RANGE_DAYS = EXPAND_PAST_DAYS + EXPAND_FUTURE_DAYS;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // RFC5545-style two-letter weekday codes, in week order (index doubles as the
 // Date#getUTCDay() value for that weekday).
@@ -137,7 +140,9 @@ function firstIndexNearWindow(dtstart, windowStart, freq) {
  * @param {any} event
  * @param {Date} windowStart
  * @param {Date} windowEnd
- * @param {{remaining: number}} [budget]
+ * @param {{remaining: number, truncated?: boolean}} [budget] `truncated` is
+ *        set when this series stopped at a per-series cap with occurrences
+ *        still left in the window.
  */
 function expandEvent(event, windowStart, windowEnd, budget = { remaining: MAX_TOTAL_STEPS }) {
   const rule = parseRecurrenceRule(event.recurrenceRule);
@@ -183,6 +188,13 @@ function expandEvent(event, windowStart, windowEnd, budget = { remaining: MAX_TO
     steps += 1;
     budget.remaining -= 1;
   }
+  if (
+    cursor <= windowEnd &&
+    (!until || cursor <= until) &&
+    (occurrences.length >= MAX_OCCURRENCES_PER_SERIES || steps >= MAX_STEPS_PER_SERIES)
+  ) {
+    budget.truncated = true;
+  }
   return occurrences;
 }
 
@@ -191,7 +203,8 @@ function expandEvent(event, windowStart, windowEnd, budget = { remaining: MAX_TO
 // unconditionally, so this clip is what actually bounds their payload.
 // Non-recurring events still pass through untouched; the SQL filter already
 // windowed them. A global occurrence cap bounds the whole response: once it
-// is hit, remaining series are dropped and `truncated` reports it.
+// is hit, remaining series are dropped and `truncated` reports it, as it does
+// a series cut short by its own per-series cap.
 /**
  * @param {any[]} events
  * @param {Date} [now]
@@ -208,9 +221,11 @@ export function expandEventsPage(events, now = new Date(), range = null) {
   let truncated = false;
   // Shared across every series in the response, so many zero-output series
   // can't each spend a full per-series step budget.
+  /** @type {{remaining: number, truncated?: boolean}} */
   const budget = { remaining: MAX_TOTAL_STEPS };
   for (const event of events) {
     const expanded = expandEvent(event, windowStart, windowEnd, budget);
+    if (budget.truncated) truncated = true;
     const remaining = MAX_TOTAL_OCCURRENCES - occurrences.length;
     if (expanded.length > remaining) {
       occurrences.push(...expanded.slice(0, Math.max(0, remaining)));

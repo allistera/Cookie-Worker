@@ -36,7 +36,7 @@ vi.mock('../src/sentry.js', () => ({
   captureHandledException: (/** @type {any[]} */ ...args) => captureHandledException(...args),
 }));
 
-const worker = (await import('../src/worker.js')).default;
+const { default: worker, createSearchSyncQueue } = await import('../src/worker.js');
 
 const PRODUCTION = 'https://mail.infinitywave.online';
 const env = /** @type {any} */ ({
@@ -587,5 +587,44 @@ describe('routing — /files', () => {
     const response = await worker.fetch(request('/files', { method: 'PUT' }), env, ctx);
     expect(response.status).toBe(405);
     expect(response.headers.get('Allow')).toBe('GET, POST');
+  });
+});
+
+describe('createSearchSyncQueue', () => {
+  test('runs one job per key, together rather than one after another', async () => {
+    const queue = createSearchSyncQueue();
+    /** @type {Array<() => void>} */
+    const release = [];
+    const started = /** @type {string[]} */ ([]);
+    const job = (/** @type {string} */ name) => () =>
+      new Promise((resolve) => {
+        started.push(name);
+        release.push(() => resolve(undefined));
+      });
+
+    queue.defer(job('a'), 'task:a');
+    queue.defer(job('a again'), 'task:a');
+    queue.defer(job('b'), 'task:b');
+    queue.defer(job('unkeyed'));
+    expect(queue.size()).toBe(3);
+
+    const running = queue.run(/** @type {any} */ ({}));
+    await Promise.resolve();
+    // All started before any finished.
+    expect(started).toEqual(['a', 'b', 'unkeyed']);
+    for (const done of release) done();
+    await running;
+  });
+
+  test('settles every job before rejecting with a failure', async () => {
+    const queue = createSearchSyncQueue();
+    const after = vi.fn(async () => undefined);
+    queue.defer(async () => {
+      throw new Error('boom');
+    }, 'task:a');
+    queue.defer(after, 'task:b');
+
+    await expect(queue.run(/** @type {any} */ ({}))).rejects.toThrow('boom');
+    expect(after).toHaveBeenCalledOnce();
   });
 });

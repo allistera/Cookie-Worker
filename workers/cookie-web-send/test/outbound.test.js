@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // Ported from Cookie-Web's api/__tests__/send.test.js — the helper half.
 // buildReadReceiptUrl loses its "deployed environment" gate (this Worker only
@@ -17,7 +17,9 @@ import {
   parseRecipients,
   replyThreadingHeaders,
   resolveOwnedAttachments,
+  storeSentMessage,
   validateOutboundMessage,
+  withAttachmentPayloadSlot,
 } from '../src/outbound.js';
 import { parseScheduledFor } from '../src/scheduled.js';
 import { createMockSql } from './helpers.js';
@@ -411,5 +413,221 @@ describe('loadProviderAttachments', () => {
     await expect(loadProviderAttachments([attachment(1), attachment(2)], readBlob)).rejects.toThrow(
       'Outbound attachments exceed the provider size limit',
     );
+  });
+});
+
+describe('loadProviderAttachments buffering', () => {
+  /** @param {Uint8Array[]} chunks */
+  const streamOf = (chunks) =>
+    new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+  const bytes = (/** @type {string} */ text) => new TextEncoder().encode(text);
+
+  it.each([
+    ['matches', 11],
+    ['overstates', 64],
+    ['understates', 4],
+    ['is missing', null],
+  ])('encodes every byte when the declared size %s the blob', async (_label, size) => {
+    const readBlob = async () => ({ stream: streamOf([bytes('hello '), bytes('world')]) });
+    const [loaded] = await loadProviderAttachments(
+      [{ id: 'a', filename: 'a.txt', size_bytes: size, blob_url: 'https://blob.example/a' }],
+      readBlob,
+    );
+    expect(atob(loaded.content)).toBe('hello world');
+  });
+
+  it('still enforces the limit on a blob larger than it declared', async () => {
+    const half = new Uint8Array(Math.floor(MAX_OUTBOUND_ATTACHMENT_BYTES / 2) + 1);
+    const readBlob = async () => ({ stream: streamOf([half, half]) });
+    await expect(
+      loadProviderAttachments(
+        [{ id: 'a', size_bytes: 1, blob_url: 'https://blob.example/a' }],
+        readBlob,
+      ),
+    ).rejects.toThrow('Outbound attachments exceed the provider size limit');
+  });
+});
+
+describe('attachment payload slot', () => {
+  const env = { RESEND_API_KEY: 'k', EMAIL_FROM: 'Cookie <mail@example.com>' };
+  const forward = { id: 'a', filename: 'a.txt', size_bytes: 1, blob_url: 'https://blob.example/a' };
+
+  it('builds and sends one attachment-bearing payload per isolate at a time', async () => {
+    /** @type {string[]} */
+    const events = [];
+    /** @type {Array<() => void>} */
+    const accept = [];
+    const services = /** @type {any} */ ({
+      env,
+      createResend: () => ({
+        emails: {
+          send: (/** @type {any} */ payload) => {
+            events.push(`send ${payload.subject}`);
+            return new Promise((resolve) => {
+              accept.push(() =>
+                resolve({ data: { id: `resend-${payload.subject}` }, error: null }),
+              );
+            });
+          },
+        },
+      }),
+      readBlob: async () => {
+        events.push('read');
+        return { stream: new Response('x').body };
+      },
+    });
+    const message = (/** @type {string} */ subject) => ({
+      recipients: ['r@example.com'],
+      subject,
+      text: 'body',
+      html: null,
+      replyToMessageId: null,
+      readReceiptToken: 'not-a-uuid',
+      attachments: [forward],
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = createMockSql([]);
+
+    const first = deliverMail(sql, 'user-1', message('one'), services);
+    const second = deliverMail(sql, 'user-1', message('two'), services);
+    await vi.waitFor(() => expect(accept).toHaveLength(1));
+    // The second forward has not even read its blob while the first is out.
+    expect(events).toEqual(['read', 'send one']);
+    accept[0]();
+    await first;
+    await vi.waitFor(() => expect(accept).toHaveLength(2));
+    expect(events).toEqual(['read', 'send one', 'read', 'send two']);
+    accept[1]();
+    await second;
+  });
+
+  it('lets a waiter through when the holder never releases', async () => {
+    vi.useFakeTimers();
+    try {
+      const wedged = withAttachmentPayloadSlot(() => new Promise(() => {}));
+      let ran = false;
+      const next = withAttachmentPayloadSlot(async () => {
+        ran = true;
+      });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(ran).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await next;
+      expect(ran).toBe(true);
+      void wedged;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends plain mail without waiting for the slot', async () => {
+    const send = vi.fn(async () => ({ data: { id: 'resend-plain' }, error: null }));
+    const services = /** @type {any} */ ({ env, createResend: () => ({ emails: { send } }) });
+    let release = () => {};
+    const holder = withAttachmentPayloadSlot(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(undefined);
+        }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await deliverMail(
+      createMockSql([]),
+      'user-1',
+      {
+        recipients: ['r@example.com'],
+        subject: 's',
+        text: 't',
+        html: null,
+        replyToMessageId: null,
+        readReceiptToken: 'not-a-uuid',
+      },
+      services,
+    );
+    expect(result.resendId).toBe('resend-plain');
+    release();
+    await holder;
+  });
+});
+
+describe('storeSentMessage under a concurrent store of the same provider id', () => {
+  const services = /** @type {any} */ ({ env: { EMAIL_FROM: 'Cookie <mail@example.com>' } });
+  const message = {
+    recipients: ['r@example.com'],
+    subject: 'Hello',
+    text: 'Body',
+    html: null,
+    replyToMessageId: null,
+    resendId: 'resend-1',
+    readReceiptToken: null,
+    attachments: [{ filename: 'a.pdf', blob_url: 'https://blob.example/a.pdf' }],
+  };
+
+  it('rolls back the thread it opened and returns the winning row', async () => {
+    const sql = createMockSql([
+      [{ thread_id: null, existing_message_id: null }], // lookup: nothing yet
+      [], // insert thread
+      [], // insert message: the concurrent store won ON CONFLICT
+      [{ id: 'winner-id' }], // re-select the winner
+    ]);
+    let rolledBack = false;
+    sql.begin = vi.fn(async (/** @type {(sql: any) => unknown} */ callback) => {
+      try {
+        return await callback(sql);
+      } catch (err) {
+        rolledBack = true;
+        throw err;
+      }
+    });
+
+    const result = await storeSentMessage(sql, 'user-1', message, services);
+
+    expect(result).toEqual({ messageUuid: 'winner-id', inserted: false });
+    expect(rolledBack).toBe(true);
+    const texts = sql.calls.map((/** @type {{text: string}} */ call) => call.text);
+    expect(texts.some((text) => text.includes('INSERT INTO attachments'))).toBe(false);
+    const reselect = sql.calls.at(-1);
+    expect(reselect.text).toContain('m.message_id = ?');
+    expect(reselect.values).toEqual(['user-1', '<resend-1@resend.cookie-web>']);
+  });
+
+  it('repairs the follow-up reminder on the winning row', async () => {
+    const sql = createMockSql([
+      [{ thread_id: 'thread-1', existing_message_id: null }],
+      [], // insert message: lost
+      [{ id: 'winner-id' }],
+      [], // follow-up repair
+    ]);
+
+    const result = await storeSentMessage(
+      sql,
+      'user-1',
+      { ...message, followUpAt: '2099-01-01T00:00:00.000Z' },
+      services,
+    );
+
+    expect(result).toEqual({ messageUuid: 'winner-id', inserted: false });
+    const texts = sql.calls.map((/** @type {{text: string}} */ call) => call.text);
+    // The thread counter is only bumped for a row this call inserted.
+    expect(texts.some((text) => text.includes('UPDATE threads'))).toBe(false);
+    expect(sql.calls.at(-1).text).toContain('SET follow_up_at');
+    expect(sql.calls.at(-1).values).toContain('winner-id');
+  });
+
+  it('still reports a fresh insert as inserted', async () => {
+    const sql = createMockSql([
+      [{ thread_id: null, existing_message_id: null }],
+      [],
+      [{ id: 'mine' }],
+      [], // attachments
+    ]);
+    const result = await storeSentMessage(sql, 'user-1', message, services);
+    expect(result.inserted).toBe(true);
+    expect(result.messageUuid).toBe(sql.calls[2].values[0]);
   });
 });

@@ -30,6 +30,21 @@ function queueSql(...results) {
   return sql;
 }
 
+// queueSql that also keeps each statement's interpolated values.
+/** @param {unknown[][]} results */
+function recordingSql(...results) {
+  const queue = [...results];
+  /** @type {{text: string, values: unknown[]}[]} */
+  const calls = [];
+  /** @type {any} */
+  const sql = (/** @type {any} */ strings, /** @type {unknown[]} */ ...values) => {
+    calls.push({ text: strings.join('?'), values });
+    return Promise.resolve(queue.shift() ?? []);
+  };
+  sql.calls = calls;
+  return sql;
+}
+
 /** @param {ReturnType<typeof parseTimeLine>} value */
 function assertParsed(value) {
   if (!value) throw new Error('expected parseTimeLine to return a non-null result');
@@ -245,13 +260,59 @@ describe('syncDailyNoteEvents', () => {
 
   it('upserts a new or changed line with the resolved calendar', async () => {
     const sql = queueSql([], [{ id: 'cal-personal' }], []);
+    const edited = { id: 'keep', type: 'paragraph', data: { text: '09:15 - Standup' } };
 
-    await syncDailyNoteEvents(sql, USER_ID, DOC_ID, '2026-08-14', oldBlocks, [oldBlocks[0]]);
+    await syncDailyNoteEvents(sql, USER_ID, DOC_ID, '2026-08-14', oldBlocks, [edited]);
 
     const upsert = sql.statements.at(-1);
     expect(upsert).toContain('INSERT INTO calendar_events');
     expect(upsert).toContain('ON CONFLICT (source_document_id, source_block_id)');
     expect(upsert).toContain('DO UPDATE SET');
+  });
+
+  // An unchanged line must not overwrite an edit made to its event from the
+  // calendar, nor cost a round trip inside the document's row lock.
+  it('leaves unchanged lines alone', async () => {
+    const sql = queueSql([]);
+
+    await syncDailyNoteEvents(sql, USER_ID, DOC_ID, '2026-08-14', oldBlocks, oldBlocks);
+
+    expect(sql.statements).toHaveLength(0);
+  });
+
+  it('deletes and upserts in one statement each, writing only new and changed lines', async () => {
+    const sql = recordingSql([], [{ id: 'cal-personal' }], []);
+    const before = [
+      ...oldBlocks,
+      { id: 'gone', type: 'paragraph', data: { text: '11:00 - Lunch' } },
+      { id: 'edit', type: 'paragraph', data: { text: '12:00 - Call' } },
+    ];
+    const after = [
+      oldBlocks[0],
+      { id: 'edit', type: 'paragraph', data: { text: '12:00 - 13:00 - Call' } },
+      { id: 'new', type: 'paragraph', data: { text: '15:00 - Review' } },
+    ];
+
+    await syncDailyNoteEvents(sql, USER_ID, DOC_ID, '2026-08-14', before, after);
+
+    expect(sql.calls).toHaveLength(3);
+    expect(sql.calls[0].text).toContain('DELETE FROM calendar_events');
+    expect(sql.calls[0].values).toContainEqual(['removed', 'gone']);
+    expect(sql.calls[2].text).toContain('FROM unnest(');
+    // Block ids of the rows written: 'keep' is unchanged and skipped.
+    expect(sql.calls[2].values).toContainEqual(['edit', 'new']);
+    expect(sql.calls[2].values).toContainEqual([60, 30]);
+  });
+
+  it('rewrites every line when the note moved to another date', async () => {
+    const sql = recordingSql([{ id: 'cal-personal' }], []);
+    const blocks = [oldBlocks[0]];
+
+    await syncDailyNoteEvents(sql, USER_ID, DOC_ID, '2026-08-14', blocks, blocks, '2026-08-13');
+
+    expect(sql.calls[1].text).toContain('INSERT INTO calendar_events');
+    expect(sql.calls[1].values).toContain('2026-08-14');
+    expect(sql.calls[1].values).toContainEqual(['keep']);
   });
 
   it('does nothing when neither old nor new blocks have any time lines', async () => {

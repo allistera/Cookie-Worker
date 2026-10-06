@@ -364,25 +364,47 @@ async function readAttachmentContent(attachment, readBlob, budget) {
   const result = await readBlob(attachment.blob_url);
   if (!result?.stream) throw new Error(`Attachment blob is unavailable: ${attachment.id}`);
   const reader = result.stream.getReader();
+  // The declared size, when there is one, lets the bytes land straight in
+  // their final buffer instead of a chunk list plus a concatenated copy of it.
+  const declared = Number(attachment.size_bytes ?? NaN);
+  /** @type {Buffer | null} */
+  let bytes =
+    Number.isSafeInteger(declared) && declared > 0 && declared <= MAX_OUTBOUND_ATTACHMENT_BYTES
+      ? Buffer.allocUnsafe(declared)
+      : null;
+  /** @type {Uint8Array[]} */
   const chunks = [];
+  let length = 0;
   try {
     while (true) {
       // A sibling read already failed the send; stop buffering for nothing.
       if (budget.failed) throw new Error('Attachment loading was abandoned');
       const { done, value } = await reader.read();
       if (done) break;
-      const chunk = Buffer.from(value);
-      budget.bytes += chunk.byteLength;
+      budget.bytes += value.byteLength;
       if (budget.bytes > MAX_OUTBOUND_ATTACHMENT_BYTES) {
         throw new Error('Outbound attachments exceed the provider size limit');
       }
-      chunks.push(chunk);
+      if (bytes && length + value.byteLength <= bytes.byteLength) {
+        bytes.set(value, length);
+      } else {
+        // The blob outgrew its declared size: keep what is already buffered
+        // as the first chunk and collect the rest.
+        if (bytes) chunks.push(bytes.subarray(0, length));
+        bytes = null;
+        chunks.push(value);
+      }
+      length += value.byteLength;
     }
   } finally {
     reader.releaseLock();
   }
+  // splice empties the chunk list as it is concatenated, so the chunks are
+  // garbage before the Base64 copy is allocated: at most one binary copy
+  // sits next to it.
+  const content = bytes ? bytes.subarray(0, length) : Buffer.concat(chunks.splice(0), length);
   return {
-    content: Buffer.concat(chunks).toString('base64'),
+    content: content.toString('base64'),
     filename: attachment.filename || 'attachment',
     contentType: attachment.content_type || 'application/octet-stream',
   };
@@ -418,6 +440,53 @@ export async function loadProviderAttachments(attachments, readBlob) {
   await Promise.all(workers);
   return loaded;
 }
+
+// A 20 MB forward is buffered as bytes, then Base64, then the provider SDK's
+// JSON body: several copies of the same mail at once. Two such sends in one
+// 128 MB isolate (a user's forward next to a flush, or two users sharing the
+// isolate) would exhaust it, so payloads with attachments are built and
+// handed to the provider one at a time per isolate. A wait is bounded: a
+// holder whose request was cancelled mid-send never runs its release, and
+// that must not wedge every later forward on this isolate.
+const ATTACHMENT_PAYLOAD_WAIT_MS = 30_000;
+/** @type {Promise<unknown>} */
+let attachmentPayloadTail = Promise.resolve();
+
+/**
+ * @template T
+ * @param {() => Promise<T>} operation
+ */
+export async function withAttachmentPayloadSlot(operation) {
+  const previous = attachmentPayloadTail;
+  /** @type {() => void} */
+  let release = () => {};
+  const held = new Promise((resolve) => {
+    release = () => resolve(undefined);
+  });
+  // Each entrant waits on the one before it only, so after a wedged holder
+  // times one waiter out the queue moves at normal speed again.
+  attachmentPayloadTail = held;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  try {
+    await Promise.race([
+      previous,
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, ATTACHMENT_PAYLOAD_WAIT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+// Thrown inside the sent-copy transaction only to roll it back.
+const LOST_SENT_COPY_RACE = new Error('lost sent-copy race');
 
 // Stores the sent copy in the existing tables (is_sent=true, excluded from
 // the inbox list, included in search). Threads with the replied-to message
@@ -465,7 +534,7 @@ export async function storeSentMessage(
   }
 
   const { name: fromName, address: fromAddress } = parseFromEnv(configuredEmailFrom(services.env));
-  const messageUuid = lookup.existing_message_id ?? crypto.randomUUID();
+  let messageUuid = lookup.existing_message_id ?? crypto.randomUUID();
   const threadUuid = lookup.thread_id ?? crypto.randomUUID();
   const sentAt = new Date().toISOString();
   const recipientsJson = JSON.stringify({
@@ -512,31 +581,50 @@ export async function storeSentMessage(
       `,
       );
     }
-    await sql.begin(async (sql) => {
-      for (const [index, statement] of statements.entries()) {
-        const result = await statement(sql);
-        if (index === messagesStatement) inserted = result.length > 0;
+    try {
+      await sql.begin(async (sql) => {
+        for (const [index, statement] of statements.entries()) {
+          const result = await statement(sql);
+          if (index === messagesStatement) {
+            inserted = result.length > 0;
+            // A concurrent store of the same provider id won the ON CONFLICT
+            // race. Roll back, so a thread this call opened is not left
+            // behind empty, and adopt the winner's row below.
+            if (!inserted) throw LOST_SENT_COPY_RACE;
+          }
+        }
+        if (attachments.length) {
+          // One statement for the whole list, inserted in the order given.
+          // attachments has no position column; readers order by filename.
+          await sql`
+            INSERT INTO attachments (message_id, filename, content_type, size_bytes, blob_url)
+            SELECT ${messageUuid}, copy.filename, copy.content_type, copy.size_bytes, copy.blob_url
+            FROM unnest(
+              ${attachments.map((attachment) => attachment.filename ?? null)}::text[],
+              ${attachments.map((attachment) => attachment.content_type ?? null)}::text[],
+              ${attachments.map((attachment) => ((attachment.size_bytes ?? null) === null ? null : String(attachment.size_bytes)))}::bigint[],
+              ${attachments.map((attachment) => attachment.blob_url)}::text[]
+            ) WITH ORDINALITY AS copy(filename, content_type, size_bytes, blob_url, ord)
+            ORDER BY copy.ord
+          `;
+        }
+      });
+    } catch (err) {
+      if (err !== LOST_SENT_COPY_RACE) throw err;
+      const [winner] = await sql`
+        SELECT m.id FROM messages m
+        WHERE m.user_id = ${userId} AND m.message_id = ${messageId}
+        LIMIT 1
+      `;
+      if (!winner) {
+        throw new Error('sent copy conflicted but no stored row was found', { cause: err });
       }
-      if (inserted && attachments.length) {
-        // One statement for the whole list, inserted in the order given.
-        // attachments has no position column; readers order by filename.
-        await sql`
-          INSERT INTO attachments (message_id, filename, content_type, size_bytes, blob_url)
-          SELECT ${messageUuid}, copy.filename, copy.content_type, copy.size_bytes, copy.blob_url
-          FROM unnest(
-            ${attachments.map((attachment) => attachment.filename ?? null)}::text[],
-            ${attachments.map((attachment) => attachment.content_type ?? null)}::text[],
-            ${attachments.map((attachment) => ((attachment.size_bytes ?? null) === null ? null : String(attachment.size_bytes)))}::bigint[],
-            ${attachments.map((attachment) => attachment.blob_url)}::text[]
-          ) WITH ORDINALITY AS copy(filename, content_type, size_bytes, blob_url, ord)
-          ORDER BY copy.ord
-        `;
-      }
-    });
+      messageUuid = winner.id;
+    }
   }
 
   // A retry repairs a sent copy whose first reminder write was interrupted.
-  if (lookup.existing_message_id && followUpAt) {
+  if (!inserted && followUpAt) {
     await sql`UPDATE messages SET follow_up_at = ${followUpAt}::timestamptz
       WHERE id = ${messageUuid} AND user_id = ${userId} AND is_sent`;
   }
@@ -632,9 +720,6 @@ export async function deliverMail(
   const trackedHtml = appendReadReceipt(html, text, receiptUrl);
 
   const resend = services.createResend(services.env.RESEND_API_KEY);
-  const providerAttachments = attachments.length
-    ? await loadProviderAttachments(attachments, services.readBlob)
-    : [];
   /** @type {Record<string, unknown>} */
   const payload = {
     from: configuredEmailFrom(services.env),
@@ -643,7 +728,6 @@ export async function deliverMail(
     text,
   };
   if (trackedHtml) payload.html = trackedHtml;
-  if (providerAttachments.length) payload.attachments = providerAttachments;
   if (replyToMessageId) {
     try {
       const headers = await replyThreadingHeaders(sql, userId, replyToMessageId);
@@ -654,9 +738,20 @@ export async function deliverMail(
       console.error('failed to load reply threading headers:', /** @type {Error} */ (err).message);
     }
   }
-  const { data, error } = idempotencyKey
-    ? await resend.emails.send(payload, { idempotencyKey })
-    : await resend.emails.send(payload);
+  /** @param {Record<string, unknown>} body */
+  const send = (body) =>
+    idempotencyKey ? resend.emails.send(body, { idempotencyKey }) : resend.emails.send(body);
+  // The attachment-bearing body exists only inside its slot, so the encoded
+  // bytes are unreachable once the provider call returns, before the sent
+  // copy is stored and before the next forward starts loading.
+  const { data, error } = attachments.length
+    ? await withAttachmentPayloadSlot(async () =>
+        send({
+          ...payload,
+          attachments: await loadProviderAttachments(attachments, services.readBlob),
+        }),
+      )
+    : await send(payload);
   if (error) throw new Error(error.message || 'Failed to send email');
 
   let messageUuid = null;
