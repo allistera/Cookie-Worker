@@ -445,42 +445,69 @@ export async function loadProviderAttachments(attachments, readBlob) {
 // JSON body: several copies of the same mail at once. Two such sends in one
 // 128 MB isolate (a user's forward next to a flush, or two users sharing the
 // isolate) would exhaust it, so payloads with attachments are built and
-// handed to the provider one at a time per isolate. A wait is bounded: a
-// holder whose request was cancelled mid-send never runs its release, and
-// that must not wedge every later forward on this isolate.
+// handed to the provider one at a time per isolate. A waiter never starts
+// while a live holder still has its payload: after ATTACHMENT_PAYLOAD_WAIT_MS
+// it gives up with AttachmentSlotBusyError, which callers treat as a
+// retryable failure before anything was loaded or sent. Only a holder older
+// than ATTACHMENT_PAYLOAD_STALE_MS is presumed dead (its request was
+// cancelled mid-send and its release never ran) and is taken over, so a
+// cancelled request cannot wedge every later forward on this isolate.
 const ATTACHMENT_PAYLOAD_WAIT_MS = 30_000;
-/** @type {Promise<unknown>} */
-let attachmentPayloadTail = Promise.resolve();
+const ATTACHMENT_PAYLOAD_STALE_MS = 120_000;
+/** @type {{done: Promise<unknown>, since: number} | null} */
+let attachmentPayloadHolder = null;
+
+export class AttachmentSlotBusyError extends Error {
+  constructor() {
+    super('Another attachment send is in progress; retry shortly');
+    this.name = 'AttachmentSlotBusyError';
+  }
+}
 
 /**
  * @template T
  * @param {() => Promise<T>} operation
  */
 export async function withAttachmentPayloadSlot(operation) {
-  const previous = attachmentPayloadTail;
+  const deadline = Date.now() + ATTACHMENT_PAYLOAD_WAIT_MS;
+  // Waiters woken together re-check the holder: the first to run takes the
+  // slot and the rest wait on it in turn.
+  while (
+    attachmentPayloadHolder &&
+    Date.now() - attachmentPayloadHolder.since < ATTACHMENT_PAYLOAD_STALE_MS
+  ) {
+    const observed = attachmentPayloadHolder;
+    const remaining = Math.min(
+      deadline - Date.now(),
+      ATTACHMENT_PAYLOAD_STALE_MS - (Date.now() - observed.since),
+    );
+    if (deadline - Date.now() <= 0) throw new AttachmentSlotBusyError();
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let timer;
+    try {
+      await Promise.race([
+        observed.done,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, remaining));
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   /** @type {() => void} */
   let release = () => {};
-  const held = new Promise((resolve) => {
-    release = () => resolve(undefined);
-  });
-  // Each entrant waits on the one before it only, so after a wedged holder
-  // times one waiter out the queue moves at normal speed again.
-  attachmentPayloadTail = held;
-  /** @type {ReturnType<typeof setTimeout> | undefined} */
-  let timer;
-  try {
-    await Promise.race([
-      previous,
-      new Promise((resolve) => {
-        timer = setTimeout(resolve, ATTACHMENT_PAYLOAD_WAIT_MS);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
+  const mine = {
+    done: new Promise((resolve) => {
+      release = () => resolve(undefined);
+    }),
+    since: Date.now(),
+  };
+  attachmentPayloadHolder = mine;
   try {
     return await operation();
   } finally {
+    if (attachmentPayloadHolder === mine) attachmentPayloadHolder = null;
     release();
   }
 }

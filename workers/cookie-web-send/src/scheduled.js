@@ -6,6 +6,7 @@
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import {
+  AttachmentSlotBusyError,
   buildReadReceiptUrl,
   claimOutboundEmailQuota,
   deliverMail,
@@ -461,6 +462,13 @@ export async function deliverScheduledSend(sql, row, services) {
       services,
     );
   } catch (err) {
+    // Another attachment send held this isolate's payload slot: nothing was
+    // loaded or sent, so the row goes back without spending an attempt.
+    if (err instanceof AttachmentSlotBusyError) {
+      await refundOutboundEmailQuota(sql, row.user_id);
+      await sql`UPDATE scheduled_sends SET status = 'pending', claimed_at = NULL WHERE id = ${row.id}`;
+      return { status: 'retried', storedMessageUuid: null };
+    }
     const attempts = row.attempts + 1;
     const errorMessage = /** @type {Error} */ (err).message;
     console.error(`scheduled send ${row.id} delivery failed (attempt ${attempts}):`, errorMessage);

@@ -20,6 +20,7 @@ import {
   storeSentMessage,
   validateOutboundMessage,
   withAttachmentPayloadSlot,
+  AttachmentSlotBusyError,
 } from '../src/outbound.js';
 import { parseScheduledFor } from '../src/scheduled.js';
 import { createMockSql } from './helpers.js';
@@ -506,20 +507,46 @@ describe('attachment payload slot', () => {
     await second;
   });
 
-  it('lets a waiter through when the holder never releases', async () => {
+  it('never overlaps a live holder: a waiter gives up after 30s instead', async () => {
     vi.useFakeTimers();
     try {
-      const wedged = withAttachmentPayloadSlot(() => new Promise(() => {}));
+      let release = () => {};
+      const holder = withAttachmentPayloadSlot(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve(undefined);
+          }),
+      );
       let ran = false;
       const next = withAttachmentPayloadSlot(async () => {
         ran = true;
       });
-      await vi.advanceTimersByTimeAsync(29_999);
+      const outcome = next.catch((/** @type {unknown} */ err) => err);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await outcome).toBeInstanceOf(AttachmentSlotBusyError);
+      expect(ran).toBe(false);
+      release();
+      await holder;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes over from a holder that never releases once it is stale', async () => {
+    vi.useFakeTimers();
+    try {
+      const wedged = withAttachmentPayloadSlot(() => new Promise(() => {}));
+      void wedged;
+      await vi.advanceTimersByTimeAsync(100_000);
+      let ran = false;
+      const next = withAttachmentPayloadSlot(async () => {
+        ran = true;
+      });
+      await vi.advanceTimersByTimeAsync(19_999);
       expect(ran).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       await next;
       expect(ran).toBe(true);
-      void wedged;
     } finally {
       vi.useRealTimers();
     }

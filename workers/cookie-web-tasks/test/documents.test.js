@@ -501,6 +501,24 @@ describe('PATCH /documents', () => {
     expect(sql.calls.at(-1)?.values).toContain('2026-08-14');
   });
 
+  // A title-only rename carries no blocks, but the note still changes day.
+  it('moves the events of a Daily note renamed to another date without blocks', async () => {
+    const standup = { id: 'block-1', type: 'paragraph', data: { text: '09:00 - Standup' } };
+    const sql = createMockSql([
+      [{ title: '13-08-26', folder_id: FOLDER_ID, blocks: [standup] }],
+      [{ id: DOC_ID, title: '14-08-26', folder_id: FOLDER_ID }],
+      [{ title: 'Daily' }],
+      [{ title: 'Daily' }],
+      [{ id: 'cal-personal' }],
+      [],
+    ]);
+    const response = await updateDocument(sql, USER_ID, { id: DOC_ID, title: '14-08-26' }, deps());
+
+    expect(response.status).toBe(200);
+    expect(sql.calls.at(-1)?.text).toContain('INSERT INTO calendar_events');
+    expect(sql.calls.at(-1)?.values).toContain('2026-08-14');
+  });
+
   it("does not touch calendar_events for a non-Daily document's blocks", async () => {
     const sql = createMockSql([
       [{ title: 'Notes', blocks: [] }],
@@ -631,11 +649,15 @@ describe('PATCH /documents', () => {
   });
 
   it('moves a document to the root with folderId null', async () => {
-    const sql = createMockSql([[{ id: DOC_ID, folder_id: null }]]);
+    const sql = createMockSql([
+      [{ title: 'Notes', folder_id: FOLDER_ID, blocks: [] }],
+      [{ id: DOC_ID, folder_id: null }],
+    ]);
     const response = await updateDocument(sql, USER_ID, { id: DOC_ID, folderId: null }, deps());
 
     expect(response.status).toBe(200);
-    expect(sql.calls[0].text).toBe('SET(folder_id)');
+    expect(sql.calls[0].text).toContain('FOR UPDATE');
+    expect(sql.calls[1].text).toBe('SET(folder_id)');
   });
 
   it('normalizes and saves document tags', async () => {
