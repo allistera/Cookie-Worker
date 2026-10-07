@@ -107,6 +107,44 @@ export async function requestPublicHttps(url, { timeoutMs, maxResponseBytes, hea
   return { status: response.status, body };
 }
 
+// Google Calendar's share dialog hands out an "add this calendar" page link
+// (https://calendar.google.com/calendar/u/0?cid=<base64 calendar id>), not a
+// feed. Fetching it returns the Google Calendar HTML landing page, so a
+// subscription stored as-is syncs nothing. Rewrite it to the calendar's public
+// ICS address — the feed that page would have added. Only calendars shared as
+// public serve that address; a private one still fails at sync time.
+const GOOGLE_SHARE_HOSTS = ['calendar.google.com', 'www.google.com'];
+const GOOGLE_ICAL_PATH_PREFIX = '/calendar/ical/';
+const PRINTABLE_ASCII_RE = /^[\x21-\x7e]+$/;
+
+/** @param {URL} parsed */
+function isGoogleShareLink(parsed) {
+  return (
+    GOOGLE_SHARE_HOSTS.includes(parsed.hostname) &&
+    !parsed.pathname.startsWith(GOOGLE_ICAL_PATH_PREFIX) &&
+    parsed.searchParams.has('cid')
+  );
+}
+
+/**
+ * @param {URL} shareLink
+ * @returns {URL | null} The public ICS URL, or null when cid is not a calendar id.
+ */
+function googleShareLinkToIcs(shareLink) {
+  const cid = shareLink.searchParams.get('cid') ?? '';
+  const base64 = cid.replace(/-/g, '+').replace(/_/g, '/');
+  let calendarId;
+  try {
+    calendarId = atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
+  } catch {
+    return null;
+  }
+  if (!PRINTABLE_ASCII_RE.test(calendarId)) return null;
+  return new URL(
+    `https://calendar.google.com${GOOGLE_ICAL_PATH_PREFIX}${encodeURIComponent(calendarId)}/public/basic.ics`,
+  );
+}
+
 // Credential-bearing URLs are rejected here rather than only at the egress
 // boundary (resolvePublicHttpsUrl), so subscribing to one fails as a 400 at
 // create time instead of storing a calendar whose every sync errors out.
@@ -129,6 +167,13 @@ export function validSubscriptionUrl(value, allowlist = DEFAULT_CALENDAR_ALLOWLI
     return null;
   }
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
+  if (isGoogleShareLink(parsed)) {
+    // A share link whose cid is not a calendar id is rejected outright rather
+    // than stored as a page URL that can never sync.
+    const feed = googleShareLinkToIcs(parsed);
+    if (!feed) return null;
+    parsed = feed;
+  }
   if (allowlist.length > 0 && !hostMatchesSuffixes(parsed.hostname, allowlist)) return null;
   return parsed.toString();
 }

@@ -41,6 +41,38 @@ describe('validSubscriptionUrl', () => {
     ).toBe('https://example.com:8443/a/feed.ics?token=x');
   });
 
+  it('rewrites Google Calendar "add this calendar" share links to the public ICS feed', () => {
+    // cid is the base64 calendar id; this one decodes to a plain gmail address.
+    expect(
+      validSubscriptionUrl(
+        'https://calendar.google.com/calendar/u/0?cid=YWxsaXN0ZXJhYWxsQGdtYWlsLmNvbQ',
+      ),
+    ).toBe('https://calendar.google.com/calendar/ical/allisteraall%40gmail.com/public/basic.ics');
+    // URL-safe base64 and ids containing '#' (holiday calendars) are encoded for the path.
+    expect(
+      validSubscriptionUrl(
+        'https://calendar.google.com/calendar/u/0/r?cid=ZW4udWsjaG9saWRheUBncm91cC52LmNhbGVuZGFyLmdvb2dsZS5jb20',
+      ),
+    ).toBe(
+      'https://calendar.google.com/calendar/ical/en.uk%23holiday%40group.v.calendar.google.com/public/basic.ics',
+    );
+    expect(
+      validSubscriptionUrl('https://www.google.com/calendar/render?cid=YWJjQGV4YW1wbGUuY29t'),
+    ).toBe('https://calendar.google.com/calendar/ical/abc%40example.com/public/basic.ics');
+  });
+
+  it('leaves ICS feed URLs alone even when they carry a cid parameter', () => {
+    const feed = 'https://calendar.google.com/calendar/ical/a%40b.com/private-abc/basic.ics?cid=x';
+    expect(validSubscriptionUrl(feed)).toBe(feed);
+  });
+
+  it('rejects Google share links whose cid is not a calendar id', () => {
+    expect(validSubscriptionUrl('https://calendar.google.com/calendar/u/0?cid=')).toBeNull();
+    expect(validSubscriptionUrl('https://calendar.google.com/calendar/u/0?cid=%%%')).toBeNull();
+    // Decodes to control characters, not an address.
+    expect(validSubscriptionUrl('https://calendar.google.com/calendar/u/0?cid=AAEC')).toBeNull();
+  });
+
   it('rejects non-https URLs', () => {
     expect(validSubscriptionUrl('http://example.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
     expect(validSubscriptionUrl('file:///etc/passwd', TEST_ALLOWLIST)).toBeNull();
