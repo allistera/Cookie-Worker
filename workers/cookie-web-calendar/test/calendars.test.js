@@ -9,6 +9,7 @@ import {
   fetchCalendars,
   listCalendars,
   renameCalendar,
+  syncCalendar,
 } from '../src/calendars.js';
 
 // Each tagged-template query resolves to the next queued result, so a test
@@ -255,5 +256,39 @@ describe('DELETE calendar management', () => {
     const response = await deleteCalendar(makeSql(), USER_ID, { id: 'not-a-uuid' });
 
     expect(response.status).toBe(400);
+  });
+});
+
+describe('syncCalendar', () => {
+  it('syncs the normalized form of a stored Google share link', async () => {
+    sqlQueue = [
+      [
+        {
+          id: CALENDAR_ID,
+          userId: USER_ID,
+          subscriptionUrl:
+            'https://calendar.google.com/calendar/u/0?cid=YWxsaXN0ZXJhYWxsQGdtYWlsLmNvbQ',
+        },
+      ],
+    ];
+    const sync = vi.fn(async () => ({ ok: true, count: 2 }));
+    const response = await syncCalendar(makeSql(), USER_ID, { id: CALENDAR_ID }, env, sync);
+    expect(response.status).toBe(200);
+    expect(sync).toHaveBeenCalledWith(
+      expect.anything(),
+      CALENDAR_ID,
+      USER_ID,
+      'https://calendar.google.com/calendar/ical/allisteraall%40gmail.com/public/basic.ics',
+    );
+  });
+
+  it('rejects a stored URL that no longer passes validation', async () => {
+    sqlQueue = [
+      [{ id: CALENDAR_ID, userId: USER_ID, subscriptionUrl: 'https://evil.com/feed.ics' }],
+    ];
+    const sync = vi.fn(async () => ({ ok: true, count: 0 }));
+    const response = await syncCalendar(makeSql(), USER_ID, { id: CALENDAR_ID }, env, sync);
+    expect(response.status).toBe(400);
+    expect(sync).not.toHaveBeenCalled();
   });
 });

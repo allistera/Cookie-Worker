@@ -208,15 +208,18 @@ export async function syncCalendar(sql, userId, body, env, sync = syncCalendarSu
   }
 
   // Re-validate stored URLs against the current allowlist so a policy change
-  // or newly-disallowed host cannot be used via an old subscription.
-  if (!validSubscriptionUrl(row.subscriptionUrl, calendarSubscriptionAllowlist(env))) {
+  // or newly-disallowed host cannot be used via an old subscription. Sync the
+  // normalized form rather than the stored one, so a subscription saved before
+  // a rewrite existed (e.g. a Google share link) recovers on "Sync now".
+  const url = validSubscriptionUrl(row.subscriptionUrl, calendarSubscriptionAllowlist(env));
+  if (!url) {
     return Response.json(
       { error: 'Calendar subscription URL is no longer allowed' },
       { status: 400 },
     );
   }
 
-  const result = await sync(sql, row.id, row.userId, row.subscriptionUrl);
+  const result = await sync(sql, row.id, row.userId, url);
   return Response.json(
     result.ok
       ? {
