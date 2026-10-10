@@ -148,6 +148,15 @@ describe('GET /calendars', () => {
     expect(await response.json()).toEqual({ defaultCalendarId: id });
     expect(mockQuery.mock.calls[1][0].join('?')).toContain('UPDATE users');
   });
+
+  test('PATCH with a primitive JSON body is still a 400, not a crash', async () => {
+    const response = await worker.fetch(
+      request('/calendars', { method: 'PATCH', body: JSON.stringify('rename me') }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+  });
 });
 
 describe('POST routing', () => {

@@ -239,10 +239,10 @@ describe('PATCH default calendar', () => {
     needsReauth: false,
   });
 
-  it('saves one of the caller’s own calendars into users.prefs', async () => {
+  it('saves one of the caller’s own calendars into users.prefs in its stored form', async () => {
     sqlQueue = [[{ id: CALENDAR_ID }], []];
     const response = await setDefaultCalendar(makeSql(), USER_ID, {
-      defaultCalendarId: CALENDAR_ID,
+      defaultCalendarId: CALENDAR_ID.toUpperCase(),
     });
 
     expect(response.status).toBe(200);

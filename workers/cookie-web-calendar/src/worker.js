@@ -121,7 +121,10 @@ async function route(url, request, sql, userId, env) {
   }
   if (request.method === 'POST') return createCalendar(sql, userId, body, env);
   if (request.method === 'PATCH') {
-    return 'defaultCalendarId' in body
+    // A JSON primitive body has no keys to look in; renameCalendar's own
+    // validation turns it into a 400 like before.
+    const setsDefault = body !== null && typeof body === 'object' && 'defaultCalendarId' in body;
+    return setsDefault
       ? setDefaultCalendar(sql, userId, body, env)
       : renameCalendar(sql, userId, body);
   }

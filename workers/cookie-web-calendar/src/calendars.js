@@ -168,26 +168,37 @@ export async function setDefaultCalendar(sql, userId, body, env = /** @type {any
     );
   }
 
-  const allowed = isGoogle
-    ? await isWritableGoogleCalendar(sql, userId, id, env)
-    : Boolean(
-        (
-          await sql`
-            SELECT c.id FROM calendars c
-            WHERE c.id = ${id} AND c.user_id = ${userId} AND c.subscription_url IS NULL
-          `
-        )[0],
-      );
-  if (!allowed) {
+  // Saved in the form GET /calendars lists it: Postgres lowercases a UUID it
+  // accepted in upper case, and the read side compares ids as strings.
+  const stored = isGoogle
+    ? (await isWritableGoogleCalendar(sql, userId, id, env))
+      ? id
+      : null
+    : await ownCalendarId(sql, userId, id);
+  if (!stored) {
     return Response.json({ error: 'Calendar not found or not writable' }, { status: 404 });
   }
 
   await sql`
     UPDATE users
-    SET prefs = coalesce(prefs, '{}'::jsonb) || ${sql.json({ defaultCalendarId: id })}
+    SET prefs = coalesce(prefs, '{}'::jsonb) || ${sql.json({ defaultCalendarId: stored })}
     WHERE id = ${userId}
   `;
-  return Response.json({ defaultCalendarId: id });
+  return Response.json({ defaultCalendarId: stored });
+}
+
+// The canonical id of one of the person's own (not subscribed) calendars.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} id
+ */
+async function ownCalendarId(sql, userId, id) {
+  const [row] = await sql`
+    SELECT c.id FROM calendars c
+    WHERE c.id = ${id} AND c.user_id = ${userId} AND c.subscription_url IS NULL
+  `;
+  return row ? String(row.id) : null;
 }
 
 /**
