@@ -238,15 +238,18 @@ describe('listGoogleEvents', () => {
     expect(await listGoogleEvents(createMockSql(), USER_ID, range, 'UTC', {})).toEqual({
       events: [],
       error: null,
+      truncated: false,
     });
     expect(await listGoogleEvents(createMockSql([[]]), USER_ID, range, 'UTC', env)).toEqual({
       events: [],
       error: null,
+      truncated: false,
     });
     const none = await connectionRow({ selectedCalendars: [] });
     expect(await listGoogleEvents(createMockSql([[none]]), USER_ID, range, 'UTC', env)).toEqual({
       events: [],
       error: null,
+      truncated: false,
     });
   });
 
@@ -350,7 +353,7 @@ describe('listGoogleEvents', () => {
         fetchImpl,
         calendar: 'google:someone-else@example.com',
       }),
-    ).toEqual({ events: [], error: null });
+    ).toEqual({ events: [], error: null, truncated: false });
   });
 
   it('keeps the other calendars when one fails, and reports a lapsed grant, without throwing', async () => {
@@ -423,7 +426,7 @@ describe('listGoogleEvents', () => {
     });
     const sql = createMockSql([[await connectionRow({ selectedCalendars: [WORK] })], []]);
     const result = await listGoogleEvents(sql, USER_ID, range, 'UTC', env, { fetchImpl });
-    expect(result).toEqual({ events: [], error: null });
+    expect(result).toEqual({ events: [], error: null, truncated: false });
     expect(attempts).toBe(2);
     expect(sql.calls[1].text).toContain('SET access_token_encrypted =');
   });
