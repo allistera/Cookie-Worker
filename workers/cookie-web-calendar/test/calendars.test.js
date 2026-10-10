@@ -9,6 +9,7 @@ import {
   fetchCalendars,
   listCalendars,
   renameCalendar,
+  setDefaultCalendar,
   syncCalendar,
 } from '../src/calendars.js';
 
@@ -27,6 +28,7 @@ function makeSql() {
     return Promise.resolve(sqlQueue.shift() ?? []);
   };
   run.begin = async (/** @type {(sql: any) => unknown} */ fn) => fn(run);
+  run.json = (/** @type {unknown} */ value) => value;
   return run;
 }
 
@@ -71,7 +73,29 @@ describe('GET calendar management', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       calendars: [{ id: CALENDAR_ID, name: 'Work', color: '#4f7c6b' }],
+      defaultCalendarId: null,
     });
+  });
+
+  it('reports the saved default calendar while it is still writable', async () => {
+    sqlQueue = [[{ id: CALENDAR_ID, name: 'Work', color: '#4f7c6b' }], [{ id: CALENDAR_ID }]];
+    const response = await listCalendars(makeSql(), USER_ID);
+
+    expect((await response.json()).defaultCalendarId).toBe(CALENDAR_ID);
+    expect(queriesRun[1].text).toContain("prefs ->> 'defaultCalendarId'");
+  });
+
+  it('drops a default that no longer names a writable calendar', async () => {
+    const subscribed = {
+      id: CALENDAR_ID,
+      name: 'Holidays',
+      color: '#d15c4e',
+      subscriptionUrl: 'https://example.com/holidays.ics',
+    };
+    sqlQueue = [[subscribed], [{ id: CALENDAR_ID }]];
+    const response = await listCalendars(makeSql(), USER_ID);
+
+    expect((await response.json()).defaultCalendarId).toBeNull();
   });
 
   it('seeds five default calendars for a user with none yet', async () => {
@@ -198,6 +222,100 @@ describe('PATCH calendar management', () => {
 
     const second = await renameCalendar(makeSql(), USER_ID, { id: CALENDAR_ID, name: '' });
     expect(second.status).toBe(400);
+  });
+});
+
+describe('PATCH default calendar', () => {
+  const GOOGLE_ENV = /** @type {import('../src/sentry.js').CalendarEnv} */ ({
+    GOOGLE_CLIENT_ID: 'id',
+    GOOGLE_CLIENT_SECRET: 'secret',
+    GOOGLE_TOKEN_ENCRYPTION_KEY: 'key',
+  });
+  const connectionRow = (/** @type {object[]} */ selectedCalendars) => ({
+    userId: USER_ID,
+    email: 'me@example.com',
+    refreshTokenEncrypted: 'enc',
+    selectedCalendars,
+    needsReauth: false,
+  });
+
+  it('saves one of the caller’s own calendars into users.prefs', async () => {
+    sqlQueue = [[{ id: CALENDAR_ID }], []];
+    const response = await setDefaultCalendar(makeSql(), USER_ID, {
+      defaultCalendarId: CALENDAR_ID,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ defaultCalendarId: CALENDAR_ID });
+    expect(queriesRun[0].text).toContain('subscription_url IS NULL');
+    expect(queriesRun[1].text).toContain('UPDATE users');
+    expect(queriesRun[1].values).toEqual([{ defaultCalendarId: CALENDAR_ID }, USER_ID]);
+  });
+
+  it('clears the choice when given null', async () => {
+    const response = await setDefaultCalendar(makeSql(), USER_ID, { defaultCalendarId: null });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ defaultCalendarId: null });
+    expect(queriesRun[0].text).toContain("- 'defaultCalendarId'");
+  });
+
+  it('404s for a subscription, another user’s calendar or an unknown id', async () => {
+    sqlQueue = [[]];
+    const response = await setDefaultCalendar(makeSql(), USER_ID, {
+      defaultCalendarId: CALENDAR_ID,
+    });
+
+    expect(response.status).toBe(404);
+    expect(queriesRun).toHaveLength(1);
+  });
+
+  it('rejects a malformed id with 400', async () => {
+    const response = await setDefaultCalendar(makeSql(), USER_ID, {
+      defaultCalendarId: 'not-a-uuid',
+    });
+
+    expect(response.status).toBe(400);
+    expect(queriesRun).toHaveLength(0);
+  });
+
+  it('accepts a selected Google calendar the account can write to', async () => {
+    sqlQueue = [
+      [connectionRow([{ id: 'me@example.com', name: 'Me', color: '#9fe1e7', readOnly: false }])],
+      [],
+    ];
+    const response = await setDefaultCalendar(
+      makeSql(),
+      USER_ID,
+      { defaultCalendarId: 'google:me@example.com' },
+      GOOGLE_ENV,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ defaultCalendarId: 'google:me@example.com' });
+  });
+
+  it('refuses a read-only Google calendar, and any Google id when Google is off', async () => {
+    sqlQueue = [
+      [connectionRow([{ id: 'team@example.com', name: 'Team', color: '#f6bf26', readOnly: true }])],
+    ];
+    const readOnly = await setDefaultCalendar(
+      makeSql(),
+      USER_ID,
+      { defaultCalendarId: 'google:team@example.com' },
+      GOOGLE_ENV,
+    );
+    expect(readOnly.status).toBe(404);
+
+    queriesRun.length = 0;
+    const unconfigured = await setDefaultCalendar(
+      makeSql(),
+      USER_ID,
+      { defaultCalendarId: 'google:me@example.com' },
+      env,
+    );
+    expect(unconfigured.status).toBe(404);
+    expect(queriesRun).toHaveLength(0);
   });
 });
 
