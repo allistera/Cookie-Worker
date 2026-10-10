@@ -342,6 +342,7 @@ describe('listGoogleEvents', () => {
       { fetchImpl, calendar: `google:${WORK.id}` },
     );
     expect(result.events.map((event) => event.title)).toEqual(['A', 'B']);
+    expect(result.truncated).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
 
     expect(
@@ -352,11 +353,21 @@ describe('listGoogleEvents', () => {
     ).toEqual({ events: [], error: null });
   });
 
-  it('reports Google failures and a lapsed grant without throwing', async () => {
+  it('keeps the other calendars when one fails, and reports a lapsed grant, without throwing', async () => {
     const failing = googleFetch({
       [`GET /calendars/${encodeURIComponent(PRIMARY.id)}/events`]: () =>
-        jsonResponse({ error: { message: 'Backend Error' } }, 503),
-      [`GET /calendars/${encodeURIComponent(WORK.id)}/events`]: () => jsonResponse({ items: [] }),
+        jsonResponse({ error: { message: 'Not Found' } }, 404),
+      [`GET /calendars/${encodeURIComponent(WORK.id)}/events`]: () =>
+        jsonResponse({
+          items: [
+            {
+              id: 'w1',
+              summary: 'Planning',
+              start: { dateTime: '2026-10-05T09:00:00Z' },
+              end: { dateTime: '2026-10-05T10:00:00Z' },
+            },
+          ],
+        }),
     });
     const outage = await listGoogleEvents(
       createMockSql([[await connectionRow()]]),
@@ -366,8 +377,23 @@ describe('listGoogleEvents', () => {
       env,
       { fetchImpl: failing },
     );
-    expect(outage.events).toEqual([]);
-    expect(outage.error).toContain('could not be loaded');
+    expect(outage.events.map((event) => event.title)).toEqual(['Planning']);
+    expect(outage.error).toBe('Events from the Google calendar "Personal" could not be loaded.');
+    expect(outage.truncated).toBe(false);
+
+    const alone = await listGoogleEvents(
+      createMockSql([[await connectionRow({ selectedCalendars: [PRIMARY] })]]),
+      USER_ID,
+      range,
+      'UTC',
+      env,
+      { fetchImpl: failing },
+    );
+    expect(alone).toEqual({
+      events: [],
+      error: 'Google Calendar events could not be loaded.',
+      truncated: false,
+    });
 
     const needsReauth = await connectionRow({ needsReauth: true });
     const lapsed = await listGoogleEvents(
@@ -400,6 +426,26 @@ describe('listGoogleEvents', () => {
     expect(result).toEqual({ events: [], error: null });
     expect(attempts).toBe(2);
     expect(sql.calls[1].text).toContain('SET access_token_encrypted =');
+  });
+});
+
+describe('listGoogleEvents truncation', () => {
+  it('flags a window cut short by the page cap', async () => {
+    const fetchImpl = googleFetch({
+      [`GET /calendars/${encodeURIComponent(WORK.id)}/events`]: () =>
+        jsonResponse({ items: [], nextPageToken: 'more' }),
+    });
+    const result = await listGoogleEvents(
+      createMockSql([[await connectionRow({ selectedCalendars: [WORK] })]]),
+      USER_ID,
+      { from: '2026-10-01', to: '2026-10-31' },
+      'UTC',
+      env,
+      { fetchImpl },
+    );
+    expect(result.truncated).toBe(true);
+    expect(result.error).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -609,21 +655,21 @@ describe('updateGoogleEvent', () => {
     expect((await response.json()).event).toMatchObject({ allDay: true, date: '2026-10-10' });
   });
 
-  it('moves the event first when the target calendar changed', async () => {
+  it('saves the fields first, then moves the event when the target calendar changed', async () => {
     const calls = [];
     const fetchImpl = googleFetch({
       [`GET /calendars/${encodeURIComponent(WORK.id)}/events/evt1`]: () => {
         calls.push('get');
         return jsonResponse(existing);
       },
+      [`PUT /calendars/${encodeURIComponent(WORK.id)}/events/evt1`]: () => {
+        calls.push('put');
+        return jsonResponse({ ...existing, summary: 'Lunch' });
+      },
       [`POST /calendars/${encodeURIComponent(WORK.id)}/events/evt1/move`]: (url) => {
         calls.push('move');
         expect(url.searchParams.get('destination')).toBe(PRIMARY.id);
-        return jsonResponse({ ...existing, id: 'evt1' });
-      },
-      [`PUT /calendars/${encodeURIComponent(PRIMARY.id)}/events/evt1`]: () => {
-        calls.push('put');
-        return jsonResponse({ ...existing, summary: 'Lunch' });
+        return jsonResponse({ ...existing, summary: 'Lunch', id: 'evt1' });
       },
     });
     const response = await updateGoogleEvent(
@@ -636,7 +682,7 @@ describe('updateGoogleEvent', () => {
       { fetchImpl },
     );
     expect(response.status).toBe(200);
-    expect(calls).toEqual(['get', 'move', 'put']);
+    expect(calls).toEqual(['get', 'put', 'move']);
     expect((await response.json()).event.calendar).toBe(`google:${PRIMARY.id}`);
   });
 

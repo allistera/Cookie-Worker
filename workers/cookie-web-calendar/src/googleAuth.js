@@ -246,8 +246,9 @@ function emailFromIdToken(idToken) {
 
 /**
  * Exchanges an authorization code and stores the connection. An existing
- * connection for the user is replaced (re-connecting after `needs_reauth`
- * keeps the calendar selection).
+ * connection for the user is replaced: re-connecting the same Google account
+ * (after `needs_reauth`, say) keeps the calendar selection, while a different
+ * account starts with none, since the old ids belong to the old account.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -296,6 +297,11 @@ export async function completeAuthorization(
       refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
       access_token_encrypted = EXCLUDED.access_token_encrypted,
       access_token_expires_at = EXCLUDED.access_token_expires_at,
+      selected_calendars = CASE
+        WHEN google_calendar_connections.google_email IS NOT DISTINCT FROM EXCLUDED.google_email
+          THEN google_calendar_connections.selected_calendars
+        ELSE '[]'::jsonb
+      END,
       needs_reauth = false,
       updated_at = now()
   `;

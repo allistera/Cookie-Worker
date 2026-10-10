@@ -294,7 +294,7 @@ export async function listEvents(sql, userId, url, env = /** @type {any} */ ({})
   const [events, google] = await Promise.all([
     isGoogleId(calendar) ? [] : fetchEvents(sql, userId, range, calendar),
     calendar && !isGoogleId(calendar)
-      ? { events: [], error: null }
+      ? { events: [], error: null, truncated: false }
       : listGoogleEvents(sql, userId, range, timeZone, env, { calendar }),
   ]);
   const { events: expanded, truncated } = expandEventsPage(events, new Date(), range);
@@ -305,7 +305,7 @@ export async function listEvents(sql, userId, url, env = /** @type {any} */ ({})
     : expanded;
   return Response.json({
     events: merged,
-    truncated,
+    truncated: truncated || google.truncated,
     ...(google.error ? { googleError: google.error } : {}),
   });
 }

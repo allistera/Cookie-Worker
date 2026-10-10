@@ -52,6 +52,9 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** @typedef {{fetchImpl?: typeof fetch, now?: () => number}} Overrides */
 
+const REAUTH_MESSAGE = 'Google Calendar needs to be reconnected in Settings.';
+const NO_GOOGLE_EVENTS = Object.freeze({ events: [], error: null, truncated: false });
+
 export class GoogleApiError extends Error {
   /**
    * @param {number} status
@@ -434,14 +437,17 @@ async function fetchCalendarEvents(client, calendar, range, timeZone) {
     pageToken = typeof body?.nextPageToken === 'string' ? body.nextPageToken : null;
     if (!pageToken) break;
   }
-  return events;
+  // A page token left over after the last allowed page means the window was
+  // cut short, which the response reports as `truncated` like stored rows.
+  return { events, truncated: pageToken !== null };
 }
 
 /**
  * Google events for every selected calendar in the range — or for one of
  * them, when `calendar` names a `google:` calendar id. Never throws: a Google
  * outage must not take the stored events down with it, so failures come back
- * as `error` for the client to mention.
+ * as `error` for the client to mention. Calendars are fetched independently,
+ * so one that has gone (unshared, deleted) does not hide the others' events.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -449,12 +455,12 @@ async function fetchCalendarEvents(client, calendar, range, timeZone) {
  * @param {string} timeZone
  * @param {GoogleCalendarEnv} env
  * @param {Overrides & {calendar?: string | null}} [overrides]
- * @returns {Promise<{events: any[], error: string | null}>}
+ * @returns {Promise<{events: any[], error: string | null, truncated: boolean}>}
  */
 export async function listGoogleEvents(sql, userId, range, timeZone, env, overrides = {}) {
-  if (!isGoogleConfigured(env)) return { events: [], error: null };
+  if (!isGoogleConfigured(env)) return NO_GOOGLE_EVENTS;
   const only = overrides.calendar ? parseGoogleCalendarId(overrides.calendar) : null;
-  if (overrides.calendar && !only) return { events: [], error: null };
+  if (overrides.calendar && !only) return NO_GOOGLE_EVENTS;
   let connection;
   try {
     connection = await loadConnectionIfAvailable(sql, userId);
@@ -463,29 +469,43 @@ export async function listGoogleEvents(sql, userId, range, timeZone, env, overri
       'Google Calendar connection lookup failed:',
       /** @type {Error} */ (error).message,
     );
-    return { events: [], error: 'Google Calendar is temporarily unavailable.' };
+    return { ...NO_GOOGLE_EVENTS, error: 'Google Calendar is temporarily unavailable.' };
   }
   const calendars = only
     ? connection?.selectedCalendars.filter((calendar) => calendar.id === only)
     : connection?.selectedCalendars;
-  if (!connection || !calendars?.length) return { events: [], error: null };
-  if (connection.needsReauth) {
-    return { events: [], error: 'Google Calendar needs to be reconnected in Settings.' };
-  }
+  if (!connection || !calendars?.length) return NO_GOOGLE_EVENTS;
+  if (connection.needsReauth) return { ...NO_GOOGLE_EVENTS, error: REAUTH_MESSAGE };
 
   const client = createClient(sql, connection, env, overrides);
-  try {
-    const perCalendar = await Promise.all(
-      calendars.map((calendar) => fetchCalendarEvents(client, calendar, range, timeZone)),
-    );
-    return { events: perCalendar.flat(), error: null };
-  } catch (error) {
-    if (error instanceof GoogleReauthRequired) {
-      return { events: [], error: 'Google Calendar needs to be reconnected in Settings.' };
+  const results = await Promise.allSettled(
+    calendars.map((calendar) => fetchCalendarEvents(client, calendar, range, timeZone)),
+  );
+  const events = [];
+  let truncated = false;
+  /** @type {string | null} */
+  let error = null;
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'fulfilled') {
+      events.push(...result.value.events);
+      truncated ||= result.value.truncated;
+      continue;
     }
-    console.error('Google Calendar events request failed:', /** @type {Error} */ (error).message);
-    return { events: [], error: 'Google Calendar events could not be loaded.' };
+    if (result.reason instanceof GoogleReauthRequired) {
+      error = REAUTH_MESSAGE;
+      continue;
+    }
+    console.error(
+      'Google Calendar events request failed:',
+      calendars[index].id,
+      /** @type {Error} */ (result.reason)?.message,
+    );
+    error ??=
+      results.length > 1
+        ? `Events from the Google calendar "${calendars[index].name}" could not be loaded.`
+        : 'Google Calendar events could not be loaded.';
   }
+  return { events, error, truncated };
 }
 
 /**
@@ -637,10 +657,11 @@ export async function createGoogleEvent(sql, userId, fields, timeZone, env, over
 }
 
 /**
- * Replaces the event's own fields and times, moving it first when the
- * target calendar changed. Fetching the current resource and putting it back
- * (rather than patching) is what lets an all-day event switch to timed and
- * back without Google seeing both a `date` and a `dateTime`.
+ * Replaces the event's own fields and times, then moves it when the target
+ * calendar changed. Fetching the current resource and putting it back (rather
+ * than patching) is what lets an all-day event switch to timed and back
+ * without Google seeing both a `date` and a `dateTime`. The update goes first
+ * so a failed move leaves a saved event where the client still knows it is.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -679,16 +700,7 @@ export async function updateGoogleEvent(sql, userId, id, fields, timeZone, env, 
 
   const client = createClient(sql, target.connection, env, overrides);
   try {
-    let existing = await googleRequest(client, eventPath(source.calendarId, source.eventId));
-    let calendarId = source.calendarId;
-    if (source.calendarId !== destinationId) {
-      existing = await googleRequest(
-        client,
-        `${eventPath(source.calendarId, source.eventId)}/move?destination=${encodeURIComponent(destinationId)}`,
-        { method: 'POST' },
-      );
-      calendarId = destinationId;
-    }
+    const existing = await googleRequest(client, eventPath(source.calendarId, source.eventId));
     const allDaySpanDays =
       typeof existing?.start?.date === 'string'
         ? Math.max(
@@ -700,20 +712,23 @@ export async function updateGoogleEvent(sql, userId, id, fields, timeZone, env, 
             1,
           )
         : undefined;
-    const updated = await googleRequest(
-      client,
-      eventPath(calendarId, existing.id ?? source.eventId),
-      {
-        method: 'PUT',
-        body: {
-          ...existing,
-          summary: fields.title,
-          description: fields.description ?? undefined,
-          location: fields.location ?? undefined,
-          ...googleEventTimes(fields, timeZone, allDaySpanDays),
-        },
+    let updated = await googleRequest(client, eventPath(source.calendarId, source.eventId), {
+      method: 'PUT',
+      body: {
+        ...existing,
+        summary: fields.title,
+        description: fields.description ?? undefined,
+        location: fields.location ?? undefined,
+        ...googleEventTimes(fields, timeZone, allDaySpanDays),
       },
-    );
+    });
+    if (source.calendarId !== destinationId) {
+      updated = await googleRequest(
+        client,
+        `${eventPath(source.calendarId, source.eventId)}/move?destination=${encodeURIComponent(destinationId)}`,
+        { method: 'POST' },
+      );
+    }
     const [event] = mapGoogleEvent(updated, target.calendar, timeZone, null);
     return Response.json({ event });
   } catch (error) {

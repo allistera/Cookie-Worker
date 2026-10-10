@@ -194,6 +194,8 @@ describe('completeAuthorization', () => {
     const insert = sql.calls[0];
     expect(insert.text).toContain('INSERT INTO google_calendar_connections');
     expect(insert.text).toContain('ON CONFLICT (user_id) DO UPDATE');
+    // A different Google account than before starts with no selection.
+    expect(insert.text).toContain("ELSE '[]'::jsonb");
     const [userId, email, refreshEncrypted, accessEncrypted] = insert.values;
     expect(userId).toBe(USER_ID);
     expect(email).toBe('person@example.com');
