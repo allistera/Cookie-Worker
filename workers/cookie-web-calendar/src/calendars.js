@@ -12,7 +12,7 @@ import {
 } from './calendarSync.js';
 import { validId } from '../../../shared/pagination.js';
 import { isGoogleConfigured, loadConnectionIfAvailable } from './googleAuth.js';
-import { googleCalendarEntries } from './googleCalendar.js';
+import { googleCalendarEntries, googleCalendarKey } from './googleCalendar.js';
 
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const MAX_NAME = 50;
@@ -115,7 +115,106 @@ export async function listCalendars(sql, userId, env = /** @type {any} */ ({})) 
       ...googleCalendarEntries(await loadConnectionIfAvailable(sql, userId)),
     ];
   }
-  return Response.json({ calendars });
+  return Response.json({
+    calendars,
+    defaultCalendarId: await readDefaultCalendarId(sql, userId, calendars),
+  });
+}
+
+// The person's chosen destination for new events, kept in users.prefs like
+// the other per-user settings. Reported only while it still names one of the
+// calendars an event can be filed in; a deleted, unsubscribed-from or now
+// read-only calendar silently drops back to the client's own fallback.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{id: string, subscriptionUrl?: string | null, readOnly?: boolean}[]} calendars
+ */
+async function readDefaultCalendarId(sql, userId, calendars) {
+  const [row] = await sql`
+    SELECT prefs ->> 'defaultCalendarId' AS id FROM users WHERE id = ${userId}
+  `;
+  const id = String(row?.id ?? '');
+  return id && calendars.some((calendar) => calendar.id === id && isWritable(calendar)) ? id : null;
+}
+
+/** @param {{subscriptionUrl?: string | null, readOnly?: boolean}} calendar */
+const isWritable = (calendar) => !calendar.subscriptionUrl && !calendar.readOnly;
+
+// PATCH /calendars with `defaultCalendarId`: null clears the choice, otherwise
+// it must be one of the person's own calendars or a selected Google calendar
+// they can write to.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {any} body
+ * @param {import('./sentry.js').CalendarEnv} env
+ */
+export async function setDefaultCalendar(sql, userId, body, env = /** @type {any} */ ({})) {
+  if (body.defaultCalendarId === null) {
+    await sql`
+      UPDATE users SET prefs = coalesce(prefs, '{}'::jsonb) - 'defaultCalendarId'
+      WHERE id = ${userId}
+    `;
+    return Response.json({ defaultCalendarId: null });
+  }
+
+  const id = String(body.defaultCalendarId ?? '');
+  const isGoogle = id.startsWith('google:');
+  if (!id || (!isGoogle && !validId(id))) {
+    return Response.json(
+      { error: 'defaultCalendarId must be a calendar id or null' },
+      { status: 400 },
+    );
+  }
+
+  // Saved in the form GET /calendars lists it: Postgres lowercases a UUID it
+  // accepted in upper case, and the read side compares ids as strings.
+  const stored = isGoogle
+    ? (await isWritableGoogleCalendar(sql, userId, id, env))
+      ? id
+      : null
+    : await ownCalendarId(sql, userId, id);
+  if (!stored) {
+    return Response.json({ error: 'Calendar not found or not writable' }, { status: 404 });
+  }
+
+  await sql`
+    UPDATE users
+    SET prefs = coalesce(prefs, '{}'::jsonb) || ${sql.json({ defaultCalendarId: stored })}
+    WHERE id = ${userId}
+  `;
+  return Response.json({ defaultCalendarId: stored });
+}
+
+// The canonical id of one of the person's own (not subscribed) calendars.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} id
+ */
+async function ownCalendarId(sql, userId, id) {
+  const [row] = await sql`
+    SELECT c.id FROM calendars c
+    WHERE c.id = ${id} AND c.user_id = ${userId} AND c.subscription_url IS NULL
+  `;
+  return row ? String(row.id) : null;
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} id
+ * @param {import('./sentry.js').CalendarEnv} env
+ */
+async function isWritableGoogleCalendar(sql, userId, id, env) {
+  if (!isGoogleConfigured(env)) return false;
+  const connection = await loadConnectionIfAvailable(sql, userId);
+  return Boolean(
+    connection?.selectedCalendars.some(
+      (calendar) => googleCalendarKey(calendar.id) === id && !calendar.readOnly,
+    ),
+  );
 }
 
 /** @param {unknown} name */

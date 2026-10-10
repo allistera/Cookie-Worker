@@ -17,6 +17,7 @@ import {
   isUndefinedTable,
   listCalendars,
   renameCalendar,
+  setDefaultCalendar,
   syncCalendar,
 } from './calendars.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -37,7 +38,8 @@ import { calendarAvailability } from './calendarAvailability.js';
  * api/calendar-events.js and its ?resource=calendars sub-handler, each as its
  * own clean route. POST /calendar-events with action=interpret is the AI
  * natural-language path; POST /calendars with action=sync is a manual
- * subscription re-sync. /google-calendar manages the Google Calendar
+ * subscription re-sync, and PATCH /calendars with defaultCalendarId saves
+ * the calendar new events go to. /google-calendar manages the Google Calendar
  * connection Settings offers (status, authorize, calendar selection,
  * disconnect); Google's own redirect lands on CALLBACK_PATH, handled
  * before auth in fetch() below.
@@ -118,7 +120,14 @@ async function route(url, request, sql, userId, env) {
     return (await claimSyncQuota(sql, userId)) ?? createCalendar(sql, userId, body, env);
   }
   if (request.method === 'POST') return createCalendar(sql, userId, body, env);
-  if (request.method === 'PATCH') return renameCalendar(sql, userId, body);
+  if (request.method === 'PATCH') {
+    // A JSON primitive body has no keys to look in; renameCalendar's own
+    // validation turns it into a 400 like before.
+    const setsDefault = body !== null && typeof body === 'object' && 'defaultCalendarId' in body;
+    return setsDefault
+      ? setDefaultCalendar(sql, userId, body, env)
+      : renameCalendar(sql, userId, body);
+  }
   return deleteCalendar(sql, userId, body);
 }
 

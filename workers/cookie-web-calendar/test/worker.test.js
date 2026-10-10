@@ -12,6 +12,7 @@ vi.mock('postgres', () => ({
     /** @type {any} */
     const sql = (/** @type {any[]} */ ...args) => mockQuery(...args);
     sql.begin = async (/** @type {(sql: any) => unknown} */ callback) => callback(sql);
+    sql.json = (/** @type {unknown} */ value) => value;
     sql.end = sqlEnd;
     return sql;
   },
@@ -133,6 +134,28 @@ describe('GET /calendars', () => {
     );
     expect(response.status).toBe(503);
     expect((await response.json()).error).toContain('upgraded');
+  });
+
+  test('PATCH with defaultCalendarId saves the default instead of renaming', async () => {
+    const id = '11111111-1111-1111-1111-111111111111';
+    mockQuery.mockResolvedValueOnce([{ id }]).mockResolvedValueOnce([]);
+    const response = await worker.fetch(
+      request('/calendars', { method: 'PATCH', body: JSON.stringify({ defaultCalendarId: id }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ defaultCalendarId: id });
+    expect(mockQuery.mock.calls[1][0].join('?')).toContain('UPDATE users');
+  });
+
+  test('PATCH with a primitive JSON body is still a 400, not a crash', async () => {
+    const response = await worker.fetch(
+      request('/calendars', { method: 'PATCH', body: JSON.stringify('rename me') }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
   });
 });
 
