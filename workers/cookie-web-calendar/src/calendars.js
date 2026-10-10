@@ -165,7 +165,7 @@ export async function createCalendar(sql, userId, body, env, sync = syncCalendar
     return Response.json(
       {
         error:
-          'name (max 50), a hex color, and (if subscribing) a valid https calendar URL are required',
+          'name (max 50), a hex color, and (if subscribing) a valid https:// or webcal:// calendar URL are required',
       },
       { status: 400 },
     );

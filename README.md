@@ -88,6 +88,17 @@ Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by th
 
 ## Cookie Web API Workers
 
+Calendar subscriptions accept `https://` and `webcal://` feed URLs from any public
+host by default. Webcal links are normalized to HTTPS before storage and sync.
+Set `CALENDAR_SUBSCRIPTION_ALLOWLIST` to comma-separated hostname suffixes to
+restrict providers; it is checked on both creation and manual refresh. Missing
+or empty configuration permits any host that passes the public-HTTPS boundary.
+Embedded credentials and plain HTTP are rejected. Sync checks DNS for private
+addresses, refuses redirects, and caps responses at 5 MB with a 10-second fetch
+timeout. Workers cannot pin the validated DNS result to the fetch connection,
+so the DNS-rebinding limitation in `shared/safe-https.js` remains; deployments
+that need a narrower target set should configure the allowlist.
+
 `cookie-web-ai`, `cookie-web-calendar`, `cookie-web-drafts`, `cookie-web-emails`, `cookie-web-labels`, `cookie-web-messages`, `cookie-web-search`, `cookie-web-send`, `cookie-web-tasks`, `cookie-web-notifications`, and `cookie-web-receipts` are different from the other three Workers here: they're called directly by Cookie-Web's browser SPA (a real `fetch()` from user-facing JavaScript), not server-to-server over a bearer token. Two things follow from that, shared by all eleven (with two deliberate exceptions: `cookie-web-receipts`'s pixel route skips auth, and `cookie-web-send`'s /send/flush authenticates with the flusher's bearer secret instead — see their bullets below):
 
 - **CORS**: every response carries `Access-Control-Allow-Origin` for allowed origins only (Cookie-Web's own production origin, any `http://localhost:*` for local dev, and any `https://*.vercel.app` preview deployment), and `OPTIONS` preflight requests are answered before auth runs. This logic lives in [`shared/cors.js`](shared/cors.js).

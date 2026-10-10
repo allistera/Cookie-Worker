@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  DEFAULT_CALENDAR_ALLOWLIST,
+  calendarSubscriptionAllowlist,
   syncCalendarSubscription,
   validSubscriptionUrl,
 } from '../src/calendarSync.js';
@@ -110,14 +110,27 @@ describe('validSubscriptionUrl', () => {
     expect(validSubscriptionUrl('https://evil.com/feed.ics', TEST_ALLOWLIST)).toBeNull();
   });
 
-  it('matches host suffixes in the default production allowlist', () => {
-    expect(validSubscriptionUrl('https://calendar.google.com/calendar/ical/.../basic.ics')).toBe(
-      'https://calendar.google.com/calendar/ical/.../basic.ics',
+  it.each(['https', 'webcal', 'WEBCAL'])(
+    'accepts arbitrary feed hosts using %s by default',
+    (scheme) => {
+      expect(validSubscriptionUrl(`${scheme}://club.example/fixtures.ics?team=1`)).toBe(
+        'https://club.example/fixtures.ics?team=1',
+      );
+    },
+  );
+
+  it('uses an optional operator allowlist for both HTTPS and webcal links', () => {
+    expect(calendarSubscriptionAllowlist({})).toEqual([]);
+    expect(calendarSubscriptionAllowlist({ CALENDAR_SUBSCRIPTION_ALLOWLIST: ' ' })).toEqual([]);
+    const allowlist = calendarSubscriptionAllowlist({
+      CALENDAR_SUBSCRIPTION_ALLOWLIST: ' Calendar.Google.com, club.example ',
+    });
+    expect(allowlist).toEqual(['calendar.google.com', 'club.example']);
+    expect(validSubscriptionUrl('webcal://feeds.club.example/feed.ics', allowlist)).toBe(
+      'https://feeds.club.example/feed.ics',
     );
-    expect(validSubscriptionUrl('https://outlook.office365.com/...')).not.toBeNull();
-    expect(
-      validSubscriptionUrl('https://not-calendar.com/feed.ics', DEFAULT_CALENDAR_ALLOWLIST),
-    ).toBeNull();
+    expect(validSubscriptionUrl('webcal://other.example/feed.ics', allowlist)).toBeNull();
+    expect(validSubscriptionUrl('https://notclub.example/feed.ics', allowlist)).toBeNull();
   });
 });
 

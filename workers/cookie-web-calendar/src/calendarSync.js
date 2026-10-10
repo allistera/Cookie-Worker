@@ -41,34 +41,15 @@ const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 // sidebar renders. Bound it before it is stored.
 const MAX_SYNC_ERROR_CHARS = 500;
 
-// Calendar subscriptions are supplied by an authenticated owner, but a
-// compromised or malicious account can still use DNS rebinding to make the
-// Worker request an unintended address. The DoH check in resolvePublicHttpsUrl
-// rejects obviously private/internal targets, but fetch() re-resolves
-// independently, so we also constrain hosts to known public calendar providers.
-// Operators can extend or replace this list with CALENDAR_SUBSCRIPTION_ALLOWLIST.
-export const DEFAULT_CALENDAR_ALLOWLIST = [
-  'calendar.google.com',
-  'www.google.com',
-  'outlook.office365.com',
-  'outlook.live.com',
-  'calendar.yahoo.com',
-  'caldav.fastmail.com',
-  'calendar.fastmail.com',
-  'calendar.zoho.com',
-  'p01-caldav.icloud.com',
-  'p02-caldav.icloud.com',
-  'p03-caldav.icloud.com',
-  'p04-caldav.icloud.com',
-  'p05-caldav.icloud.com',
-  'p06-caldav.icloud.com',
-  'p07-caldav.icloud.com',
-  'p08-caldav.icloud.com',
-  'p09-caldav.icloud.com',
-  'p10-caldav.icloud.com',
-];
+// Calendar feeds may live on any public HTTPS host. Operators can restrict
+// providers with CALENDAR_SUBSCRIPTION_ALLOWLIST (hostname suffixes).
+// The DoH check rejects private/internal addresses before fetching, but
+// Workers fetch() re-resolves independently: the DNS-rebinding limitation
+// documented in shared/safe-https.js still applies.
+/** @type {string[]} */
+export const DEFAULT_CALENDAR_ALLOWLIST = [];
 
-// The pinned public-HTTPS boundary, Workers edition: DoH-validate the target,
+// The public-HTTPS boundary, Workers edition: DoH-validate the target,
 // fetch without following redirects (the caller reports 3xx explicitly), and
 // stream the body under a byte cap so a huge feed cannot buffer unbounded.
 /**
@@ -153,8 +134,8 @@ function googleShareLinkToIcs(shareLink) {
 // same public-HTTPS egress path as a plain https subscription.
 /**
  * @param {unknown} value
- * @param {string[]} [allowlist] Hostname suffixes allowed for subscriptions.
- *        Defaults to DEFAULT_CALENDAR_ALLOWLIST.
+ * @param {string[]} [allowlist] Hostname suffixes allowed for subscriptions;
+ *        empty (the default) allows any public HTTPS host.
  */
 export function validSubscriptionUrl(value, allowlist = DEFAULT_CALENDAR_ALLOWLIST) {
   const url = String(value ?? '');
@@ -180,7 +161,7 @@ export function validSubscriptionUrl(value, allowlist = DEFAULT_CALENDAR_ALLOWLI
 
 /**
  * Reads an operator-provided comma-separated hostname allowlist. An empty or
- * missing value falls back to the built-in default list.
+ * missing value means any public HTTPS host.
  * @param {{ CALENDAR_SUBSCRIPTION_ALLOWLIST?: string }} env
  * @returns {string[]}
  */
