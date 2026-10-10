@@ -1,5 +1,6 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { parse } from 'jsonc-parser';
 import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import {
@@ -38,6 +39,19 @@ async function repositoryWithWorkers(...workers) {
 }
 
 describe('worker repository interface', () => {
+  test('keeps user-supplied calendar fetches on public routing rather than the zone origin shortcut', async () => {
+    const config = parse(
+      await readFile(
+        new URL('../../workers/cookie-web-calendar/wrangler.jsonc', import.meta.url),
+        'utf8',
+      ),
+    );
+    // Operator-configured subscription hosts can belong to the Worker's own
+    // zone. They must not bypass that zone's public security settings.
+    expect(config.compatibility_flags).toContain('global_fetch_strictly_public');
+    expect(config.compatibility_flags).not.toContain('global_fetch_private_origin');
+  });
+
   test('discovers worker capsules in deterministic order', async () => {
     const repositoryRoot = await repositoryWithWorkers('second-worker', 'first-worker');
 

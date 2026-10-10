@@ -135,6 +135,52 @@ describe('POST calendar management', () => {
     expect(neverSync).not.toHaveBeenCalled();
   });
 
+  it('stores and initially syncs a webcal subscription over HTTPS', async () => {
+    sqlQueue = [[{ id: CALENDAR_ID, userId: USER_ID, name: 'Fixtures', color: '#3b82f6' }]];
+    const sync = vi.fn(async () => ({ ok: true, count: 2 }));
+    const response = await createCalendar(
+      makeSql(),
+      USER_ID,
+      {
+        name: 'Fixtures',
+        color: '#3b82f6',
+        subscriptionUrl: 'webcal://p176-caldav.icloud.com/published/2/example?team=1',
+      },
+      env,
+      sync,
+    );
+    expect(response.status).toBe(201);
+    expect((await response.json()).calendar.subscriptionUrl).toBe(
+      'https://p176-caldav.icloud.com/published/2/example?team=1',
+    );
+    expect(queriesRun[0].values).toContain(
+      'https://p176-caldav.icloud.com/published/2/example?team=1',
+    );
+    expect(sync).toHaveBeenCalledWith(
+      expect.anything(),
+      CALENDAR_ID,
+      USER_ID,
+      'https://p176-caldav.icloud.com/published/2/example?team=1',
+    );
+  });
+
+  it('rejects webcal hosts outside an explicit operator allowlist before storing or syncing', async () => {
+    const response = await createCalendar(
+      makeSql(),
+      USER_ID,
+      {
+        name: 'Fixtures',
+        color: '#3b82f6',
+        subscriptionUrl: 'webcal://p176-caldav.icloud.com/published/2/example',
+      },
+      { ...env, CALENDAR_SUBSCRIPTION_ALLOWLIST: 'calendar.google.com' },
+      neverSync,
+    );
+    expect(response.status).toBe(400);
+    expect(queriesRun).toEqual([]);
+    expect(neverSync).not.toHaveBeenCalled();
+  });
+
   it('409s when the insert is skipped by the unique constraint', async () => {
     sqlQueue = [[]];
     const response = await createCalendar(
@@ -282,12 +328,39 @@ describe('syncCalendar', () => {
     );
   });
 
+  it.each(['webcal', 'https'])('refreshes a stored %s iCloud feed over HTTPS', async (scheme) => {
+    sqlQueue = [
+      [
+        {
+          id: CALENDAR_ID,
+          userId: USER_ID,
+          subscriptionUrl: `${scheme}://p176-caldav.icloud.com/published/2/example`,
+        },
+      ],
+    ];
+    const sync = vi.fn(async () => ({ ok: true, count: 2 }));
+    const response = await syncCalendar(makeSql(), USER_ID, { id: CALENDAR_ID }, env, sync);
+    expect(response.status).toBe(200);
+    expect(sync).toHaveBeenCalledWith(
+      expect.anything(),
+      CALENDAR_ID,
+      USER_ID,
+      'https://p176-caldav.icloud.com/published/2/example',
+    );
+  });
+
   it('rejects a stored URL that no longer passes validation', async () => {
     sqlQueue = [
       [{ id: CALENDAR_ID, userId: USER_ID, subscriptionUrl: 'https://evil.com/feed.ics' }],
     ];
     const sync = vi.fn(async () => ({ ok: true, count: 0 }));
-    const response = await syncCalendar(makeSql(), USER_ID, { id: CALENDAR_ID }, env, sync);
+    const response = await syncCalendar(
+      makeSql(),
+      USER_ID,
+      { id: CALENDAR_ID },
+      { ...env, CALENDAR_SUBSCRIPTION_ALLOWLIST: 'calendar.google.com' },
+      sync,
+    );
     expect(response.status).toBe(400);
     expect(sync).not.toHaveBeenCalled();
   });
