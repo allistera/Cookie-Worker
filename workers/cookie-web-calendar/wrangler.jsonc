@@ -7,7 +7,9 @@
   "workers_dev": true,
   "routes": [{ "pattern": "calendar-api.infinitywave.online", "custom_domain": true }],
   "compatibility_date": "2026-08-26",
-  "compatibility_flags": ["nodejs_compat"],
+  // Subscription hosts are user supplied. Route even same-zone fetches
+  // through the public Internet, never the zone's private origin shortcut.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "upload_source_maps": true,
   "observability": {
     "enabled": true,

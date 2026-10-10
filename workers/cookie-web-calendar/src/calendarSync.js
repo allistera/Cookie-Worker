@@ -43,9 +43,12 @@ const MAX_SYNC_ERROR_CHARS = 500;
 
 // Calendar feeds may live on any public HTTPS host. Operators can restrict
 // providers with CALENDAR_SUBSCRIPTION_ALLOWLIST (hostname suffixes).
-// The DoH check rejects private/internal addresses before fetching, but
-// Workers fetch() re-resolves independently: the DNS-rebinding limitation
-// documented in shared/safe-https.js still applies.
+// The DoH precheck alone is not DNS-rebinding protection: fetch() resolves
+// again. This path relies on Cloudflare's outbound proxy to block internal
+// destinations at connection time, plus global_fetch_strictly_public in
+// wrangler.jsonc to avoid the same-zone origin shortcut. Keep that flag when
+// accepting arbitrary hosts; a non-Workers port needs an IP-pinned transport.
+// https://developers.cloudflare.com/workers/reference/security-model/
 /** @type {string[]} */
 export const DEFAULT_CALENDAR_ALLOWLIST = [];
 

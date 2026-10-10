@@ -95,9 +95,12 @@ restrict providers; it is checked on both creation and manual refresh. Missing
 or empty configuration permits any host that passes the public-HTTPS boundary.
 Embedded credentials and plain HTTP are rejected. Sync checks DNS for private
 addresses, refuses redirects, and caps responses at 5 MB with a 10-second fetch
-timeout. Workers cannot pin the validated DNS result to the fetch connection,
-so the DNS-rebinding limitation in `shared/safe-https.js` remains; deployments
-that need a narrower target set should configure the allowlist.
+timeout. The DoH precheck alone does not prevent DNS rebinding: `fetch()` resolves
+again. This Worker relies on [Cloudflare's outbound proxy restrictions](https://developers.cloudflare.com/workers/reference/security-model/)
+to block internal destinations, and enables [`global_fetch_strictly_public`](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public)
+to prevent the same-zone origin shortcut from bypassing public routing and
+security settings. Keep that flag enabled. A port to another runtime must use
+an IP-pinned transport or enforce equivalent outbound network restrictions.
 
 `cookie-web-ai`, `cookie-web-calendar`, `cookie-web-drafts`, `cookie-web-emails`, `cookie-web-labels`, `cookie-web-messages`, `cookie-web-search`, `cookie-web-send`, `cookie-web-tasks`, `cookie-web-notifications`, and `cookie-web-receipts` are different from the other three Workers here: they're called directly by Cookie-Web's browser SPA (a real `fetch()` from user-facing JavaScript), not server-to-server over a bearer token. Two things follow from that, shared by all eleven (with two deliberate exceptions: `cookie-web-receipts`'s pixel route skips auth, and `cookie-web-send`'s /send/flush authenticates with the flusher's bearer secret instead — see their bullets below):
 
