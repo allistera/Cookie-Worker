@@ -96,6 +96,12 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers/cookie-web-calendar
           command: deploy
+          # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_TOKEN_ENCRYPTION_KEY
+          # are not synced here, like RESEND_API_KEY above: without them the
+          # Worker reports Google Calendar as not configured and everything
+          # else works, whereas a *listed* secret with no value fails the whole
+          # deploy. Set them once with `wrangler secret put` (README, "Google
+          # Calendar"); Cloudflare keeps them across later deploys.
           secrets: |
             OPENAI_API_KEY
             SENTRY_DSN

@@ -16,19 +16,28 @@ const SERVICE = 'cookie-web-calendar';
  *   OPENAI_API_KEY?: string,
  *   OPENAI_CALENDAR_MODEL?: string,
  *   CALENDAR_SUBSCRIPTION_ALLOWLIST?: string,
+ *   GOOGLE_CLIENT_ID?: string,
+ *   GOOGLE_CLIENT_SECRET?: string,
+ *   GOOGLE_TOKEN_ENCRYPTION_KEY?: string,
  * }} CalendarEnv
  */
 
 /**
- * The Hyperdrive connection string carries the database password and
- * OPENAI_API_KEY is a real secret — both get scrubbed from anything that
+ * The Hyperdrive connection string carries the database password;
+ * OPENAI_API_KEY, the Google OAuth client secret and the key that encrypts
+ * stored Google tokens are real secrets — all get scrubbed from anything that
  * reaches Sentry.
  *
  * @param {CalendarEnv} env
  * @returns {(string | undefined)[]}
  */
 function secrets(env) {
-  return [env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY];
+  return [
+    env.HYPERDRIVE.connectionString,
+    env.OPENAI_API_KEY,
+    env.GOOGLE_CLIENT_SECRET,
+    env.GOOGLE_TOKEN_ENCRYPTION_KEY,
+  ];
 }
 
 /**

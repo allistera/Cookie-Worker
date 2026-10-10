@@ -22,6 +22,9 @@ export function createMockSql(results = []) {
     return Promise.resolve(queue.length ? queue.shift() : []);
   });
   sql.begin = vi.fn(async (/** @type {(sql: any) => unknown} */ callback) => callback(sql));
+  // postgres.js wraps a value for a jsonb parameter; here it passes through so
+  // a test can read the saved value straight off `calls`.
+  sql.json = (/** @type {unknown} */ value) => value;
   sql.end = vi.fn(async () => undefined);
   sql.calls = calls;
   return sql;

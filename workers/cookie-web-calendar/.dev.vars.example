@@ -7,3 +7,12 @@ OPENAI_API_KEY=""
 
 # Optional locally; required in production to send sanitized errors to Sentry.
 SENTRY_DSN=""
+
+# Google Calendar sign-in (Settings → Calendars). Leave all three empty to run
+# without it; the Worker then answers GET /google-calendar with
+# { configured: false }. See README "Google Calendar" for the console setup;
+# register http://localhost:8787/google-calendar/callback as a redirect URI.
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+# 32 random bytes, base64: openssl rand -base64 32
+GOOGLE_TOKEN_ENCRYPTION_KEY=""

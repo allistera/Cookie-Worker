@@ -102,6 +102,8 @@ Use a development Supabase project. Do not connect local Worker sessions to prod
 
 Update GitHub environment secrets first, then rerun the `Deploy` workflow. Confirm the deployed Worker reports no authentication errors.
 
+`cookie-web-calendar`'s Google secrets are not in GitHub: rotate `GOOGLE_CLIENT_SECRET` with `wrangler secret put` after creating the new secret in the Google Cloud console. Rotating `GOOGLE_TOKEN_ENCRYPTION_KEY` makes every stored Google connection undecryptable — users see Google Calendar as needing a reconnect in Settings and sign in again; truncate `google_calendar_connections` first if the old ciphertext should not linger.
+
 When rotating the database password, update the Cloudflare Hyperdrive origin and the local connection string separately.
 
 ## Incident response

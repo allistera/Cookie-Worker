@@ -13,10 +13,21 @@ import {
 import { generateCalendarEventDraft } from './calendarAi.js';
 import { validId } from '../../../shared/pagination.js';
 import { validDate, validTime } from './availabilityTime.js';
+import {
+  createGoogleEvent,
+  deleteGoogleEvent,
+  isGoogleId,
+  listGoogleEvents,
+  updateGoogleEvent,
+  validTimeZone,
+} from './googleCalendar.js';
 
 const MAX_TITLE = 200;
 const MAX_LOCATION = 200;
 const MAX_DESCRIPTION = 2000;
+// Google allows descriptions far longer than Cookie's own rows do; an event
+// edited here must round-trip without the dialog rejecting what Google holds.
+const MAX_GOOGLE_DESCRIPTION = 8000;
 const MAX_AI_EVENT_TEXT = 1000;
 const AI_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 // The schema CHECK only enforces duration > 0; this upper bound stops an
@@ -33,8 +44,11 @@ const LEGACY_CALENDAR_NAMES = new Map([
 const ALLOWED_TONES = new Set(['default', 'dark', 'conflict', 'accepted', 'suggested']);
 const REPEAT_FREQUENCIES = new Set(['none', 'daily', 'weekly', 'monthly', 'yearly']);
 
-/** @param {any} body */
-function validEventFields(body) {
+/**
+ * @param {any} body
+ * @param {{maxDescription?: number}} [limits]
+ */
+function validEventFields(body, { maxDescription = MAX_DESCRIPTION } = {}) {
   const title = String(body.title ?? '').trim();
   const description = String(body.description ?? '').trim() || null;
   const location = String(body.location ?? '').trim() || null;
@@ -54,10 +68,10 @@ function validEventFields(body) {
     !validTime(start) ||
     duration <= 0 ||
     duration > MAX_DURATION_MINUTES ||
-    !(validId(calendar) || LEGACY_CALENDAR_NAMES.has(calendar)) ||
+    !(validId(calendar) || LEGACY_CALENDAR_NAMES.has(calendar) || isGoogleId(calendar)) ||
     (tone !== null && !ALLOWED_TONES.has(tone)) ||
     (location && location.length > MAX_LOCATION) ||
-    (description && description.length > MAX_DESCRIPTION) ||
+    (description && description.length > maxDescription) ||
     !REPEAT_FREQUENCIES.has(repeat) ||
     (repeatUntil && !validDate(repeatUntil)) ||
     (repeatDaysRaw &&
@@ -253,29 +267,64 @@ async function isEventInSubscribedCalendar(sql, userId, eventId) {
 }
 
 /**
+ * Stored events plus, when a Google account is connected, the same window of
+ * its selected Google calendars (googleCalendar.js). `timeZone` (IANA, default
+ * UTC) is the zone Google wall-clock times are expressed in — stored rows are
+ * zone-less text already. A Google failure keeps the stored events and
+ * reports `googleError` instead of failing the request.
+ *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {URL} url
+ * @param {import('./sentry.js').CalendarEnv} [env]
  */
-export async function listEvents(sql, userId, url) {
+export async function listEvents(sql, userId, url, env = /** @type {any} */ ({})) {
   const { range, error } = parseRangeParams(url.searchParams);
   if (error || !range) {
     return Response.json({ error: 'from and to must be a valid YYYY-MM-DD pair' }, { status: 400 });
   }
+  const timeZone = validTimeZone(url.searchParams.get('timeZone'));
+  if (!timeZone) {
+    return Response.json({ error: 'timeZone must be a valid IANA time zone' }, { status: 400 });
+  }
   // Optional: a calendar id (or legacy slug) as the rows report it. It is
   // only ever a bound parameter, so an unknown value just matches nothing.
+  // A Google calendar id filters to that calendar alone.
   const calendar = url.searchParams.get('calendar') || null;
-  const events = await fetchEvents(sql, userId, range, calendar);
+  const [events, google] = await Promise.all([
+    isGoogleId(calendar) ? [] : fetchEvents(sql, userId, range, calendar),
+    calendar && !isGoogleId(calendar)
+      ? { events: [], error: null }
+      : listGoogleEvents(sql, userId, range, timeZone, env, { calendar }),
+  ]);
   const { events: expanded, truncated } = expandEventsPage(events, new Date(), range);
-  return Response.json({ events: expanded, truncated });
+  const merged = google.events.length
+    ? [...expanded, ...google.events].sort(
+        (a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start),
+      )
+    : expanded;
+  return Response.json({
+    events: merged,
+    truncated,
+    ...(google.error ? { googleError: google.error } : {}),
+  });
 }
 
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {import('./sentry.js').CalendarEnv} [env]
  */
-export async function createEvent(sql, userId, body) {
+export async function createEvent(sql, userId, body, env = /** @type {any} */ ({})) {
+  if (isGoogleId(body.calendar)) {
+    const googleFields = validEventFields(body, { maxDescription: MAX_GOOGLE_DESCRIPTION });
+    const timeZone = validTimeZone(body.timeZone);
+    if (!googleFields || !timeZone) {
+      return Response.json({ error: 'Invalid event fields' }, { status: 400 });
+    }
+    return createGoogleEvent(sql, userId, googleFields, timeZone, env);
+  }
   const fields = validEventFields(body);
   if (!fields) {
     return Response.json({ error: 'Invalid event fields' }, { status: 400 });
@@ -311,12 +360,27 @@ export async function createEvent(sql, userId, body) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {import('./sentry.js').CalendarEnv} [env]
  */
-export async function updateEvent(sql, userId, body) {
+export async function updateEvent(sql, userId, body, env = /** @type {any} */ ({})) {
+  if (isGoogleId(body.id)) {
+    const googleFields = validEventFields(body, { maxDescription: MAX_GOOGLE_DESCRIPTION });
+    const timeZone = validTimeZone(body.timeZone);
+    if (!googleFields || !timeZone) {
+      return Response.json({ error: 'id and valid event fields are required' }, { status: 400 });
+    }
+    return updateGoogleEvent(sql, userId, String(body.id), googleFields, timeZone, env);
+  }
   const id = validId(body.id) ? String(body.id) : null;
   const fields = id ? validEventFields(body) : null;
   if (!fields) {
     return Response.json({ error: 'id and valid event fields are required' }, { status: 400 });
+  }
+  if (isGoogleId(fields.calendar)) {
+    return Response.json(
+      { error: 'Only a Google Calendar event can move to a Google calendar.' },
+      { status: 400 },
+    );
   }
   // Independent lookups — the target calendar (from fields.calendar) and the
   // event's current calendar (from id) — so they run concurrently instead of
@@ -361,8 +425,10 @@ export async function updateEvent(sql, userId, body) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {import('./sentry.js').CalendarEnv} [env]
  */
-export async function deleteEvent(sql, userId, body) {
+export async function deleteEvent(sql, userId, body, env = /** @type {any} */ ({})) {
+  if (isGoogleId(body.id)) return deleteGoogleEvent(sql, userId, String(body.id), env);
   const id = validId(body.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'id is required' }, { status: 400 });
@@ -379,20 +445,6 @@ export async function deleteEvent(sql, userId, body) {
     return Response.json({ error: 'Event not found' }, { status: 404 });
   }
   return Response.json({ ok: true });
-}
-
-/** @param {unknown} value */
-function validTimeZone(value) {
-  const timeZone = String(value ?? '')
-    .trim()
-    .slice(0, 100);
-  if (!timeZone) return 'UTC';
-  try {
-    new Intl.DateTimeFormat('en-GB', { timeZone }).format();
-    return timeZone;
-  } catch {
-    return null;
-  }
 }
 
 /**
