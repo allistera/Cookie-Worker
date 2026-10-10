@@ -46,9 +46,8 @@ describe('worker repository interface', () => {
         'utf8',
       ),
     );
-    // Arbitrary subscription hosts rely on the Workers outbound proxy's
-    // public-network policy. This flag also prevents same-zone fetches from
-    // bypassing the zone's public security settings.
+    // Operator-configured subscription hosts can belong to the Worker's own
+    // zone. They must not bypass that zone's public security settings.
     expect(config.compatibility_flags).toContain('global_fetch_strictly_public');
     expect(config.compatibility_flags).not.toContain('global_fetch_private_origin');
   });

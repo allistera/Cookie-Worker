@@ -41,16 +41,23 @@ const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 // sidebar renders. Bound it before it is stored.
 const MAX_SYNC_ERROR_CHARS = 500;
 
-// Calendar feeds may live on any public HTTPS host. Operators can restrict
-// providers with CALENDAR_SUBSCRIPTION_ALLOWLIST (hostname suffixes).
-// The DoH precheck alone is not DNS-rebinding protection: fetch() resolves
-// again. This path relies on Cloudflare's outbound proxy to block internal
-// destinations at connection time, plus global_fetch_strictly_public in
-// wrangler.jsonc to avoid the same-zone origin shortcut. Keep that flag when
-// accepting arbitrary hosts; a non-Workers port needs an IP-pinned transport.
-// https://developers.cloudflare.com/workers/reference/security-model/
-/** @type {string[]} */
-export const DEFAULT_CALENDAR_ALLOWLIST = [];
+// Only known provider domains are allowed by default: the DoH precheck and
+// fetch() resolve independently, so it is not an IP-pinned transport.
+// Operators can replace the list with trusted hostname suffixes using
+// CALENDAR_SUBSCRIPTION_ALLOWLIST. Public routing in wrangler.jsonc also
+// prevents same-zone fetches from bypassing the zone's security settings.
+export const DEFAULT_CALENDAR_ALLOWLIST = [
+  'calendar.google.com',
+  'www.google.com',
+  'outlook.office365.com',
+  'outlook.live.com',
+  'calendar.yahoo.com',
+  'caldav.fastmail.com',
+  'calendar.fastmail.com',
+  'calendar.zoho.com',
+  // Apple allocates feeds across iCloud hosts beyond p01 through p10.
+  'icloud.com',
+];
 
 // The public-HTTPS boundary, Workers edition: DoH-validate the target,
 // fetch without following redirects (the caller reports 3xx explicitly), and
@@ -137,8 +144,8 @@ function googleShareLinkToIcs(shareLink) {
 // same public-HTTPS egress path as a plain https subscription.
 /**
  * @param {unknown} value
- * @param {string[]} [allowlist] Hostname suffixes allowed for subscriptions;
- *        empty (the default) allows any public HTTPS host.
+ * @param {string[]} [allowlist] Trusted hostname suffixes allowed for subscriptions.
+ *        Defaults to DEFAULT_CALENDAR_ALLOWLIST; an empty list denies all hosts.
  */
 export function validSubscriptionUrl(value, allowlist = DEFAULT_CALENDAR_ALLOWLIST) {
   const url = String(value ?? '');
@@ -158,23 +165,24 @@ export function validSubscriptionUrl(value, allowlist = DEFAULT_CALENDAR_ALLOWLI
     if (!feed) return null;
     parsed = feed;
   }
-  if (allowlist.length > 0 && !hostMatchesSuffixes(parsed.hostname, allowlist)) return null;
+  if (!hostMatchesSuffixes(parsed.hostname, allowlist)) return null;
   return parsed.toString();
 }
 
 /**
  * Reads an operator-provided comma-separated hostname allowlist. An empty or
- * missing value means any public HTTPS host.
+ * missing value falls back to the built-in provider list.
  * @param {{ CALENDAR_SUBSCRIPTION_ALLOWLIST?: string }} env
  * @returns {string[]}
  */
 export function calendarSubscriptionAllowlist(env) {
   const raw = env?.CALENDAR_SUBSCRIPTION_ALLOWLIST;
   if (!raw) return DEFAULT_CALENDAR_ALLOWLIST;
-  return raw
+  const hosts = raw
     .split(',')
     .map((h) => h.trim().toLowerCase())
     .filter(Boolean);
+  return hosts.length ? hosts : DEFAULT_CALENDAR_ALLOWLIST;
 }
 
 /**

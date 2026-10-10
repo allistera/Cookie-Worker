@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  DEFAULT_CALENDAR_ALLOWLIST,
   calendarSubscriptionAllowlist,
   syncCalendarSubscription,
   validSubscriptionUrl,
@@ -111,17 +112,36 @@ describe('validSubscriptionUrl', () => {
   });
 
   it.each(['https', 'webcal', 'WEBCAL'])(
-    'accepts arbitrary feed hosts using %s by default',
+    'accepts iCloud feed hosts beyond the original ten shards using %s',
     (scheme) => {
-      expect(validSubscriptionUrl(`${scheme}://club.example/fixtures.ics?team=1`)).toBe(
-        'https://club.example/fixtures.ics?team=1',
-      );
+      expect(
+        validSubscriptionUrl(`${scheme}://p176-caldav.icloud.com/published/2/example?team=1`),
+      ).toBe('https://p176-caldav.icloud.com/published/2/example?team=1');
     },
   );
 
+  it.each(['https', 'webcal'])('accepts Apple holiday feeds using %s', (scheme) => {
+    expect(validSubscriptionUrl(`${scheme}://calendars.icloud.com/holidays/gb_en-gb.ics/`)).toBe(
+      'https://calendars.icloud.com/holidays/gb_en-gb.ics/',
+    );
+  });
+
+  it('keeps unknown and lookalike hosts blocked by default', () => {
+    expect(validSubscriptionUrl('webcal://club.example/feed.ics')).toBeNull();
+    expect(
+      validSubscriptionUrl('webcal://p176-caldav.icloud.com.evil.example/feed.ics'),
+    ).toBeNull();
+    expect(validSubscriptionUrl('webcal://noticloud.com/feed.ics')).toBeNull();
+    expect(validSubscriptionUrl('webcal://p176-caldav.icloud.com/feed.ics', [])).toBeNull();
+    expect(validSubscriptionUrl('https://calendar.google.com/feed.ics')).not.toBeNull();
+    expect(validSubscriptionUrl('https://outlook.office365.com/feed.ics')).not.toBeNull();
+  });
+
   it('uses an optional operator allowlist for both HTTPS and webcal links', () => {
-    expect(calendarSubscriptionAllowlist({})).toEqual([]);
-    expect(calendarSubscriptionAllowlist({ CALENDAR_SUBSCRIPTION_ALLOWLIST: ' ' })).toEqual([]);
+    expect(calendarSubscriptionAllowlist({})).toEqual(DEFAULT_CALENDAR_ALLOWLIST);
+    expect(calendarSubscriptionAllowlist({ CALENDAR_SUBSCRIPTION_ALLOWLIST: ' , ' })).toEqual(
+      DEFAULT_CALENDAR_ALLOWLIST,
+    );
     const allowlist = calendarSubscriptionAllowlist({
       CALENDAR_SUBSCRIPTION_ALLOWLIST: ' Calendar.Google.com, club.example ',
     });
