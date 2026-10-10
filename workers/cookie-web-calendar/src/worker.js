@@ -1,6 +1,6 @@
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
-import { withUserSql } from '../../../shared/db.js';
+import { createSql, endSql, withUserSql } from '../../../shared/db.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import {
@@ -20,6 +20,14 @@ import {
   syncCalendar,
 } from './calendars.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
+import { CALLBACK_PATH } from './googleAuth.js';
+import {
+  authorizeGoogle,
+  disconnectGoogle,
+  getGoogleStatus,
+  handleGoogleCallback,
+  updateGoogleSelection,
+} from './googleCalendar.js';
 
 import { configureOpenAi } from '../../../shared/openai.js';
 import { calendarAvailability } from './calendarAvailability.js';
@@ -29,7 +37,10 @@ import { calendarAvailability } from './calendarAvailability.js';
  * api/calendar-events.js and its ?resource=calendars sub-handler, each as its
  * own clean route. POST /calendar-events with action=interpret is the AI
  * natural-language path; POST /calendars with action=sync is a manual
- * subscription re-sync.
+ * subscription re-sync. /google-calendar manages the Google Calendar
+ * connection Settings offers (status, authorize, calendar selection,
+ * disconnect); Google's own redirect lands on CALLBACK_PATH, handled
+ * before auth in fetch() below.
  *
  * @param {URL} url
  * @param {Request} request
@@ -43,7 +54,8 @@ async function route(url, request, sql, userId, env) {
   if (
     resource !== 'calendar-events' &&
     resource !== 'calendars' &&
-    resource !== 'calendar-availability'
+    resource !== 'calendar-availability' &&
+    resource !== 'google-calendar'
   ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
@@ -56,9 +68,10 @@ async function route(url, request, sql, userId, env) {
   }
 
   if (request.method === 'GET') {
+    if (resource === 'google-calendar') return getGoogleStatus(sql, userId, env);
     return resource === 'calendar-events'
-      ? listEvents(sql, userId, url)
-      : listCalendars(sql, userId);
+      ? listEvents(sql, userId, url, env)
+      : listCalendars(sql, userId, env);
   }
   if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {
     return Response.json(
@@ -78,13 +91,24 @@ async function route(url, request, sql, userId, env) {
 
   if (resource === 'calendar-availability') return calendarAvailability(sql, userId, body, env);
 
+  if (resource === 'google-calendar') {
+    if (request.method === 'POST' && body.action === 'authorize') {
+      return authorizeGoogle(sql, userId, body, url, env);
+    }
+    if (request.method === 'POST') {
+      return Response.json({ error: 'Unsupported action' }, { status: 400 });
+    }
+    if (request.method === 'PATCH') return updateGoogleSelection(sql, userId, body, env);
+    return disconnectGoogle(sql, userId, env);
+  }
+
   if (resource === 'calendar-events') {
     if (request.method === 'POST' && body.action === 'interpret') {
       return interpretEvent(sql, userId, body, env);
     }
-    if (request.method === 'POST') return createEvent(sql, userId, body);
-    if (request.method === 'PATCH') return updateEvent(sql, userId, body);
-    return deleteEvent(sql, userId, body);
+    if (request.method === 'POST') return createEvent(sql, userId, body, env);
+    if (request.method === 'PATCH') return updateEvent(sql, userId, body, env);
+    return deleteEvent(sql, userId, body, env);
   }
 
   if (request.method === 'POST' && body.action === 'sync') {
@@ -114,6 +138,19 @@ const worker = {
 
     const url = new URL(request.url);
     try {
+      // Google redirects the browser here after sign-in. A top-level
+      // navigation carries no Auth0 bearer token; the single-use state it
+      // carries was bound to the signed-in user when the flow began
+      // (googleAuth.js), which is what authenticates it instead.
+      if (request.method === 'GET' && url.pathname === CALLBACK_PATH) {
+        const sql = createSql(env.HYPERDRIVE.connectionString);
+        try {
+          return await handleGoogleCallback(sql, url, env);
+        } finally {
+          ctx.waitUntil(endSql(sql));
+        }
+      }
+
       // Reads are idempotent, so a dropped Hyperdrive connection gets one more
       // go on a fresh client. Writes (and the AI/sync POSTs) are not retried.
       const response = await withUserSql(
@@ -148,7 +185,9 @@ const worker = {
             error:
               url.pathname === '/calendars'
                 ? 'Calendars request failed'
-                : 'Calendar events request failed',
+                : url.pathname.startsWith('/google-calendar')
+                  ? 'Google Calendar request failed'
+                  : 'Calendar events request failed',
           },
           { status: 500 },
         ),

@@ -363,6 +363,93 @@ describe('calendar tools', () => {
     expect(api.calendar.delete).not.toHaveBeenCalled();
   });
 
+  test('cookie_list_calendars marks Google calendars the account can only read', async () => {
+    const api = fakeApi();
+    api.calendar.get.mockResolvedValue({
+      calendars: [
+        {
+          id: 'google:me@example.com',
+          name: 'me@example.com',
+          color: '#9fe1e7',
+          source: 'google',
+          readOnly: false,
+        },
+        {
+          id: 'google:team@group',
+          name: 'Team',
+          color: '#f6bf26',
+          source: 'google',
+          readOnly: true,
+        },
+      ],
+    });
+    const result = await call('cookie_list_calendars', {}, api);
+    expect(result.calendars.map((c) => [c.id, c.readOnly])).toEqual([
+      ['google:me@example.com', false],
+      ['google:team@group', true],
+    ]);
+  });
+
+  test('cookie_list_events passes the time zone through for Google events', async () => {
+    const api = fakeApi();
+    api.calendar.get.mockResolvedValue({ events: [], truncated: false });
+    await call(
+      'cookie_list_events',
+      { from: '2026-10-01', to: '2026-10-31', timeZone: 'Europe/London' },
+      api,
+    );
+    expect(api.calendar.get).toHaveBeenCalledWith('/calendar-events', {
+      from: '2026-10-01',
+      to: '2026-10-31',
+      timeZone: 'Europe/London',
+    });
+  });
+
+  test('Google events are written with their id and zone, and refused without a zone or with a repeat', async () => {
+    const api = fakeApi();
+    const google = { ...fields, calendar: 'google:me@example.com' };
+    await expect(call('cookie_create_event', google, api)).rejects.toThrow(/timeZone/);
+    await expect(
+      call('cookie_create_event', { ...google, timeZone: 'Europe/London', repeat: 'weekly' }, api),
+    ).rejects.toThrow(/repeat/);
+    expect(api.calendar.post).not.toHaveBeenCalled();
+
+    api.calendar.post.mockResolvedValue({ event: { id: 'google:me@example.com:new' } });
+    await call('cookie_create_event', { ...google, timeZone: 'Europe/London' }, api);
+    expect(api.calendar.post).toHaveBeenCalledWith(
+      '/calendar-events',
+      expect.objectContaining({ calendar: 'google:me@example.com', timeZone: 'Europe/London' }),
+    );
+
+    api.calendar.patch.mockResolvedValue({ event: { id: 'google:me@example.com:evt' } });
+    await call(
+      'cookie_update_event',
+      {
+        ...google,
+        id: 'google:me@example.com:evt@2026-10-06',
+        timeZone: 'UTC',
+        repeat: 'none',
+        tone: null,
+      },
+      api,
+    );
+    expect(api.calendar.patch).toHaveBeenCalledWith(
+      '/calendar-events',
+      expect.objectContaining({ id: 'google:me@example.com:evt', timeZone: 'UTC' }),
+    );
+
+    api.calendar.delete.mockResolvedValue({ ok: true });
+    const deleted = await call(
+      'cookie_delete_event',
+      { id: 'google:me@example.com:evt@2026-10-06' },
+      api,
+    );
+    expect(api.calendar.delete).toHaveBeenCalledWith('/calendar-events', {
+      id: 'google:me@example.com:evt',
+    });
+    expect(deleted.id).toBe('google:me@example.com:evt');
+  });
+
   test('cookie_delete_event deletes the whole series for an occurrence id', async () => {
     const api = fakeApi();
     api.calendar.delete.mockResolvedValue({ ok: true });

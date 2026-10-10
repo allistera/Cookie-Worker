@@ -11,6 +11,8 @@ import {
   validSubscriptionUrl,
 } from './calendarSync.js';
 import { validId } from '../../../shared/pagination.js';
+import { isGoogleConfigured, loadConnectionIfAvailable } from './googleAuth.js';
+import { googleCalendarEntries } from './googleCalendar.js';
 
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const MAX_NAME = 50;
@@ -89,10 +91,14 @@ async function ensureDefaultCalendars(sql, userId) {
 }
 
 /**
+ * Stored calendars first, then the Google calendars the person chose to show
+ * (googleCalendar.js), which the sidebar and event dialog treat alike.
+ *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
+ * @param {import('./sentry.js').CalendarEnv} [env]
  */
-export async function listCalendars(sql, userId) {
+export async function listCalendars(sql, userId, env = /** @type {any} */ ({})) {
   let calendars;
   try {
     calendars = await ensureDefaultCalendars(sql, userId);
@@ -102,6 +108,12 @@ export async function listCalendars(sql, userId) {
     // as the expand migration creates the table.
     if (!isUndefinedTable(error)) throw error;
     calendars = DEFAULT_CALENDARS;
+  }
+  if (isGoogleConfigured(env)) {
+    calendars = [
+      ...calendars,
+      ...googleCalendarEntries(await loadConnectionIfAvailable(sql, userId)),
+    ];
   }
   return Response.json({ calendars });
 }

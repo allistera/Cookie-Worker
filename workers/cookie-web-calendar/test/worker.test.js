@@ -221,3 +221,115 @@ describe('routing and cleanup', () => {
     expect(sqlEnd).toHaveBeenCalledOnce();
   });
 });
+
+describe('/google-calendar', () => {
+  const googleEnv = {
+    ...env,
+    GOOGLE_CLIENT_ID: 'client-id',
+    GOOGLE_CLIENT_SECRET: 'client-secret',
+    GOOGLE_TOKEN_ENCRYPTION_KEY: btoa(String.fromCharCode(...new Uint8Array(32))),
+  };
+
+  test('GET reports an unconfigured deployment without touching the database', async () => {
+    const response = await worker.fetch(request('/google-calendar'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ configured: false, connected: false });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('GET reports not connected when the account has no row', async () => {
+    const response = await worker.fetch(request('/google-calendar'), googleEnv, ctx);
+    expect(await response.json()).toEqual({ configured: true, connected: false });
+  });
+
+  test('POST action=authorize answers the Google consent URL for a Cookie return URL', async () => {
+    const response = await worker.fetch(
+      request('/google-calendar', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'authorize',
+          returnTo: `${PRODUCTION}/settings/calendar`,
+        }),
+      }),
+      googleEnv,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    const url = new URL((await response.json()).url);
+    expect(url.hostname).toBe('accounts.google.com');
+    expect(url.searchParams.get('redirect_uri')).toBe(
+      'https://cookie-web-calendar.example/google-calendar/callback',
+    );
+  });
+
+  test('other POST actions are rejected and PATCH validates its ids', async () => {
+    const other = await worker.fetch(
+      request('/google-calendar', { method: 'POST', body: JSON.stringify({ action: 'x' }) }),
+      googleEnv,
+      ctx,
+    );
+    expect(other.status).toBe(400);
+    const patch = await worker.fetch(
+      request('/google-calendar', { method: 'PATCH', body: JSON.stringify({}) }),
+      googleEnv,
+      ctx,
+    );
+    expect(patch.status).toBe(400);
+  });
+
+  test('the callback skips bearer auth and answers plainly for an unknown state', async () => {
+    const response = await worker.fetch(
+      new Request(
+        'https://cookie-web-calendar.example/google-calendar/callback?code=abc&state=unknown',
+      ),
+      googleEnv,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(verifyAccessToken).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledOnce();
+    expect(sqlEnd).toHaveBeenCalledOnce();
+  });
+
+  test('a stored-calendar event cannot be moved onto a Google calendar', async () => {
+    const response = await worker.fetch(
+      request('/calendar-events', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          id: '11111111-1111-1111-1111-111111111111',
+          title: 'Lunch',
+          date: '2026-10-10',
+          start: '12:00',
+          duration: 30,
+          calendar: 'google:person@example.com',
+        }),
+      }),
+      googleEnv,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('Google calendar');
+  });
+
+  test('a Google event id routes DELETE to Google, which needs a connection', async () => {
+    const response = await worker.fetch(
+      request('/calendar-events', {
+        method: 'DELETE',
+        body: JSON.stringify({ id: 'google:person@example.com:evt1' }),
+      }),
+      googleEnv,
+      ctx,
+    );
+    expect(response.status).toBe(404);
+    expect((await response.json()).error).toBe('Calendar not found');
+  });
+
+  test('GET /calendar-events rejects an unknown time zone', async () => {
+    const response = await worker.fetch(
+      request('/calendar-events?from=2026-10-01&to=2026-10-31&timeZone=Mars/Olympus'),
+      googleEnv,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+  });
+});

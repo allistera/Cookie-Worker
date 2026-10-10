@@ -5,6 +5,12 @@ import { provided, READ_ONLY } from './common.js';
 const MAX_SPAN_DAYS = 1095;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Google Calendar ids (cookie-web-calendar/src/googleCalendar.js):
+// `google:<calendarId>` and `google:<calendarId>:<eventId>`, the latter with
+// an `@YYYY-MM-DD` suffix on the second and later rows of a multi-day
+// all-day event.
+const GOOGLE_ID = /^google:/;
+const GOOGLE_ALL_DAY_ROW = /@\d{4}-\d{2}-\d{2}$/;
 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
 const OCCURRENCE_ID = /^[^:]+:(\d{4}-\d{2}-\d{2})$/;
@@ -18,7 +24,35 @@ const TONES = /** @type {const} */ (['default', 'dark', 'conflict', 'accepted', 
 
 const TIMES =
   'Times are local wall-clock times with no timezone. ' +
-  'Editing or deleting a recurring event affects the whole series.';
+  'Editing or deleting a recurring event affects the whole series. ' +
+  'Google Calendar events (ids starting with google:) need timeZone, repeat none, and are ' +
+  'edited one occurrence at a time.';
+
+const timeZone = z
+  .string()
+  .min(1)
+  .max(100)
+  .optional()
+  .describe(
+    'IANA time zone the times are in (e.g. Europe/London). Required for Google Calendar ' +
+      'events and calendars (ids starting with google:); stored calendars ignore it.',
+  );
+
+/** @param {string | undefined} id */
+const isGoogleId = (id) => GOOGLE_ID.test(id ?? '');
+
+/**
+ * Google events are read and written in the caller's zone; without one the
+ * calendar worker would fall back to UTC and shift every time.
+ * @param {{calendar?: string, id?: string, timeZone?: string, repeat?: string}} args
+ */
+function assertGoogleFields({ calendar, id, timeZone: zone, repeat }) {
+  if (!isGoogleId(calendar) && !isGoogleId(id)) return;
+  if (!zone) throw new ToolInputError('timeZone is required for Google Calendar events');
+  if (repeat && repeat !== 'none') {
+    throw new ToolInputError('Google Calendar events cannot repeat from here; use repeat "none"');
+  }
+}
 
 const eventFields = z.object({
   title: z.string().min(1).max(200),
@@ -29,7 +63,8 @@ const eventFields = z.object({
     .describe('Start time, 24-hour HH:MM, local wall-clock time'),
   durationMinutes: z.number().int().min(1).max(43_200),
   calendar: z.string().describe('Calendar id from cookie_list_calendars (or a legacy slug)'),
-  description: z.string().max(2000).optional(),
+  timeZone,
+  description: z.string().max(8000).optional(),
   location: z.string().max(200).optional(),
   repeat: z.enum(REPEATS).default('none'),
   repeatUntil: date.nullable().optional().describe('Last date of the series, YYYY-MM-DD'),
@@ -78,10 +113,12 @@ function decodeRecurrence(rule) {
 
 /**
  * Occurrence ids look like `<seriesUuid>:<YYYY-MM-DD>`, but the write API only
- * accepts the series row id.
+ * accepts the series row id. A Google event id is sent as is, minus the
+ * all-day row suffix.
  * @param {string} id
  */
 function seriesIdOf(id) {
+  if (isGoogleId(id)) return id.replace(GOOGLE_ALL_DAY_ROW, '');
   const series = id.split(':')[0];
   if (!UUID.test(series)) {
     throw new ToolInputError('id must be an event id from cookie_list_events');
@@ -107,7 +144,9 @@ export const tools = [
     name: 'cookie_list_calendars',
     title: 'List calendars',
     description:
-      'Lists the owner’s calendars with their ids; readOnly calendars are subscriptions and cannot take events.',
+      'Lists the owner’s calendars with their ids; readOnly calendars (subscriptions, and Google ' +
+      'calendars the account can only read) cannot take events. Google calendars have ids ' +
+      'starting with google: and need timeZone on every event read or write.',
     inputSchema: z.object({}),
     outputSchema: z.object({
       calendars: z.array(
@@ -127,7 +166,7 @@ export const tools = [
           id: c.id,
           name: c.name,
           color: c.color,
-          readOnly: Boolean(c.subscriptionUrl),
+          readOnly: Boolean(c.subscriptionUrl || c.readOnly),
         })),
       };
     },
@@ -140,6 +179,7 @@ export const tools = [
       from: date.describe('First date, YYYY-MM-DD'),
       to: date.describe('Last date, YYYY-MM-DD'),
       calendar: z.string().optional().describe('Only events in this calendar id'),
+      timeZone,
       // Each event can carry a 2,000-character description, which update needs
       // back in full, so the page is kept small instead of trimming the rows.
       limit: z.number().int().min(1).max(500).default(50),
@@ -170,12 +210,17 @@ export const tools = [
       truncated: z.boolean(),
     }),
     annotations: READ_ONLY,
-    async run({ from, to, calendar, limit }, api) {
+    async run({ from, to, calendar, timeZone: zone, limit }, api) {
       assertRange(from, to);
       // The calendar worker filters in SQL before expanding recurrences, so
       // its occurrence cap (and truncated) apply to this calendar alone; the
       // local filter below only guards against a worker that predates it.
-      const body = await api.calendar.get('/calendar-events', { from, to, calendar });
+      const body = await api.calendar.get('/calendar-events', {
+        from,
+        to,
+        calendar,
+        timeZone: zone,
+      });
       const all = (body.events ?? []).filter(
         (/** @type {any} */ e) => !calendar || e.calendar === calendar,
       );
@@ -210,6 +255,7 @@ export const tools = [
     outputSchema: z.object({ event: eventOut }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async run(args, api) {
+      assertGoogleFields(args);
       const body = await api.calendar.post('/calendar-events', toEventBody(args));
       return { event: body.event };
     },
@@ -242,6 +288,7 @@ export const tools = [
       openWorldHint: false,
     },
     async run({ id, ...fields }, api) {
+      assertGoogleFields({ id, ...fields });
       // The API moves the whole series to the given date, so an occurrence's
       // own date would silently shift the series start.
       if (OCCURRENCE_ID.exec(id)?.[1] === fields.date) {
