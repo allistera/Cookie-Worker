@@ -37,9 +37,10 @@ function withFreshClient(env, work) {
 }
 
 /**
- * Triage the last 24 hours of inbox mail into Reply Needed, Review, and Noise.
- * Reply Needed and Review become the AI Inbox rows; Noise is stored only as
- * category counts. Stored whole so an empty day replaces stale triage output.
+ * Triage the last 24 hours of inbox mail, plus mail marked done in that time,
+ * into Reply Needed, Review, and Noise. Reply Needed and Review become the AI
+ * Inbox rows; Noise is stored only as category counts. Stored whole so an
+ * empty day replaces stale triage output.
  *
  * @param {import('postgres').Sql} sql
  * @param {Env & {OPENAI_API_KEY?: string}} env

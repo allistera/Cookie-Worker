@@ -116,15 +116,20 @@ export function buildNews(row) {
   return { created_at: row.created_at, sections };
 }
 
+// How long a message marked done stays in the triage as a done row. Matches
+// the enricher's candidate window (data-enricher's fetchDigestMessages).
+export const RECENTLY_DONE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 // Live state for the messages inbox triage cites. Triage is a snapshot from
-// the overnight run, so by the time it is read some of its mail may have been
-// read, archived or deleted. Archived mail stays included - archiving is how
-// a topic gets dealt with, not a reason to hide it until tomorrow's digest;
-// only deletion actually removes the message the topic is about.
+// the last run, so by the time it is read some of its mail may have been
+// read, marked done or deleted. Done mail stays in the query, with the time
+// it was marked done (archived_at, migration 0092) so buildDigest can keep
+// the recent ones as done rows; only deletion actually removes the message
+// the item is about.
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string[]} ids */
 export function fetchMessageStates(sql, userId, ids) {
   return sql`
-    SELECT m.id, m.is_unread, m.is_archived, m.scheduled_for
+    SELECT m.id, m.is_unread, m.is_archived, m.archived_at, m.scheduled_for
     FROM messages m
     WHERE m.user_id = ${userId}
       AND m.id = ANY(${ids}::uuid[])
@@ -147,13 +152,25 @@ export function digestMessageIds(row) {
   return [...new Set(ids.filter((/** @type {any} */ id) => validId(String(id))))];
 }
 
+// Whether a done message was marked done recently enough to stay in the
+// triage as a done row. A missing stamp means it was done before the stamp
+// existed, at an unknown time, so it does not qualify.
+/** @param {{is_archived?: boolean, archived_at?: string | null}} state @param {number} now */
+function isRecentlyDone(state, now) {
+  if (!state.is_archived || !state.archived_at) return false;
+  const doneAt = Date.parse(state.archived_at);
+  return Number.isFinite(doneAt) && now - doneAt < RECENTLY_DONE_WINDOW_MS;
+}
+
 // Fold live message state into stored triage: drop items whose message is
 // deleted from the mailbox or has since been rescheduled to a later day, drop
-// priority groups that empty, and mark what is still unread. Noise is already
-// category-only, but is sanitized again before it reaches the browser because
-// summaries.raw ultimately contains model data.
-/** @param {any} row @param {any[]} states */
-export function buildDigest(row, states) {
+// priority groups that empty, mark what is still unread, and mark what was
+// marked done in the last 24 hours. Mail done longer ago than that is
+// dropped: a triage list that keeps listing long-finished mail is just noise.
+// Noise is already category-only, but is sanitized again before it reaches
+// the browser because summaries.raw ultimately contains model data.
+/** @param {any} row @param {any[]} states @param {number} [now] */
+export function buildDigest(row, states, now = Date.now()) {
   if (!row) return null;
   const stateById = new Map(states.map((state) => [state.id, state]));
   const topics = [];
@@ -162,10 +179,8 @@ export function buildDigest(row, states) {
       .filter((/** @type {any} */ item) => {
         const state = stateById.get(item?.message_id);
         if (!state) return false;
-        // Done means handled, whether or not it was ever opened — a triage
-        // list that keeps asking about finished mail is just noise.
-        if (state.is_archived) return false;
-        if (state.scheduled_for && new Date(state.scheduled_for) > new Date()) return false;
+        if (state.is_archived && !isRecentlyDone(state, now)) return false;
+        if (state.scheduled_for && new Date(state.scheduled_for) > new Date(now)) return false;
         return true;
       })
       .map((/** @type {any} */ item) => ({
@@ -173,6 +188,7 @@ export function buildDigest(row, states) {
         headline: String(item.headline ?? ''),
         note: String(item.note ?? ''),
         unread: stateById.get(item.message_id).is_unread,
+        done: Boolean(stateById.get(item.message_id).is_archived),
       }));
     if (items.length > 0) {
       topics.push({ emoji: String(topic.emoji ?? ''), title: String(topic.title ?? ''), items });

@@ -108,14 +108,16 @@ describe('fetchLatestSummary', () => {
 
 describe('fetchMessageStates', () => {
   // is_archived is read rather than filtered in SQL: buildDigest needs to see
-  // done messages to drop their items, and the same rows also carry the read
-  // state the surviving items render.
+  // done messages, and when they were done, to keep the recent ones as done
+  // rows and drop the rest; the same rows also carry the read state the
+  // surviving items render.
   it('reads live read-state and done-state, excluding deleted mail', () => {
     const sql = createMockSql();
     fetchMessageStates(sql, USER_ID, [ID_A]);
 
     expect(sql.calls[0].text).toContain('m.is_unread');
     expect(sql.calls[0].text).toContain('m.is_archived');
+    expect(sql.calls[0].text).toContain('m.archived_at');
     expect(sql.calls[0].text).toContain('m.scheduled_for');
     expect(sql.calls[0].text).toContain('WHERE m.user_id =');
     expect(sql.calls[0].text).toContain('::uuid[]');
@@ -171,8 +173,14 @@ describe('buildDigest', () => {
     expect(digest.overview).toBe('One reply needs you and one message is worth reviewing.');
     expect(digest.created_at).toBe('2026-08-03T05:00:00.000Z');
     expect(digest.topics[0].items).toEqual([
-      { message_id: ID_A, headline: 'Floor plan', note: 'Revised design.', unread: true },
-      { message_id: ID_B, headline: 'Claim', note: 'Processed.', unread: false },
+      {
+        message_id: ID_A,
+        headline: 'Floor plan',
+        note: 'Revised design.',
+        unread: true,
+        done: false,
+      },
+      { message_id: ID_B, headline: 'Claim', note: 'Processed.', unread: false, done: false },
     ]);
   });
 
@@ -205,8 +213,10 @@ describe('buildDigest', () => {
     expect(digest.topics[0].items.map((/** @type {any} */ i) => i.message_id)).toEqual([ID_B]);
   });
 
-  // Done means handled, whether or not it was ever opened.
-  it('drops items whose message is done, read or not', () => {
+  // Done means handled, whether or not it was ever opened; mail done in the
+  // last 24 hours stays as a done row, anything done longer ago is dropped.
+  it('keeps items done in the last 24 hours as done rows, read or not', () => {
+    const now = Date.parse('2026-08-03T12:00:00.000Z');
     const row = digestRow([
       {
         emoji: '↩️',
@@ -215,28 +225,93 @@ describe('buildDigest', () => {
       },
     ]);
     const digest = nonNull(
-      buildDigest(row, [
-        { id: ID_A, is_unread: false, is_archived: true },
-        { id: ID_B, is_unread: true, is_archived: true },
-        { id: ID_C, is_unread: false, is_archived: false },
-      ]),
+      buildDigest(
+        row,
+        [
+          {
+            id: ID_A,
+            is_unread: false,
+            is_archived: true,
+            archived_at: '2026-08-03T11:00:00.000Z',
+          },
+          { id: ID_B, is_unread: true, is_archived: true, archived_at: '2026-08-02T12:00:01.000Z' },
+          { id: ID_C, is_unread: false, is_archived: false, archived_at: null },
+        ],
+        now,
+      ),
     );
 
-    // Only the read-but-not-done message survives: being read is not enough
-    // to hide an item, and being unread does not rescue a done one.
+    expect(
+      digest.topics[0].items.map((/** @type {any} */ i) => [i.message_id, i.unread, i.done]),
+    ).toEqual([
+      [ID_A, false, true],
+      [ID_B, true, true],
+      [ID_C, false, false],
+    ]);
+  });
+
+  it('drops items done more than 24 hours ago, or done before the stamp existed', () => {
+    const now = Date.parse('2026-08-03T12:00:00.000Z');
+    const row = digestRow([
+      {
+        emoji: '↩️',
+        title: 'Reply Needed',
+        items: [{ message_id: ID_A }, { message_id: ID_B }, { message_id: ID_C }],
+      },
+    ]);
+    const digest = nonNull(
+      buildDigest(
+        row,
+        [
+          { id: ID_A, is_unread: true, is_archived: true, archived_at: '2026-08-02T12:00:00.000Z' },
+          { id: ID_B, is_unread: true, is_archived: true, archived_at: null },
+          { id: ID_C, is_unread: false, is_archived: false, archived_at: null },
+        ],
+        now,
+      ),
+    );
+
+    // Being unread does not rescue a done one, and being read is not enough
+    // to hide an item.
     expect(digest.topics[0].items.map((/** @type {any} */ i) => i.message_id)).toEqual([ID_C]);
   });
 
-  it('drops a topic left empty because every item was done', () => {
+  it('ignores a stale stamp on mail that is back in the inbox', () => {
+    const now = Date.parse('2026-08-03T12:00:00.000Z');
+    const row = digestRow([{ emoji: '↩️', title: 'Reply Needed', items: [{ message_id: ID_A }] }]);
+    const digest = nonNull(
+      buildDigest(
+        row,
+        [
+          {
+            id: ID_A,
+            is_unread: true,
+            is_archived: false,
+            archived_at: '2026-08-03T11:00:00.000Z',
+          },
+        ],
+        now,
+      ),
+    );
+
+    expect(digest.topics[0].items[0].done).toBe(false);
+  });
+
+  it('drops a topic left empty because every item was done long ago', () => {
+    const now = Date.parse('2026-08-03T12:00:00.000Z');
     const row = digestRow([
       { emoji: '↩️', title: 'All handled', items: [{ message_id: ID_A }] },
       { emoji: '👀', title: 'Review', items: [{ message_id: ID_B }] },
     ]);
     const digest = nonNull(
-      buildDigest(row, [
-        { id: ID_A, is_unread: true, is_archived: true },
-        { id: ID_B, is_unread: true, is_archived: false },
-      ]),
+      buildDigest(
+        row,
+        [
+          { id: ID_A, is_unread: true, is_archived: true, archived_at: '2026-08-01T12:00:00.000Z' },
+          { id: ID_B, is_unread: true, is_archived: false, archived_at: null },
+        ],
+        now,
+      ),
     );
 
     expect(digest.topics).toHaveLength(1);
@@ -398,11 +473,13 @@ describe('getTasks', () => {
 
     expect(response.status).toBe(200);
     expect(sql.calls[3].text).toContain('m.is_unread');
+    expect(sql.calls[3].text).toContain('m.archived_at');
     expect(body.digest.topics[0].items[0]).toEqual({
       message_id: ID_A,
       headline: 'Floor plan',
       note: 'Revised design.',
       unread: true,
+      done: false,
     });
   });
 
