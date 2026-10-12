@@ -8,7 +8,7 @@ import { retryWithBackoff } from '../../../shared/retry.js';
 // Eric Porres's Email Triage Skill: Reply Needed, Review, and summarized Noise.
 // https://github.com/ericporres/email-triage-plugin
 export const TRIAGE_POLICY_SOURCE = 'ericporres/email-triage-plugin';
-export const DIGEST_PROMPT_VERSION = 'email-triage-v1';
+export const DIGEST_PROMPT_VERSION = 'email-triage-v2';
 export const DIGEST_KIND = 'daily_digest';
 export const DIGEST_MESSAGE_LIMIT = 50;
 export const DIGEST_TEXT_CAP = 400;
@@ -68,15 +68,20 @@ const DIGEST_SCHEMA = {
   additionalProperties: false,
 };
 
+/** @typedef {{id: string, from_name: string | null, from_address: string, envelope_to: string | null, subject: string | null, gist: string | null, sent_at: string, archived_at: string | null}} DigestMessage */
+
 /**
- * Mail that arrived in the last 24 hours, whether read or unread. The triage
- * skill explicitly uses a time window instead of unread state because casually
- * opening a message is not evidence that it no longer needs action. Mirrors the app's inbox
- * predicate so archived, sent, deleted, spam, and snoozed mail stay out.
+ * Mail that arrived in the last 24 hours, whether read or unread, plus mail
+ * marked done in that time so the day's triage also shows what was handled.
+ * The triage skill explicitly uses a time window instead of unread state
+ * because casually opening a message is not evidence that it no longer needs
+ * action. Otherwise mirrors the app's inbox predicate so sent, deleted, spam,
+ * and snoozed mail stay out; mail done before archived_at existed (migration
+ * 0092) has no stamp and stays out too.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @returns {Promise<Array<{id: string, from_name: string | null, from_address: string, envelope_to: string | null, subject: string | null, gist: string | null, sent_at: string}>>}
+ * @returns {Promise<DigestMessage[]>}
  */
 export async function fetchDigestMessages(sql, userId) {
   return /** @type {Promise<any>} */ (
@@ -84,19 +89,21 @@ export async function fetchDigestMessages(sql, userId) {
     SELECT messages.id, messages.from_name, messages.from_address, messages.envelope_to,
            messages.subject,
            coalesce(message_ai.summary, messages.snippet) AS gist,
-           messages.sent_at
+           messages.sent_at, messages.archived_at
     FROM messages
     LEFT JOIN message_ai ON message_ai.message_id = messages.id
     WHERE messages.user_id = ${userId}
       AND NOT messages.is_sent
-      AND NOT messages.is_archived
       AND NOT messages.is_deleted
       AND messages.screening_status = 'allowed'
       AND coalesce(message_ai.spam_verdict, 'inbox') <> 'spam'
       AND (messages.scheduled_for IS NULL OR messages.scheduled_for <= now())
-      -- Arrival time, not the sender's Date header: a back-dated or
-      -- delayed message still counts on the day it reached the inbox.
-      AND messages.created_at > now() - interval '1 day'
+      AND (
+        -- Arrival time, not the sender's Date header: a back-dated or
+        -- delayed message still counts on the day it reached the inbox.
+        (NOT messages.is_archived AND messages.created_at > now() - interval '1 day')
+        OR messages.archived_at > now() - interval '1 day'
+      )
     ORDER BY messages.sent_at DESC
     LIMIT ${DIGEST_MESSAGE_LIMIT}
   `
@@ -231,7 +238,7 @@ export function repairDigest(digest, messages) {
 }
 
 /**
- * @param {Array<{id: string, from_name: string | null, from_address: string, envelope_to: string | null, subject: string | null, gist: string | null, sent_at: string}>} messages
+ * @param {DigestMessage[]} messages
  * @param {string} apiKey
  * @param {string} model
  */
@@ -258,6 +265,7 @@ async function requestTriage(messages, apiKey, model) {
               "Review means it needs the owner's eyes but not necessarily a reply: shipping, calendar, shared documents, travel, receipts, or a newsletter they likely read. " +
               'Noise means marketing, bulk newsletters, automated notifications, social alerts, or promotions. ' +
               'Use delivered_to as an alias-routing signal when it is informative, and fall back to sender and content when it is not. ' +
+              'A message with done set to true was marked done by the owner within the last day: tier it by what it is, not by whether it still needs action, and let the overview mention what has already been handled. ' +
               'For Reply Needed, include a one-line summary and suggested action. For Review, include why it deserves attention. ' +
               'Assign every supplied message_id to exactly one tier. Use only supplied ids and never repeat one. ' +
               'Return only the schema.',
@@ -272,6 +280,7 @@ async function requestTriage(messages, apiKey, model) {
                 subject: message.subject,
                 snippet: (message.gist || '').slice(0, DIGEST_TEXT_CAP),
                 sent_at: message.sent_at,
+                done: Boolean(message.archived_at),
               })),
             }),
           },
@@ -304,11 +313,12 @@ function isRetryableTriageError(error) {
 }
 
 /**
- * Triage the last 24 hours of inbox mail using the three-tier policy from the
- * Email Triage Skill. The snippet-first payload keeps the run bounded; full
- * bodies and threads remain the concern of later, user-requested drafting.
+ * Triage the last 24 hours of inbox mail, and mail marked done in that time,
+ * using the three-tier policy from the Email Triage Skill. The snippet-first
+ * payload keeps the run bounded; full bodies and threads remain the concern
+ * of later, user-requested drafting.
  *
- * @param {Array<{id: string, from_name: string | null, from_address: string, envelope_to: string | null, subject: string | null, gist: string | null, sent_at: string}>} messages
+ * @param {DigestMessage[]} messages
  * @param {string} apiKey
  * @param {string} model
  */

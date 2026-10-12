@@ -24,6 +24,7 @@ const MESSAGES = [
     subject: 'Revised Floor Plan',
     gist: 'Please approve the revised design by tomorrow.',
     sent_at: '2026-08-17T08:00:00.000Z',
+    archived_at: null,
   },
   {
     id: 'msg-2',
@@ -33,6 +34,7 @@ const MESSAGES = [
     subject: 'Claim processed',
     gist: 'Your homeowner claim was processed.',
     sent_at: '2026-08-17T07:00:00.000Z',
+    archived_at: null,
   },
   {
     id: 'msg-3',
@@ -42,6 +44,7 @@ const MESSAGES = [
     subject: 'Weekend sale',
     gist: 'Save 20 percent this weekend.',
     sent_at: '2026-08-17T06:00:00.000Z',
+    archived_at: null,
   },
 ];
 
@@ -115,6 +118,37 @@ describe('buildDigest email triage', () => {
     expect(body.input[0].content).toContain('Reply Needed, Review, and Noise');
     expect(body.input[1].content).toContain('home@example.com');
     expect(body.input[1].content).toContain('msg-1');
+    const payload = JSON.parse(body.input[1].content);
+    expect(payload.messages.map((/** @type {any} */ m) => m.done)).toEqual([false, false, false]);
+  });
+
+  test('tells the model which messages were already marked done', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ output_text: JSON.stringify(TRIAGE) }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const messages = MESSAGES.map((message) =>
+      message.id === 'msg-2' ? { ...message, archived_at: '2026-08-17T09:30:00.000Z' } : message,
+    );
+
+    await expect(buildDigest(messages, 'key', 'gpt-5.6-luna')).resolves.toMatchObject({
+      overview: TRIAGE.overview,
+    });
+
+    const [, init] = /** @type {[string, {body: string}]} */ (
+      /** @type {unknown} */ (fetchMock.mock.calls[0])
+    );
+    const body = JSON.parse(init.body);
+    expect(body.input[0].content).toContain('done set to true');
+    const payload = JSON.parse(body.input[1].content);
+    expect(payload.messages.map((/** @type {any} */ m) => [m.message_id, m.done])).toEqual([
+      ['msg-1', false],
+      ['msg-2', true],
+      ['msg-3', false],
+    ]);
+    // The stamp itself stays out of the prompt; done is all the model needs.
+    expect(body.input[1].content).not.toContain('archived_at');
   });
 
   test('omits the reasoning option for models that do not support it', async () => {
@@ -394,7 +428,7 @@ describe('repairDigest triage coverage', () => {
 });
 
 describe('fetchDigestMessages', () => {
-  test('selects the last 24 hours of inbox mail regardless of read state', async () => {
+  test('selects the last 24 hours of inbox mail regardless of read state, plus mail done in that time', async () => {
     const calls = [];
     const sql = (strings, ...values) => {
       calls.push({ text: strings.join('$'), values });
@@ -410,7 +444,12 @@ describe('fetchDigestMessages', () => {
     expect(text).toContain('messages.envelope_to');
     expect(text).toContain('messages.scheduled_for IS NULL');
     expect(text).toContain('NOT messages.is_sent');
-    expect(text).toContain('NOT messages.is_archived');
+    // Inbox mail is bounded by arrival; done mail by when it was marked done.
+    expect(text).toContain(
+      "(NOT messages.is_archived AND messages.created_at > now() - interval '1 day')",
+    );
+    expect(text).toContain("OR messages.archived_at > now() - interval '1 day'");
+    expect(text).toContain('messages.sent_at, messages.archived_at');
     expect(text).toContain('NOT messages.is_deleted');
     expect(text).toContain("messages.screening_status = 'allowed'");
     expect(text).toContain("spam_verdict, 'inbox') <> 'spam'");
