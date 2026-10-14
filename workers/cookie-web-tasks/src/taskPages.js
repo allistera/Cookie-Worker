@@ -1,4 +1,5 @@
 import { decodeCursor, encodeCursor, validId, validTimestamp } from '../../../shared/pagination.js';
+import { loadTaskFilter, taskFilterSql } from './taskFilters.js';
 import { cleanLabelName } from './taskLabels.js';
 
 function columns(sql, full = false) {
@@ -19,16 +20,26 @@ export async function getTaskPage(sql, userId, url) {
   const isLabel = project.startsWith('label:');
   const label = isLabel ? cleanLabelName(project.slice('label:'.length)) : null;
   if (isLabel && !label) return Response.json({ error: 'Invalid label' }, { status: 400 });
+  // A saved filter: `filter:<id>` lists the tasks its rules fit across every
+  // project. Its date rules are relative to the caller's own day, so like
+  // Today it needs the date; the rows come back by due date, undated last.
+  const isFilter = project.startsWith('filter:');
+  const filterId = isFilter ? project.slice('filter:'.length) : null;
+  if (isFilter && !validId(filterId)) {
+    return Response.json({ error: 'Invalid filter' }, { status: 400 });
+  }
   const date = url.searchParams.get('date');
-  if (!['today', 'inbox'].includes(project) && !isLabel && !validId(project))
+  if (!['today', 'inbox'].includes(project) && !isLabel && !isFilter && !validId(project))
     return Response.json({ error: 'Invalid project' }, { status: 400 });
   if (
-    today &&
+    (today || isFilter) &&
     (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '') ||
       !validTimestamp(date) ||
       new Date(date ?? '').toISOString().slice(0, 10) !== date)
   )
     return Response.json({ error: 'Invalid date' }, { status: 400 });
+  const filter = isFilter ? await loadTaskFilter(sql, userId, String(filterId)) : null;
+  if (isFilter && !filter) return Response.json({ error: 'Filter not found' }, { status: 404 });
   let cursor;
   try {
     cursor = decodeCursor(
@@ -45,7 +56,13 @@ export async function getTaskPage(sql, userId, url) {
   } catch {
     return Response.json({ error: 'Invalid task cursor' }, { status: 400 });
   }
-  const orderDate = today ? sql`t.due_date` : sql`DATE '0001-01-01'`;
+  // Today's rows are all dated; a filter's may not be, and those go last.
+  const undated = '9999-12-31';
+  const orderDate = today
+    ? sql`t.due_date`
+    : filter
+      ? sql`COALESCE(t.due_date, DATE '9999-12-31')`
+      : sql`DATE '0001-01-01'`;
   const orderPosition = today
     ? sql`COALESCE(t.today_position, 'Infinity'::float8)`
     : sql`0::float8`;
@@ -55,11 +72,13 @@ export async function getTaskPage(sql, userId, url) {
       ${
         today
           ? sql`AND t.due_date <= ${date}::date`
-          : label
-            ? sql`AND t.labels @> ARRAY[${label}]::text[]`
-            : project === 'inbox'
-              ? sql`AND t.project_id IS NULL`
-              : sql`AND t.project_id = ${project}::uuid`
+          : filter
+            ? sql`AND t.kind = 'task' AND ${taskFilterSql(sql, filter, String(date))}`
+            : label
+              ? sql`AND t.labels @> ARRAY[${label}]::text[]`
+              : project === 'inbox'
+                ? sql`AND t.project_id IS NULL`
+                : sql`AND t.project_id = ${project}::uuid`
       }
       ${
         cursor
@@ -77,7 +96,7 @@ export async function getTaskPage(sql, userId, url) {
     nextCursor:
       rows.length > 100 && last
         ? encodeCursor([
-            today ? last.dueDate : '0001-01-01',
+            today ? last.dueDate : filter ? (last.dueDate ?? undated) : '0001-01-01',
             today ? last.todayPosition : 0,
             Number(last.position),
             last.cursor_time,

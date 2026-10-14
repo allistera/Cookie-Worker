@@ -13,6 +13,7 @@ import { deleteFile, getFile, getFileContent, listFiles, updateFile, uploadFile 
 import { getDocumentImageUrl, postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
+import { getTaskFilters, putTaskFilters } from './taskFilters.js';
 import { createTaskLabel, deleteTaskLabel, getTaskLabels, updateTaskLabel } from './taskLabels.js';
 import { allowRequest } from '../../../shared/rate-limit.js';
 import { postRefresh } from './refresh.js';
@@ -73,7 +74,7 @@ async function isMailboxOwner(sql, userId, env) {
  * Routes GET/POST /tasks, POST /tasks/refresh, GET/PUT /tasks/interests,
  * GET/PUT /tasks/enrichment-settings,
  * POST /task-items/reorder, POST /task-items/interpret,
- * GET/POST/PATCH/DELETE /task-labels,
+ * GET/POST/PATCH/DELETE /task-labels, GET/PUT /task-filters,
  * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, GET /tasks/document-image, and
  * GET/POST/PATCH/DELETE /documents — the resources Cookie-Web's api/tasks.js
  * served, previously reached only via
@@ -150,6 +151,20 @@ async function route(url, request, sql, userId, env) {
       if (request.method === 'PATCH') return updateTaskLabel(sql, userId, body);
       return deleteTaskLabel(sql, userId, body);
     });
+  }
+
+  // Saved task filters are one document per user, replaced whole at a
+  // revision (taskFilters.js), so the routes are GET and PUT only.
+  if (segments[0] === 'task-filters') {
+    if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
+    if (request.method === 'GET') return getTaskFilters(sql, userId);
+    if (request.method !== 'PUT') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, PUT' } },
+      );
+    }
+    return withJsonBody(request, (body) => putTaskFilters(sql, userId, body));
   }
 
   if (segments[0] === 'files') {
