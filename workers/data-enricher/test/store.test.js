@@ -64,7 +64,7 @@ describe('storeDigest', () => {
       __pgJson: {
         topics: digest.topics,
         noise: digest.noise,
-        prompt_version: 'email-triage-v2',
+        prompt_version: 'email-triage-v3',
         policy_source: 'ericporres/email-triage-plugin',
       },
     });

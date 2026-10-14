@@ -107,10 +107,7 @@ describe('fetchLatestSummary', () => {
 });
 
 describe('fetchMessageStates', () => {
-  // is_archived is read rather than filtered in SQL: buildDigest needs to see
-  // done messages, and when they were done, to keep the recent ones as done
-  // rows and drop the rest; the same rows also carry the read state the
-  // surviving items render.
+  // Live archive state excludes Done mail even from an older stored digest.
   it('reads live read-state and done-state, excluding deleted mail', () => {
     const sql = createMockSql();
     fetchMessageStates(sql, USER_ID, [ID_A]);
@@ -213,9 +210,8 @@ describe('buildDigest', () => {
     expect(digest.topics[0].items.map((/** @type {any} */ i) => i.message_id)).toEqual([ID_B]);
   });
 
-  // Done means handled, whether or not it was ever opened; mail done in the
-  // last 24 hours stays as a done row, anything done longer ago is dropped.
-  it('keeps items done in the last 24 hours as done rows, read or not', () => {
+  // Done means handled, regardless of read state or when it was completed.
+  it('drops items done in the last 24 hours, read or not', () => {
     const now = Date.parse('2026-08-03T12:00:00.000Z');
     const row = digestRow([
       {
@@ -243,11 +239,7 @@ describe('buildDigest', () => {
 
     expect(
       digest.topics[0].items.map((/** @type {any} */ i) => [i.message_id, i.unread, i.done]),
-    ).toEqual([
-      [ID_A, false, true],
-      [ID_B, true, true],
-      [ID_C, false, false],
-    ]);
+    ).toEqual([[ID_C, false, false]]);
   });
 
   it('drops items done more than 24 hours ago, or done before the stamp existed', () => {

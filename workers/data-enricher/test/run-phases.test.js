@@ -17,7 +17,7 @@ vi.mock('../src/digest.js', () => ({
     noise: { count: 1, categories: [{ category: 'automated', count: 1 }] },
   })),
   DIGEST_KIND: 'daily_digest',
-  DIGEST_PROMPT_VERSION: 'email-triage-v2',
+  DIGEST_PROMPT_VERSION: 'email-triage-v3',
   TRIAGE_POLICY_SOURCE: 'ericporres/email-triage-plugin',
 }));
 vi.mock('../src/news.js', () => ({
