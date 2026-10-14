@@ -14,7 +14,7 @@
 // infer a parameter's type inside jsonb_set's path.
 
 import { validId } from '../../../shared/pagination.js';
-import { cleanLabelName } from './taskLabels.js';
+import { normalizeTaskLabels } from './taskMetadata.js';
 
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
 const MAX_FILTERS = 30;
@@ -81,6 +81,22 @@ function cleanRule(rule) {
 }
 
 /**
+ * One label name, normalised the way task writes normalise them, or null
+ * when it cannot be a label. Same as taskLabels.js's cleanLabelName, kept
+ * here so that module can import this one without a cycle.
+ *
+ * @param {unknown} value
+ */
+function cleanLabelName(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    return normalizeTaskLabels([value])[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The stored document, however the column reads: a missing or malformed
  * value is an empty list at revision 0.
  *
@@ -127,7 +143,10 @@ export function cleanTaskFilters(body) {
     if (!filter || typeof filter !== 'object' || Array.isArray(filter)) {
       return { error: 'Invalid saved filter.' };
     }
-    if (typeof filter.id !== 'string' || !validId(filter.id) || ids.has(filter.id)) {
+    // Hex case says nothing about a UUID's identity, so ids are kept and
+    // compared in lowercase.
+    const id = typeof filter.id === 'string' ? filter.id.toLowerCase() : null;
+    if (!id || !validId(id) || ids.has(id)) {
       return { error: 'Each saved filter needs a unique ID.' };
     }
     if (
@@ -156,9 +175,9 @@ export function cleanTaskFilters(body) {
       if ('error' in cleaned) return cleaned;
       rules.push(cleaned.rule);
     }
-    ids.add(filter.id);
+    ids.add(id);
     names.add(normalizedName);
-    filters.push({ id: filter.id, name: filter.name, match: filter.match, rules });
+    filters.push({ id, name: filter.name, match: filter.match, rules });
   }
   return { revision: value.revision, filters };
 }
@@ -212,7 +231,8 @@ export async function loadTaskFilter(sql, userId, id) {
   const [row] =
     await sql`SELECT prefs -> 'savedTaskFilters' AS filters FROM users WHERE id = ${userId}`;
   const { filters } = parseTaskFilters(row?.filters);
-  return filters.find((filter) => filter?.id === id) ?? null;
+  const wanted = id.toLowerCase();
+  return filters.find((filter) => String(filter?.id ?? '').toLowerCase() === wanted) ?? null;
 }
 
 /**
@@ -243,10 +263,12 @@ function ruleSql(sql, rule, date) {
         return sql`false`;
     }
   }
+  // An Inbox task has a null project_id, which must read as "not in that
+  // project" rather than unknown, or NOT would drop it.
   if (rule.field === 'project') {
     return rule.value === 'inbox'
       ? sql`t.project_id IS NULL`
-      : sql`t.project_id = ${String(rule.value)}::uuid`;
+      : sql`COALESCE(t.project_id = ${String(rule.value)}::uuid, false)`;
   }
   if (rule.field === 'priority') return sql`t.priority = ${Number(rule.value)}`;
   if (rule.field === 'label') return sql`t.labels @> ARRAY[${String(rule.value)}]::text[]`;
@@ -272,4 +294,39 @@ export function taskFilterSql(sql, filter, date) {
     filter.match === 'any' ? sql`${left} OR ${right}` : sql`${left} AND ${right}`,
   );
   return sql`(${joined})`;
+}
+
+/**
+ * A label rename, carried into every saved filter rule that named the old
+ * label, in the renaming transaction, so a filter keeps meaning what it
+ * meant. The document's revision moves on so a session holding the old
+ * one meets a conflict rather than writing the old name back. Resolves
+ * whether anything changed.
+ *
+ * @param {import('postgres').Sql | import('postgres').TransactionSql} sql
+ * @param {string} userId
+ * @param {string} previousName
+ * @param {string} name
+ */
+export async function renameLabelInTaskFilters(sql, userId, previousName, name) {
+  const [row] =
+    await sql`SELECT prefs -> 'savedTaskFilters' AS filters FROM users WHERE id = ${userId} FOR UPDATE`;
+  const document = parseTaskFilters(row?.filters);
+  let changed = false;
+  const filters = document.filters.map((filter) => ({
+    ...filter,
+    rules: (Array.isArray(filter?.rules) ? filter.rules : []).map((rule) => {
+      if (rule?.field !== 'label' || rule.value !== previousName) return rule;
+      changed = true;
+      return { ...rule, value: name };
+    }),
+  }));
+  if (!changed) return false;
+  const next = { revision: document.revision + 1, filters };
+  await sql`
+    UPDATE users
+    SET prefs = jsonb_set(coalesce(prefs, '{}'::jsonb), '{savedTaskFilters}', ${sql.json(next)}, true)
+    WHERE id = ${userId}
+  `;
+  return true;
 }

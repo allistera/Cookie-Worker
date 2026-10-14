@@ -5,6 +5,7 @@ import {
   getTaskFilters,
   loadTaskFilter,
   putTaskFilters,
+  renameLabelInTaskFilters,
   taskFilterSql,
 } from '../src/taskFilters.js';
 import { getTaskPage } from '../src/taskPages.js';
@@ -118,6 +119,16 @@ describe('cleanTaskFilters', () => {
         },
       ],
     });
+  });
+
+  it('stores a filter id in lowercase and spots a duplicate across cases', () => {
+    const upper = { ...FILTER, id: FILTER_ID.toUpperCase() };
+    expect(cleanTaskFilters({ revision: 0, filters: [upper] })).toMatchObject({
+      filters: [{ id: FILTER_ID }],
+    });
+    expect(
+      cleanTaskFilters({ revision: 0, filters: [FILTER, { ...upper, name: 'Other' }] }),
+    ).toEqual({ error: 'Each saved filter needs a unique ID.' });
   });
 
   it('drops any extra fields a client sends along', () => {
@@ -277,10 +288,57 @@ describe('PUT /task-filters', () => {
 });
 
 describe('loadTaskFilter', () => {
-  it('finds the caller filter by id', async () => {
-    const sql = createMockSql([[{ filters: { revision: 1, filters: [FILTER] } }]]);
+  it('finds the caller filter by id, whatever the hex case', async () => {
+    const sql = createMockSql([
+      [{ filters: { revision: 1, filters: [FILTER] } }],
+      [{ filters: { revision: 1, filters: [FILTER] } }],
+      [{ filters: { revision: 1, filters: [FILTER] } }],
+    ]);
     expect(await loadTaskFilter(sql, USER_ID, FILTER_ID)).toEqual(FILTER);
+    expect(await loadTaskFilter(sql, USER_ID, FILTER_ID.toUpperCase())).toEqual(FILTER);
     expect(await loadTaskFilter(sql, USER_ID, PROJECT_ID)).toBeNull();
+  });
+});
+
+describe('renameLabelInTaskFilters', () => {
+  const stored = {
+    revision: 4,
+    filters: [
+      {
+        ...FILTER,
+        rules: [
+          { field: 'label', value: 'home', negate: false },
+          { field: 'label', value: 'work', negate: true },
+        ],
+      },
+    ],
+  };
+
+  it('rewrites every rule naming the old label and moves the revision on', async () => {
+    const sql = createMockSql([[{ filters: stored }], []]);
+
+    expect(await renameLabelInTaskFilters(sql, USER_ID, 'home', 'house')).toBe(true);
+
+    expect(sql.calls[0].text).toContain('FOR UPDATE');
+    expect(sql.calls[1].text).toContain("'{savedTaskFilters}'");
+    expect(sql.json).toHaveBeenCalledWith({
+      revision: 5,
+      filters: [
+        {
+          ...FILTER,
+          rules: [
+            { field: 'label', value: 'house', negate: false },
+            { field: 'label', value: 'work', negate: true },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('writes nothing when no filter names the label', async () => {
+    const sql = createMockSql([[{ filters: stored }]]);
+    expect(await renameLabelInTaskFilters(sql, USER_ID, 'garden', 'yard')).toBe(false);
+    expect(sql.calls).toHaveLength(1);
   });
 });
 
@@ -305,7 +363,7 @@ describe('taskFilterSql', () => {
       ],
     });
     expect(render(taskFilterSql(sql, filter, DATE))).toEqual({
-      text: '(t.labels @> ARRAY[?]::text[] OR NOT (t.project_id IS NULL) OR t.project_id = ?::uuid)',
+      text: '(t.labels @> ARRAY[?]::text[] OR NOT (t.project_id IS NULL) OR COALESCE(t.project_id = ?::uuid, false))',
       params: ['home', PROJECT_ID],
     });
   });
@@ -347,7 +405,7 @@ describe('GET /task-items?view=page with a filter', () => {
     expect((await response.json()).items).toHaveLength(1);
     const query = render(sql.calls.find((call) => call.text.includes('LIMIT 101')));
     expect(query.text).toContain("AND t.kind = 'task' AND (COALESCE(t.due_date >= ?::date");
-    expect(query.text).toContain("ORDER BY COALESCE(t.due_date, DATE '9999-12-31'), 0::float8");
+    expect(query.text).toContain("ORDER BY COALESCE(t.due_date, DATE 'infinity'), 0::float8");
     expect(query.text).toContain('t.completed_at IS NULL');
     expect(query.params).toEqual([USER_ID, DATE, DATE, 1]);
     expect(sql.calls[0].text).toContain('FROM users');
@@ -367,7 +425,7 @@ describe('GET /task-items?view=page with a filter', () => {
 
     expect(body.items).toHaveLength(100);
     expect(JSON.parse(atob(body.nextCursor.replaceAll('-', '+').replaceAll('_', '/')))).toEqual([
-      '9999-12-31',
+      'infinity',
       0,
       99,
       '2026-01-01T00:00:00.000000Z',

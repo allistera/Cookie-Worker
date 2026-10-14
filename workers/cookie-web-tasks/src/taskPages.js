@@ -47,7 +47,8 @@ export async function getTaskPage(sql, userId, url) {
       (value) =>
         Array.isArray(value) &&
         value.length === 5 &&
-        validTimestamp(value[0]) &&
+        // A filter page cursors past undated rows with the date 'infinity'.
+        (validTimestamp(value[0]) || value[0] === 'infinity') &&
         (value[1] === null || Number.isFinite(value[1])) &&
         Number.isFinite(value[2]) &&
         validTimestamp(value[3]) &&
@@ -56,12 +57,13 @@ export async function getTaskPage(sql, userId, url) {
   } catch {
     return Response.json({ error: 'Invalid task cursor' }, { status: 400 });
   }
-  // Today's rows are all dated; a filter's may not be, and those go last.
-  const undated = '9999-12-31';
+  // Today's rows are all dated; a filter's may not be, and those go last —
+  // after any real date, which 'infinity' is past and 9999-12-31 is not.
+  const undated = 'infinity';
   const orderDate = today
     ? sql`t.due_date`
     : filter
-      ? sql`COALESCE(t.due_date, DATE '9999-12-31')`
+      ? sql`COALESCE(t.due_date, DATE 'infinity')`
       : sql`DATE '0001-01-01'`;
   const orderPosition = today
     ? sql`COALESCE(t.today_position, 'Infinity'::float8)`
