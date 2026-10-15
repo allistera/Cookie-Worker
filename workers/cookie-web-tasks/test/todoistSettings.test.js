@@ -35,6 +35,7 @@ async function connectionRow(overrides = {}) {
     syncProjects: true,
     syncTasks: true,
     lastSyncedAt: null,
+    tasksSyncedAt: null,
     lastSyncStatus: null,
     lastSyncError: null,
     lastSyncSummary: null,
@@ -222,7 +223,9 @@ describe('PUT /tasks/todoist', () => {
     expect(sql.calls[1].text).toContain('UPDATE task_items SET todoist_id = NULL');
     expect(sql.calls[2].text).toContain('UPDATE task_projects SET todoist_id = NULL');
     expect(sql.calls[3].text).toContain('INSERT INTO todoist_connections');
-    expect(sql.calls[3].values[13]).toBe(true); // switchesAccount resets the completion cursor
+    // switchesAccount resets the last-success stamp and the completion cursor.
+    expect(sql.calls[3].text).toContain('tasks_synced_at     = CASE WHEN ?::boolean THEN NULL');
+    expect(sql.calls[3].values.slice(13, 16)).toEqual([true, true, true]);
     expect((await response.json()).todoist.email).toBe('other@example.com');
   });
 

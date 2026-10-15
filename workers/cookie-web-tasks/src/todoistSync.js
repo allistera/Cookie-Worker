@@ -20,7 +20,11 @@
 // off, no project row is written, moved or removed: tasks land in the
 // mirrored project Cookie already has, or in the Inbox when it has none.
 // With sync_tasks off, no section or task row is touched; the mirrors
-// already there stay as they are until the switch is turned back on.
+// already there stay as they are until the switch is turned back on — a
+// vanished project holding any task is unlinked rather than deleted, so the
+// cascade cannot take them — and the completion cursor (tasks_synced_at,
+// the last run that read tasks) stands still, so the completions made
+// meanwhile are still found when tasks resume.
 //
 // Between runs: a mirrored task Todoist no longer lists as open is marked
 // completed when it appears in the recently-completed list, and deleted
@@ -565,7 +569,9 @@ export async function applySync(sql, userId, plan, options = {}) {
     guarded AS (
       SELECT DISTINCT s.root FROM subtree s
       WHERE EXISTS (SELECT 1 FROM task_items t
-                    WHERE t.user_id = ${userId} AND t.project_id = s.id AND t.todoist_id IS NULL)
+                    WHERE t.user_id = ${userId} AND t.project_id = s.id
+                      -- With tasks switched off every task row is kept, mirror or not.
+                      AND (t.todoist_id IS NULL OR ${!syncTasks}::boolean))
          OR EXISTS (SELECT 1 FROM task_projects c
                     WHERE c.user_id = ${userId} AND c.parent_id = s.id AND c.todoist_id IS NULL)
     )
@@ -822,17 +828,24 @@ export async function indexSyncedTasks(sql, env, userId, deletedRootIds, deps = 
 // Running a connection
 
 /**
+ * Records a run on the connection. `tasksSynced` says the run read Todoist's
+ * tasks and completions, which moves the completion cursor (tasks_synced_at)
+ * along with the last-success stamp.
+ *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{status: 'ok' | 'failed', summary?: SyncSummary, error?: string, syncedAt?: Date}} result
+ * @param {{status: 'ok' | 'failed', summary?: SyncSummary, error?: string, syncedAt?: Date, tasksSynced?: boolean}} result
  */
 export async function recordSyncResult(sql, userId, result) {
+  const ok = result.status === 'ok';
+  const syncedAt = result.syncedAt ?? new Date();
   await sql`
     UPDATE todoist_connections SET
-      last_synced_at    = CASE WHEN ${result.status === 'ok'}::boolean THEN ${result.syncedAt ?? new Date()} ELSE last_synced_at END,
+      last_synced_at    = CASE WHEN ${ok}::boolean THEN ${syncedAt} ELSE last_synced_at END,
+      tasks_synced_at   = CASE WHEN ${ok && result.tasksSynced === true}::boolean THEN ${syncedAt} ELSE tasks_synced_at END,
       last_sync_status  = ${result.status},
       last_sync_error   = ${result.error ? result.error.slice(0, MAX_SYNC_ERROR_LENGTH) : null},
-      last_sync_summary = CASE WHEN ${result.status === 'ok'}::boolean THEN ${sql.json(/** @type {any} */ (result.summary ?? null))} ELSE last_sync_summary END,
+      last_sync_summary = CASE WHEN ${ok}::boolean THEN ${sql.json(/** @type {any} */ (result.summary ?? null))} ELSE last_sync_summary END,
       updated_at        = now()
     WHERE user_id = ${userId}
   `;
@@ -863,9 +876,11 @@ export function describeSyncFailure(error) {
  * @param {import('postgres').Sql} sql
  * @param {TodoistSyncEnv} env
  * @param {{
- *   userId: string, token: string, timeZone: string | null, lastSyncedAt: Date | null,
+ *   userId: string, token: string, timeZone: string | null, tasksSyncedAt: Date | null,
  *   syncProjects?: boolean, syncTasks?: boolean,
- * }} connection
+ * }} connection `tasksSyncedAt` is the last run that read tasks: the
+ *   completion window starts an hour before it, or a month back when there
+ *   was none.
  * @param {{fetchImpl?: typeof fetch, now?: () => Date}} [deps]
  * @returns {Promise<SyncSummary>}
  */
@@ -876,8 +891,8 @@ export async function syncConnection(sql, env, connection, deps = {}) {
   try {
     const snapshot = await fetchSnapshot(connection.token, {
       completedSince: new Date(
-        connection.lastSyncedAt
-          ? connection.lastSyncedAt.getTime() - COMPLETED_OVERLAP_MS
+        connection.tasksSyncedAt
+          ? connection.tasksSyncedAt.getTime() - COMPLETED_OVERLAP_MS
           : now.getTime() - COMPLETED_LOOKBACK_MS,
       ),
       completedUntil: new Date(now.getTime() + COMPLETED_OVERLAP_MS),
@@ -903,7 +918,12 @@ export async function syncConnection(sql, env, connection, deps = {}) {
         mirroredProjects,
       });
     });
-    await recordSyncResult(sql, connection.userId, { status: 'ok', summary, syncedAt: now });
+    await recordSyncResult(sql, connection.userId, {
+      status: 'ok',
+      summary,
+      syncedAt: now,
+      tasksSynced: syncTasks,
+    });
     console.log(JSON.stringify({ event: 'todoist_synced', ...summary }));
     if (env.deferSearchSync) {
       env.deferSearchSync(

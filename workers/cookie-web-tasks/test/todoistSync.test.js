@@ -347,6 +347,8 @@ describe('applySync', () => {
     // The guard walks each vanished project's whole subtree.
     expect(texts[2]).toContain('WITH RECURSIVE vanished');
     expect(sql.calls[2].values[1]).toEqual(['work', 'reports']);
+    // With tasks on, only Cookie-authored tasks guard a vanished project.
+    expect(sql.calls[2].values[4]).toBe(false);
     expect(texts[3]).toContain('SET todoist_id = NULL');
     expect(texts[4]).toContain('WHERE user_id = ? AND todoist_id IS NOT NULL');
 
@@ -475,6 +477,10 @@ describe('applySync', () => {
     });
 
     expect(sql.calls).toHaveLength(4);
+    // A vanished project holding any task row, mirror or not, is unlinked
+    // rather than deleted, so the cascade cannot take the tasks.
+    expect(sql.calls[2].text).toContain('t.todoist_id IS NULL OR ?::boolean');
+    expect(sql.calls[2].values[4]).toBe(true);
     // The vanished-project guard reads task_items; nothing writes to it.
     expect(
       sql.calls.some((call) => /(INSERT INTO|UPDATE|DELETE FROM) task_items/.test(call.text)),
@@ -553,7 +559,7 @@ describe('indexSyncedTasks', () => {
 });
 
 describe('syncConnection', () => {
-  const connection = { userId: USER_ID, token: 'tok', timeZone: ZONE, lastSyncedAt: null };
+  const connection = { userId: USER_ID, token: 'tok', timeZone: ZONE, tasksSyncedAt: null };
 
   it('records a failed run with a safe message and rethrows', async () => {
     const sql = createMockSql([[]]);
@@ -603,7 +609,7 @@ describe('syncConnection', () => {
     const summary = await syncConnection(
       sql,
       /** @type {any} */ ({ deferSearchSync }),
-      { ...connection, lastSyncedAt: new Date('2026-10-14T08:00:00Z') },
+      { ...connection, tasksSyncedAt: new Date('2026-10-14T08:00:00Z') },
       { fetchImpl: /** @type {any} */ (fetchImpl), now: () => now },
     );
 
@@ -625,6 +631,8 @@ describe('syncConnection', () => {
     expect(record.text).toContain('UPDATE todoist_connections');
     expect(record.values).toContain('ok');
     expect(record.values).toContainEqual(now);
+    // Both the last-success stamp and the completion cursor move.
+    expect(record.values.slice(0, 4)).toEqual([true, now, true, now]);
     expect(deferSearchSync).toHaveBeenCalledWith(expect.any(Function), `todoist:${USER_ID}`);
 
     // The completed window reaches back an hour before the last run.
@@ -682,6 +690,24 @@ describe('syncConnection', () => {
     expect(rows.find((/** @type {any} */ row) => row.todoist_id === 't').project_id).toBe('p-row');
     expect(rows.find((/** @type {any} */ row) => row.todoist_id === 'u').project_id).toBeNull();
     expect(sql.calls.some((call) => call.text.includes('INSERT INTO task_projects'))).toBe(false);
+  });
+
+  it('leaves the completion cursor where it was when tasks are switched off', async () => {
+    const fetchImpl = vi.fn(async (/** @type {any} */ _url) =>
+      jsonResponse({ results: [], next_cursor: null }),
+    );
+    const sql = createMockSql([[], [], []]);
+    const now = new Date('2026-10-15T09:00:00Z');
+    await syncConnection(
+      sql,
+      /** @type {any} */ ({}),
+      { ...connection, syncTasks: false },
+      { fetchImpl: /** @type {any} */ (fetchImpl), now: () => now },
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const record = sql.calls.at(-1);
+    expect(record.text).toContain('tasks_synced_at   = CASE WHEN ?::boolean');
+    expect(record.values.slice(0, 4)).toEqual([true, now, false, now]);
   });
 
   it('looks a month back for completions on a first run', async () => {

@@ -52,7 +52,7 @@ const TOKEN_UNREADABLE_MESSAGE = 'The saved token could not be read. Enter it ag
  *   userId: string, apiTokenEncrypted: string, tokenHint: string,
  *   todoistUserId: string | null, email: string | null,
  *   timeZone: string | null, enabled: boolean, syncProjects: boolean, syncTasks: boolean,
- *   lastSyncedAt: Date | null,
+ *   lastSyncedAt: Date | null, tasksSyncedAt: Date | null,
  *   lastSyncStatus: 'ok' | 'failed' | null, lastSyncError: string | null,
  *   lastSyncSummary: Record<string, number> | null,
  * }} TodoistConnection
@@ -80,6 +80,7 @@ function connectionFromRow(row) {
     syncProjects: row.syncProjects !== false,
     syncTasks: row.syncTasks !== false,
     lastSyncedAt: row.lastSyncedAt ? new Date(row.lastSyncedAt) : null,
+    tasksSyncedAt: row.tasksSyncedAt ? new Date(row.tasksSyncedAt) : null,
     lastSyncStatus: row.lastSyncStatus ?? null,
     lastSyncError: row.lastSyncError ?? null,
     lastSyncSummary:
@@ -117,7 +118,8 @@ export async function loadConnection(sql, userId) {
     SELECT user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
            todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
            sync_projects AS "syncProjects", sync_tasks AS "syncTasks",
-           last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
+           last_synced_at AS "lastSyncedAt", tasks_synced_at AS "tasksSyncedAt",
+           last_sync_status AS "lastSyncStatus",
            last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
     FROM todoist_connections
     WHERE user_id = ${userId}
@@ -218,7 +220,8 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
       RETURNING user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
                 todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
                 sync_projects AS "syncProjects", sync_tasks AS "syncTasks",
-                last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
+                last_synced_at AS "lastSyncedAt", tasks_synced_at AS "tasksSyncedAt",
+           last_sync_status AS "lastSyncStatus",
                 last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
     `;
     if (!row) return Response.json({ error: 'Connect Todoist first' }, { status: 404 });
@@ -256,7 +259,8 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
     // account's mirrors: its first sync would see none of their ids and
     // complete or delete them all. Unlinking first leaves them as ordinary
     // Cookie rows and lets the new account mirror afresh. The completion
-    // cursor (last_synced_at) is reset for the same reason.
+    // cursor (tasks_synced_at) and last-success stamp are reset for the same
+    // reason.
     const switchesAccount = existing !== null && isDifferentAccount(existing, account);
     if (switchesAccount) {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
@@ -285,6 +289,8 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
       sync_tasks          = COALESCE(${syncTasks}::boolean, todoist_connections.sync_tasks),
       last_synced_at      = CASE WHEN ${switchesAccount}::boolean THEN NULL
                                  ELSE todoist_connections.last_synced_at END,
+      tasks_synced_at     = CASE WHEN ${switchesAccount}::boolean THEN NULL
+                                 ELSE todoist_connections.tasks_synced_at END,
       last_sync_summary   = CASE WHEN ${switchesAccount}::boolean THEN NULL
                                  ELSE todoist_connections.last_sync_summary END,
       -- A new token clears the verdict on the old one.
@@ -294,7 +300,8 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
     RETURNING user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
               todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
               sync_projects AS "syncProjects", sync_tasks AS "syncTasks",
-              last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
+              last_synced_at AS "lastSyncedAt", tasks_synced_at AS "tasksSyncedAt",
+           last_sync_status AS "lastSyncStatus",
               last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
     `;
     return saved;
@@ -403,7 +410,8 @@ export async function runScheduledTodoistSyncs(env, scheduledAt, deps = {}) {
       SELECT user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
              todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
              sync_projects AS "syncProjects", sync_tasks AS "syncTasks",
-             last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
+             last_synced_at AS "lastSyncedAt", tasks_synced_at AS "tasksSyncedAt",
+           last_sync_status AS "lastSyncStatus",
              last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
       FROM todoist_connections
       WHERE enabled
