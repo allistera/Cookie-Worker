@@ -400,6 +400,53 @@ describe('routing — /task-labels', () => {
   });
 });
 
+describe('routing — /task-filters', () => {
+  const filter = {
+    id: '11111111-1111-4111-8111-111111111111',
+    name: 'Urgent',
+    match: 'all',
+    rules: [{ field: 'priority', value: 1, negate: false }],
+  };
+
+  test('GET reads the caller document, empty when nothing was saved', async () => {
+    mockQuery.mockResolvedValueOnce([{ filters: null }]);
+
+    const response = await worker.fetch(request('/task-filters'), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ revision: 0, filters: [] });
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+  });
+
+  test('PUT replaces the document from a JSON body', async () => {
+    mockQuery.mockResolvedValueOnce([{ filters: { revision: 1, filters: [filter] } }]);
+
+    const response = await worker.fetch(
+      request('/task-filters', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ revision: 0, filters: [filter] }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).revision).toBe(1);
+  });
+
+  test('refuses POST with the allowed methods', async () => {
+    const response = await worker.fetch(request('/task-filters', { method: 'POST' }), env, ctx);
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('GET, PUT');
+  });
+
+  test('has no sub-paths', async () => {
+    const response = await worker.fetch(request('/task-filters/abc'), env, ctx);
+    expect(response.status).toBe(404);
+  });
+});
+
 describe('routing — unknown paths', () => {
   test('a completely unknown top-level path returns 404', async () => {
     const response = await worker.fetch(request('/unknown'), env, ctx);

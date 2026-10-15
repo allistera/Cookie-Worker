@@ -11,6 +11,16 @@ const USER_ID = '99999999-9999-9999-9999-999999999999';
 const LABEL_ID = '11111111-1111-4111-8111-111111111111';
 const LABEL = { id: LABEL_ID, name: 'home', color: '#1a73e8', taskCount: 2, createdAt: 't0' };
 
+/** A saved filter with one rule on the given label. @param {string} label */
+function filterOn(label) {
+  return {
+    id: '22222222-2222-4222-8222-222222222222',
+    name: 'Tagged',
+    match: 'all',
+    rules: [{ field: 'label', value: label, negate: false }],
+  };
+}
+
 describe('GET /task-labels', () => {
   it('returns the caller labels with a task count each', async () => {
     const sql = createMockSql([[LABEL]]);
@@ -74,6 +84,8 @@ describe('PATCH /task-labels', () => {
       [], // no other label has the new name
       [{ id: LABEL_ID, name: 'house', color: '#1a73e8', createdAt: 't0' }],
       [], // task rewrite
+      [{ filters: { revision: 1, filters: [filterOn('home')] } }], // saved filters, locked
+      [], // saved filters rewrite
     ]);
 
     const response = await updateTaskLabel(sql, USER_ID, { id: LABEL_ID, name: '@House' });
@@ -84,6 +96,9 @@ describe('PATCH /task-labels', () => {
     const rewrite = sql.calls.find((call) => call.text.includes('array_replace'));
     expect(rewrite.text).toContain('UPDATE task_items');
     expect(rewrite.values).toEqual(expect.arrayContaining(['home', 'house', USER_ID]));
+    // Saved filters naming the label follow it, in the same transaction.
+    expect(sql.calls.at(-1).text).toContain("'{savedTaskFilters}'");
+    expect(sql.json).toHaveBeenCalledWith({ revision: 2, filters: [filterOn('house')] });
   });
 
   it('recolours without touching tasks', async () => {

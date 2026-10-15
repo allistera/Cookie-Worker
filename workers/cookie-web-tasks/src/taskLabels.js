@@ -4,6 +4,7 @@
 // projects.js: the same id validation, user-scoped statements and body
 // shapes.
 
+import { renameLabelInTaskFilters } from './taskFilters.js';
 import { normalizeTaskLabels } from './taskMetadata.js';
 import { validId } from '../../../shared/pagination.js';
 
@@ -134,6 +135,8 @@ export async function updateTaskLabel(sql, userId, body) {
         SET labels = array_replace(labels, ${existing.name}, ${name}), updated_at = now()
         WHERE user_id = ${userId} AND labels @> ARRAY[${existing.name}]::text[]
       `;
+      // Saved filters name labels too (taskFilters.js), so they follow.
+      await renameLabelInTaskFilters(tx, userId, existing.name, /** @type {string} */ (name));
     }
     return Response.json({ label });
   });
