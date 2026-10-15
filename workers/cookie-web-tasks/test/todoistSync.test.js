@@ -280,6 +280,7 @@ describe('applySync', () => {
       [{ id: 't1a-row', todoistId: 't1a', parentId: T1 }], // tasks depth 1
       [], // parent re-index mark
       [], // completions
+      [], // Cookie sub-tasks detached from doomed parents
       [
         { id: 'z-row', kind: 'task', parentId: null },
         { id: 'sec-row', kind: 'divider', parentId: null },
@@ -299,6 +300,8 @@ describe('applySync', () => {
       __json: [{ todoist_id: 'reports', name: 'Reports', parent_id: WORK, description: null }],
     });
     expect(texts[2]).toContain('DELETE FROM task_projects');
+    // The guard walks each vanished project's whole subtree.
+    expect(texts[2]).toContain('WITH RECURSIVE vanished');
     expect(sql.calls[2].values[1]).toEqual(['work', 'reports']);
     expect(texts[3]).toContain('SET todoist_id = NULL');
     expect(texts[4]).toContain('WHERE user_id = ? AND todoist_id IS NOT NULL');
@@ -346,10 +349,13 @@ describe('applySync', () => {
     expect(sql.calls[9].values[0]).toEqual({
       __json: [{ todoist_id: 'c1', completed_at: '2026-10-14T09:00:00.000Z' }],
     });
-    expect(texts[10]).toContain('DELETE FROM task_items');
-    expect(sql.calls[10].values[1]).toEqual(['zombie', `${SECTION_PREFIX}old`]);
-    expect(texts[11]).toContain('INSERT INTO task_labels');
-    expect(sql.calls[11].values[1]).toEqual(['urgent', 'work']);
+    expect(texts[10]).toContain('SET parent_id = NULL');
+    expect(texts[10]).toContain('c.todoist_id IS NULL');
+    expect(sql.calls[10].values[2]).toEqual(['zombie', `${SECTION_PREFIX}old`]);
+    expect(texts[11]).toContain('DELETE FROM task_items');
+    expect(sql.calls[11].values[1]).toEqual(['zombie', `${SECTION_PREFIX}old`]);
+    expect(texts[12]).toContain('INSERT INTO task_labels');
+    expect(sql.calls[12].values[1]).toEqual(['urgent', 'work']);
 
     expect(summary).toEqual({
       projects: 2,
@@ -386,7 +392,12 @@ describe('indexSyncedTasks', () => {
   const env = { MEILISEARCH_URL: 'https://meili.example', MEILISEARCH_API_KEY: 'k' };
 
   it('drops deleted roots, pushes unindexed mirrors in chunks and stamps them', async () => {
-    const rows = Array.from({ length: 60 }, (_, i) => ({ id: `id-${i}`, content: `t${i}` }));
+    const rows = Array.from({ length: 60 }, (_, i) => ({
+      id: `id-${i}`,
+      content: `t${i}`,
+      row_version: `${100 + i}`,
+      child_versions: '',
+    }));
     const sql = createMockSql([rows, [], []]);
     const addDocuments = vi.fn(async () => ({}));
     const deleteDocuments = vi.fn(async () => ({}));
@@ -397,8 +408,11 @@ describe('indexSyncedTasks', () => {
     expect(addDocuments).toHaveBeenCalledTimes(2);
     expect(/** @type {any[]} */ (addDocuments.mock.calls[0])[2]).toHaveLength(50);
     expect(sql.calls[1].text).toContain('SET search_indexed_at = now()');
-    expect(sql.calls[1].values[1]).toHaveLength(50);
-    expect(sql.calls[2].values[1]).toHaveLength(10);
+    // Stamped only where the row (and its sub-task set) is still as read.
+    expect(sql.calls[1].text).toContain('t.xmin::text = pushed.row_version');
+    expect(sql.calls[1].values[0]).toHaveLength(50);
+    expect(sql.calls[1].values[1]).toEqual(rows.slice(0, 50).map((row) => row.row_version));
+    expect(sql.calls[2].values[0]).toHaveLength(10);
   });
 
   it('never throws and does nothing without Meilisearch', async () => {

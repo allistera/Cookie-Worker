@@ -467,16 +467,34 @@ export async function applySync(sql, userId, plan) {
   }
 
   const keptProjects = plan.projects.map((project) => project.todoistId);
-  // A vanished mirror goes when only mirrors depend on it; otherwise it
-  // stays as an ordinary project so nothing written in Cookie is lost.
+  // A vanished mirror goes when only mirrors depend on it, anywhere in its
+  // subtree: deleting a project cascades to its sub-projects and their tasks,
+  // so a Cookie-authored task or sub-project nested beneath a mirrored child
+  // also keeps the whole branch. Otherwise it stays as an ordinary project.
   const removedProjects = await sql`
+    WITH RECURSIVE vanished AS (
+      SELECT id FROM task_projects
+      WHERE user_id = ${userId} AND todoist_id IS NOT NULL
+        AND NOT (todoist_id = ANY(${keptProjects}::text[]))
+    ),
+    subtree AS (
+      SELECT v.id AS root, v.id FROM vanished v
+      UNION
+      SELECT s.root, c.id FROM task_projects c
+      JOIN subtree s ON c.parent_id = s.id
+      WHERE c.user_id = ${userId}
+    ),
+    guarded AS (
+      SELECT DISTINCT s.root FROM subtree s
+      WHERE EXISTS (SELECT 1 FROM task_items t
+                    WHERE t.user_id = ${userId} AND t.project_id = s.id AND t.todoist_id IS NULL)
+         OR EXISTS (SELECT 1 FROM task_projects c
+                    WHERE c.user_id = ${userId} AND c.parent_id = s.id AND c.todoist_id IS NULL)
+    )
     DELETE FROM task_projects p
-    WHERE p.user_id = ${userId} AND p.todoist_id IS NOT NULL
-      AND NOT (p.todoist_id = ANY(${keptProjects}::text[]))
-      AND NOT EXISTS (SELECT 1 FROM task_items t
-                      WHERE t.user_id = p.user_id AND t.project_id = p.id AND t.todoist_id IS NULL)
-      AND NOT EXISTS (SELECT 1 FROM task_projects c
-                      WHERE c.user_id = p.user_id AND c.parent_id = p.id AND c.todoist_id IS NULL)
+    WHERE p.user_id = ${userId}
+      AND p.id IN (SELECT id FROM vanished)
+      AND p.id NOT IN (SELECT root FROM guarded)
     RETURNING p.id
   `;
   const unlinkedProjects = await sql`
@@ -605,6 +623,16 @@ export async function applySync(sql, userId, plan) {
   /** @type {string[]} */
   let deletedRootIds = [];
   if (toDelete.length) {
+    // Deleting a task cascades to its sub-tasks. A sub-task written in Cookie
+    // under a mirrored parent is promoted to a top-level task in the same
+    // project first, so only mirrors go.
+    await sql`
+      UPDATE task_items c
+      SET parent_id = NULL, search_indexed_at = NULL, updated_at = now()
+      WHERE c.user_id = ${userId} AND c.todoist_id IS NULL
+        AND c.parent_id IN (SELECT id FROM task_items
+                            WHERE user_id = ${userId} AND todoist_id = ANY(${toDelete}::text[]))
+    `;
     const deleted = await sql`
       DELETE FROM task_items
       WHERE user_id = ${userId} AND todoist_id = ANY(${toDelete}::text[])
@@ -652,7 +680,10 @@ export async function indexSyncedTasks(sql, env, userId, deletedRootIds, deps = 
   try {
     if (deletedRootIds.length) await deleteDocs(env, TASKS_INDEX, deletedRootIds);
     const rows = await sql`
-      SELECT t.id, t.user_id, t.content, t.description, t.completed_at, t.updated_at,
+      SELECT t.id, t.xmin::text AS row_version,
+             COALESCE(string_agg(c.id::text || ':' || c.xmin::text, ',' ORDER BY c.id), '')
+               AS child_versions,
+             t.user_id, t.content, t.description, t.completed_at, t.updated_at,
              COALESCE(array_agg(c.content ORDER BY c.position, c.created_at)
                         FILTER (WHERE c.id IS NOT NULL), ARRAY[]::text[]) AS subtasks
       FROM task_items t
@@ -664,9 +695,19 @@ export async function indexSyncedTasks(sql, env, userId, deletedRootIds, deps = 
     for (let start = 0; start < rows.length; start += MEILI_CHUNK_SIZE) {
       const chunk = rows.slice(start, start + MEILI_CHUNK_SIZE);
       await addDocs(env, TASKS_INDEX, chunk);
+      // Stamp only rows (and sub-task sets) still as they were read, as
+      // taskItemMeiliSync.js does: an edit that landed meanwhile keeps its
+      // null stamp for the drift sweep instead of being passed off as indexed.
       await sql`
-        UPDATE task_items SET search_indexed_at = now()
-        WHERE user_id = ${userId} AND id = ANY(${chunk.map((row) => String(row.id))}::uuid[])
+        UPDATE task_items t SET search_indexed_at = now()
+        FROM unnest(${chunk.map((row) => String(row.id))}::uuid[],
+                    ${chunk.map((row) => String(row.row_version))}::text[],
+                    ${chunk.map((row) => String(row.child_versions))}::text[])
+          AS pushed(id, row_version, child_versions)
+        WHERE t.user_id = ${userId} AND t.id = pushed.id
+          AND t.xmin::text = pushed.row_version
+          AND COALESCE((SELECT string_agg(child.id::text || ':' || child.xmin::text, ',' ORDER BY child.id)
+                        FROM task_items child WHERE child.parent_id = t.id), '') = pushed.child_versions
       `;
     }
   } catch (error) {

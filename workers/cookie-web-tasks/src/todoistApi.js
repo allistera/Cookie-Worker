@@ -106,14 +106,18 @@ export async function listAll(
  *
  * @param {string} token
  * @param {typeof fetch} [fetchImpl]
- * @returns {Promise<{email: string | null, timeZone: string | null}>}
+ * @returns {Promise<{id: string | null, email: string | null, timeZone: string | null}>}
  */
 export async function fetchAccount(token, fetchImpl = fetch) {
   const user = await getJson(token, '/user', {}, fetchImpl);
+  const id =
+    typeof user?.id === 'string' || typeof user?.id === 'number'
+      ? String(user.id).slice(0, 64)
+      : '';
   const email = typeof user?.email === 'string' ? user.email.trim().slice(0, 320) : '';
   const timeZone =
     typeof user?.tz_info?.timezone === 'string' ? user.tz_info.timezone.trim().slice(0, 100) : '';
-  return { email: email || null, timeZone: timeZone || null };
+  return { id: id || null, email: email || null, timeZone: timeZone || null };
 }
 
 /**

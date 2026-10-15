@@ -90,17 +90,21 @@ describe('listAll', () => {
 
 describe('fetchAccount', () => {
   it('returns the email and time zone, or nulls when Todoist gives none', async () => {
-    const full = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse({ email: ' person@example.com ', tz_info: { timezone: 'Europe/Paris' } }),
-      );
+    const full = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: 123456,
+        email: ' person@example.com ',
+        tz_info: { timezone: 'Europe/Paris' },
+      }),
+    );
     expect(await fetchAccount('tok', /** @type {any} */ (full))).toEqual({
+      id: '123456',
       email: 'person@example.com',
       timeZone: 'Europe/Paris',
     });
-    const bare = vi.fn().mockResolvedValue(jsonResponse({ id: '1' }));
+    const bare = vi.fn().mockResolvedValue(jsonResponse({ karma: 1 }));
     expect(await fetchAccount('tok', /** @type {any} */ (bare))).toEqual({
+      id: null,
       email: null,
       timeZone: null,
     });

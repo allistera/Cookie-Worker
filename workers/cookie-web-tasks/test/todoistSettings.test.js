@@ -3,6 +3,7 @@ import { encryptToken } from '../../../shared/token-crypto.js';
 import {
   deleteTodoistSettings,
   getTodoistSettings,
+  isDifferentAccount,
   postTodoistSync,
   publicSettings,
   putTodoistSettings,
@@ -27,6 +28,7 @@ async function connectionRow(overrides = {}) {
     userId: USER_ID,
     apiTokenEncrypted: await encryptToken('todoist-token', KEY),
     tokenHint: 'oken',
+    todoistUserId: 'todoist-user-1',
     email: 'person@example.com',
     timeZone: 'Europe/London',
     enabled: true,
@@ -145,12 +147,15 @@ describe('PUT /tasks/todoist', () => {
   });
 
   it('checks the token with Todoist, then stores it encrypted with the account details', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse({ email: 'person@example.com', tz_info: { timezone: 'Europe/Paris' } }),
-      );
-    const sql = createMockSql([[await connectionRow({ timeZone: 'Europe/Paris' })]]);
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: 'todoist-user-1',
+        email: 'person@example.com',
+        tz_info: { timezone: 'Europe/Paris' },
+      }),
+    );
+    // No connection yet, then the saved row.
+    const sql = createMockSql([[], [await connectionRow({ timeZone: 'Europe/Paris' })]]);
 
     const response = await putTodoistSettings(sql, USER_ID, { token: ' abcdef123456 ' }, env, {
       fetchImpl: /** @type {any} */ (fetchImpl),
@@ -159,20 +164,64 @@ describe('PUT /tasks/todoist', () => {
     expect(response.status).toBe(200);
     expect(new URL(String(fetchImpl.mock.calls[0][0])).pathname).toBe('/api/v1/user');
     expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe('Bearer abcdef123456');
-    const { text, values } = sql.calls[0];
+    expect(sql.calls[0].text).toContain('FROM todoist_connections');
+    const { text, values } = sql.calls[1];
     expect(text).toContain('INSERT INTO todoist_connections');
     expect(values[0]).toBe(USER_ID);
     expect(String(values[1]).startsWith('v1:')).toBe(true);
     expect(values[1]).not.toContain('abcdef123456');
     expect(values[2]).toBe('3456');
-    expect(values[3]).toBe('person@example.com');
-    expect(values[4]).toBe('Europe/Paris');
-    expect(values[5]).toBe(true); // enabled defaults on for a new connection
-    expect(values[7]).toBe(false); // hasEnabled: keep the existing flag on a replace
+    expect(values[3]).toBe('todoist-user-1');
+    expect(values[4]).toBe('person@example.com');
+    expect(values[5]).toBe('Europe/Paris');
+    expect(values[6]).toBe(true); // enabled defaults on for a new connection
+    expect(values[8]).toBe(false); // hasEnabled: keep the existing flag on a replace
+    expect(values[9]).toBe(false); // not an account switch
+    expect(sql.calls.some((call) => call.text.includes('SET todoist_id = NULL'))).toBe(false);
     expect((await response.json()).todoist).toMatchObject({
       connected: true,
       timeZone: 'Europe/Paris',
     });
+  });
+
+  it("unlinks the previous account's mirrors when the new token belongs to another account", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ id: 'todoist-user-2', email: 'other@example.com', tz_info: {} }),
+      );
+    const existing = await connectionRow();
+    const saved = await connectionRow({
+      todoistUserId: 'todoist-user-2',
+      email: 'other@example.com',
+    });
+    const sql = createMockSql([[existing], [], [], [saved]]);
+
+    const response = await putTodoistSettings(sql, USER_ID, { token: 'newtoken99' }, env, {
+      fetchImpl: /** @type {any} */ (fetchImpl),
+    });
+
+    expect(response.status).toBe(200);
+    expect(sql.controlCalls[0].text).toContain('pg_advisory_xact_lock');
+    expect(sql.calls[1].text).toContain('UPDATE task_items SET todoist_id = NULL');
+    expect(sql.calls[2].text).toContain('UPDATE task_projects SET todoist_id = NULL');
+    expect(sql.calls[3].text).toContain('INSERT INTO todoist_connections');
+    expect(sql.calls[3].values[9]).toBe(true); // switchesAccount resets the completion cursor
+    expect((await response.json()).todoist.email).toBe('other@example.com');
+  });
+
+  it('treats a renewed token for the same account as a plain replacement', async () => {
+    const existing = await connectionRow();
+    expect(isDifferentAccount(existing, { id: 'todoist-user-1', email: 'new@example.com' })).toBe(
+      false,
+    );
+    expect(
+      isDifferentAccount(existing, { id: 'todoist-user-2', email: 'person@example.com' }),
+    ).toBe(true);
+    const noId = { ...existing, todoistUserId: null };
+    expect(isDifferentAccount(noId, { id: null, email: 'Person@example.com' })).toBe(false);
+    expect(isDifferentAccount(noId, { id: null, email: 'other@example.com' })).toBe(true);
+    expect(isDifferentAccount({ ...noId, email: null }, { id: null, email: null })).toBe(false);
   });
 
   it('flips only the schedule flag when no token is sent, and 404s without a connection', async () => {

@@ -9,7 +9,8 @@
 //                               stored encrypted; enabled flips the schedule.
 //   DELETE /tasks/todoist       forgets the token. Mirrored projects and tasks
 //                               stay, still linked, so reconnecting the same
-//                               account picks them up in place.
+//                               account picks them up in place; a token for a
+//                               different account unlinks them first.
 //   POST   /tasks/todoist/sync  runs a sync now and answers with the result.
 //
 // The token is encrypted at rest under TODOIST_TOKEN_ENCRYPTION_KEY
@@ -46,7 +47,8 @@ const TOKEN_UNREADABLE_MESSAGE = 'The saved token could not be read. Enter it ag
 
 /**
  * @typedef {{
- *   userId: string, apiTokenEncrypted: string, tokenHint: string, email: string | null,
+ *   userId: string, apiTokenEncrypted: string, tokenHint: string,
+ *   todoistUserId: string | null, email: string | null,
  *   timeZone: string | null, enabled: boolean, lastSyncedAt: Date | null,
  *   lastSyncStatus: 'ok' | 'failed' | null, lastSyncError: string | null,
  *   lastSyncSummary: Record<string, number> | null,
@@ -64,6 +66,7 @@ function connectionFromRow(row) {
     userId: String(row.userId),
     apiTokenEncrypted: String(row.apiTokenEncrypted),
     tokenHint: String(row.tokenHint ?? ''),
+    todoistUserId: row.todoistUserId ?? null,
     email: row.email ?? null,
     timeZone: row.timeZone ?? null,
     enabled: row.enabled === true,
@@ -79,6 +82,23 @@ function connectionFromRow(row) {
 // written out each time because postgres.js parameters cannot carry it.
 
 /**
+ * Whether a newly checked token belongs to another Todoist account than the
+ * stored connection. Judged on the Todoist user id when both are known, on
+ * the email otherwise; when neither can be compared the account is taken to
+ * be the same, so a plain token renewal never unlinks anything.
+ *
+ * @param {TodoistConnection} existing
+ * @param {{id: string | null, email: string | null}} account
+ */
+export function isDifferentAccount(existing, account) {
+  if (existing.todoistUserId && account.id) return existing.todoistUserId !== account.id;
+  if (existing.email && account.email) {
+    return existing.email.toLowerCase() !== account.email.toLowerCase();
+  }
+  return false;
+}
+
+/**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @returns {Promise<TodoistConnection | null>}
@@ -86,7 +106,7 @@ function connectionFromRow(row) {
 export async function loadConnection(sql, userId) {
   const [row] = await sql`
     SELECT user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
-           todoist_email AS email, time_zone AS "timeZone", enabled,
+           todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
            last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
            last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
     FROM todoist_connections
@@ -171,7 +191,7 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
       UPDATE todoist_connections SET enabled = ${enabled}, updated_at = now()
       WHERE user_id = ${userId}
       RETURNING user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
-                todoist_email AS email, time_zone AS "timeZone", enabled,
+                todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
                 last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
                 last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
     `;
@@ -204,28 +224,50 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
 
   const key = /** @type {string} */ (env.TODOIST_TOKEN_ENCRYPTION_KEY);
   const encrypted = await encryptToken(token, key);
-  const [row] = await sql`
+  const row = await sql.begin(async (tx) => {
+    const existing = await loadConnection(/** @type {any} */ (tx), userId);
+    // A token for a different Todoist account must not inherit the previous
+    // account's mirrors: its first sync would see none of their ids and
+    // complete or delete them all. Unlinking first leaves them as ordinary
+    // Cookie rows and lets the new account mirror afresh. The completion
+    // cursor (last_synced_at) is reset for the same reason.
+    const switchesAccount = existing !== null && isDifferentAccount(existing, account);
+    if (switchesAccount) {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
+      await tx`UPDATE task_items SET todoist_id = NULL, updated_at = now()
+               WHERE user_id = ${userId} AND todoist_id IS NOT NULL`;
+      await tx`UPDATE task_projects SET todoist_id = NULL
+               WHERE user_id = ${userId} AND todoist_id IS NOT NULL`;
+    }
+    const [saved] = await tx`
     INSERT INTO todoist_connections
-      (user_id, api_token_encrypted, token_hint, todoist_email, time_zone, enabled)
-    SELECT ${userId}, ${encrypted}, ${token.slice(-TOKEN_HINT_LENGTH)}, ${account.email},
-           ${account.timeZone}, ${enabled ?? true}
+      (user_id, api_token_encrypted, token_hint, todoist_user_id, todoist_email, time_zone, enabled)
+    SELECT ${userId}, ${encrypted}, ${token.slice(-TOKEN_HINT_LENGTH)}, ${account.id},
+           ${account.email}, ${account.timeZone}, ${enabled ?? true}
     WHERE EXISTS (SELECT 1 FROM users WHERE id = ${userId})
     ON CONFLICT (user_id) DO UPDATE SET
       api_token_encrypted = EXCLUDED.api_token_encrypted,
       token_hint          = EXCLUDED.token_hint,
+      todoist_user_id     = EXCLUDED.todoist_user_id,
       todoist_email       = EXCLUDED.todoist_email,
       time_zone           = EXCLUDED.time_zone,
       enabled             = CASE WHEN ${hasEnabled}::boolean THEN EXCLUDED.enabled
                                  ELSE todoist_connections.enabled END,
+      last_synced_at      = CASE WHEN ${switchesAccount}::boolean THEN NULL
+                                 ELSE todoist_connections.last_synced_at END,
+      last_sync_summary   = CASE WHEN ${switchesAccount}::boolean THEN NULL
+                                 ELSE todoist_connections.last_sync_summary END,
       -- A new token clears the verdict on the old one.
       last_sync_status    = NULL,
       last_sync_error     = NULL,
       updated_at          = now()
     RETURNING user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
-              todoist_email AS email, time_zone AS "timeZone", enabled,
+              todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
               last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
               last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
-  `;
+    `;
+    return saved;
+  });
   if (!row) return Response.json({ error: 'User not found' }, { status: 404 });
   return Response.json(
     { todoist: publicSettings(env, connectionFromRow(row)) },
@@ -328,7 +370,7 @@ export async function runScheduledTodoistSyncs(env, scheduledAt, deps = {}) {
   try {
     const rows = await sql`
       SELECT user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
-             todoist_email AS email, time_zone AS "timeZone", enabled,
+             todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
              last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
              last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
       FROM todoist_connections
