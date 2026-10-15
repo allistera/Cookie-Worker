@@ -67,7 +67,7 @@ const MAX_LABELS = 20;
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const MAX_SYNC_ERROR_LENGTH = 500;
 
-/** @typedef {{HYPERDRIVE: {connectionString: string}, TODOIST_TOKEN_ENCRYPTION_KEY?: string, MEILISEARCH_URL?: string, MEILISEARCH_API_KEY?: string, deferSearchSync?: Function}} TodoistSyncEnv */
+/** @typedef {{HYPERDRIVE: {connectionString: string}, TODOIST_TOKEN_ENCRYPTION_KEY?: string, MEILISEARCH_URL?: string, MEILISEARCH_API_KEY?: string, FILES?: R2Bucket, deferSearchSync?: Function}} TodoistSyncEnv */
 
 /**
  * @typedef {{
@@ -924,6 +924,19 @@ export async function syncConnection(sql, env, connection, deps = {}) {
       });
       return { ...applied, attachmentKeys: keys };
     });
+    // The rows are committed, so the objects of any thread that cascaded
+    // are only findable from the keys read above: clean them up now, ahead
+    // of the status write, and never let that cleanup decide the outcome.
+    await deleteVanishedAttachments(sql, env ?? {}, connection.userId, attachmentKeys).catch(
+      (error) => {
+        console.log(
+          JSON.stringify({
+            event: 'todoist_attachment_cleanup_failed',
+            message: /** @type {Error} */ (error)?.message ?? String(error),
+          }),
+        );
+      },
+    );
     await recordSyncResult(sql, connection.userId, {
       status: 'ok',
       summary,
@@ -931,7 +944,6 @@ export async function syncConnection(sql, env, connection, deps = {}) {
       tasksSynced: syncTasks,
     });
     console.log(JSON.stringify({ event: 'todoist_synced', ...summary }));
-    await deleteVanishedAttachments(sql, env ?? {}, connection.userId, attachmentKeys);
     if (env.deferSearchSync) {
       env.deferSearchSync(
         (/** @type {import('postgres').Sql} */ freshSql) =>

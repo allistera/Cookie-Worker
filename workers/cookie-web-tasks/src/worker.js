@@ -133,7 +133,9 @@ async function route(url, request, sql, userId, env) {
       if (reorder) return reorderTaskItems(sql, userId, body);
       if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
       if (request.method === 'PATCH') return updateTaskItem(sql, userId, body, env);
-      return deleteTaskItem(sql, userId, body, env);
+      return deleteTaskItem(sql, userId, body, env, {
+        report: (operation, error, extra) => captureHandledException(operation, error, env, extra),
+      });
     });
   }
 
@@ -149,7 +151,9 @@ async function route(url, request, sql, userId, env) {
     return withJsonBody(request, (body) => {
       if (request.method === 'POST') return createProject(sql, userId, body);
       if (request.method === 'PATCH') return updateProject(sql, userId, body);
-      return deleteProject(sql, userId, body, env);
+      return deleteProject(sql, userId, body, env, {
+        report: (operation, error, extra) => captureHandledException(operation, error, env, extra),
+      });
     });
   }
 

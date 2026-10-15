@@ -16,7 +16,7 @@ import {
   sniffFileType,
 } from './files.js';
 import { cleanText } from './documents.js';
-import { decodeCursor, encodeCursor, validId, validTimestamp } from '../../../shared/pagination.js';
+import { decodeCursor, encodeCursor, validId } from '../../../shared/pagination.js';
 
 // Same as a task description (taskItems.js).
 export const MAX_COMMENT_LENGTH = 10000;
@@ -28,6 +28,23 @@ const COMMENT_RATE_LIMIT = { limit: 60, windowMs: 60_000 };
 const PAGE_SIZE = 100;
 
 const NEEDS_CONTENT = 'A comment needs text or an attachment';
+// The cursor time exactly as the list query emits it (UTC, microseconds).
+const CURSOR_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/u;
+
+/**
+ * A cursor time the list query could have produced: the exact format, and
+ * a real calendar date. Date.parse alone would admit 2026-02-31, which
+ * Postgres refuses at the ::timestamptz cast — a 500 where the caller
+ * deserves a 400.
+ *
+ * @param {any} value
+ */
+export function isCursorTime(value) {
+  if (typeof value !== 'string' || !CURSOR_TIME_RE.test(value)) return false;
+  const millis = `${value.slice(0, 23)}Z`;
+  const date = new Date(millis);
+  return !Number.isNaN(date.getTime()) && date.toISOString() === millis;
+}
 
 /**
  * @typedef {{
@@ -58,7 +75,7 @@ export async function getTaskComments(sql, userId, url) {
     cursor = decodeCursor(
       url.searchParams.get('after'),
       (value) =>
-        Array.isArray(value) && value.length === 2 && validTimestamp(value[0]) && validId(value[1]),
+        Array.isArray(value) && value.length === 2 && isCursorTime(value[0]) && validId(value[1]),
     );
   } catch {
     return Response.json({ error: 'Invalid comment cursor' }, { status: 400 });
@@ -134,8 +151,15 @@ export async function createTaskComment(request, sql, userId, env, deps) {
     return Response.json({ error: 'File is larger than 25 MB' }, { status: 413 });
   }
 
-  const [task] = await sql`SELECT id FROM task_items WHERE id = ${taskId} AND user_id = ${userId}`;
-  if (!task) return Response.json({ error: 'Task not found' }, { status: 404 });
+  // Nothing is written to the bucket for a task the caller does not own.
+  // The row insert below checks again under the lock; this read only spares
+  // the upload.
+  if (file) {
+    const [task] = await sql`
+      SELECT id FROM task_items WHERE id = ${taskId} AND user_id = ${userId}
+    `;
+    if (!task) return Response.json({ error: 'Task not found' }, { status: 404 });
+  }
 
   /** @type {{file_name: string | null, mime_type: string | null, size_bytes: number | null, object_key: string | null}} */
   let attachment = { file_name: null, mime_type: null, size_bytes: null, object_key: null };
@@ -155,24 +179,27 @@ export async function createTaskComment(request, sql, userId, env, deps) {
     await env.FILES.put(objectKey, bytes, { httpMetadata: { contentType: mimeType } });
   }
 
+  // The row goes in under the owner's task lock, the one every cascading
+  // delete (deleteTaskItem, deleteProject, the Todoist sync) snapshots
+  // attachment keys under, so a comment is either in a delete's snapshot
+  // or refused because its task is already gone — never a row that
+  // cascades away with an object nobody knows about. The insert re-checks
+  // the task itself: no owned task, no row.
+  let comment;
   try {
-    const [comment] = await sql`
-      INSERT INTO task_comments (task_id, user_id, body, file_name, mime_type, size_bytes, object_key)
-      VALUES (${taskId}, ${userId}, ${body}, ${attachment.file_name}, ${attachment.mime_type},
-              ${attachment.size_bytes}, ${attachment.object_key})
-      RETURNING id, task_id AS "taskId", body,
-        CASE WHEN object_key IS NULL THEN NULL ELSE jsonb_build_object(
-          'name', file_name, 'mimeType', mime_type, 'sizeBytes', size_bytes) END AS attachment,
-        true AS mine, edited_at AS "editedAt", created_at AS "createdAt", updated_at AS "updatedAt"
-    `;
-    console.log(
-      JSON.stringify({
-        event: 'task_comment_created',
-        comment_id: comment.id,
-        size: attachment.size_bytes ?? 0,
-      }),
-    );
-    return Response.json({ comment }, { status: 201 });
+    [comment] = await sql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
+      return tx`
+        INSERT INTO task_comments (task_id, user_id, body, file_name, mime_type, size_bytes, object_key)
+        SELECT t.id, ${userId}, ${body}, ${attachment.file_name}, ${attachment.mime_type},
+               ${attachment.size_bytes}, ${attachment.object_key}
+        FROM task_items t WHERE t.id = ${taskId} AND t.user_id = ${userId}
+        RETURNING id, task_id AS "taskId", body,
+          CASE WHEN object_key IS NULL THEN NULL ELSE jsonb_build_object(
+            'name', file_name, 'mimeType', mime_type, 'sizeBytes', size_bytes) END AS attachment,
+          true AS mine, edited_at AS "editedAt", created_at AS "createdAt", updated_at AS "updatedAt"
+      `;
+    });
   } catch (error) {
     if (attachment.object_key) {
       await env.FILES?.delete(attachment.object_key).catch(() => undefined);
@@ -185,6 +212,20 @@ export async function createTaskComment(request, sql, userId, env, deps) {
     );
     return Response.json({ error: 'Failed to save the comment' }, { status: 500 });
   }
+  if (!comment) {
+    if (attachment.object_key) {
+      await env.FILES?.delete(attachment.object_key).catch(() => undefined);
+    }
+    return Response.json({ error: 'Task not found' }, { status: 404 });
+  }
+  console.log(
+    JSON.stringify({
+      event: 'task_comment_created',
+      comment_id: comment.id,
+      size: attachment.size_bytes ?? 0,
+    }),
+  );
+  return Response.json({ comment }, { status: 201 });
 }
 
 /**
@@ -326,10 +367,12 @@ async function deleteAttachmentObject(env, key, deps, extra) {
 // task, a project (whose tasks cascade) or a Todoist mirror takes the rows
 // with it and the Worker never sees their object keys. Rather than teach
 // every delete path the thread's shape, a caller snapshots the owner's
-// attachment keys before the delete and asks afterwards which of them no
-// longer have a row; those objects go. Both reads use the partial index on
-// (user_id) WHERE object_key IS NOT NULL, and nothing is read back when the
-// owner had no attachments to begin with.
+// attachment keys and runs the delete in one transaction under the owner's
+// task lock (the lock createTaskComment inserts under, so no comment can
+// slip in between), then asks after the commit which keys no longer have a
+// row; those objects go. Both reads use the partial index on (user_id)
+// WHERE object_key IS NOT NULL, and nothing is read back when the owner had
+// no attachments to begin with.
 
 /**
  * Every attachment key the owner holds right now.

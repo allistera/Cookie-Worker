@@ -702,8 +702,10 @@ describe('routing — /task-comments', () => {
   });
 
   test('POST /task-comments stores a multipart entry through the bucket', async () => {
+    // The ownership read, the owner lock, then the insert.
     mockQuery
       .mockResolvedValueOnce([{ id: TASK_ID }])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ id: COMMENT_ID, body: 'hi' }]);
     const form = new FormData();
     form.set('task', TASK_ID);

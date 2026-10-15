@@ -6,7 +6,6 @@ import { getTaskPage, getTaskDetail } from './taskPages.js';
 import { normalizeTaskMetadata } from './taskMetadata.js';
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
 import { isAncestorOf } from './ancestry.js';
-import { captureHandledException } from './sentry.js';
 import { attachmentKeysOf, deleteVanishedAttachments } from './taskComments.js';
 import { removeTaskItemFromMeili, syncTaskItemToMeili } from './taskItemMeiliSync.js';
 import { validId } from '../../../shared/pagination.js';
@@ -758,22 +757,28 @@ export async function reorderTaskItems(sql, userId, body) {
  * @param {string} userId
  * @param {any} body
  * @param {any} [env] Meilisearch config for the best-effort search sync.
+ * @param {{report?: (operation: string, error: unknown, extra: Record<string, unknown>) => void}} [deps]
+ *   Where a failed attachment-object delete is reported.
  */
-export async function deleteTaskItem(sql, userId, body, env) {
+export async function deleteTaskItem(sql, userId, body, env, deps = {}) {
   const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
 
   // The task's thread (and its sub-tasks' threads) cascade with it; their
   // attachment objects are removed once the rows are gone (taskComments.js).
-  const attachmentKeys = await attachmentKeysOf(sql, userId);
-  const deleted = await sql`
-    DELETE FROM task_items WHERE id = ${id} AND user_id = ${userId}
-    RETURNING id, kind, parent_id AS "parentId"
-  `;
-  if (!deleted.length) return Response.json({ error: 'Task not found' }, { status: 404 });
-  await deleteVanishedAttachments(sql, env ?? {}, userId, attachmentKeys, {
-    report: (operation, error, extra) => captureHandledException(operation, error, env, extra),
+  // The key snapshot and the delete share the owner's task lock, so a
+  // comment landing meanwhile is either in the snapshot or refused.
+  const { attachmentKeys, deleted } = await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
+    const keys = await attachmentKeysOf(/** @type {any} */ (tx), userId);
+    const rows = await tx`
+      DELETE FROM task_items WHERE id = ${id} AND user_id = ${userId}
+      RETURNING id, kind, parent_id AS "parentId"
+    `;
+    return { attachmentKeys: keys, deleted: rows };
   });
+  if (!deleted.length) return Response.json({ error: 'Task not found' }, { status: 404 });
+  await deleteVanishedAttachments(sql, env ?? {}, userId, attachmentKeys, deps);
   // A divider was never indexed, so there is nothing to take out.
   if (deleted[0].kind === 'divider') return Response.json({ ok: true });
   // A top-level task takes its search document (sub-task titles and all) with

@@ -7,9 +7,11 @@ import {
   deleteVanishedAttachments,
   getTaskCommentAttachment,
   getTaskComments,
+  isCursorTime,
   updateTaskComment,
 } from '../src/taskComments.js';
 import { MAX_FILE_BYTES } from '../src/files.js';
+import { encodeCursor } from '../../../shared/pagination.js';
 
 const USER = '99999999-9999-9999-9999-999999999999';
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
@@ -97,6 +99,20 @@ describe('GET /task-comments', () => {
     expect(sql.calls[0].values).toEqual([USER, USER, TASK_ID, true, null, null, 101]);
   });
 
+  it('rejects a cursor whose time is not a real calendar date', async () => {
+    const impossible = encodeCursor(['2026-02-31T09:00:00.000000Z', COMMENT_ID]);
+    const sql = createMockSql();
+    const response = await getTaskComments(
+      sql,
+      USER,
+      new URL(`https://x/task-comments?task=${TASK_ID}&after=${impossible}`),
+    );
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
+    expect(isCursorTime('2026-10-15T09:00:00.000000Z')).toBe(true);
+    expect(isCursorTime('2026-10-15T09:00:00Z')).toBe(false);
+  });
+
   it('rejects a malformed task id or cursor', async () => {
     expect(
       (await getTaskComments(createMockSql(), USER, new URL('https://x/task-comments?task=nope')))
@@ -117,7 +133,7 @@ describe('GET /task-comments', () => {
 describe('POST /task-comments', () => {
   it('saves a text comment without touching the bucket', async () => {
     const env = { FILES: r2() };
-    const sql = createMockSql([[{ id: TASK_ID }], [ROW]]);
+    const sql = createMockSql([[ROW]]);
     const response = await createTaskComment(
       postRequest({ body: '  Looks good ' }),
       sql,
@@ -129,9 +145,35 @@ describe('POST /task-comments', () => {
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({ comment: ROW });
     expect(env.FILES.put).not.toHaveBeenCalled();
-    expect(sql.calls[0].text).toContain('SELECT id FROM task_items WHERE id = ? AND user_id = ?');
-    expect(sql.calls[1].text).toContain('INSERT INTO task_comments');
-    expect(sql.calls[1].values).toEqual([TASK_ID, USER, 'Looks good', null, null, null, null]);
+    // One statement under the owner's task lock: the insert itself checks
+    // the task is the caller's.
+    expect(sql.begin).toHaveBeenCalledTimes(1);
+    expect(sql.controlCalls[0].text).toContain('pg_advisory_xact_lock');
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).toContain('INSERT INTO task_comments');
+    expect(sql.calls[0].text).toContain('FROM task_items t WHERE t.id = ? AND t.user_id = ?');
+    expect(sql.calls[0].values).toEqual([
+      USER,
+      'Looks good',
+      null,
+      null,
+      null,
+      null,
+      TASK_ID,
+      USER,
+    ]);
+  });
+
+  it('404s a text comment on a task the caller does not own', async () => {
+    const sql = createMockSql([[]]);
+    const response = await createTaskComment(
+      postRequest({ body: 'x' }),
+      sql,
+      USER,
+      { FILES: r2() },
+      allow,
+    );
+    expect(response.status).toBe(404);
   });
 
   it('writes the object then the row for an attachment, sniffing its type', async () => {
@@ -158,15 +200,33 @@ describe('POST /task-comments', () => {
       expect.any(ArrayBuffer),
       { httpMetadata: { contentType: 'image/png' } },
     );
+    expect(sql.calls[0].text).toContain('SELECT id FROM task_items WHERE id = ? AND user_id = ?');
     expect(sql.calls[1].values).toEqual([
-      TASK_ID,
       USER,
       '',
       'shot.png',
       'image/png',
       10,
       env.FILES.put.mock.calls[0][0],
+      TASK_ID,
+      USER,
     ]);
+  });
+
+  it('removes the object again when the task vanished before the locked insert', async () => {
+    const env = { FILES: r2() };
+    const sql = createMockSql([[{ id: TASK_ID }], []]);
+    const response = await createTaskComment(
+      postRequest({ file: { name: 'a.bin', type: '', bytes: new Uint8Array([1, 2]) } }),
+      sql,
+      USER,
+      env,
+      allow,
+    );
+
+    expect(response.status).toBe(404);
+    expect(env.FILES.put).toHaveBeenCalledTimes(1);
+    expect(env.FILES.delete).toHaveBeenCalledWith(env.FILES.put.mock.calls[0][0]);
   });
 
   it('removes the object again when the row insert fails', async () => {
