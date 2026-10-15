@@ -32,7 +32,10 @@ async function connectionRow(overrides = {}) {
     email: 'person@example.com',
     timeZone: 'Europe/London',
     enabled: true,
+    syncProjects: true,
+    syncTasks: true,
     lastSyncedAt: null,
+    tasksSyncedAt: null,
     lastSyncStatus: null,
     lastSyncError: null,
     lastSyncSummary: null,
@@ -49,6 +52,8 @@ describe('GET /tasks/todoist', () => {
         configured: true,
         connected: false,
         enabled: false,
+        syncProjects: true,
+        syncTasks: true,
         email: null,
         tokenHint: '',
         timeZone: null,
@@ -72,6 +77,8 @@ describe('GET /tasks/todoist', () => {
     expect(todoist).toMatchObject({
       connected: true,
       enabled: true,
+      syncProjects: true,
+      syncTasks: true,
       email: 'person@example.com',
       tokenHint: 'oken',
       lastSyncedAt: '2026-10-15T08:00:00.000Z',
@@ -115,6 +122,11 @@ describe('PUT /tasks/todoist', () => {
       (await putTodoistSettings(createMockSql(), USER_ID, { enabled: 'yes' }, env, { fetchImpl }))
         .status,
     ).toBe(400);
+    const badFlag = await putTodoistSettings(createMockSql(), USER_ID, { syncTasks: 1 }, env, {
+      fetchImpl,
+    });
+    expect(badFlag.status).toBe(400);
+    expect((await badFlag.json()).error).toBe('syncTasks must be true or false');
     expect(
       (
         await putTodoistSettings(createMockSql(), USER_ID, { token: 'has space' }, env, {
@@ -174,9 +186,14 @@ describe('PUT /tasks/todoist', () => {
     expect(values[3]).toBe('todoist-user-1');
     expect(values[4]).toBe('person@example.com');
     expect(values[5]).toBe('Europe/Paris');
-    expect(values[6]).toBe(true); // enabled defaults on for a new connection
-    expect(values[8]).toBe(false); // hasEnabled: keep the existing flag on a replace
-    expect(values[9]).toBe(false); // not an account switch
+    // The three switches default on for a new connection...
+    expect(values.slice(6, 9)).toEqual([true, true, true]);
+    // ...and, not having been sent, keep their stored values on a replace.
+    expect(values.slice(10, 13)).toEqual([null, null, null]);
+    expect(text).toContain(
+      'enabled             = COALESCE(?::boolean, todoist_connections.enabled)',
+    );
+    expect(values[13]).toBe(false); // not an account switch
     expect(sql.calls.some((call) => call.text.includes('SET todoist_id = NULL'))).toBe(false);
     expect((await response.json()).todoist).toMatchObject({
       connected: true,
@@ -206,7 +223,9 @@ describe('PUT /tasks/todoist', () => {
     expect(sql.calls[1].text).toContain('UPDATE task_items SET todoist_id = NULL');
     expect(sql.calls[2].text).toContain('UPDATE task_projects SET todoist_id = NULL');
     expect(sql.calls[3].text).toContain('INSERT INTO todoist_connections');
-    expect(sql.calls[3].values[9]).toBe(true); // switchesAccount resets the completion cursor
+    // switchesAccount resets the last-success stamp and the completion cursor.
+    expect(sql.calls[3].text).toContain('tasks_synced_at     = CASE WHEN ?::boolean THEN NULL');
+    expect(sql.calls[3].values.slice(13, 16)).toEqual([true, true, true]);
     expect((await response.json()).todoist.email).toBe('other@example.com');
   });
 
@@ -224,14 +243,30 @@ describe('PUT /tasks/todoist', () => {
     expect(isDifferentAccount({ ...noId, email: null }, { id: null, email: null })).toBe(false);
   });
 
-  it('flips only the schedule flag when no token is sent, and 404s without a connection', async () => {
+  it('flips only the flags sent when no token is given, and 404s without a connection', async () => {
     const row = await connectionRow({ enabled: false });
     const sql = createMockSql([[row]]);
     const response = await putTodoistSettings(sql, USER_ID, { enabled: false }, env);
     expect(response.status).toBe(200);
-    expect(sql.calls[0].text).toContain('UPDATE todoist_connections SET enabled = ?');
-    expect(sql.calls[0].values).toEqual([false, USER_ID]);
+    expect(sql.calls[0].text).toContain('enabled       = COALESCE(?::boolean, enabled)');
+    expect(sql.calls[0].text).toContain('sync_projects = COALESCE(?::boolean, sync_projects)');
+    // Flags left out are sent as null, so COALESCE keeps the stored value.
+    expect(sql.calls[0].values).toEqual([false, null, null, USER_ID]);
     expect((await response.json()).todoist.enabled).toBe(false);
+
+    const switched = await connectionRow({ syncProjects: false });
+    const both = createMockSql([[switched]]);
+    const settings = await putTodoistSettings(
+      both,
+      USER_ID,
+      { syncProjects: false, syncTasks: true },
+      env,
+    );
+    expect(both.calls[0].values).toEqual([null, false, true, USER_ID]);
+    expect((await settings.json()).todoist).toMatchObject({
+      syncProjects: false,
+      syncTasks: true,
+    });
 
     const missing = await putTodoistSettings(createMockSql([[]]), USER_ID, { enabled: true }, env);
     expect(missing.status).toBe(404);
@@ -299,6 +334,31 @@ describe('POST /tasks/todoist/sync', () => {
       lastSyncSummary: { tasks: 0 },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  it('reads only the projects from Todoist when tasks are switched off', async () => {
+    const fetchImpl = vi.fn(async (/** @type {any} */ _url) =>
+      jsonResponse({ results: [], next_cursor: null }),
+    );
+    const before = await connectionRow({ syncTasks: false });
+    const after = await connectionRow({ syncTasks: false, lastSyncStatus: 'ok' });
+    const sql = createMockSql([
+      [{ allowed: true }],
+      [before],
+      [], // vanished projects deleted
+      [], // unlinked
+      [], // recordSyncResult
+      [after],
+    ]);
+
+    const response = await postTodoistSync(sql, USER_ID, env, {
+      fetchImpl: /** @type {any} */ (fetchImpl),
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(new URL(String(fetchImpl.mock.calls[0][0])).pathname).toBe('/api/v1/projects');
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO task_items'))).toBe(false);
   });
 
   it('maps a rejected token to 409 and a Todoist outage to 502', async () => {

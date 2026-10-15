@@ -13,6 +13,18 @@
 //   repeat rule when Cookie understands its wording.
 // - Sub-tasks keep their parent; a parent Cookie cannot see makes the task
 //   top-level rather than losing it.
+// - A task whose Todoist project Cookie does not hold goes to the Inbox
+//   rather than being dropped, at the end of the Inbox's own tasks.
+//
+// The connection carries two switches (migration 0094). With sync_projects
+// off, no project row is written, moved or removed: tasks land in the
+// mirrored project Cookie already has, or in the Inbox when it has none.
+// With sync_tasks off, no section or task row is touched; the mirrors
+// already there stay as they are until the switch is turned back on — a
+// vanished project holding any task is unlinked rather than deleted, so the
+// cascade cannot take them — and the completion cursor (tasks_synced_at,
+// the last run that read tasks) stands still, so the completions made
+// meanwhile are still found when tasks resume.
 //
 // Between runs: a mirrored task Todoist no longer lists as open is marked
 // completed when it appears in the recently-completed list, and deleted
@@ -21,11 +33,11 @@
 // task or sub-project lives in it. Rows with a null todoist_id are never
 // touched, so Cookie's own tasks sit alongside the mirrors in the same lists.
 //
-// Reads happen first, outside any transaction; the database work then runs
-// under the same per-owner advisory lock the task writes take, so a sync
-// never interleaves with a drag or a completion. Rows are upserted a tree
-// level at a time through jsonb_to_recordset, so a few hundred tasks cost a
-// handful of statements rather than one each.
+// Reads happen first, outside any transaction; the plan is then drawn up and
+// written under the same per-owner advisory lock the task writes take, so a
+// sync never interleaves with a drag or a completion. Rows are upserted a
+// tree level at a time through jsonb_to_recordset, so a few hundred tasks
+// cost a handful of statements rather than one each.
 
 import { TASKS_INDEX } from '../../../shared/meili/tasks.js';
 import { addDocuments, deleteDocuments, meiliAvailable } from '../../../shared/meili.js';
@@ -211,27 +223,37 @@ function isInboxProject(project) {
  * }} PlannedTask
  * @typedef {{
  *   projects: PlannedProject[], sections: PlannedSection[], tasks: PlannedTask[],
- *   completed: Map<string, string>, labels: string[], skipped: number,
+ *   completed: Map<string, string>, labels: string[],
  * }} SyncPlan
  */
 
 /**
  * Turns a Todoist snapshot into the rows Cookie will hold, with nothing
  * resolved to database ids yet. Archived and deleted projects and sections
- * are left out, and so are tasks in a project the plan does not know
- * (counted as skipped) — dropping them into the Inbox would mislabel them.
+ * are left out. A task in a project the plan does not know goes to the
+ * Inbox: with projects switched off that is any project Cookie holds no
+ * mirror of (`mirroredProjectIds` names the ones it does); with them on it
+ * is a project Todoist no longer lists as live. Sections of such a project
+ * are left out, so the task arrives unsectioned.
  *
  * Within a project the order is: tasks in no section, then each section's
  * divider followed by its tasks, sections and tasks each in Todoist's own
- * order. Positions count up from one per project, so Cookie-authored rows
- * (positioned at epoch seconds, migration 0062) always follow the mirrors.
- * A sub-task's position is its order among its siblings.
+ * order; in the Inbox, tasks sent there from elsewhere come last, grouped by
+ * the project they came from. Positions count up from one per project, so
+ * Cookie-authored rows (positioned at epoch seconds, migration 0062) always
+ * follow the mirrors. A sub-task's position is its order among its siblings.
+ *
+ * With tasks switched off the plan holds projects only; with projects off it
+ * holds no project at all.
  *
  * @param {{projects: any[], sections: any[], tasks: any[], completed: any[]}} snapshot
- * @param {{timeZone: string}} options
+ * @param {{timeZone: string, syncProjects?: boolean, syncTasks?: boolean, mirroredProjectIds?: Iterable<string>}} options
  * @returns {SyncPlan}
  */
-export function planSync(snapshot, { timeZone }) {
+export function planSync(
+  snapshot,
+  { timeZone, syncProjects = true, syncTasks = true, mirroredProjectIds = [] },
+) {
   const fallbackZone = isTaskTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
   /** @type {Set<string>} */
   const inboxIds = new Set();
@@ -244,11 +266,16 @@ export function planSync(snapshot, { timeZone }) {
       inboxIds.add(project.id);
       continue;
     }
-    liveProjects.set(project.id, project);
+    if (syncProjects) liveProjects.set(project.id, project);
   }
+  // Where a section or task may land: the projects this run writes, or the
+  // mirrors Cookie already holds when projects are left alone.
+  const knownProjects = syncProjects
+    ? new Set(liveProjects.keys())
+    : new Set([...mirroredProjectIds].filter((id) => !inboxIds.has(id)));
 
   /** @param {string} id */
-  const projectKey = (id) => (inboxIds.has(id) ? null : liveProjects.has(id) ? id : undefined);
+  const projectKey = (id) => (inboxIds.has(id) ? null : knownProjects.has(id) ? id : undefined);
 
   /** @type {Map<string, number>} */
   const projectDepth = new Map();
@@ -284,6 +311,10 @@ export function planSync(snapshot, { timeZone }) {
           orderOf(liveProjects.get(b.todoistId)?.child_order),
     );
 
+  if (!syncTasks) {
+    return { projects, sections: [], tasks: [], completed: new Map(), labels: [] };
+  }
+
   // Sections and tasks grouped by the project key they land in: null for
   // the Inbox, the Todoist project id otherwise.
   /** @type {Map<string | null, any[]>} */
@@ -301,18 +332,17 @@ export function planSync(snapshot, { timeZone }) {
     sectionsByProject.set(key, list);
   }
 
-  let skipped = 0;
   /** @type {Map<string, any>} */
   const liveTasks = new Map();
   for (const task of snapshot.tasks ?? []) {
     if (typeof task?.id !== 'string' || !task.id) continue;
     if (task.is_deleted === true || task.checked === true) continue;
-    if (projectKey(String(task.project_id ?? '')) === undefined) {
-      skipped += 1;
-      continue;
-    }
     liveTasks.set(task.id, task);
   }
+  /** @param {any} task */
+  const taskProjectKey = (task) => projectKey(String(task.project_id ?? '')) ?? null;
+  /** @param {any} task */
+  const isRedirected = (task) => projectKey(String(task.project_id ?? '')) === undefined;
 
   /** @type {Map<string, number>} */
   const taskDepth = new Map();
@@ -350,7 +380,7 @@ export function planSync(snapshot, { timeZone }) {
       todoistId: String(task.id),
       content: cleanText(task.content, MAX_CONTENT_LENGTH) ?? 'Untitled task',
       description: cleanText(task.description, MAX_DESCRIPTION_LENGTH),
-      projectTodoistId: /** @type {string | null} */ (projectKey(String(task.project_id))),
+      projectTodoistId: taskProjectKey(task),
       parentTodoistId: parentId,
       ...due,
       labels: taskLabels,
@@ -362,22 +392,33 @@ export function planSync(snapshot, { timeZone }) {
 
   /** @type {Map<string | null, any[]>} */
   const rootsByProject = new Map();
+  /** @type {any[]} Top-level tasks sent to the Inbox from a project Cookie lacks. */
+  const redirected = [];
   for (const task of liveTasks.values()) {
     const parentId = task.parent_id;
     if (typeof parentId === 'string' && liveTasks.has(parentId)) {
       planTask(task, orderOf(task.child_order));
       continue;
     }
-    const key = /** @type {string | null} */ (projectKey(String(task.project_id)));
+    if (isRedirected(task)) {
+      redirected.push(task);
+      continue;
+    }
+    const key = taskProjectKey(task);
     const list = rootsByProject.get(key) ?? [];
     list.push(task);
     rootsByProject.set(key, list);
   }
 
-  // Inbox first, then projects in their own order, so positions and the
-  // divider list come out the same for the same account every run.
-  const projectKeys = [null, ...projects.map((project) => project.todoistId)].filter(
-    (key) => rootsByProject.has(key) || sectionsByProject.has(key),
+  // Inbox first, then projects in their own order (by id when this run is
+  // not writing them), so positions and the divider list come out the same
+  // for the same account every run.
+  const orderedProjects = syncProjects
+    ? projects.map((project) => project.todoistId)
+    : [...knownProjects].sort();
+  const projectKeys = [null, ...orderedProjects].filter(
+    (key) =>
+      rootsByProject.has(key) || sectionsByProject.has(key) || (key === null && redirected.length),
   );
   for (const key of projectKeys) {
     const roots = (rootsByProject.get(key) ?? []).sort(
@@ -402,6 +443,16 @@ export function planSync(snapshot, { timeZone }) {
         planTask(task, ++position);
       }
     }
+    if (key === null) {
+      // After the Inbox's own rows, grouped by the project they came from so
+      // the Inbox reads the same way every run.
+      redirected.sort(
+        (a, b) =>
+          String(a.project_id).localeCompare(String(b.project_id)) ||
+          orderOf(a.child_order) - orderOf(b.child_order),
+      );
+      for (const task of redirected) planTask(task, ++position);
+    }
   }
   tasks.sort((a, b) => a.depth - b.depth);
 
@@ -413,7 +464,7 @@ export function planSync(snapshot, { timeZone }) {
     completed.set(task.id, new Date(task.completed_at).toISOString());
   }
 
-  return { projects, sections, tasks, completed, labels: [...labels].sort(), skipped };
+  return { projects, sections, tasks, completed, labels: [...labels].sort() };
 }
 
 // ---------------------------------------------------------------------------
@@ -432,18 +483,48 @@ function levels(rows) {
 }
 
 /**
+ * The mirrored projects Cookie holds, Todoist id → Cookie id. What a run
+ * with projects switched off files tasks under.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @returns {Promise<Map<string, string>>}
+ */
+export async function loadMirroredProjects(sql, userId) {
+  const rows = await sql`
+    SELECT id, todoist_id AS "todoistId" FROM task_projects
+    WHERE user_id = ${userId} AND todoist_id IS NOT NULL
+  `;
+  return new Map(rows.map((row) => [String(row.todoistId), String(row.id)]));
+}
+
+/**
+ * @typedef {{
+ *   syncProjects?: boolean, syncTasks?: boolean,
+ *   mirroredProjects?: Map<string, string>,
+ * }} ApplyOptions
+ *   With syncProjects off, `mirroredProjects` (loadMirroredProjects, read
+ *   under the same lock) says where tasks go; it is read here when the
+ *   caller did not.
+ */
+
+/**
  * Writes a plan into the caller's tables. Runs inside the caller's
  * transaction (and advisory lock); see syncConnection.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {SyncPlan} plan
+ * @param {ApplyOptions} [options]
  * @returns {Promise<{summary: SyncSummary, deletedRootIds: string[]}>}
  */
-export async function applySync(sql, userId, plan) {
+export async function applySync(sql, userId, plan, options = {}) {
+  const { syncProjects = true, syncTasks = true } = options;
   /** @type {Map<string, string>} Todoist project id → Cookie project id */
-  const projectIds = new Map();
-  for (const level of levels(plan.projects)) {
+  const projectIds = syncProjects
+    ? new Map()
+    : (options.mirroredProjects ?? (await loadMirroredProjects(sql, userId)));
+  for (const level of levels(syncProjects ? plan.projects : [])) {
     const rows = level.map((project) => ({
       todoist_id: project.todoistId,
       name: project.name,
@@ -471,7 +552,8 @@ export async function applySync(sql, userId, plan) {
   // subtree: deleting a project cascades to its sub-projects and their tasks,
   // so a Cookie-authored task or sub-project nested beneath a mirrored child
   // also keeps the whole branch. Otherwise it stays as an ordinary project.
-  const removedProjects = await sql`
+  const removedProjects = syncProjects
+    ? await sql`
     WITH RECURSIVE vanished AS (
       SELECT id FROM task_projects
       WHERE user_id = ${userId} AND todoist_id IS NOT NULL
@@ -487,7 +569,9 @@ export async function applySync(sql, userId, plan) {
     guarded AS (
       SELECT DISTINCT s.root FROM subtree s
       WHERE EXISTS (SELECT 1 FROM task_items t
-                    WHERE t.user_id = ${userId} AND t.project_id = s.id AND t.todoist_id IS NULL)
+                    WHERE t.user_id = ${userId} AND t.project_id = s.id
+                      -- With tasks switched off every task row is kept, mirror or not.
+                      AND (t.todoist_id IS NULL OR ${!syncTasks}::boolean))
          OR EXISTS (SELECT 1 FROM task_projects c
                     WHERE c.user_id = ${userId} AND c.parent_id = s.id AND c.todoist_id IS NULL)
     )
@@ -496,14 +580,34 @@ export async function applySync(sql, userId, plan) {
       AND p.id IN (SELECT id FROM vanished)
       AND p.id NOT IN (SELECT root FROM guarded)
     RETURNING p.id
-  `;
-  const unlinkedProjects = await sql`
+  `
+    : [];
+  const unlinkedProjects = syncProjects
+    ? await sql`
     UPDATE task_projects SET todoist_id = NULL
     WHERE user_id = ${userId} AND todoist_id IS NOT NULL
       AND NOT (todoist_id = ANY(${keptProjects}::text[]))
     RETURNING id
-  `;
+  `
+    : [];
 
+  if (!syncTasks) {
+    return {
+      summary: {
+        projects: plan.projects.length,
+        sections: 0,
+        tasks: 0,
+        completed: 0,
+        removed: removedProjects.length,
+        skipped: unlinkedProjects.length,
+      },
+      deletedRootIds: [],
+    };
+  }
+
+  // A task whose project Cookie does not hold (planSync sends those to the
+  // Inbox, but a project can also go between the plan and this write) lands
+  // in the Inbox too.
   /** @param {string | null} todoistProjectId */
   const cookieProjectId = (todoistProjectId) =>
     todoistProjectId === null ? null : (projectIds.get(todoistProjectId) ?? null);
@@ -652,7 +756,7 @@ export async function applySync(sql, userId, plan) {
       tasks: plan.tasks.length,
       completed: toComplete.length,
       removed: removedProjects.length + toDelete.length,
-      skipped: plan.skipped + unlinkedProjects.length,
+      skipped: unlinkedProjects.length,
     },
     deletedRootIds,
   };
@@ -724,17 +828,24 @@ export async function indexSyncedTasks(sql, env, userId, deletedRootIds, deps = 
 // Running a connection
 
 /**
+ * Records a run on the connection. `tasksSynced` says the run read Todoist's
+ * tasks and completions, which moves the completion cursor (tasks_synced_at)
+ * along with the last-success stamp.
+ *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{status: 'ok' | 'failed', summary?: SyncSummary, error?: string, syncedAt?: Date}} result
+ * @param {{status: 'ok' | 'failed', summary?: SyncSummary, error?: string, syncedAt?: Date, tasksSynced?: boolean}} result
  */
 export async function recordSyncResult(sql, userId, result) {
+  const ok = result.status === 'ok';
+  const syncedAt = result.syncedAt ?? new Date();
   await sql`
     UPDATE todoist_connections SET
-      last_synced_at    = CASE WHEN ${result.status === 'ok'}::boolean THEN ${result.syncedAt ?? new Date()} ELSE last_synced_at END,
+      last_synced_at    = CASE WHEN ${ok}::boolean THEN ${syncedAt} ELSE last_synced_at END,
+      tasks_synced_at   = CASE WHEN ${ok && result.tasksSynced === true}::boolean THEN ${syncedAt} ELSE tasks_synced_at END,
       last_sync_status  = ${result.status},
       last_sync_error   = ${result.error ? result.error.slice(0, MAX_SYNC_ERROR_LENGTH) : null},
-      last_sync_summary = CASE WHEN ${result.status === 'ok'}::boolean THEN ${sql.json(/** @type {any} */ (result.summary ?? null))} ELSE last_sync_summary END,
+      last_sync_summary = CASE WHEN ${ok}::boolean THEN ${sql.json(/** @type {any} */ (result.summary ?? null))} ELSE last_sync_summary END,
       updated_at        = now()
     WHERE user_id = ${userId}
   `;
@@ -764,28 +875,55 @@ export function describeSyncFailure(error) {
  *
  * @param {import('postgres').Sql} sql
  * @param {TodoistSyncEnv} env
- * @param {{userId: string, token: string, timeZone: string | null, lastSyncedAt: Date | null}} connection
+ * @param {{
+ *   userId: string, token: string, timeZone: string | null, tasksSyncedAt: Date | null,
+ *   syncProjects?: boolean, syncTasks?: boolean,
+ * }} connection `tasksSyncedAt` is the last run that read tasks: the
+ *   completion window starts an hour before it, or a month back when there
+ *   was none.
  * @param {{fetchImpl?: typeof fetch, now?: () => Date}} [deps]
  * @returns {Promise<SyncSummary>}
  */
 export async function syncConnection(sql, env, connection, deps = {}) {
   const now = deps.now ? deps.now() : new Date();
+  const syncProjects = connection.syncProjects !== false;
+  const syncTasks = connection.syncTasks !== false;
   try {
     const snapshot = await fetchSnapshot(connection.token, {
       completedSince: new Date(
-        connection.lastSyncedAt
-          ? connection.lastSyncedAt.getTime() - COMPLETED_OVERLAP_MS
+        connection.tasksSyncedAt
+          ? connection.tasksSyncedAt.getTime() - COMPLETED_OVERLAP_MS
           : now.getTime() - COMPLETED_LOOKBACK_MS,
       ),
       completedUntil: new Date(now.getTime() + COMPLETED_OVERLAP_MS),
+      includeTasks: syncTasks,
       fetchImpl: deps.fetchImpl,
     });
-    const plan = planSync(snapshot, { timeZone: connection.timeZone ?? DEFAULT_TIME_ZONE });
     const { summary, deletedRootIds } = await sql.begin(async (tx) => {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${connection.userId}, 1))`;
-      return applySync(/** @type {any} */ (tx), connection.userId, plan);
+      // Which projects tasks may land in is read under the lock, so the plan
+      // and the write see the same set.
+      const mirroredProjects = syncProjects
+        ? undefined
+        : await loadMirroredProjects(/** @type {any} */ (tx), connection.userId);
+      const plan = planSync(snapshot, {
+        timeZone: connection.timeZone ?? DEFAULT_TIME_ZONE,
+        syncProjects,
+        syncTasks,
+        mirroredProjectIds: mirroredProjects?.keys() ?? [],
+      });
+      return applySync(/** @type {any} */ (tx), connection.userId, plan, {
+        syncProjects,
+        syncTasks,
+        mirroredProjects,
+      });
     });
-    await recordSyncResult(sql, connection.userId, { status: 'ok', summary, syncedAt: now });
+    await recordSyncResult(sql, connection.userId, {
+      status: 'ok',
+      summary,
+      syncedAt: now,
+      tasksSynced: syncTasks,
+    });
     console.log(JSON.stringify({ event: 'todoist_synced', ...summary }));
     if (env.deferSearchSync) {
       env.deferSearchSync(

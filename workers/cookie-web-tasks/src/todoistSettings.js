@@ -4,9 +4,11 @@
 //   GET    /tasks/todoist       what Settings shows: connected or not, the
 //                               account's email, whether the hourly sync is
 //                               on, and how the last run went.
-//   PUT    /tasks/todoist       { token?, enabled? } — a token is checked
-//                               against Todoist (GET /user) before it is
-//                               stored encrypted; enabled flips the schedule.
+//   PUT    /tasks/todoist       { token?, enabled?, syncProjects?, syncTasks? }
+//                               — a token is checked against Todoist
+//                               (GET /user) before it is stored encrypted;
+//                               enabled flips the schedule; the other two
+//                               choose what a run mirrors (todoistSync.js).
 //   DELETE /tasks/todoist       forgets the token. Mirrored projects and tasks
 //                               stay, still linked, so reconnecting the same
 //                               account picks them up in place; a token for a
@@ -49,11 +51,15 @@ const TOKEN_UNREADABLE_MESSAGE = 'The saved token could not be read. Enter it ag
  * @typedef {{
  *   userId: string, apiTokenEncrypted: string, tokenHint: string,
  *   todoistUserId: string | null, email: string | null,
- *   timeZone: string | null, enabled: boolean, lastSyncedAt: Date | null,
+ *   timeZone: string | null, enabled: boolean, syncProjects: boolean, syncTasks: boolean,
+ *   lastSyncedAt: Date | null, tasksSyncedAt: Date | null,
  *   lastSyncStatus: 'ok' | 'failed' | null, lastSyncError: string | null,
  *   lastSyncSummary: Record<string, number> | null,
  * }} TodoistConnection
  */
+
+// The three switches a PUT without a token may carry.
+const FLAGS = /** @type {const} */ (['enabled', 'syncProjects', 'syncTasks']);
 
 /** @param {{TODOIST_TOKEN_ENCRYPTION_KEY?: string}} env */
 export function isTodoistConfigured(env) {
@@ -70,7 +76,11 @@ function connectionFromRow(row) {
     email: row.email ?? null,
     timeZone: row.timeZone ?? null,
     enabled: row.enabled === true,
+    // Both switches default on, as every connection ran before they existed.
+    syncProjects: row.syncProjects !== false,
+    syncTasks: row.syncTasks !== false,
     lastSyncedAt: row.lastSyncedAt ? new Date(row.lastSyncedAt) : null,
+    tasksSyncedAt: row.tasksSyncedAt ? new Date(row.tasksSyncedAt) : null,
     lastSyncStatus: row.lastSyncStatus ?? null,
     lastSyncError: row.lastSyncError ?? null,
     lastSyncSummary:
@@ -107,7 +117,9 @@ export async function loadConnection(sql, userId) {
   const [row] = await sql`
     SELECT user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
            todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
-           last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
+           sync_projects AS "syncProjects", sync_tasks AS "syncTasks",
+           last_synced_at AS "lastSyncedAt", tasks_synced_at AS "tasksSyncedAt",
+           last_sync_status AS "lastSyncStatus",
            last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
     FROM todoist_connections
     WHERE user_id = ${userId}
@@ -142,6 +154,8 @@ export function publicSettings(env, connection) {
     configured: isTodoistConfigured(env),
     connected: Boolean(connection),
     enabled: connection?.enabled ?? false,
+    syncProjects: connection?.syncProjects ?? true,
+    syncTasks: connection?.syncTasks ?? true,
     email: connection?.email ?? null,
     tokenHint: connection?.tokenHint ?? '',
     timeZone: connection?.timeZone ?? null,
@@ -177,22 +191,37 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
     );
   }
   const hasToken = Object.hasOwn(body ?? {}, 'token');
-  const hasEnabled = Object.hasOwn(body ?? {}, 'enabled');
-  if (!hasToken && !hasEnabled) {
-    return Response.json({ error: 'A token or an enabled flag is required' }, { status: 400 });
+  const sent = FLAGS.filter((flag) => Object.hasOwn(body ?? {}, flag));
+  if (!hasToken && !sent.length) {
+    return Response.json(
+      { error: 'A token, or one of enabled, syncProjects and syncTasks, is required' },
+      { status: 400 },
+    );
   }
-  if (hasEnabled && typeof body.enabled !== 'boolean') {
-    return Response.json({ error: 'enabled must be true or false' }, { status: 400 });
+  const malformed = sent.find((flag) => typeof body[flag] !== 'boolean');
+  if (malformed) {
+    return Response.json({ error: `${malformed} must be true or false` }, { status: 400 });
   }
-  const enabled = hasEnabled ? Boolean(body.enabled) : null;
+  /** @param {(typeof FLAGS)[number]} flag */
+  const flagOrNull = (flag) => (sent.includes(flag) ? Boolean(body[flag]) : null);
+  const enabled = flagOrNull('enabled');
+  const syncProjects = flagOrNull('syncProjects');
+  const syncTasks = flagOrNull('syncTasks');
 
   if (!hasToken) {
+    // A flag left out of the body keeps its stored value.
     const [row] = await sql`
-      UPDATE todoist_connections SET enabled = ${enabled}, updated_at = now()
+      UPDATE todoist_connections SET
+        enabled       = COALESCE(${enabled}::boolean, enabled),
+        sync_projects = COALESCE(${syncProjects}::boolean, sync_projects),
+        sync_tasks    = COALESCE(${syncTasks}::boolean, sync_tasks),
+        updated_at    = now()
       WHERE user_id = ${userId}
       RETURNING user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
                 todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
-                last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
+                sync_projects AS "syncProjects", sync_tasks AS "syncTasks",
+                last_synced_at AS "lastSyncedAt", tasks_synced_at AS "tasksSyncedAt",
+           last_sync_status AS "lastSyncStatus",
                 last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
     `;
     if (!row) return Response.json({ error: 'Connect Todoist first' }, { status: 404 });
@@ -230,7 +259,8 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
     // account's mirrors: its first sync would see none of their ids and
     // complete or delete them all. Unlinking first leaves them as ordinary
     // Cookie rows and lets the new account mirror afresh. The completion
-    // cursor (last_synced_at) is reset for the same reason.
+    // cursor (tasks_synced_at) and last-success stamp are reset for the same
+    // reason.
     const switchesAccount = existing !== null && isDifferentAccount(existing, account);
     if (switchesAccount) {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
@@ -241,9 +271,11 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
     }
     const [saved] = await tx`
     INSERT INTO todoist_connections
-      (user_id, api_token_encrypted, token_hint, todoist_user_id, todoist_email, time_zone, enabled)
+      (user_id, api_token_encrypted, token_hint, todoist_user_id, todoist_email, time_zone,
+       enabled, sync_projects, sync_tasks)
     SELECT ${userId}, ${encrypted}, ${token.slice(-TOKEN_HINT_LENGTH)}, ${account.id},
-           ${account.email}, ${account.timeZone}, ${enabled ?? true}
+           ${account.email}, ${account.timeZone}, ${enabled ?? true}, ${syncProjects ?? true},
+           ${syncTasks ?? true}
     WHERE EXISTS (SELECT 1 FROM users WHERE id = ${userId})
     ON CONFLICT (user_id) DO UPDATE SET
       api_token_encrypted = EXCLUDED.api_token_encrypted,
@@ -251,10 +283,14 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
       todoist_user_id     = EXCLUDED.todoist_user_id,
       todoist_email       = EXCLUDED.todoist_email,
       time_zone           = EXCLUDED.time_zone,
-      enabled             = CASE WHEN ${hasEnabled}::boolean THEN EXCLUDED.enabled
-                                 ELSE todoist_connections.enabled END,
+      -- A flag left out of the body keeps its stored value.
+      enabled             = COALESCE(${enabled}::boolean, todoist_connections.enabled),
+      sync_projects       = COALESCE(${syncProjects}::boolean, todoist_connections.sync_projects),
+      sync_tasks          = COALESCE(${syncTasks}::boolean, todoist_connections.sync_tasks),
       last_synced_at      = CASE WHEN ${switchesAccount}::boolean THEN NULL
                                  ELSE todoist_connections.last_synced_at END,
+      tasks_synced_at     = CASE WHEN ${switchesAccount}::boolean THEN NULL
+                                 ELSE todoist_connections.tasks_synced_at END,
       last_sync_summary   = CASE WHEN ${switchesAccount}::boolean THEN NULL
                                  ELSE todoist_connections.last_sync_summary END,
       -- A new token clears the verdict on the old one.
@@ -263,7 +299,9 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
       updated_at          = now()
     RETURNING user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
               todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
-              last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
+              sync_projects AS "syncProjects", sync_tasks AS "syncTasks",
+              last_synced_at AS "lastSyncedAt", tasks_synced_at AS "tasksSyncedAt",
+           last_sync_status AS "lastSyncStatus",
               last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
     `;
     return saved;
@@ -371,7 +409,9 @@ export async function runScheduledTodoistSyncs(env, scheduledAt, deps = {}) {
     const rows = await sql`
       SELECT user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
              todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,
-             last_synced_at AS "lastSyncedAt", last_sync_status AS "lastSyncStatus",
+             sync_projects AS "syncProjects", sync_tasks AS "syncTasks",
+             last_synced_at AS "lastSyncedAt", tasks_synced_at AS "tasksSyncedAt",
+           last_sync_status AS "lastSyncStatus",
              last_sync_error AS "lastSyncError", last_sync_summary AS "lastSyncSummary"
       FROM todoist_connections
       WHERE enabled
