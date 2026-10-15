@@ -18,5 +18,11 @@ BLOB_READ_WRITE_TOKEN=""
 # editable Advanced form.
 OPENAI_API_KEY=""
 
+# Encrypts each user's Todoist API token at rest (Settings → Tasks → Todoist).
+# 32 random bytes, base64: `openssl rand -base64 32`. Without it the Todoist
+# routes answer 501 and the hourly sync does nothing. Not synced by the Deploy
+# workflow; set it once with `wrangler secret put` (README, "Todoist sync").
+TODOIST_TOKEN_ENCRYPTION_KEY=""
+
 # Optional locally; required in production to send sanitized errors to Sentry.
 SENTRY_DSN=""

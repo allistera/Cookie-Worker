@@ -104,6 +104,8 @@ Update GitHub environment secrets first, then rerun the `Deploy` workflow. Confi
 
 `cookie-web-calendar`'s Google secrets are not in GitHub: rotate `GOOGLE_CLIENT_SECRET` with `wrangler secret put` after creating the new secret in the Google Cloud console. Rotating `GOOGLE_TOKEN_ENCRYPTION_KEY` makes every stored Google connection undecryptable — users see Google Calendar as needing a reconnect in Settings and sign in again; truncate `google_calendar_connections` first if the old ciphertext should not linger.
 
+`cookie-web-tasks`'s `TODOIST_TOKEN_ENCRYPTION_KEY` is likewise not in GitHub. Rotating it makes every stored Todoist token undecryptable — the next sync records "The saved token could not be read" on each connection and Settings asks for the token again; truncate `todoist_connections` first if the old ciphertext should not linger. Mirrored tasks and projects keep their `todoist_id` and are picked up in place once a token is saved again.
+
 When rotating the database password, update the Cloudflare Hyperdrive origin and the local connection string separately.
 
 ## Incident response
