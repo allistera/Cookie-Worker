@@ -12,9 +12,10 @@ export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
 const MAX_NAME_LENGTH = 255;
 const UPLOAD_RATE_LIMIT = { limit: 60, windowMs: 60_000 };
-const FALLBACK_TYPE = 'application/octet-stream';
+export const FALLBACK_TYPE = 'application/octet-stream';
 // The only types ever served inline: the sniffed set, nothing the client says.
-const INLINE_TYPES = new Set([
+// Task comment attachments (taskComments.js) are served by the same rule.
+export const INLINE_TYPES = new Set([
   'image/jpeg',
   'image/png',
   'image/gif',
@@ -60,7 +61,7 @@ export function contentDisposition(name, inline) {
 }
 
 /** @param {string} type */
-function cleanMimeType(type) {
+export function cleanMimeType(type) {
   const value = String(type ?? '')
     .trim()
     .toLowerCase();

@@ -594,6 +594,7 @@ describe('syncConnection', () => {
       return jsonResponse({ results: [], next_cursor: null });
     });
     const sql = createMockSql([
+      [], // attachment keys, read before the run writes
       [{ id: 'p-row', todoistId: 'p' }],
       [],
       [],
@@ -669,6 +670,7 @@ describe('syncConnection', () => {
     });
     const sql = createMockSql([
       [{ id: 'p-row', todoistId: 'p' }], // mirrored projects
+      [], // attachment keys
       [], // existing mirrors
       [
         { id: 't-row', todoistId: 't', parentId: null },
@@ -686,7 +688,7 @@ describe('syncConnection', () => {
 
     expect(summary).toMatchObject({ projects: 0, tasks: 2, removed: 0 });
     expect(sql.calls[0].text).toContain('FROM task_projects');
-    const rows = sql.calls[2].values[1].__json;
+    const rows = sql.calls[3].values[1].__json;
     expect(rows.find((/** @type {any} */ row) => row.todoist_id === 't').project_id).toBe('p-row');
     expect(rows.find((/** @type {any} */ row) => row.todoist_id === 'u').project_id).toBeNull();
     expect(sql.calls.some((call) => call.text.includes('INSERT INTO task_projects'))).toBe(false);

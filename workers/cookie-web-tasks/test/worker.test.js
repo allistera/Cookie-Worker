@@ -692,6 +692,94 @@ describe('POST /task-items/interpret', () => {
   });
 });
 
+describe('routing — /task-comments', () => {
+  const COMMENT_ID = '44444444-4444-4444-8444-444444444444';
+
+  test('GET /task-comments lists a thread', async () => {
+    const response = await worker.fetch(request(`/task-comments?task=${TASK_ID}`), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ comments: [], nextCursor: null });
+  });
+
+  test('POST /task-comments stores a multipart entry through the bucket', async () => {
+    mockQuery
+      .mockResolvedValueOnce([{ id: TASK_ID }])
+      .mockResolvedValueOnce([{ id: COMMENT_ID, body: 'hi' }]);
+    const form = new FormData();
+    form.set('task', TASK_ID);
+    form.set('body', 'hi');
+    form.set('file', new File(['hi'], 'a.txt', { type: 'text/plain' }));
+    const response = await worker.fetch(
+      request('/task-comments', { method: 'POST', body: form }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(201);
+    expect(env.FILES.put).toHaveBeenCalled();
+  });
+
+  test('PATCH /task-comments/:id edits the text', async () => {
+    mockQuery
+      .mockResolvedValueOnce([{ body: 'old', object_key: null }])
+      .mockResolvedValueOnce([{ id: COMMENT_ID, body: 'new' }]);
+    const response = await worker.fetch(
+      request(`/task-comments/${COMMENT_ID}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ body: 'new' }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ comment: { id: COMMENT_ID, body: 'new' } });
+  });
+
+  test('DELETE /task-comments/:id removes the row and object', async () => {
+    mockQuery.mockResolvedValueOnce([{ object_key: 'k' }]);
+    const response = await worker.fetch(
+      request(`/task-comments/${COMMENT_ID}`, { method: 'DELETE' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(204);
+    expect(env.FILES.delete).toHaveBeenCalledWith('k');
+  });
+
+  test('GET /task-comments/:id/attachment streams the object with CORS headers', async () => {
+    mockQuery.mockResolvedValueOnce([
+      { file_name: 'a.txt', mime_type: 'text/plain', object_key: 'k' },
+    ]);
+    env.FILES.get.mockResolvedValue({ body: new Blob(['hi']).stream(), size: 2, httpMetadata: {} });
+    const response = await worker.fetch(
+      request(`/task-comments/${COMMENT_ID}/attachment`),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('hi');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION);
+  });
+
+  test('rejects malformed ids, unknown sub-paths and wrong methods', async () => {
+    expect((await worker.fetch(request('/task-comments/nope'), env, ctx)).status).toBe(404);
+    expect(
+      (await worker.fetch(request(`/task-comments/${COMMENT_ID}/other`), env, ctx)).status,
+    ).toBe(404);
+    const put = await worker.fetch(request('/task-comments', { method: 'PUT' }), env, ctx);
+    expect(put.status).toBe(405);
+    expect(put.headers.get('Allow')).toBe('GET, POST');
+    const get = await worker.fetch(request(`/task-comments/${COMMENT_ID}`), env, ctx);
+    expect(get.status).toBe(405);
+    expect(get.headers.get('Allow')).toBe('PATCH, DELETE');
+    const post = await worker.fetch(
+      request(`/task-comments/${COMMENT_ID}/attachment`, { method: 'POST' }),
+      env,
+      ctx,
+    );
+    expect(post.status).toBe(405);
+  });
+});
+
 describe('routing — /files', () => {
   const FILE_ID = '33333333-3333-4333-8333-333333333333';
 

@@ -3,6 +3,8 @@
 // on GET that the client assembles into a tree.
 
 import { isAncestorOf } from './ancestry.js';
+import { captureHandledException } from './sentry.js';
+import { attachmentKeysOf, deleteVanishedAttachments } from './taskComments.js';
 import { validId } from '../../../shared/pagination.js';
 
 const MAX_NAME_LENGTH = 120;
@@ -145,14 +147,21 @@ async function updateProjectUnlocked(sql, userId, body) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {any} [env] The FILES bucket, for the cascaded attachments.
  */
-export async function deleteProject(sql, userId, body) {
+export async function deleteProject(sql, userId, body, env) {
   const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid project id is required' }, { status: 400 });
 
+  // Sub-projects and tasks cascade, and the tasks' threads with them; their
+  // attachment objects are removed once the rows are gone (taskComments.js).
+  const attachmentKeys = await attachmentKeysOf(sql, userId);
   const deleted = await sql`
     DELETE FROM task_projects WHERE id = ${id} AND user_id = ${userId} RETURNING id
   `;
   if (!deleted.length) return Response.json({ error: 'Project not found' }, { status: 404 });
+  await deleteVanishedAttachments(sql, env ?? {}, userId, attachmentKeys, {
+    report: (operation, error, extra) => captureHandledException(operation, error, env, extra),
+  });
   return Response.json({ ok: true });
 }

@@ -6,6 +6,8 @@ import { getTaskPage, getTaskDetail } from './taskPages.js';
 import { normalizeTaskMetadata } from './taskMetadata.js';
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
 import { isAncestorOf } from './ancestry.js';
+import { captureHandledException } from './sentry.js';
+import { attachmentKeysOf, deleteVanishedAttachments } from './taskComments.js';
 import { removeTaskItemFromMeili, syncTaskItemToMeili } from './taskItemMeiliSync.js';
 import { validId } from '../../../shared/pagination.js';
 
@@ -761,11 +763,17 @@ export async function deleteTaskItem(sql, userId, body, env) {
   const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid task id is required' }, { status: 400 });
 
+  // The task's thread (and its sub-tasks' threads) cascade with it; their
+  // attachment objects are removed once the rows are gone (taskComments.js).
+  const attachmentKeys = await attachmentKeysOf(sql, userId);
   const deleted = await sql`
     DELETE FROM task_items WHERE id = ${id} AND user_id = ${userId}
     RETURNING id, kind, parent_id AS "parentId"
   `;
   if (!deleted.length) return Response.json({ error: 'Task not found' }, { status: 404 });
+  await deleteVanishedAttachments(sql, env ?? {}, userId, attachmentKeys, {
+    report: (operation, error, extra) => captureHandledException(operation, error, env, extra),
+  });
   // A divider was never indexed, so there is nothing to take out.
   if (deleted[0].kind === 'divider') return Response.json({ ok: true });
   // A top-level task takes its search document (sub-task titles and all) with
