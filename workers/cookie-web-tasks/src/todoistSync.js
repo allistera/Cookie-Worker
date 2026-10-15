@@ -406,9 +406,13 @@ export function planSync(
     rootsByProject.set(key, list);
   }
 
-  // Inbox first, then projects in their own order, so positions and the
-  // divider list come out the same for the same account every run.
-  const projectKeys = [null, ...projects.map((project) => project.todoistId)].filter(
+  // Inbox first, then projects in their own order (by id when this run is
+  // not writing them), so positions and the divider list come out the same
+  // for the same account every run.
+  const orderedProjects = syncProjects
+    ? projects.map((project) => project.todoistId)
+    : [...knownProjects].sort();
+  const projectKeys = [null, ...orderedProjects].filter(
     (key) =>
       rootsByProject.has(key) || sectionsByProject.has(key) || (key === null && redirected.length),
   );

@@ -475,7 +475,10 @@ describe('applySync', () => {
     });
 
     expect(sql.calls).toHaveLength(4);
-    expect(sql.calls.every((call) => !call.text.includes('task_items'))).toBe(true);
+    // The vanished-project guard reads task_items; nothing writes to it.
+    expect(
+      sql.calls.some((call) => /(INSERT INTO|UPDATE|DELETE FROM) task_items/.test(call.text)),
+    ).toBe(false);
     expect(summary).toEqual({
       projects: 2,
       sections: 0,
