@@ -122,13 +122,19 @@ export async function fetchAccount(token, fetchImpl = fetch) {
 
 /**
  * Everything one sync run reads, fetched in sequence so a personal token
- * never fires four requests at once at Todoist's per-user rate limit.
+ * never fires four requests at once at Todoist's per-user rate limit. The
+ * projects are always read (the sync needs to know which is the Inbox); the
+ * sections, tasks and completions only when the run will write tasks.
  *
  * @param {string} token
- * @param {{completedSince: Date, completedUntil: Date, fetchImpl?: typeof fetch}} options
+ * @param {{completedSince: Date, completedUntil: Date, includeTasks?: boolean, fetchImpl?: typeof fetch}} options
  */
-export async function fetchSnapshot(token, { completedSince, completedUntil, fetchImpl = fetch }) {
+export async function fetchSnapshot(
+  token,
+  { completedSince, completedUntil, includeTasks = true, fetchImpl = fetch },
+) {
   const projects = await listAll(token, '/projects', { fetchImpl });
+  if (!includeTasks) return { projects, sections: [], tasks: [], completed: [] };
   const sections = await listAll(token, '/sections', { fetchImpl });
   const tasks = await listAll(token, '/tasks', { fetchImpl });
   const completed = await listAll(token, '/tasks/completed/by_completion_date', {

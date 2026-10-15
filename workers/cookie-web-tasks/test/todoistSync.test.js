@@ -7,6 +7,7 @@ import {
   describeSyncFailure,
   indexSyncedTasks,
   isSyncHour,
+  loadMirroredProjects,
   mapDue,
   mapLabels,
   mapPriority,
@@ -220,6 +221,14 @@ describe('planSync', () => {
     expect(byId.get('t3')).toMatchObject({ projectTodoistId: null, position: 1 });
   });
 
+  it('sends a task in a project it does not know to the Inbox, after the Inbox rows', () => {
+    const orphan = plan.tasks.find((task) => task.todoistId === 't4');
+    // The Inbox holds t3 (1) and its section divider (2); the orphan follows.
+    expect(orphan).toMatchObject({ projectTodoistId: null, position: 3, depth: 0 });
+    // Its section lives in the unknown project, so no divider comes with it.
+    expect(plan.sections.map((section) => section.todoistId)).not.toContain(`${SECTION_PREFIX}s4`);
+  });
+
   it('maps task fields and places a sub-task among its siblings', () => {
     const report = plan.tasks.find((task) => task.todoistId === 't1');
     expect(report).toMatchObject({
@@ -238,10 +247,44 @@ describe('planSync', () => {
     expect(plan.labels).toEqual(['urgent', 'work']);
   });
 
-  it('skips tasks in unknown projects and completed tasks', () => {
-    expect(plan.tasks.map((task) => task.todoistId)).not.toContain('t4');
+  it('leaves completed tasks out', () => {
     expect(plan.tasks.map((task) => task.todoistId)).not.toContain('t5');
-    expect(plan.skipped).toBe(1);
+  });
+
+  it('plans projects only when tasks are switched off', () => {
+    const projectsOnly = planSync(SNAPSHOT, { timeZone: ZONE, syncTasks: false });
+    expect(projectsOnly.projects.map((project) => project.todoistId)).toEqual(['work', 'reports']);
+    expect(projectsOnly).toMatchObject({ sections: [], tasks: [], labels: [] });
+    expect(projectsOnly.completed.size).toBe(0);
+  });
+
+  it('files tasks under the mirrors Cookie already holds when projects are switched off', () => {
+    // Cookie holds a mirror of Work but not of Reports or the unknown
+    // project; a task in either of those goes to the Inbox.
+    const snapshot = {
+      ...SNAPSHOT,
+      tasks: [
+        ...SNAPSHOT.tasks,
+        { id: 't7', content: 'In reports', project_id: 'reports', parent_id: null, child_order: 1 },
+      ],
+    };
+    const tasksOnly = planSync(snapshot, {
+      timeZone: ZONE,
+      syncProjects: false,
+      mirroredProjectIds: ['work', 'inbox'],
+    });
+    expect(tasksOnly.projects).toEqual([]);
+    const byId = new Map(tasksOnly.tasks.map((task) => [task.todoistId, task]));
+    expect(byId.get('t1')).toMatchObject({ projectTodoistId: 'work', position: 4 });
+    expect(byId.get('t3')).toMatchObject({ projectTodoistId: null, position: 1 });
+    // Redirected tasks come after the Inbox's own rows, grouped by origin.
+    expect(byId.get('t7')).toMatchObject({ projectTodoistId: null, position: 3 });
+    expect(byId.get('t4')).toMatchObject({ projectTodoistId: null, position: 4 });
+    expect(tasksOnly.sections.map((section) => section.projectTodoistId)).toEqual([
+      null,
+      'work',
+      'work',
+    ]);
   });
 
   it('keeps only completions with a readable timestamp', () => {
@@ -275,6 +318,7 @@ describe('applySync', () => {
         { id: T1, todoistId: 't1', parentId: null },
         { id: 't2-row', todoistId: 't2', parentId: null },
         { id: 't3-row', todoistId: 't3', parentId: null },
+        { id: 't4-row', todoistId: 't4', parentId: null },
         { id: 't6-row', todoistId: 't6', parentId: null },
       ],
       [{ id: 't1a-row', todoistId: 't1a', parentId: T1 }], // tasks depth 1
@@ -320,10 +364,18 @@ describe('applySync', () => {
 
     expect(texts[6]).toContain("'task'");
     const roots = sql.calls[6].values[1].__json;
-    // Inbox first, then each project in order.
-    expect(roots.map((/** @type {any} */ row) => row.todoist_id)).toEqual(['t3', 't2', 't6', 't1']);
+    // Inbox first (its own task, then the one sent there), then each project
+    // in order.
+    expect(roots.map((/** @type {any} */ row) => row.todoist_id)).toEqual([
+      't3',
+      't4',
+      't2',
+      't6',
+      't1',
+    ]);
     expect(roots[0].project_id).toBeNull();
-    expect(roots[3]).toEqual({
+    expect(roots[1]).toMatchObject({ todoist_id: 't4', project_id: null, position: 3 });
+    expect(roots[4]).toEqual({
       todoist_id: 't1',
       content: 'Write the report',
       description: null,
@@ -360,12 +412,79 @@ describe('applySync', () => {
     expect(summary).toEqual({
       projects: 2,
       sections: 3,
-      tasks: 5,
+      tasks: 6,
       completed: 1,
       removed: 1 + 2,
-      skipped: 1,
+      skipped: 0,
     });
     expect(deletedRootIds).toEqual(['z-row']);
+  });
+
+  it('leaves projects alone and files tasks under the mirrors it holds when projects are off', async () => {
+    const tasksOnly = planSync(SNAPSHOT, {
+      timeZone: ZONE,
+      syncProjects: false,
+      mirroredProjectIds: ['work'],
+    });
+    const sql = createMockSql([
+      [], // existing mirrors
+      [], // sections upsert
+      [], // tasks depth 0
+      [], // tasks depth 1
+      [], // registerTaskLabels
+    ]);
+
+    const { summary } = await applySync(sql, USER_ID, tasksOnly, {
+      syncProjects: false,
+      mirroredProjects: new Map([['work', WORK]]),
+    });
+
+    const texts = sql.calls.map((/** @type {{text: string}} */ call) => call.text);
+    expect(texts.some((text) => text.includes('task_projects'))).toBe(false);
+    const roots = sql.calls[2].values[1].__json;
+    expect(roots.find((/** @type {any} */ row) => row.todoist_id === 't1').project_id).toBe(WORK);
+    expect(roots.find((/** @type {any} */ row) => row.todoist_id === 't4').project_id).toBeNull();
+    expect(summary).toMatchObject({ projects: 0, tasks: 6, removed: 0, skipped: 0 });
+  });
+
+  it('reads the mirrored projects itself when projects are off and none were given', async () => {
+    const sql = createMockSql([[{ id: WORK, todoistId: 'work' }]]);
+    expect(await loadMirroredProjects(sql, USER_ID)).toEqual(new Map([['work', WORK]]));
+
+    const plan = planSync(
+      { projects: [], sections: [], tasks: [], completed: [] },
+      { timeZone: ZONE },
+    );
+    const apply = createMockSql([[{ id: WORK, todoistId: 'work' }], []]);
+    await applySync(apply, USER_ID, plan, { syncProjects: false });
+    expect(apply.calls[0].text).toContain('FROM task_projects');
+    expect(apply.calls[0].text).toContain('todoist_id IS NOT NULL');
+  });
+
+  it('writes projects only, touching no task row, when tasks are off', async () => {
+    const projectsOnly = planSync(SNAPSHOT, { timeZone: ZONE, syncTasks: false });
+    const sql = createMockSql([
+      [{ id: WORK, todoistId: 'work' }],
+      [{ id: REPORTS, todoistId: 'reports' }],
+      [{ id: 'removed-project' }],
+      [{ id: 'unlinked-project' }],
+    ]);
+
+    const { summary, deletedRootIds } = await applySync(sql, USER_ID, projectsOnly, {
+      syncTasks: false,
+    });
+
+    expect(sql.calls).toHaveLength(4);
+    expect(sql.calls.every((call) => !call.text.includes('task_items'))).toBe(true);
+    expect(summary).toEqual({
+      projects: 2,
+      sections: 0,
+      tasks: 0,
+      completed: 0,
+      removed: 1,
+      skipped: 1,
+    });
+    expect(deletedRootIds).toEqual([]);
   });
 
   it('runs no project or task statements for an empty account beyond the reconciliation', async () => {
@@ -494,6 +613,10 @@ describe('syncConnection', () => {
       skipped: 0,
     });
     expect(sql.begin).toHaveBeenCalledTimes(1);
+    // With projects on, the mirrored-project read is not needed.
+    expect(sql.calls.some((call) => call.text.includes('AS "todoistId" FROM task_projects'))).toBe(
+      false,
+    );
     expect(sql.controlCalls[0].text).toContain('pg_advisory_xact_lock');
     const record = sql.calls.at(-1);
     expect(record.text).toContain('UPDATE todoist_connections');
@@ -506,6 +629,56 @@ describe('syncConnection', () => {
       String(fetchImpl.mock.calls.find(([url]) => String(url).includes('by_completion_date'))?.[0]),
     );
     expect(completedUrl.searchParams.get('since')).toBe('2026-10-14T07:00:00.000Z');
+  });
+
+  it('reads the mirrored projects under the lock when projects are switched off', async () => {
+    const fetchImpl = vi.fn(async (/** @type {any} */ url) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith('/by_completion_date'))
+        return jsonResponse({ items: [], next_cursor: null });
+      if (path.endsWith('/tasks')) {
+        return jsonResponse({
+          results: [
+            { id: 't', content: 'Kept', project_id: 'p', priority: 1, child_order: 1 },
+            { id: 'u', content: 'Homeless', project_id: 'q', priority: 1, child_order: 1 },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path.endsWith('/projects')) {
+        return jsonResponse({
+          results: [
+            { id: 'p', name: 'P', child_order: 1 },
+            { id: 'q', name: 'Q', child_order: 2 },
+          ],
+          next_cursor: null,
+        });
+      }
+      return jsonResponse({ results: [], next_cursor: null });
+    });
+    const sql = createMockSql([
+      [{ id: 'p-row', todoistId: 'p' }], // mirrored projects
+      [], // existing mirrors
+      [
+        { id: 't-row', todoistId: 't', parentId: null },
+        { id: 'u-row', todoistId: 'u', parentId: null },
+      ],
+      [], // recordSyncResult
+    ]);
+
+    const summary = await syncConnection(
+      sql,
+      /** @type {any} */ ({ deferSearchSync: vi.fn() }),
+      { ...connection, syncProjects: false },
+      { fetchImpl: /** @type {any} */ (fetchImpl) },
+    );
+
+    expect(summary).toMatchObject({ projects: 0, tasks: 2, removed: 0 });
+    expect(sql.calls[0].text).toContain('FROM task_projects');
+    const rows = sql.calls[2].values[1].__json;
+    expect(rows.find((/** @type {any} */ row) => row.todoist_id === 't').project_id).toBe('p-row');
+    expect(rows.find((/** @type {any} */ row) => row.todoist_id === 'u').project_id).toBeNull();
+    expect(sql.calls.some((call) => call.text.includes('INSERT INTO task_projects'))).toBe(false);
   });
 
   it('looks a month back for completions on a first run', async () => {
