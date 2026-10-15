@@ -14,6 +14,8 @@
 // auth0-spa-js treats any `code` + `state` pair on the app's own URL as its
 // own login callback and tries to redeem it against Auth0.
 
+import { bytesToBase64Url, decryptToken, encryptToken } from '../../../shared/token-crypto.js';
+
 export const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
@@ -80,80 +82,10 @@ export class GoogleReauthRequired extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Token encryption
+// Token encryption: shared/token-crypto.js, re-exported so this module's
+// callers and tests keep their import.
 
-/** @param {string} base64 */
-function base64ToBytes(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-/** @param {Uint8Array} bytes */
-function bytesToBase64(bytes) {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-/** @param {Uint8Array} bytes */
-function bytesToBase64Url(bytes) {
-  return bytesToBase64(bytes).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
-}
-
-/** @type {Map<string, Promise<CryptoKey>>} */
-const importedKeys = new Map();
-
-/** @param {string} encodedKey Base64 of exactly 32 random bytes. */
-function importKey(encodedKey) {
-  let imported = importedKeys.get(encodedKey);
-  if (!imported) {
-    const bytes = base64ToBytes(encodedKey);
-    if (bytes.length !== 32) {
-      throw new Error('GOOGLE_TOKEN_ENCRYPTION_KEY must decode to 32 bytes');
-    }
-    imported = crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, false, [
-      'encrypt',
-      'decrypt',
-    ]);
-    importedKeys.clear();
-    importedKeys.set(encodedKey, imported);
-  }
-  return imported;
-}
-
-/**
- * @param {string} plaintext
- * @param {string} encodedKey
- * @returns {Promise<string>} `v1:<iv>:<ciphertext>`, both base64.
- */
-export async function encryptToken(plaintext, encodedKey) {
-  const key = await importKey(encodedKey);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    new TextEncoder().encode(plaintext),
-  );
-  return `v1:${bytesToBase64(iv)}:${bytesToBase64(new Uint8Array(ciphertext))}`;
-}
-
-/**
- * @param {string} stored
- * @param {string} encodedKey
- */
-export async function decryptToken(stored, encodedKey) {
-  const [version, iv, ciphertext] = String(stored).split(':');
-  if (version !== 'v1' || !iv || !ciphertext) throw new Error('Unrecognized token ciphertext');
-  const key = await importKey(encodedKey);
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: base64ToBytes(iv) },
-    key,
-    base64ToBytes(ciphertext),
-  );
-  return new TextDecoder().decode(plaintext);
-}
+export { decryptToken, encryptToken };
 
 // ---------------------------------------------------------------------------
 // Authorization flow

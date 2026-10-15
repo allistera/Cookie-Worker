@@ -34,6 +34,7 @@ const captureHandledException = vi.fn();
 vi.mock('../src/sentry.js', () => ({
   createSentryOptions: () => ({ enabled: false }),
   captureHandledException: (/** @type {any[]} */ ...args) => captureHandledException(...args),
+  tagTrigger: () => undefined,
 }));
 
 const { default: worker, createSearchSyncQueue } = await import('../src/worker.js');
@@ -172,6 +173,126 @@ describe('routing — /tasks/refresh', () => {
     );
     expect(response.status).toBe(403);
     expect(mockQuery).not.toHaveBeenCalled();
+  });
+});
+
+describe('routing — /tasks/todoist', () => {
+  const KEY = btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, i) => i + 1)));
+  const todoistEnv = { ...env, TODOIST_TOKEN_ENCRYPTION_KEY: KEY };
+
+  test('GET /tasks/todoist dispatches to getTodoistSettings', async () => {
+    const response = await worker.fetch(request('/tasks/todoist'), todoistEnv, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      todoist: expect.objectContaining({ configured: true, connected: false }),
+    });
+  });
+
+  test('GET /tasks/todoist without the encryption key still answers, as not configured', async () => {
+    const response = await worker.fetch(request('/tasks/todoist'), env, ctx);
+    expect((await response.json()).todoist.configured).toBe(false);
+  });
+
+  test('PUT /tasks/todoist dispatches to putTodoistSettings', async () => {
+    const response = await worker.fetch(
+      request('/tasks/todoist', { method: 'PUT', body: JSON.stringify({ enabled: true }) }),
+      todoistEnv,
+      ctx,
+    );
+    // Empty mock result -> "connect first", proof the body reached the handler.
+    expect(response.status).toBe(404);
+  });
+
+  test('DELETE /tasks/todoist dispatches to deleteTodoistSettings', async () => {
+    mockQuery.mockResolvedValueOnce([{ user_id: 'user-1' }]);
+    const response = await worker.fetch(
+      request('/tasks/todoist', { method: 'DELETE' }),
+      todoistEnv,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+  });
+
+  test('PATCH on /tasks/todoist returns 405', async () => {
+    const response = await worker.fetch(
+      request('/tasks/todoist', { method: 'PATCH' }),
+      todoistEnv,
+      ctx,
+    );
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('GET, PUT, DELETE');
+  });
+
+  test('POST /tasks/todoist/sync dispatches to postTodoistSync', async () => {
+    // allowRequest is mocked above; the first query is the connection read.
+    mockQuery.mockResolvedValueOnce([]);
+    const response = await worker.fetch(
+      request('/tasks/todoist/sync', { method: 'POST' }),
+      todoistEnv,
+      ctx,
+    );
+    expect(response.status).toBe(404);
+    expect((await response.json()).error).toBe('Connect Todoist first');
+  });
+
+  test('GET on /tasks/todoist/sync returns 405 and deeper paths 404', async () => {
+    expect((await worker.fetch(request('/tasks/todoist/sync'), todoistEnv, ctx)).status).toBe(405);
+    expect((await worker.fetch(request('/tasks/todoist/other'), todoistEnv, ctx)).status).toBe(404);
+  });
+});
+
+describe('scheduled — Todoist sync', () => {
+  const KEY = btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, i) => i + 1)));
+  const controller = /** @type {any} */ ({ scheduledTime: Date.parse('2026-12-01T09:00:00Z') });
+
+  test('does nothing without the encryption key', async () => {
+    await worker.scheduled(controller, env, ctx);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('syncs each enabled connection inside its local window and skips the rest', async () => {
+    const { encryptToken } = await import('../../../shared/token-crypto.js');
+    const encrypted = await encryptToken('todoist-token', KEY);
+    const row = (/** @type {string} */ userId, /** @type {string} */ timeZone) => ({
+      userId,
+      apiTokenEncrypted: encrypted,
+      tokenHint: 'oken',
+      email: null,
+      timeZone,
+      enabled: true,
+      lastSyncedAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+      lastSyncSummary: null,
+    });
+    // 09:00 UTC is 09:00 in London (in the window) and 01:00 in Los Angeles.
+    mockQuery.mockResolvedValueOnce([
+      row('u-london', 'Europe/London'),
+      row('u-la', 'America/Los_Angeles'),
+    ]);
+    const fetchMock = vi.fn(
+      async (/** @type {any} */ url) =>
+        new Response(
+          JSON.stringify(
+            String(url).includes('by_completion_date')
+              ? { items: [], next_cursor: null }
+              : { results: [], next_cursor: null },
+          ),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await worker.scheduled(controller, { ...env, TODOIST_TOKEN_ENCRYPTION_KEY: KEY }, ctx);
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const [, firstInit] = /** @type {any[]} */ (fetchMock.mock.calls[0]);
+    expect(firstInit.headers.Authorization).toBe('Bearer todoist-token');
+    const texts = mockQuery.mock.calls.map((call) => call[0].join('?'));
+    expect(texts[0]).toContain('FROM todoist_connections');
+    expect(texts.at(-1)).toContain('UPDATE todoist_connections');
+    expect(mockQuery.mock.calls.at(-1)?.slice(1)).toContain('u-london');
+    expect(sqlEnd).toHaveBeenCalled();
   });
 });
 

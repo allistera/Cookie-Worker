@@ -20,6 +20,14 @@
   // Every request opens a Hyperdrive connection before any route work, so
   // run the isolate near the database rather than near the browser.
   "placement": { "mode": "smart" },
+  "triggers": {
+    // Todoist sync (src/todoistSettings.js runScheduledTodoistSyncs). Cron
+    // Triggers run on UTC; each tick syncs the enabled connections whose own
+    // clock reads 07:00–20:00, so the window follows each account's zone and
+    // its daylight-saving changes. The ticks outside every window are cheap:
+    // one query, no Todoist call.
+    "crons": ["0 * * * *"],
+  },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
   // Worker-to-Worker call for POST /tasks/refresh: zero-cost, never leaves
   // Cloudflare, no public URL involved. The matching ENRICHER_TRIGGER_TOKEN

@@ -17,7 +17,14 @@ import { getTaskFilters, putTaskFilters } from './taskFilters.js';
 import { createTaskLabel, deleteTaskLabel, getTaskLabels, updateTaskLabel } from './taskLabels.js';
 import { allowRequest } from '../../../shared/rate-limit.js';
 import { postRefresh } from './refresh.js';
-import { captureHandledException, createSentryOptions } from './sentry.js';
+import { captureHandledException, createSentryOptions, tagTrigger } from './sentry.js';
+import {
+  deleteTodoistSettings,
+  getTodoistSettings,
+  postTodoistSync,
+  putTodoistSettings,
+  runScheduledTodoistSyncs,
+} from './todoistSettings.js';
 import {
   createTaskItem,
   deleteTaskItem,
@@ -75,7 +82,8 @@ async function isMailboxOwner(sql, userId, env) {
  * GET/PUT /tasks/enrichment-settings,
  * POST /task-items/reorder, POST /task-items/interpret,
  * GET/POST/PATCH/DELETE /task-labels, GET/PUT /task-filters,
- * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, GET /tasks/document-image, and
+ * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, GET /tasks/document-image,
+ * GET/PUT/DELETE /tasks/todoist, POST /tasks/todoist/sync, and
  * GET/POST/PATCH/DELETE /documents — the resources Cookie-Web's api/tasks.js
  * served, previously reached only via
  * api/tasks.js?resource=(refresh|interests|documents|daily-note-seed|image-upload)
@@ -224,6 +232,29 @@ async function route(url, request, sql, userId, env) {
     );
   }
 
+  // Todoist sync (todoistSettings.js): the connection under /tasks/todoist
+  // and a manual run under /tasks/todoist/sync, the one three-segment path
+  // in this Worker.
+  if (segments[0] === 'tasks' && segments[1] === 'todoist') {
+    if (segments.length === 3 && segments[2] === 'sync') {
+      if (request.method !== 'POST')
+        return Response.json(
+          { error: 'Method not allowed' },
+          { status: 405, headers: { Allow: 'POST' } },
+        );
+      return postTodoistSync(sql, userId, env);
+    }
+    if (segments.length !== 2) return Response.json({ error: 'Not Found' }, { status: 404 });
+    if (request.method === 'GET') return getTodoistSettings(sql, userId, env);
+    if (request.method === 'DELETE') return deleteTodoistSettings(sql, userId);
+    if (request.method !== 'PUT')
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, PUT, DELETE' } },
+      );
+    return withJsonBody(request, (body) => putTodoistSettings(sql, userId, body, env));
+  }
+
   if (segments[0] !== 'tasks' || segments.length > 2) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
@@ -370,12 +401,28 @@ export function createSearchSyncQueue() {
 
 const worker = {
   /**
+   * Hourly cron: the Todoist sync for every enabled connection inside its
+   * local 07:00–20:00 window (todoistSettings.js). Per-connection failures
+   * are recorded on the connection and reported there; anything escaping is
+   * the run itself failing, left for withSentry.
+   *
+   * @param {ScheduledController} controller
+   * @param {import('./sentry.js').TasksEnv} env
+   * @param {ExecutionContext} _ctx
+   */
+  async scheduled(controller, env, _ctx) {
+    tagTrigger('scheduled');
+    await runScheduledTodoistSyncs(env, new Date(controller.scheduledTime));
+  },
+
+  /**
    * @param {Request} request
    * @param {import('./sentry.js').TasksEnv} env
    * @param {ExecutionContext} ctx
    */
   async fetch(request, env, ctx) {
     configureOpenAi(env);
+    tagTrigger('http');
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {

@@ -3,6 +3,8 @@ import {
   createSentryOptions as createSharedOptions,
 } from '../../../shared/sentry.js';
 
+export { tagTrigger } from '../../../shared/sentry.js';
+
 const SERVICE = 'cookie-web-tasks';
 
 /**
@@ -17,6 +19,7 @@ const SERVICE = 'cookie-web-tasks';
  *   ENRICHER_TRIGGER_TOKEN?: string,
  *   OWNER_EMAIL?: string,
  *   BLOB_READ_WRITE_TOKEN?: string,
+ *   TODOIST_TOKEN_ENCRYPTION_KEY?: string,
  *   FILES?: R2Bucket,
  * }} TasksEnv
  */
@@ -31,6 +34,7 @@ function secrets(env) {
     env.OPENAI_API_KEY,
     env.ENRICHER_TRIGGER_TOKEN,
     env.BLOB_READ_WRITE_TOKEN,
+    env.TODOIST_TOKEN_ENCRYPTION_KEY,
   ];
 }
 
