@@ -495,3 +495,28 @@ New inbound emails are included in the inbox and unread badge only once `message
 Responses contain a conversational reply and optionally a reviewable title/block proposal. The Worker never writes documents: Cookie-Web applies accepted proposals through normal autosave, refuses stale suggestions, and preserves existing non-text blocks exactly. Model content is escaped before conversion into Editor.js text blocks. Requests include the editor's live draft and the last 12 chat messages; linked attachments and image pixels are not fetched. Requests use `store: false` at OpenAI.
 
 The route accepts bodies up to 1 MiB; each full draft is limited to 250,000 characters and 500 blocks, instructions to 8,000 characters, and history entries to 16,000 characters. Oversized drafts are rejected rather than truncated. OpenAI has a 90-second deadline and 16,000 output-token limit; incomplete responses are rejected without applying changes.
+
+## Task activity and progress
+
+Apply Cookie-Web migration `0097_task_activity.sql` before deploying
+`cookie-web-tasks`, then deploy the web client. The database trigger records
+creation, edits, completion, reopening and deletion atomically, including writes
+from sync and cascades. The Worker stamps recurring completions while advancing
+the next occurrence. Existing tasks contribute their known creation and current
+completion timestamps; earlier edits and deleted tasks cannot be reconstructed.
+
+Authenticated endpoints, always scoped to the caller:
+
+- `GET /task-activity?task=<uuid>&after=<cursor>`: newest-first timeline, 50 per
+  page. Omit `task` for all history; use `completed=true` for completion history.
+  Entries retain a task title and ID after deletion; `taskExists` indicates
+  whether the client can open the task. Cursors preserve timestamp microseconds.
+- `GET /task-progress?timeZone=Europe%2FLondon`: today's and this week's completion
+  counts plus saved goals. The zone defaults to UTC and is validated against
+  Postgres. Calendar days and Monday–Sunday weeks respect DST. Counts include
+  recurring completion events; reopening/deleting does not erase completions.
+- `PUT /task-goals` with `{ "daily": 5, "weekly": 25 }`: replace the caller's
+  goals. Both must be integers from 0 to 10000; zero disables a goal.
+
+History is retained until account deletion. The tables have RLS enabled and no
+browser-role grants; clients cannot insert or edit activity directly.

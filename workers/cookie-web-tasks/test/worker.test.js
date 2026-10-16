@@ -886,3 +886,28 @@ describe('createSearchSyncQueue', () => {
     expect(after).toHaveBeenCalledOnce();
   });
 });
+
+describe('routing — task activity and progress', () => {
+  test('serves the authenticated activity timeline', async () => {
+    const response = await worker.fetch(request('/task-activity'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ activities: [], nextCursor: null });
+  });
+  test('validates goals and time zones through their handlers', async () => {
+    const goals = await worker.fetch(
+      request('/task-goals', { method: 'PUT', body: JSON.stringify({ daily: -1, weekly: 1 }) }),
+      env,
+      ctx,
+    );
+    expect(goals.status).toBe(400);
+    const progress = await worker.fetch(request('/task-progress?timeZone=bad'), env, ctx);
+    expect(progress.status).toBe(400);
+  });
+  test('rejects writes to history and extra path segments', async () => {
+    expect(
+      (await worker.fetch(request('/task-activity', { method: 'POST' }), env, ctx)).status,
+    ).toBe(405);
+    expect((await worker.fetch(request('/task-progress/extra'), env, ctx)).status).toBe(404);
+    expect((await worker.fetch(request('/task-goals'), env, ctx)).status).toBe(405);
+  });
+});
