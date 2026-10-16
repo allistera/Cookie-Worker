@@ -42,6 +42,7 @@
 import { TASKS_INDEX } from '../../../shared/meili/tasks.js';
 import { addDocuments, deleteDocuments, meiliAvailable } from '../../../shared/meili.js';
 import { MEILI_CHUNK_SIZE } from '../../../shared/meiliSync.js';
+import { attachmentKeysOf, deleteVanishedAttachments } from './taskComments.js';
 import { isCalendarDate, registerTaskLabels } from './taskItems.js';
 import { isTaskTimeZone, normalizeTaskLabels } from './taskMetadata.js';
 import { parseTaskRecurrence } from './taskRecurrence.js';
@@ -66,7 +67,7 @@ const MAX_LABELS = 20;
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const MAX_SYNC_ERROR_LENGTH = 500;
 
-/** @typedef {{HYPERDRIVE: {connectionString: string}, TODOIST_TOKEN_ENCRYPTION_KEY?: string, MEILISEARCH_URL?: string, MEILISEARCH_API_KEY?: string, deferSearchSync?: Function}} TodoistSyncEnv */
+/** @typedef {{HYPERDRIVE: {connectionString: string}, TODOIST_TOKEN_ENCRYPTION_KEY?: string, MEILISEARCH_URL?: string, MEILISEARCH_API_KEY?: string, FILES?: R2Bucket, deferSearchSync?: Function}} TodoistSyncEnv */
 
 /**
  * @typedef {{
@@ -899,7 +900,7 @@ export async function syncConnection(sql, env, connection, deps = {}) {
       includeTasks: syncTasks,
       fetchImpl: deps.fetchImpl,
     });
-    const { summary, deletedRootIds } = await sql.begin(async (tx) => {
+    const { summary, deletedRootIds, attachmentKeys } = await sql.begin(async (tx) => {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${connection.userId}, 1))`;
       // Which projects tasks may land in is read under the lock, so the plan
       // and the write see the same set.
@@ -912,12 +913,30 @@ export async function syncConnection(sql, env, connection, deps = {}) {
         syncTasks,
         mirroredProjectIds: mirroredProjects?.keys() ?? [],
       });
-      return applySync(/** @type {any} */ (tx), connection.userId, plan, {
+      // A vanished mirror (task or project) takes its tasks' threads with
+      // it by cascade; the keys read here say which attachment objects to
+      // remove once the run has committed (taskComments.js).
+      const keys = await attachmentKeysOf(/** @type {any} */ (tx), connection.userId);
+      const applied = await applySync(/** @type {any} */ (tx), connection.userId, plan, {
         syncProjects,
         syncTasks,
         mirroredProjects,
       });
+      return { ...applied, attachmentKeys: keys };
     });
+    // The rows are committed, so the objects of any thread that cascaded
+    // are only findable from the keys read above: clean them up now, ahead
+    // of the status write, and never let that cleanup decide the outcome.
+    await deleteVanishedAttachments(sql, env ?? {}, connection.userId, attachmentKeys).catch(
+      (error) => {
+        console.log(
+          JSON.stringify({
+            event: 'todoist_attachment_cleanup_failed',
+            message: /** @type {Error} */ (error)?.message ?? String(error),
+          }),
+        );
+      },
+    );
     await recordSyncResult(sql, connection.userId, {
       status: 'ok',
       summary,

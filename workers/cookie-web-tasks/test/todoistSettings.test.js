@@ -317,6 +317,7 @@ describe('POST /tasks/todoist/sync', () => {
     const sql = createMockSql([
       [{ allowed: true }],
       [before],
+      [], // attachment keys, read before the run writes
       [], // vanished projects deleted
       [], // unlinked
       [], // existing mirrors

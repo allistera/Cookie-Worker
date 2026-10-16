@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createProject, deleteProject, getProjects, updateProject } from '../src/projects.js';
 import { createMockSql } from './helpers.js';
 
@@ -123,12 +123,24 @@ describe('PATCH /projects', () => {
 
 describe('DELETE /projects', () => {
   it('deletes an owned project', async () => {
-    const sql = createMockSql([[{ id: PROJECT_ID }]]);
+    // The owner's attachment keys are read first, so the threads of the
+    // cascaded tasks can have their objects removed afterwards.
+    const sql = createMockSql([[], [{ id: PROJECT_ID }]]);
     const response = await deleteProject(sql, USER_ID, { id: PROJECT_ID });
 
     expect(response.status).toBe(200);
     expect((await response.json()).ok).toBe(true);
-    expect(sql.calls[0].text).toContain('DELETE FROM task_projects');
+    expect(sql.calls[0].text).toContain('FROM task_comments');
+    expect(sql.calls[1].text).toContain('DELETE FROM task_projects');
+  });
+
+  it('removes the attachment objects of the threads that cascaded', async () => {
+    const sql = createMockSql([[{ object_key: 'u/gone' }], [{ id: PROJECT_ID }], []]);
+    const FILES = { delete: vi.fn(async () => undefined) };
+    const response = await deleteProject(sql, USER_ID, { id: PROJECT_ID }, { FILES });
+
+    expect(response.status).toBe(200);
+    expect(FILES.delete).toHaveBeenCalledWith('u/gone');
   });
 
   it('404s an id the caller does not own', async () => {

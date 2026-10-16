@@ -366,12 +366,30 @@ describe('PATCH /task-items', () => {
 
 describe('DELETE /task-items', () => {
   it('deletes an owned task', async () => {
-    const sql = createMockSql([[{ id: ITEM_ID }]]);
+    // The owner's attachment keys are read first, so a cascaded thread's
+    // objects can be removed afterwards; none here, so nothing is read back.
+    const sql = createMockSql([[], [{ id: ITEM_ID }]]);
     const response = await deleteTaskItem(sql, USER_ID, { id: ITEM_ID });
 
     expect(response.status).toBe(200);
     expect((await response.json()).ok).toBe(true);
-    expect(sql.calls[0].text).toContain('DELETE FROM task_items');
+    expect(sql.calls[0].text).toContain('FROM task_comments');
+    expect(sql.calls[1].text).toContain('DELETE FROM task_items');
+    expect(sql.calls).toHaveLength(2);
+  });
+
+  it('removes the attachment objects of the threads that cascaded', async () => {
+    const sql = createMockSql([
+      [{ object_key: 'u/kept' }, { object_key: 'u/gone' }],
+      [{ id: ITEM_ID, kind: 'task', parentId: null }],
+      [{ object_key: 'u/kept' }],
+    ]);
+    const FILES = { delete: vi.fn(async () => undefined) };
+    const response = await deleteTaskItem(sql, USER_ID, { id: ITEM_ID }, { FILES });
+
+    expect(response.status).toBe(200);
+    expect(FILES.delete).toHaveBeenCalledTimes(1);
+    expect(FILES.delete).toHaveBeenCalledWith('u/gone');
   });
 
   it('404s an id the caller does not own', async () => {
@@ -1011,14 +1029,15 @@ describe('dividers', () => {
   });
 
   it('deletes a divider without touching the search index', async () => {
-    const sql = createMockSql([[{ id: ITEM_ID, kind: 'divider', parentId: null }]]);
+    // The attachment-key read comes first (no keys, so nothing is read back).
+    const sql = createMockSql([[], [{ id: ITEM_ID, kind: 'divider', parentId: null }]]);
     vi.stubGlobal('fetch', vi.fn());
 
     const response = await deleteTaskItem(sql, USER_ID, { id: ITEM_ID }, env);
 
     expect(response.status).toBe(200);
     expect(fetch).not.toHaveBeenCalled();
-    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls).toHaveLength(2);
     vi.unstubAllGlobals();
   });
 

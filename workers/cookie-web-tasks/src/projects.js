@@ -3,6 +3,7 @@
 // on GET that the client assembles into a tree.
 
 import { isAncestorOf } from './ancestry.js';
+import { attachmentKeysOf, deleteVanishedAttachments } from './taskComments.js';
 import { validId } from '../../../shared/pagination.js';
 
 const MAX_NAME_LENGTH = 120;
@@ -145,14 +146,27 @@ async function updateProjectUnlocked(sql, userId, body) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
+ * @param {any} [env] The FILES bucket, for the cascaded attachments.
+ * @param {{report?: (operation: string, error: unknown, extra: Record<string, unknown>) => void}} [deps]
+ *   Where a failed attachment-object delete is reported.
  */
-export async function deleteProject(sql, userId, body) {
+export async function deleteProject(sql, userId, body, env, deps = {}) {
   const id = validId(body?.id) ? String(body.id) : null;
   if (!id) return Response.json({ error: 'A valid project id is required' }, { status: 400 });
 
-  const deleted = await sql`
-    DELETE FROM task_projects WHERE id = ${id} AND user_id = ${userId} RETURNING id
-  `;
+  // Sub-projects and tasks cascade, and the tasks' threads with them; their
+  // attachment objects are removed once the rows are gone (taskComments.js).
+  // The key snapshot and the delete share the owner's task lock, so a
+  // comment landing meanwhile is either in the snapshot or refused.
+  const { attachmentKeys, deleted } = await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
+    const keys = await attachmentKeysOf(/** @type {any} */ (tx), userId);
+    const rows = await tx`
+      DELETE FROM task_projects WHERE id = ${id} AND user_id = ${userId} RETURNING id
+    `;
+    return { attachmentKeys: keys, deleted: rows };
+  });
   if (!deleted.length) return Response.json({ error: 'Project not found' }, { status: 404 });
+  await deleteVanishedAttachments(sql, env ?? {}, userId, attachmentKeys, deps);
   return Response.json({ ok: true });
 }

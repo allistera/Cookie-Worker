@@ -14,6 +14,13 @@ import { getDocumentImageUrl, postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
 import { getTaskFilters, putTaskFilters } from './taskFilters.js';
+import {
+  createTaskComment,
+  deleteTaskComment,
+  getTaskCommentAttachment,
+  getTaskComments,
+  updateTaskComment,
+} from './taskComments.js';
 import { createTaskLabel, deleteTaskLabel, getTaskLabels, updateTaskLabel } from './taskLabels.js';
 import { allowRequest } from '../../../shared/rate-limit.js';
 import { postRefresh } from './refresh.js';
@@ -82,7 +89,8 @@ async function isMailboxOwner(sql, userId, env) {
  * GET/PUT /tasks/enrichment-settings,
  * POST /task-items/reorder, POST /task-items/interpret,
  * GET/POST/PATCH/DELETE /task-labels, GET/PUT /task-filters,
- * GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, GET /tasks/document-image,
+ * GET/POST /task-comments, PATCH/DELETE /task-comments/:id,
+ * GET /task-comments/:id/attachment, GET/PUT /tasks/daily-note-seed, POST /tasks/image-upload, GET /tasks/document-image,
  * GET/PUT/DELETE /tasks/todoist, POST /tasks/todoist/sync, and
  * GET/POST/PATCH/DELETE /documents — the resources Cookie-Web's api/tasks.js
  * served, previously reached only via
@@ -125,7 +133,9 @@ async function route(url, request, sql, userId, env) {
       if (reorder) return reorderTaskItems(sql, userId, body);
       if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
       if (request.method === 'PATCH') return updateTaskItem(sql, userId, body, env);
-      return deleteTaskItem(sql, userId, body, env);
+      return deleteTaskItem(sql, userId, body, env, {
+        report: (operation, error, extra) => captureHandledException(operation, error, env, extra),
+      });
     });
   }
 
@@ -141,7 +151,9 @@ async function route(url, request, sql, userId, env) {
     return withJsonBody(request, (body) => {
       if (request.method === 'POST') return createProject(sql, userId, body);
       if (request.method === 'PATCH') return updateProject(sql, userId, body);
-      return deleteProject(sql, userId, body);
+      return deleteProject(sql, userId, body, env, {
+        report: (operation, error, extra) => captureHandledException(operation, error, env, extra),
+      });
     });
   }
 
@@ -173,6 +185,51 @@ async function route(url, request, sql, userId, env) {
       );
     }
     return withJsonBody(request, (body) => putTaskFilters(sql, userId, body));
+  }
+
+  // A task's discussion thread (taskComments.js): the list under
+  // ?task=<id>, one entry under /task-comments/:id, and its bytes under
+  // /task-comments/:id/attachment — the path shapes of /files.
+  if (segments[0] === 'task-comments') {
+    if (segments.length === 1) {
+      if (request.method === 'GET') return getTaskComments(sql, userId, url);
+      if (request.method === 'POST') {
+        return createTaskComment(request, sql, userId, env, {
+          allowRequest,
+          report: (operation, error, extra) =>
+            captureHandledException(operation, error, env, extra),
+        });
+      }
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, POST' } },
+      );
+    }
+    const id = segments[1];
+    if (!validId(id) || segments.length > 3) {
+      return Response.json({ error: 'Not Found' }, { status: 404 });
+    }
+    if (segments.length === 3) {
+      if (segments[2] !== 'attachment')
+        return Response.json({ error: 'Not Found' }, { status: 404 });
+      if (request.method !== 'GET')
+        return Response.json(
+          { error: 'Method not allowed' },
+          { status: 405, headers: { Allow: 'GET' } },
+        );
+      return getTaskCommentAttachment(sql, userId, id, env);
+    }
+    const report = (operation, error, extra) =>
+      captureHandledException(operation, error, env, extra);
+    if (request.method === 'DELETE') return deleteTaskComment(sql, userId, id, env, { report });
+    if (request.method !== 'PATCH')
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'PATCH, DELETE' } },
+      );
+    return withJsonBody(request, (body) =>
+      updateTaskComment(sql, userId, id, body, env, { report }),
+    );
   }
 
   if (segments[0] === 'files') {
