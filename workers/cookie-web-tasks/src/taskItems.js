@@ -585,6 +585,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
       time_zone = CASE WHEN ${changesTime}::boolean THEN ${metadata.timeZone} ELSE t.time_zone END,
       labels = CASE WHEN ${hasLabels}::boolean THEN ${metadata.labels}::text[] ELSE t.labels END,
       recurrence = CASE WHEN ${changesRecurrence}::boolean THEN ${recurrence} ELSE t.recurrence END,
+      last_occurrence_completed_at = CASE WHEN ${advances}::boolean THEN clock_timestamp() ELSE t.last_occurrence_completed_at END,
       completed_at = CASE
         WHEN ${advances}::boolean THEN NULL
         WHEN ${hasCompleted}::boolean THEN (CASE WHEN ${Boolean(body.completed)}::boolean THEN now() ELSE NULL END)

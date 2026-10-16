@@ -13,6 +13,7 @@ import { deleteFile, getFile, getFileContent, listFiles, updateFile, uploadFile 
 import { getDocumentImageUrl, postImageUpload } from './imageUpload.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
+import { getTaskActivity, getTaskProgress, putTaskGoals } from './taskActivity.js';
 import { getTaskFilters, putTaskFilters } from './taskFilters.js';
 import {
   createTaskComment,
@@ -106,6 +107,19 @@ async function isMailboxOwner(sql, userId, env) {
  */
 async function route(url, request, sql, userId, env) {
   const segments = url.pathname.split('/').filter(Boolean);
+
+  if (['task-activity', 'task-progress', 'task-goals'].includes(segments[0])) {
+    if (segments.length !== 1) return Response.json({ error: 'Not Found' }, { status: 404 });
+    const method = segments[0] === 'task-goals' ? 'PUT' : 'GET';
+    if (request.method !== method)
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: method } },
+      );
+    if (segments[0] === 'task-activity') return getTaskActivity(sql, userId, url);
+    if (segments[0] === 'task-progress') return getTaskProgress(sql, userId, url);
+    return withJsonBody(request, (body) => putTaskGoals(sql, userId, body));
+  }
 
   if (segments[0] === 'task-items') {
     const reorder = segments.length === 2 && segments[1] === 'reorder';
