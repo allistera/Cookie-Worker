@@ -1272,3 +1272,75 @@ it('rejects completing a stale recurring occurrence after recurrence was removed
   expect(response.status).toBe(409);
   expect(sql.calls).toHaveLength(1);
 });
+
+describe('estimated task duration', () => {
+  it.each([null, 1, 90, 1440])(
+    'creates an unscheduled task with duration %s',
+    async (durationMinutes) => {
+      const sql = createMockSql([[{ id: ITEM_ID, content: 'Plan', durationMinutes }]]);
+      const response = await createTaskItem(sql, USER_ID, { content: 'Plan', durationMinutes });
+      expect(response.status).toBe(201);
+      expect((await response.json()).item.durationMinutes).toBe(durationMinutes);
+      expect(sql.calls[0].text).toContain('duration_minutes');
+      expect(sql.calls[0].values.at(-1)).toBe(durationMinutes);
+    },
+  );
+
+  it.each([0, -1, 1.5, 1441, '30', '', true])(
+    'rejects invalid duration %s on create and update',
+    async (durationMinutes) => {
+      const createSql = createMockSql();
+      expect(
+        (await createTaskItem(createSql, USER_ID, { content: 'Plan', durationMinutes })).status,
+      ).toBe(400);
+      expect(createSql.calls).toHaveLength(0);
+      const updateSql = createMockSql([[{ id: ITEM_ID, kind: 'task' }]]);
+      expect(
+        (await updateTaskItem(updateSql, USER_ID, { id: ITEM_ID, durationMinutes })).status,
+      ).toBe(400);
+      expect(updateSql.calls).toHaveLength(1);
+    },
+  );
+
+  it.each([60, null])('updates or clears an estimate with %s', async (durationMinutes) => {
+    const sql = createMockSql([
+      [{ id: ITEM_ID, kind: 'task' }],
+      [{ id: ITEM_ID, durationMinutes }],
+    ]);
+    const response = await updateTaskItem(sql, USER_ID, { id: ITEM_ID, durationMinutes });
+    expect(response.status).toBe(200);
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items t SET'));
+    const before = update.text.split('duration_minutes = CASE WHEN ')[0];
+    const index = (before.match(/\?/g) || []).length;
+    expect(update.values.slice(index, index + 2)).toEqual([true, durationMinutes]);
+  });
+
+  it('preserves an estimate when editing another field', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, kind: 'task' }], [{ id: ITEM_ID }]]);
+    expect((await updateTaskItem(sql, USER_ID, { id: ITEM_ID, content: 'Changed' })).status).toBe(
+      200,
+    );
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_items t SET'));
+    const index = (update.text.split('duration_minutes = CASE WHEN ')[0].match(/\?/g) || []).length;
+    expect(update.values[index]).toBe(false);
+  });
+
+  it('refuses estimates on dividers', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, kind: 'divider' }]]);
+    expect((await updateTaskItem(sql, USER_ID, { id: ITEM_ID, durationMinutes: 30 })).status).toBe(
+      400,
+    );
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  it('includes estimates in calendar results', async () => {
+    const sql = createMockSql([[{ id: ITEM_ID, durationMinutes: 90 }]]);
+    const response = await getTaskItems(
+      sql,
+      USER_ID,
+      url('?view=calendar&from=2026-10-01&to=2026-10-31'),
+    );
+    expect((await response.json()).items[0].durationMinutes).toBe(90);
+    expect(sql.calls[0].text).toContain('t.duration_minutes AS "durationMinutes"');
+  });
+});

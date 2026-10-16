@@ -3,7 +3,7 @@ import { getTaskPage, getTaskDetail } from './taskPages.js';
 // enricher's gathered email action items and is not a place a person writes
 // to. The two never share a row.
 
-import { normalizeTaskMetadata } from './taskMetadata.js';
+import { normalizeTaskMetadata, normalizeTaskDuration } from './taskMetadata.js';
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
 import { isAncestorOf } from './ancestry.js';
 import { attachmentKeysOf, deleteVanishedAttachments } from './taskComments.js';
@@ -129,7 +129,7 @@ export async function getTaskItems(sql, userId, url) {
   const items = await sql`
     SELECT t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
            t.description, t.recurrence, to_char(t.due_time, 'HH24:MI') AS "dueTime",
-           t.time_zone AS "timeZone", t.labels, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
+           t.duration_minutes AS "durationMinutes", t.time_zone AS "timeZone", t.labels, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
            t.position, t.today_position AS "todayPosition",
            t.completed_at AS "completedAt", t.created_at AS "createdAt"
     FROM task_items t
@@ -197,7 +197,7 @@ async function getCalendarTaskItems(sql, userId, url) {
   const items = await sql`
     SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
            to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate",
-           to_char(t.due_time, 'HH24:MI') AS "dueTime", t.time_zone AS "timeZone",
+           to_char(t.due_time, 'HH24:MI') AS "dueTime", t.duration_minutes AS "durationMinutes", t.time_zone AS "timeZone",
            t.priority, t.recurrence
     FROM task_items t
     WHERE t.user_id = ${userId}
@@ -211,7 +211,7 @@ async function getCalendarTaskItems(sql, userId, url) {
 
 /**
  * POST /task-items — { content, description?, projectId?, dueDate?, dueTime?,
- * timeZone?, labels?, priority?, parentId?, kind?, recurrence?, today? }. A sub-task lives in its parent's project: with parentId set,
+ * timeZone?, durationMinutes?, labels?, priority?, parentId?, kind?, recurrence?, today? }. A sub-task lives in its parent's project: with parentId set,
  * the project is read from the parent row and any projectId in the body is
  * ignored, so the two can never disagree.
  *
@@ -288,7 +288,9 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
   }
   const recurrence = rule?.text ?? null;
   let metadata;
+  let durationMinutes;
   try {
+    durationMinutes = normalizeTaskDuration(body?.durationMinutes);
     metadata = normalizeTaskMetadata({ ...body, dueDate });
   } catch (error) {
     return Response.json({ error: /** @type {Error} */ (error).message }, { status: 400 });
@@ -303,10 +305,10 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
 
   await registerTaskLabels(sql, userId, metadata.labels);
   const [item] = await sql`
-    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority, recurrence, due_time, time_zone, labels)
-    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority}, ${recurrence}, ${metadata.dueTime}::time, ${metadata.timeZone}, ${metadata.labels}::text[])
+    INSERT INTO task_items (user_id, project_id, parent_id, content, description, due_date, priority, recurrence, due_time, time_zone, labels, duration_minutes)
+    VALUES (${userId}, ${projectId}, ${parentId}, ${content}, ${description}, ${dueDate}, ${priority}, ${recurrence}, ${metadata.dueTime}::time, ${metadata.timeZone}, ${metadata.labels}::text[], ${durationMinutes})
     RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description, recurrence,
-              to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", labels,
+              to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", duration_minutes AS "durationMinutes", labels,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
               today_position AS "todayPosition", completed_at AS "completedAt",
               created_at AS "createdAt"
@@ -341,7 +343,7 @@ async function createDivider(sql, userId, body) {
     INSERT INTO task_items (user_id, project_id, kind, content)
     VALUES (${userId}, ${projectId}, 'divider', ${content})
     RETURNING id, kind, project_id AS "projectId", parent_id AS "parentId", content, description, recurrence,
-              to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", labels,
+              to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", duration_minutes AS "durationMinutes", labels,
               to_char(due_date, 'YYYY-MM-DD') AS "dueDate", priority, position,
               today_position AS "todayPosition", completed_at AS "completedAt",
               created_at AS "createdAt"
@@ -361,7 +363,7 @@ function fetchOwnedTaskItem(sql, userId, id) {
 
 /**
  * PATCH /task-items — { id, content?, description?, projectId?, parentId?,
- * dueDate?, dueTime?, timeZone?, labels?, priority?, completed?, recurrence?, today?, expectedDueDate? }. projectId: null moves the task to the
+ * dueDate?, dueTime?, timeZone?, durationMinutes?, labels?, priority?, completed?, recurrence?, today?, expectedDueDate? }. projectId: null moves the task to the
  * Inbox; priority: null resets it to the default (4). List order is not a
  * per-row field: see reorderTaskItems. A divider only ever moves between
  * projects; every other change is refused.
@@ -389,6 +391,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   const hasRecurrence = Object.hasOwn(body, 'recurrence');
   const hasTime = Object.hasOwn(body, 'dueTime') || Object.hasOwn(body, 'timeZone');
   const hasLabels = Object.hasOwn(body, 'labels');
+  const hasDuration = Object.hasOwn(body, 'durationMinutes');
 
   // A divider's content is its optional heading, so blank is allowed there
   // (it clears the text); a task always needs a title.
@@ -409,7 +412,8 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
     !hasCompleted &&
     !hasRecurrence &&
     !hasTime &&
-    !hasLabels
+    !hasLabels &&
+    !hasDuration
   ) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
@@ -422,7 +426,8 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
       hasCompleted ||
       hasRecurrence ||
       hasTime ||
-      hasLabels)
+      hasLabels ||
+      hasDuration)
   ) {
     return Response.json(
       { error: 'A divider can only be moved between projects or given a heading' },
@@ -544,7 +549,9 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   const changesRecurrence = hasRecurrence || clearsDueDate;
   const guardsSchedule = changesDate || changesRecurrence || hasCompleted || hasTime;
   let metadata;
+  let durationMinutes;
   try {
+    durationMinutes = normalizeTaskDuration(body.durationMinutes);
     metadata = normalizeTaskMetadata({
       dueDate: changesDate ? dueDate : existing.dueDate,
       dueTime: clearsDueDate
@@ -583,6 +590,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
       priority     = CASE WHEN ${hasPriority}::boolean THEN ${priority}::smallint ELSE t.priority END,
       due_time = CASE WHEN ${changesTime}::boolean THEN ${metadata.dueTime}::time ELSE t.due_time END,
       time_zone = CASE WHEN ${changesTime}::boolean THEN ${metadata.timeZone} ELSE t.time_zone END,
+      duration_minutes = CASE WHEN ${hasDuration}::boolean THEN ${durationMinutes}::integer ELSE t.duration_minutes END,
       labels = CASE WHEN ${hasLabels}::boolean THEN ${metadata.labels}::text[] ELSE t.labels END,
       recurrence = CASE WHEN ${changesRecurrence}::boolean THEN ${recurrence} ELSE t.recurrence END,
       last_occurrence_completed_at = CASE WHEN ${advances}::boolean THEN clock_timestamp() ELSE t.last_occurrence_completed_at END,
@@ -601,7 +609,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
         AND t.completed_at IS NOT DISTINCT FROM ${existing.completedAt ?? null}::timestamptz))
     RETURNING t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
               t.description, t.recurrence, to_char(t.due_time, 'HH24:MI') AS "dueTime",
-           t.time_zone AS "timeZone", t.labels, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
+           t.duration_minutes AS "durationMinutes", t.time_zone AS "timeZone", t.labels, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority,
               t.position, t.today_position AS "todayPosition", t.completed_at AS "completedAt",
               t.created_at AS "createdAt"
   `;

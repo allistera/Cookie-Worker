@@ -520,3 +520,15 @@ Authenticated endpoints, always scoped to the caller:
 
 History is retained until account deletion. The tables have RLS enabled and no
 browser-role grants; clients cannot insert or edit activity directly.
+
+### Estimated task duration
+
+Task create and update accept `durationMinutes`: an integer from 1 to 1440, or
+`null` to clear the estimate. Omitting it on update preserves the current value.
+It does not require a due date or time. List, detail, and calendar responses
+include the nullable estimate. Timed calendar tasks use this many minutes; the
+web client retains its 30-minute default when the estimate is absent. Dividers
+cannot store an estimate.
+
+Apply Cookie-Web migration `0098_task_duration.sql` before deploying
+`cookie-web-tasks`, then deploy the web client.
