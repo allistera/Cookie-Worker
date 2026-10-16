@@ -229,7 +229,15 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
   if (!KINDS.includes(kind)) {
     return Response.json({ error: 'kind must be "task" or "divider"' }, { status: 400 });
   }
-  if (kind === 'divider') return createDivider(sql, userId, body);
+  if (kind === 'divider') {
+    if (Object.hasOwn(body, 'durationMinutes')) {
+      return Response.json(
+        { error: 'A divider cannot have an estimated duration' },
+        { status: 400 },
+      );
+    }
+    return createDivider(sql, userId, body);
+  }
 
   const content = cleanText(body?.content, MAX_CONTENT_LENGTH);
   if (!content) return Response.json({ error: 'Task content is required' }, { status: 400 });
