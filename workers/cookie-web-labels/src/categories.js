@@ -10,7 +10,14 @@ export const MAX_CATEGORIES_PER_USER = 100;
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  */
-export async function listCategories(sql, userId) {
+export async function listCategories(sql, userId, includeCounts = true) {
+  if (!includeCounts) {
+    const categories = await sql`
+      SELECT c.id, c.name, c.color, c.description, c.notifications_enabled
+      FROM email_categories c WHERE c.user_id = ${userId} ORDER BY c.name
+    `;
+    return Response.json({ categories });
+  }
   const categories = await sql`
     SELECT c.id, c.name, c.color, c.description, c.notifications_enabled,
            count(m.id)::int AS message_count

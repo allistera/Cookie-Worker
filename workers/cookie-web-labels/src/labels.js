@@ -16,7 +16,14 @@ export const MAX_LABELS_PER_USER = 100;
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  */
-export async function listLabels(sql, userId) {
+export async function listLabels(sql, userId, includeCounts = true) {
+  if (!includeCounts) {
+    const labels = await sql`
+      SELECT l.id, l.name, l.color, l.kind, l.description, l.auto_apply
+      FROM labels l WHERE l.user_id = ${userId} ORDER BY l.name
+    `;
+    return Response.json({ labels });
+  }
   const labels = await sql`
     SELECT l.id, l.name, l.color, l.kind, l.description, l.auto_apply,
            count(m.id)::int AS message_count

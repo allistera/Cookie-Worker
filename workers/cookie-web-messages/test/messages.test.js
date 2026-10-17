@@ -691,15 +691,23 @@ describe('getMessage', () => {
       }),
     });
     const sql = createMockSql([
-      [{ id: MESSAGE_ID, thread_id: null, body_html: '<p>Booking</p>', headers: [] }],
       [
         {
-          id: 'att-1',
-          filename: 'booking.ics',
-          content_type: 'text/calendar',
-          size_bytes: 250,
-          blob_url: 'https://store.private.blob.vercel-storage.com/booking.ics',
-          downloadable: true,
+          id: MESSAGE_ID,
+          thread_id: null,
+          body_html: '<p>Booking</p>',
+          headers: [],
+          thread: [],
+          attachments: [
+            {
+              id: 'att-1',
+              filename: 'booking.ics',
+              content_type: 'text/calendar',
+              size_bytes: 250,
+              blob_url: 'https://store.private.blob.vercel-storage.com/booking.ics',
+              downloadable: true,
+            },
+          ],
         },
       ],
     ]);
@@ -732,24 +740,31 @@ describe('getMessage', () => {
           body_html: '<p>Hi</p>',
           body_text: 'Hi',
           headers: [],
-        },
-      ],
-      [
-        {
-          id: 'earlier-id',
-          from_name: 'Alice',
-          snippet: 'Earlier message',
-          sent_at: '2026-01-01T00:00:00Z',
-        },
-        { id: MESSAGE_ID, from_name: 'Bob', snippet: 'Hi', sent_at: '2026-01-02T00:00:00Z' },
-      ],
-      [
-        {
-          id: 'att-1',
-          filename: 'plan.pdf',
-          content_type: 'application/pdf',
-          size_bytes: 1024,
-          downloadable: true,
+          thread: [
+            {
+              id: 'earlier-id',
+              from_name: 'Alice',
+              snippet: 'Earlier message',
+              sent_at: '2026-01-01T00:00:00Z',
+              is_sent: false,
+            },
+            {
+              id: MESSAGE_ID,
+              from_name: 'Bob',
+              snippet: 'Hi',
+              sent_at: '2026-01-02T00:00:00Z',
+              is_sent: false,
+            },
+          ],
+          attachments: [
+            {
+              id: 'att-1',
+              filename: 'plan.pdf',
+              content_type: 'application/pdf',
+              size_bytes: 1024,
+              downloadable: true,
+            },
+          ],
         },
       ],
     ]);
@@ -1235,14 +1250,22 @@ describe('deferred calendar enrichment', () => {
   test('returns the body without downloading the invite', async () => {
     const readBlob = vi.fn(() => new Promise(() => {}));
     const sql = createMockSql([
-      [{ id: MESSAGE_ID, thread_id: null, body_html: '<p>Ready</p>', headers: [] }],
       [
         {
-          filename: 'invite.ics',
-          content_type: 'text/calendar',
-          size_bytes: 100,
-          downloadable: true,
-          blob_url: 'https://private.invalid/invite.ics',
+          id: MESSAGE_ID,
+          thread_id: null,
+          body_html: '<p>Ready</p>',
+          headers: [],
+          thread: [],
+          attachments: [
+            {
+              filename: 'invite.ics',
+              content_type: 'text/calendar',
+              size_bytes: 100,
+              downloadable: true,
+              blob_url: 'https://private.invalid/invite.ics',
+            },
+          ],
         },
       ],
     ]);

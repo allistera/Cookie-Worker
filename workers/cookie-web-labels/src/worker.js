@@ -40,8 +40,9 @@ async function route(url, request, sql, userId) {
   }
 
   if (request.method === 'GET') {
-    if (isCategories) return listCategories(sql, userId);
-    return isRules ? listRules(sql, userId) : listLabels(sql, userId);
+    const includeCounts = url.searchParams.get('include_counts') !== 'false';
+    if (isCategories) return listCategories(sql, userId, includeCounts);
+    return isRules ? listRules(sql, userId) : listLabels(sql, userId, includeCounts);
   }
 
   const handlers = isCategories ? CATEGORY_HANDLERS : isRules ? RULE_HANDLERS : LABEL_HANDLERS;
