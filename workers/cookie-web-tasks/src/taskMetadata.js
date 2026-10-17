@@ -26,6 +26,15 @@ export function normalizeTaskLabels(value) {
   return [...new Set(labels)];
 }
 
+/** @param {unknown} value */
+export function normalizeTaskDuration(value) {
+  if (value === null || value === undefined) return null;
+  if (!Number.isInteger(value) || typeof value !== 'number' || value < 1 || value > 1440) {
+    throw new Error('Estimated duration must be a whole number of minutes from 1 to 1440');
+  }
+  return value;
+}
+
 /** @param {{dueDate?: string | null, dueTime?: any, timeZone?: any, labels?: any}} value */
 export function normalizeTaskMetadata(value) {
   const dueTime = value.dueTime === '' ? null : (value.dueTime ?? null);

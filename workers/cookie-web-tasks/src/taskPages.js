@@ -6,7 +6,7 @@ function columns(sql, full = false) {
   return sql`t.id, t.kind, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
     ${full ? sql`t.description` : sql`left(t.description, 240)`} AS description,
     t.recurrence, to_char(t.due_time, 'HH24:MI') AS "dueTime", t.time_zone AS "timeZone",
-    t.labels, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority, t.position,
+    t.duration_minutes AS "durationMinutes", t.labels, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.priority, t.position,
     t.today_position AS "todayPosition", t.completed_at AS "completedAt", t.created_at AS "createdAt",
     to_char(t.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_time`;
 }
