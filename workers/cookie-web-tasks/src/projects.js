@@ -29,7 +29,7 @@ function fetchOwnedProject(sql, userId, id) {
  */
 export async function getProjects(sql, userId) {
   const projects = await sql`
-    SELECT p.id, p.parent_id AS "parentId", p.name, p.description, p.created_at AS "createdAt"
+    SELECT p.id, p.parent_id AS "parentId", p.name, p.description, p.is_favorite AS "isFavorite", p.created_at AS "createdAt"
     FROM task_projects p
     WHERE p.user_id = ${userId}
     ORDER BY p.name ASC
@@ -58,13 +58,13 @@ export async function createProject(sql, userId, body) {
   const [project] = await sql`
     INSERT INTO task_projects (user_id, parent_id, name)
     VALUES (${userId}, ${parentId}, ${name})
-    RETURNING id, parent_id AS "parentId", name, description, created_at AS "createdAt"
+    RETURNING id, parent_id AS "parentId", name, description, is_favorite AS "isFavorite", created_at AS "createdAt"
   `;
   return Response.json({ project }, { status: 201 });
 }
 
 /**
- * PATCH /projects — { id, name?, parentId? }. parentId: null moves the
+ * PATCH /projects — { id, name?, parentId?, description?, isFavorite? }. parentId: null moves the
  * project to the root.
  *
  * @param {import('postgres').Sql} sql
@@ -90,12 +90,16 @@ async function updateProjectUnlocked(sql, userId, body) {
 
   const hasName = Object.hasOwn(body, 'name');
   const hasParent = Object.hasOwn(body, 'parentId');
+  const hasFavorite = Object.hasOwn(body, 'isFavorite');
+  if (hasFavorite && typeof body.isFavorite !== 'boolean') {
+    return Response.json({ error: 'isFavorite must be a boolean' }, { status: 400 });
+  }
   const hasDescription = Object.hasOwn(body, 'description');
   const name = hasName ? cleanName(body.name) : null;
   if (hasName && !name) {
     return Response.json({ error: 'A project name is required' }, { status: 400 });
   }
-  if (!hasName && !hasParent && !hasDescription) {
+  if (!hasName && !hasParent && !hasDescription && !hasFavorite) {
     return Response.json({ error: 'At least one change is required' }, { status: 400 });
   }
 
@@ -132,9 +136,10 @@ async function updateProjectUnlocked(sql, userId, body) {
     UPDATE task_projects p SET
       name        = COALESCE(${hasName ? name : null}, p.name),
       parent_id   = CASE WHEN ${hasParent}::boolean THEN ${parentId}::uuid ELSE p.parent_id END,
-      description = CASE WHEN ${hasDescription}::boolean THEN ${description} ELSE p.description END
+      description = CASE WHEN ${hasDescription}::boolean THEN ${description} ELSE p.description END,
+      is_favorite = CASE WHEN ${hasFavorite}::boolean THEN ${hasFavorite ? body.isFavorite : false}::boolean ELSE p.is_favorite END
     WHERE p.id = ${id} AND p.user_id = ${userId}
-    RETURNING p.id, p.parent_id AS "parentId", p.name, p.description, p.created_at AS "createdAt"
+    RETURNING p.id, p.parent_id AS "parentId", p.name, p.description, p.is_favorite AS "isFavorite", p.created_at AS "createdAt"
   `;
   return Response.json({ project });
 }
