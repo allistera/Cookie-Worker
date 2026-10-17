@@ -190,6 +190,7 @@ async function route(url, request, sql, userId, env, ctx) {
             })
         : undefined,
       onMessageChanged,
+      onMessagesChanged,
     });
   }
 

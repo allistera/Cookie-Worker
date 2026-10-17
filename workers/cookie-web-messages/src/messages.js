@@ -1050,7 +1050,7 @@ export async function patchMessage(sql, userId, body, deps = {}) {
         scheduled_for = CASE WHEN ${hasScheduledChange}::boolean THEN ${scheduledFor}::timestamptz ELSE m.scheduled_for END,
         search_indexed_at = CASE WHEN ${hasSearchChange}::boolean THEN NULL ELSE m.search_indexed_at END
       WHERE m.user_id = ${userId} AND m.id = ANY(${ids}::uuid[])
-        AND (NOT ${hasCategoryChange}::boolean OR NOT m.is_deleted)
+        AND (NOT ${hasCategoryChange}::boolean OR NOT m.is_deleted OR ${is_deleted === false}::boolean)
       RETURNING m.id
     `;
     const changedIds = rows.map((row) => String(row.id));

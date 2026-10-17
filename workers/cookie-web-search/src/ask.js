@@ -153,10 +153,21 @@ export async function handleAsk(sql, userId, body, env, deps = DEFAULT_DEPS, str
   }
 
   if (ids.length === 0) {
-    return Response.json({
-      answer: "I couldn't find any emails related to that. Try rephrasing your question.",
-      sources: [],
-    });
+    const answer = "I couldn't find any emails related to that. Try rephrasing your question.";
+    if (stream) {
+      const events = [
+        { type: 'sources', sources: [] },
+        { type: 'token', text: answer },
+        { type: 'done' },
+      ];
+      return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+        headers: {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+        },
+      });
+    }
+    return Response.json({ answer, sources: [] });
   }
 
   try {

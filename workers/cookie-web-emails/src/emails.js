@@ -279,17 +279,44 @@ export function fetchPresenceCounts(sql, userId) {
 export function fetchMailboxCounts(sql, userId) {
   return sql`
     SELECT
-      (${fetchUnreadCount(sql, userId)}) AS unread,
-      (${fetchSpamCount(sql, userId)}) AS spam,
-      (${fetchSnoozedCount(sql, userId)}) AS snoozed,
-      (${fetchScheduledCount(sql, userId)}) AS scheduled,
+      (
+        SELECT count(m.id) FILTER (
+          WHERE ai.status = 'completed' AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+        )::int
+        FROM messages m
+        LEFT JOIN message_ai ai ON ai.message_id = m.id
+        WHERE m.user_id = ${userId} AND m.is_unread AND m.screening_status = 'allowed'
+          AND NOT m.is_archived AND NOT m.is_sent AND NOT m.is_deleted
+          AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())
+      ) AS unread,
+      (
+        SELECT count(*)::int
+        FROM messages m JOIN message_ai ai ON ai.message_id = m.id
+        WHERE m.user_id = ${userId} AND m.screening_status = 'allowed'
+          AND ai.spam_verdict = 'spam'
+          AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+      ) AS spam,
+      (
+        SELECT count(m.id)::int
+        FROM messages m LEFT JOIN message_ai ai ON ai.message_id = m.id
+        WHERE m.user_id = ${userId} AND m.screening_status = 'allowed'
+          AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+          AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+          AND m.scheduled_for > now()
+      ) AS snoozed,
+      (
+        SELECT count(*)::int FROM scheduled_sends s
+        WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed')
+      ) AS scheduled,
       (
         SELECT json_build_object(
-          'starred', starred,
-          'screening', screening,
-          'blocked', blocked
+          'starred', count(*) FILTER (WHERE m.is_starred AND m.screening_status = 'allowed')::int,
+          'screening', count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'held')::int,
+          'blocked', count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'blocked')::int
         )
-        FROM (${fetchPresenceCounts(sql, userId)}) presence_counts
+        FROM messages m
+        WHERE m.user_id = ${userId} AND NOT m.is_deleted
+          AND (m.is_starred OR (NOT m.is_sent AND m.screening_status <> 'allowed'))
       ) AS presence
   `;
 }
