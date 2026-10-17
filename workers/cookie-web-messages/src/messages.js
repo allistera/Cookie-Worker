@@ -35,7 +35,43 @@ export function fetchOwnedMessageBody(sql, id, userId) {
            CASE WHEN t.ai_summary_message_id = latest.id
                 THEN t.ai_summary ELSE NULL END AS thread_summary,
            latest.id AS thread_latest_message_id,
-           t.is_muted AS thread_muted
+           t.is_muted AS thread_muted,
+           COALESCE((
+             SELECT json_agg(
+               json_build_object(
+                 'id', thread_row.id,
+                 'from_name', thread_row.from_name,
+                 'from_address', thread_row.from_address,
+                 'snippet', thread_row.snippet,
+                 'sent_at', thread_row.sent_at,
+                 'is_sent', thread_row.is_sent
+               ) ORDER BY thread_row.sort_at ASC
+             )
+             FROM (
+               SELECT older.id, older.from_name, older.from_address, older.snippet,
+                      to_char(older.sent_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS sent_at,
+                      older.is_sent, older.sent_at AS sort_at
+               FROM messages older
+               WHERE older.thread_id = m.thread_id AND older.user_id = m.user_id
+                 AND NOT older.is_deleted AND older.screening_status = 'allowed'
+               ORDER BY older.sent_at ASC
+               LIMIT ${MAX_THREAD_MESSAGES}
+             ) thread_row
+           ), '[]'::json) AS thread,
+           COALESCE((
+             SELECT json_agg(
+               json_build_object(
+                 'id', a.id,
+                 'filename', a.filename,
+                 'content_type', a.content_type,
+                 'size_bytes', a.size_bytes,
+                 'blob_url', a.blob_url,
+                 'downloadable', a.blob_url IS NOT NULL
+               ) ORDER BY a.filename
+             )
+             FROM attachments a
+             WHERE a.message_id = m.id
+           ), '[]'::json) AS attachments
     FROM messages m
     JOIN threads t ON t.id = m.thread_id AND t.user_id = m.user_id
     LEFT JOIN LATERAL (
@@ -205,11 +241,7 @@ export async function getMessage(sql, userId, id, deps = {}) {
   }
   // Never return the raw sender-controlled headers to the client; expose only
   // the parsed, safe unsubscribe summary.
-  const { headers, thread_id, ...rest } = rows[0];
-  const [thread, attachments] = await Promise.all([
-    thread_id ? timing.run('thread', () => fetchThreadMessages(sql, thread_id, userId)) : [],
-    timing.run('attachments', () => fetchMessageAttachments(sql, id)),
-  ]);
+  const { headers, thread_id, thread, attachments, ...rest } = rows[0];
   const calendar_invite = deps.deferCalendar
     ? null
     : await timing.run('invite', () => extractCalendarInvite(attachments, deps.readBlob));
@@ -260,7 +292,7 @@ export async function getCalendarInvite(sql, userId, id, deps = {}) {
  * rather than called directly so the handlers stay pure — the ExecutionContext
  * and the sync's own database client belong to worker.js.
  *
- * @typedef {{ onMessageChanged?: (messageId: string) => void }} ReindexDeps
+ * @typedef {{ onMessageChanged?: (messageId: string) => void, onMessagesChanged?: (messageIds: string[]) => void }} ReindexDeps
  */
 
 /**
@@ -355,6 +387,49 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
 }
 
 const MAX_LABELS_PER_UPDATE = 20;
+const MAX_MESSAGES_PER_UPDATE = 100;
+
+async function updateMessageLabelBatch(sql, userId, messageIds, action, rawLabelId, deps) {
+  const ids = [...new Set(Array.isArray(messageIds) ? messageIds.map(String) : [])];
+  const labelId = validId(rawLabelId) ? String(rawLabelId) : null;
+  if (
+    !ids.length ||
+    ids.length > MAX_MESSAGES_PER_UPDATE ||
+    ids.some((id) => !validId(id)) ||
+    !labelId
+  ) {
+    return Response.json(
+      { error: 'ids (max 100) and a valid label_id are required' },
+      { status: 400 },
+    );
+  }
+  const changed = await sql.begin(async (tx) => {
+    const [label] =
+      await tx`SELECT id FROM labels WHERE id = ${labelId} AND user_id = ${userId} AND kind = 'user'`;
+    if (!label) return null;
+    const rows =
+      action === 'add_label'
+        ? await tx`
+          INSERT INTO message_labels (message_id, label_id)
+          SELECT m.id, ${labelId} FROM messages m
+          WHERE m.id = ANY(${ids}::uuid[]) AND m.user_id = ${userId} AND NOT m.is_deleted
+          ON CONFLICT DO NOTHING RETURNING message_id
+        `
+        : await tx`
+          DELETE FROM message_labels ml USING messages m
+          WHERE ml.message_id = m.id AND ml.label_id = ${labelId}
+            AND m.id = ANY(${ids}::uuid[]) AND m.user_id = ${userId}
+          RETURNING ml.message_id
+        `;
+    const changedIds = rows.map((row) => String(row.message_id));
+    if (changedIds.length)
+      await tx`UPDATE messages SET search_indexed_at = NULL WHERE id = ANY(${changedIds}::uuid[])`;
+    return changedIds;
+  });
+  if (changed === null) return Response.json({ error: 'Label not found' }, { status: 404 });
+  if (changed.length) deps.onMessagesChanged?.(changed);
+  return Response.json({ updated: changed.length, ids: changed });
+}
 
 /** @param {any} value */
 function validIdList(value) {
@@ -682,6 +757,9 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
  */
 export async function postMessage(sql, userId, body, deps) {
   const { action } = body ?? {};
+  if (Array.isArray(body?.ids) && (action === 'add_label' || action === 'remove_label')) {
+    return updateMessageLabelBatch(sql, userId, body.ids, action, body.label_id, deps);
+  }
   const id = validId(body?.id) ? String(body.id) : null;
   if (!id) {
     return Response.json({ error: 'A valid id is required' }, { status: 400 });
@@ -924,6 +1002,61 @@ async function applySpamVerdict(tx, messageId, isSpam) {
  * @param {ReindexDeps} [deps]
  */
 export async function patchMessage(sql, userId, body, deps = {}) {
+  if (Array.isArray(body?.ids)) {
+    const ids = [...new Set(body.ids.map(String))];
+    const { is_unread, is_starred, is_archived, is_deleted } = body;
+    const hasCategoryChange = Object.hasOwn(body, 'category_id');
+    const hasScheduledChange = Object.hasOwn(body, 'scheduled_for');
+    const scheduledFor = body.scheduled_for === null ? null : String(body.scheduled_for ?? '');
+    const scheduledForValid =
+      !hasScheduledChange || scheduledFor === null || Number.isFinite(Date.parse(scheduledFor));
+    const hasSearchChange =
+      [is_unread, is_starred, is_archived, is_deleted].some((value) => value !== undefined) ||
+      hasScheduledChange;
+    const categoryId =
+      body.category_id === null
+        ? null
+        : validId(body.category_id)
+          ? String(body.category_id)
+          : undefined;
+    const flags = [is_unread, is_starred, is_archived, is_deleted];
+    if (
+      !ids.length ||
+      ids.length > 100 ||
+      ids.some((id) => !validId(id)) ||
+      (flags.every((value) => value === undefined) && !hasCategoryChange && !hasScheduledChange) ||
+      flags.some((value) => value !== undefined && typeof value !== 'boolean') ||
+      (hasCategoryChange && categoryId === undefined) ||
+      body.is_spam !== undefined ||
+      !scheduledForValid
+    ) {
+      return Response.json(
+        { error: 'ids (max 100) and valid message changes are required' },
+        { status: 400 },
+      );
+    }
+    if (categoryId) {
+      const [category] =
+        await sql`SELECT id FROM email_categories WHERE id = ${categoryId} AND user_id = ${userId}`;
+      if (!category) return Response.json({ error: 'Category not found' }, { status: 404 });
+    }
+    const rows = await sql`
+      UPDATE messages m SET
+        is_unread = COALESCE(${is_unread ?? null}::boolean, m.is_unread),
+        is_starred = COALESCE(${is_starred ?? null}::boolean, m.is_starred),
+        is_archived = COALESCE(${is_archived ?? null}::boolean, m.is_archived),
+        is_deleted = COALESCE(${is_deleted ?? null}::boolean, m.is_deleted),
+        category_id = CASE WHEN ${hasCategoryChange}::boolean THEN ${categoryId ?? null}::uuid ELSE m.category_id END,
+        scheduled_for = CASE WHEN ${hasScheduledChange}::boolean THEN ${scheduledFor}::timestamptz ELSE m.scheduled_for END,
+        search_indexed_at = CASE WHEN ${hasSearchChange}::boolean THEN NULL ELSE m.search_indexed_at END
+      WHERE m.user_id = ${userId} AND m.id = ANY(${ids}::uuid[])
+        AND (NOT ${hasCategoryChange}::boolean OR NOT m.is_deleted OR ${is_deleted === false}::boolean)
+      RETURNING m.id
+    `;
+    const changedIds = rows.map((row) => String(row.id));
+    if (changedIds.length && hasSearchChange) deps.onMessagesChanged?.(changedIds);
+    return Response.json({ updated: changedIds.length, ids: changedIds });
+  }
   const { is_unread, is_starred, is_archived, is_deleted, is_spam } = body ?? {};
   const flags = [is_unread, is_starred, is_archived, is_deleted, is_spam];
   const id = validId(body?.id) ? String(body.id) : null;

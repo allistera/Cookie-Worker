@@ -119,7 +119,7 @@ describe('handleState', () => {
   // Starred, New senders and Blocked are likewise listed only while they
   // hold mail, so their counts arrive with the bootstrap too.
   test('reports how many messages Starred, New senders and Blocked hold', async () => {
-    const rows = [{ unread: 1, starred: 2, screening: 3, blocked: 4 }];
+    const rows = [{ unread: 1, presence: { starred: 2, screening: 3, blocked: 4 } }];
     const body = await (await handleState(stubSql(rows), USER_ID)).json();
     expect(body).toMatchObject({ starredCount: 2, screeningCount: 3, blockedCount: 4 });
   });
@@ -144,7 +144,7 @@ describe('handleState', () => {
   // something, so the counts have to arrive with the bootstrap, before either
   // folder is ever opened.
   test('reports how many messages the Spam and Snoozed folders hold', async () => {
-    const rows = [{ unread: 7, spam: 2, snoozed: 3 }];
+    const rows = [{ unread: 7, spam: 2, snoozed: 3, presence: {} }];
     const response = await handleState(stubSql(rows), USER_ID);
 
     expect(await response.json()).toEqual({
@@ -162,7 +162,7 @@ describe('handleState', () => {
   // The Scheduled folder is likewise shown only while Send Later has pending
   // mail, so its count rides along too instead of costing a separate request.
   test('reports how many sends are waiting in the Scheduled folder', async () => {
-    const rows = [{ unread: 0, spam: 0, snoozed: 0, scheduled: 4 }];
+    const rows = [{ unread: 0, spam: 0, snoozed: 0, scheduled: 4, presence: {} }];
     const response = await handleState(stubSql(rows), USER_ID);
 
     expect(await response.json()).toMatchObject({ scheduledCount: 4 });

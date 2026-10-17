@@ -14,7 +14,7 @@ import {
   postMessage,
 } from './messages.js';
 import { attemptAiUnsubscribe } from './aiUnsubscribe.js';
-import { syncMessageToMeili } from '../../../shared/meiliSync.js';
+import { syncMessageToMeili, syncMessagesToMeili } from '../../../shared/meiliSync.js';
 import { sendEmail } from './resend.js';
 import { requestPublicHttps } from '../../../shared/safe-https.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -53,6 +53,19 @@ function reindexMessage(env, ctx, messageId) {
     })().catch((err) => {
       console.error('failed to index message for search:', /** @type {Error} */ (err).message);
     }),
+  );
+}
+
+function reindexMessages(env, ctx, messageIds) {
+  ctx.waitUntil(
+    (async () => {
+      const syncSql = createSql(env.HYPERDRIVE.connectionString);
+      try {
+        await syncMessagesToMeili(syncSql, env, messageIds);
+      } finally {
+        await syncSql.end({ timeout: 2 }).catch(() => undefined);
+      }
+    })().catch((err) => console.error('failed to index messages for search:', err.message)),
   );
 }
 
@@ -154,6 +167,8 @@ async function route(url, request, sql, userId, env, ctx) {
   }
 
   const onMessageChanged = (/** @type {string} */ messageId) => reindexMessage(env, ctx, messageId);
+  const onMessagesChanged = (/** @type {string[]} */ messageIds) =>
+    reindexMessages(env, ctx, messageIds);
 
   if (sub === 'contact-insights') {
     return patchContactInsights(sql, userId, body);
@@ -175,10 +190,11 @@ async function route(url, request, sql, userId, env, ctx) {
             })
         : undefined,
       onMessageChanged,
+      onMessagesChanged,
     });
   }
 
-  return patchMessage(sql, userId, body, { onMessageChanged });
+  return patchMessage(sql, userId, body, { onMessageChanged, onMessagesChanged });
 }
 
 const worker = {

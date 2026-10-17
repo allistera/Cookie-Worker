@@ -270,6 +270,58 @@ export function fetchPresenceCounts(sql, userId) {
 }
 
 /**
+ * Fetch the sidebar counts with one database round trip. The individual
+ * helpers above remain available for focused query tests and callers that
+ * need only one count.
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ */
+export function fetchMailboxCounts(sql, userId) {
+  return sql`
+    SELECT
+      (
+        SELECT count(m.id) FILTER (
+          WHERE ai.status = 'completed' AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+        )::int
+        FROM messages m
+        LEFT JOIN message_ai ai ON ai.message_id = m.id
+        WHERE m.user_id = ${userId} AND m.is_unread AND m.screening_status = 'allowed'
+          AND NOT m.is_archived AND NOT m.is_sent AND NOT m.is_deleted
+          AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())
+      ) AS unread,
+      (
+        SELECT count(*)::int
+        FROM messages m JOIN message_ai ai ON ai.message_id = m.id
+        WHERE m.user_id = ${userId} AND m.screening_status = 'allowed'
+          AND ai.spam_verdict = 'spam'
+          AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+      ) AS spam,
+      (
+        SELECT count(m.id)::int
+        FROM messages m LEFT JOIN message_ai ai ON ai.message_id = m.id
+        WHERE m.user_id = ${userId} AND m.screening_status = 'allowed'
+          AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+          AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
+          AND m.scheduled_for > now()
+      ) AS snoozed,
+      (
+        SELECT count(*)::int FROM scheduled_sends s
+        WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed')
+      ) AS scheduled,
+      (
+        SELECT json_build_object(
+          'starred', count(*) FILTER (WHERE m.is_starred AND m.screening_status = 'allowed')::int,
+          'screening', count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'held')::int,
+          'blocked', count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'blocked')::int
+        )
+        FROM messages m
+        WHERE m.user_id = ${userId} AND NOT m.is_deleted
+          AND (m.is_starred OR (NOT m.is_sent AND m.screening_status <> 'allowed'))
+      ) AS presence
+  `;
+}
+
+/**
  * GET /emails/state — lightweight app bootstrap for routes that need the
  * unread badge and Realtime channel identity but do not render the mailbox
  * list. Previously reached as /api/emails?resource=state.
@@ -279,18 +331,13 @@ export function fetchPresenceCounts(sql, userId) {
  */
 export async function handleState(sql, userId) {
   try {
-    const [[userRow], [spamRow], [snoozedRow], [scheduledRow], [presenceRow]] = await Promise.all([
-      fetchUnreadCount(sql, userId),
-      fetchSpamCount(sql, userId),
-      fetchSnoozedCount(sql, userId),
-      fetchScheduledCount(sql, userId),
-      fetchPresenceCounts(sql, userId),
-    ]);
+    const [counts] = await fetchMailboxCounts(sql, userId);
+    const presenceRow = counts?.presence;
     return Response.json({
-      unreadCount: userRow?.unread ?? 0,
-      spamCount: spamRow?.spam ?? 0,
-      snoozedCount: snoozedRow?.snoozed ?? 0,
-      scheduledCount: scheduledRow?.scheduled ?? 0,
+      unreadCount: counts?.unread ?? 0,
+      spamCount: counts?.spam ?? 0,
+      snoozedCount: counts?.snoozed ?? 0,
+      scheduledCount: counts?.scheduled ?? 0,
       starredCount: presenceRow?.starred ?? 0,
       screeningCount: presenceRow?.screening ?? 0,
       blockedCount: presenceRow?.blocked ?? 0,
@@ -311,8 +358,8 @@ export async function handleState(sql, userId) {
  * first. Responds {emails, nextCursor, readReceiptsAvailable, unreadCount,
  * spamCount, snoozedCount, userId}; nextCursor is null on the last page.
  * unreadCount always covers the inbox (sent mail is never unread), and
- * spamCount/snoozedCount the Spam and Snoozed folders, whichever folder was
- * listed — the sidebar shows those two only while they hold something. userId lets the client subscribe to its
+ * sidebar count hints on the inbox's first page; cursor pages and other
+ * folders omit them. userId lets the client subscribe to its
  * Realtime inbox-ping channel.
  *
  * @param {import('postgres').Sql} sql
@@ -349,17 +396,15 @@ export async function handleList(sql, userId, url) {
 
   const timing = createTimings();
   try {
-    // The unread and spam counts only matter on a list's first page; the
-    // client ignores them on cursor pages, so skip the aggregates there.
-    const [rows, [userRow], [spamRow], [snoozedRow], [scheduledRow], [presenceRow]] =
-      await Promise.all([
-        timing.run('list', () => fetchEmails(sql, userId, limit, cursor, folder, labelName)),
-        cursor ? [] : timing.run('unread', () => fetchUnreadCount(sql, userId)),
-        cursor ? [] : timing.run('spam', () => fetchSpamCount(sql, userId)),
-        cursor ? [] : timing.run('snoozed', () => fetchSnoozedCount(sql, userId)),
-        cursor ? [] : timing.run('scheduled', () => fetchScheduledCount(sql, userId)),
-        cursor ? [] : timing.run('presence', () => fetchPresenceCounts(sql, userId)),
-      ]);
+    // Only the inbox consumes sidebar counts. Avoid re-running the aggregates
+    // when the first page of another folder is opened.
+    const includeCounts = !cursor && folder === 'inbox';
+    const [rows, countRows] = await Promise.all([
+      timing.run('list', () => fetchEmails(sql, userId, limit, cursor, folder, labelName)),
+      includeCounts ? timing.run('counts', () => fetchMailboxCounts(sql, userId)) : [],
+    ]);
+    const counts = countRows[0];
+    const presenceRow = counts?.presence;
     const hasMore = rows.length > limit;
     const emails = hasMore ? rows.slice(0, limit) : rows;
     const last = emails[emails.length - 1];
@@ -377,14 +422,16 @@ export async function handleList(sql, userId, url) {
       nextCursor: hasMore ? `${last.sort_cursor ?? last.sort_at.toISOString()}|${last.id}` : null,
       readReceiptsAvailable: folder === 'sent',
     };
-    if (!cursor) {
-      payload.unreadCount = userRow?.unread ?? 0;
-      payload.spamCount = spamRow?.spam ?? 0;
-      payload.snoozedCount = snoozedRow?.snoozed ?? 0;
-      payload.scheduledCount = scheduledRow?.scheduled ?? 0;
+    if (includeCounts) {
+      payload.unreadCount = counts?.unread ?? 0;
+      payload.spamCount = counts?.spam ?? 0;
+      payload.snoozedCount = counts?.snoozed ?? 0;
+      payload.scheduledCount = counts?.scheduled ?? 0;
       payload.starredCount = presenceRow?.starred ?? 0;
       payload.screeningCount = presenceRow?.screening ?? 0;
       payload.blockedCount = presenceRow?.blocked ?? 0;
+    }
+    if (!cursor) {
       payload.userId = userId;
     }
     return timing.response(Response.json(payload));

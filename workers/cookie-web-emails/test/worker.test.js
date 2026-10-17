@@ -185,7 +185,7 @@ describe('routing', () => {
   });
 
   test('GET /emails/state dispatches to the state handler', async () => {
-    mockQuery.mockResolvedValueOnce([{ unread: 3 }]);
+    mockQuery.mockResolvedValueOnce([{ unread: 3, presence: {} }]);
     const response = await worker.fetch(request('/emails/state'), env, ctx);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -310,7 +310,7 @@ describe('a dropped connection', () => {
   });
 
   test('retries inbox state, which used to swallow the drop as a 500', async () => {
-    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([{ unread: 3 }]);
+    mockQuery.mockRejectedValueOnce(dropped()).mockResolvedValue([{ unread: 3, presence: {} }]);
     const state = await worker.fetch(request('/emails/state'), env, ctx);
     expect(state.status).toBe(200);
     expect((await state.json()).unreadCount).toBe(3);
