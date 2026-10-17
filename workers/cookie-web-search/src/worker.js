@@ -53,7 +53,7 @@ async function route(url, request, sql, userId, env) {
       if (errorResponse) return errorResponse;
       throw error;
     }
-    return handleAsk(sql, userId, body, env);
+    return handleAsk(sql, userId, body, env, undefined, url.searchParams.get('stream') === '1');
   }
 
   if (resource === 'saved-views') {

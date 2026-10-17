@@ -56,7 +56,7 @@ function contextEmails(rows) {
  * @param {string} apiKey
  * @param {string} model
  */
-async function chatCompletion(question, rows, apiKey, model) {
+async function chatCompletion(question, rows, apiKey, model, stream = false) {
   const response = await fetch(openAiUrl('chat/completions'), {
     method: 'POST',
     headers: {
@@ -66,6 +66,7 @@ async function chatCompletion(question, rows, apiKey, model) {
     signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({
       model,
+      stream,
       max_tokens: MAX_ANSWER_TOKENS,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -82,6 +83,7 @@ async function chatCompletion(question, rows, apiKey, model) {
   if (!response.ok) {
     throw new Error(`OpenAI chat API responded ${response.status}`);
   }
+  if (stream) return response;
   const { choices } = await response.json();
   return choices?.[0]?.message?.content?.trim() || "I couldn't produce an answer.";
 }
@@ -117,7 +119,7 @@ async function retrieveViaMeili(userId, question, env, deps) {
  * @param {{OPENAI_API_KEY?: string, OPENAI_ASK_MODEL?: string}} env
  * @param {AskDeps} [deps]
  */
-export async function handleAsk(sql, userId, body, env, deps = DEFAULT_DEPS) {
+export async function handleAsk(sql, userId, body, env, deps = DEFAULT_DEPS, stream = false) {
   const question = String(body.question ?? '').trim();
   if (!question || question.length > MAX_QUESTION_CHARS) {
     return Response.json({ error: 'question is required (max 500 chars)' }, { status: 400 });
@@ -168,15 +170,70 @@ export async function handleAsk(sql, userId, body, env, deps = DEFAULT_DEPS) {
     const byId = new Map(rows.map((/** @type {any} */ row) => [row.id, row]));
     const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
 
-    const answer = await chatCompletion(question, ordered, apiKey, model);
+    const sources = ordered.map((m) => ({
+      id: m.id,
+      subject: m.subject,
+      from_name: m.from_name || m.from_address,
+    }));
+    const completion = await chatCompletion(question, ordered, apiKey, model, stream);
+    if (stream) {
+      if (!(completion instanceof Response) || !completion.body) {
+        return Response.json({ error: 'Assistant stream unavailable' }, { status: 502 });
+      }
+      const encoder = new TextEncoder();
+      const reader = completion.body.getReader();
+      const bodyStream = new ReadableStream({
+        async start(controller) {
+          const send = (event) =>
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          send({ type: 'sources', sources });
+          const decoder = new TextDecoder();
+          let buffer = '';
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() ?? '';
+              for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6);
+                if (payload === '[DONE]') continue;
+                let chunk;
+                try {
+                  chunk = JSON.parse(payload);
+                } catch {
+                  continue;
+                }
+                const text = chunk.choices?.[0]?.delta?.content;
+                if (text) send({ type: 'token', text });
+              }
+            }
+            send({ type: 'done' });
+            controller.close();
+          } catch (error) {
+            controller.error(error);
+          } finally {
+            reader.releaseLock();
+          }
+        },
+        cancel() {
+          return reader.cancel();
+        },
+      });
+      return new Response(bodyStream, {
+        headers: {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+        },
+      });
+    }
+    const answer = completion;
 
     return Response.json({
       answer,
-      sources: ordered.map((/** @type {any} */ m) => ({
-        id: m.id,
-        subject: m.subject,
-        from_name: m.from_name || m.from_address,
-      })),
+      sources,
     });
   } catch (err) {
     console.error('POST /ask failed:', err);
