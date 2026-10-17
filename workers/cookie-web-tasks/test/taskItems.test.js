@@ -1325,19 +1325,17 @@ describe('estimated task duration', () => {
     expect(update.values[index]).toBe(false);
   });
 
-  it('refuses estimates when creating dividers', async () => {
+  it.each([30, null])('refuses duration %s when creating dividers', async (durationMinutes) => {
     const sql = createMockSql();
-    expect(
-      (await createTaskItem(sql, USER_ID, { kind: 'divider', durationMinutes: 30 })).status,
-    ).toBe(400);
+    expect((await createTaskItem(sql, USER_ID, { kind: 'divider', durationMinutes })).status).toBe(
+      400,
+    );
     expect(sql.calls).toHaveLength(0);
   });
 
-  it('refuses estimates on dividers', async () => {
+  it.each([30, null])('refuses duration %s when updating dividers', async (durationMinutes) => {
     const sql = createMockSql([[{ id: ITEM_ID, kind: 'divider' }]]);
-    expect((await updateTaskItem(sql, USER_ID, { id: ITEM_ID, durationMinutes: 30 })).status).toBe(
-      400,
-    );
+    expect((await updateTaskItem(sql, USER_ID, { id: ITEM_ID, durationMinutes })).status).toBe(400);
     expect(sql.calls).toHaveLength(1);
   });
 
