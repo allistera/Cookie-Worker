@@ -185,3 +185,26 @@ describe('project descriptions', () => {
     expect(response.status).toBe(200);
   });
 });
+
+describe('project favorites', () => {
+  it.each([true, false])('saves isFavorite=%s for the owner', async (isFavorite) => {
+    const sql = createMockSql([[{ id: PROJECT_ID }], [{ id: PROJECT_ID, isFavorite }]]);
+    const response = await updateProject(sql, USER_ID, { id: PROJECT_ID, isFavorite });
+    expect(response.status).toBe(200);
+    expect((await response.json()).project.isFavorite).toBe(isFavorite);
+    expect(sql.calls[1].text).toContain('is_favorite = CASE');
+    expect(sql.calls[1].values).toContain(USER_ID);
+    expect(sql.calls[1].values).toContain(isFavorite);
+  });
+  it.each([null, 1, 'true', {}, []])('rejects a non-boolean favorite: %j', async (isFavorite) => {
+    const sql = createMockSql([[{ id: PROJECT_ID }]]);
+    const response = await updateProject(sql, USER_ID, { id: PROJECT_ID, isFavorite });
+    expect(response.status).toBe(400);
+    expect(sql.calls.some((call) => call.text.includes('UPDATE task_projects'))).toBe(false);
+  });
+  it('cannot favorite another owner project', async () => {
+    const sql = createMockSql([[]]);
+    const response = await updateProject(sql, USER_ID, { id: PROJECT_ID, isFavorite: true });
+    expect(response.status).toBe(404);
+  });
+});
