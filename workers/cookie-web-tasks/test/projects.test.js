@@ -9,15 +9,20 @@ const PARENT_ID = '22222222-2222-4222-8222-222222222222';
 describe('GET /projects', () => {
   it('returns the caller rows as a flat list', async () => {
     const sql = createMockSql([
-      [{ id: PROJECT_ID, parentId: null, name: 'Work', createdAt: 't0' }],
+      [{ id: PROJECT_ID, parentId: null, name: 'Work', createdAt: 't0', taskCount: 12 }],
     ]);
 
     const response = await getProjects(sql, USER_ID);
 
     expect(response.status).toBe(200);
-    expect((await response.json()).projects).toHaveLength(1);
+    expect((await response.json()).projects).toEqual([
+      { id: PROJECT_ID, parentId: null, name: 'Work', createdAt: 't0', taskCount: 12 },
+    ]);
     expect(sql.calls[0].text).toContain('FROM task_projects');
     expect(sql.calls[0].values).toContain(USER_ID);
+    expect(sql.calls[0].text).toContain('t.user_id = p.user_id AND t.project_id = p.id');
+    expect(sql.calls[0].text).toContain("t.kind = 'task' AND t.parent_id IS NULL");
+    expect(sql.calls[0].text).toContain('t.completed_at IS NULL');
   });
 });
 
@@ -48,16 +53,27 @@ describe('POST /projects', () => {
 });
 
 describe('PATCH /projects', () => {
-  it('renames a project', async () => {
+  it.each([0, 5])('renames a project and returns its %i unfinished tasks', async (taskCount) => {
     const sql = createMockSql([
       [{ id: PROJECT_ID }],
-      [{ id: PROJECT_ID, parentId: null, name: 'Renamed', createdAt: 't0' }],
+      [{ id: PROJECT_ID, parentId: null, name: 'Renamed', createdAt: 't0', taskCount }],
     ]);
 
     const response = await updateProject(sql, USER_ID, { id: PROJECT_ID, name: 'Renamed' });
 
     expect(response.status).toBe(200);
-    expect((await response.json()).project.name).toBe('Renamed');
+    expect((await response.json()).project).toEqual({
+      id: PROJECT_ID,
+      parentId: null,
+      name: 'Renamed',
+      createdAt: 't0',
+      taskCount,
+    });
+    const update = sql.calls.find((call) => call.text.includes('UPDATE task_projects'));
+    expect(update.text).toContain('count(*)::int FROM task_items t');
+    expect(update.text).toContain('t.user_id = p.user_id AND t.project_id = p.id');
+    expect(update.text).toContain("t.kind = 'task' AND t.parent_id IS NULL");
+    expect(update.text).toContain('t.completed_at IS NULL');
   });
 
   it('404s an id the caller does not own', async () => {
