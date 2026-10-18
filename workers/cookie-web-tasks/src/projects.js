@@ -144,7 +144,11 @@ async function updateProjectUnlocked(sql, userId, body) {
       description = CASE WHEN ${hasDescription}::boolean THEN ${description} ELSE p.description END,
       is_favorite = CASE WHEN ${hasFavorite}::boolean THEN ${hasFavorite ? body.isFavorite : false}::boolean ELSE p.is_favorite END
     WHERE p.id = ${id} AND p.user_id = ${userId}
-    RETURNING p.id, p.parent_id AS "parentId", p.name, p.description, p.is_favorite AS "isFavorite", p.created_at AS "createdAt"
+    RETURNING p.id, p.parent_id AS "parentId", p.name, p.description, p.is_favorite AS "isFavorite", p.created_at AS "createdAt",
+              (SELECT count(*)::int FROM task_items t
+                WHERE t.user_id = p.user_id AND t.project_id = p.id
+                  AND t.kind = 'task' AND t.parent_id IS NULL
+                  AND t.completed_at IS NULL) AS "taskCount"
   `;
   return Response.json({ project });
 }

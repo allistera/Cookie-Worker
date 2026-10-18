@@ -537,9 +537,9 @@ Apply Cookie-Web migration `0098_task_duration.sql` before deploying
 
 `GET /projects` includes `taskCount`: the number of unfinished top-level tasks
 directly in each owned project, excluding dividers and tasks in nested projects.
-New project responses return zero. The web sidebar uses this count independently
-of task pagination. Deploy the updated task Worker before the web client; this
-count needs no migration.
+Project update responses include the live count; new project responses return
+zero. The web sidebar uses this count independently of task pagination. Deploy
+the updated task Worker before the web client; this count needs no migration.
 
 In Tasks, hover over a project and open its **…** menu, then choose **Add to
 favorites**. Favorites appear above My Projects and remain in the project tree.
