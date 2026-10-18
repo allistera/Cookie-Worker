@@ -22,14 +22,19 @@ function fetchOwnedProject(sql, userId, id) {
 
 /**
  * GET /projects — every project the caller owns, ordered by name. Flat, not
- * nested: the sidebar builds the tree client-side.
+ * nested: the sidebar builds the tree client-side. Counts cover unfinished
+ * top-level tasks directly in each project, independent of task pagination.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  */
 export async function getProjects(sql, userId) {
   const projects = await sql`
-    SELECT p.id, p.parent_id AS "parentId", p.name, p.description, p.is_favorite AS "isFavorite", p.created_at AS "createdAt"
+    SELECT p.id, p.parent_id AS "parentId", p.name, p.description, p.is_favorite AS "isFavorite", p.created_at AS "createdAt",
+           (SELECT count(*)::int FROM task_items t
+             WHERE t.user_id = p.user_id AND t.project_id = p.id
+               AND t.kind = 'task' AND t.parent_id IS NULL
+               AND t.completed_at IS NULL) AS "taskCount"
     FROM task_projects p
     WHERE p.user_id = ${userId}
     ORDER BY p.name ASC
@@ -58,7 +63,7 @@ export async function createProject(sql, userId, body) {
   const [project] = await sql`
     INSERT INTO task_projects (user_id, parent_id, name)
     VALUES (${userId}, ${parentId}, ${name})
-    RETURNING id, parent_id AS "parentId", name, description, is_favorite AS "isFavorite", created_at AS "createdAt"
+    RETURNING id, parent_id AS "parentId", name, description, is_favorite AS "isFavorite", created_at AS "createdAt", 0 AS "taskCount"
   `;
   return Response.json({ project }, { status: 201 });
 }
