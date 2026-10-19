@@ -17,27 +17,27 @@
     "deploy": "node scripts/workers.mjs deploy"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.3.0",
-    "@sentry/cloudflare": "^11.0.0",
-    "@vercel/blob": "^2.8.0",
+    "@modelcontextprotocol/server": "^2.3.1",
+    "@sentry/cloudflare": "^11.8.0",
+    "@vercel/blob": "^2.8.2",
     "jose": "^6.2.12",
     "meilisearch": "^0.62.0",
-    "node-ical": "^0.27.2",
-    "postal-mime": "^3.0.1",
+    "node-ical": "^0.27.3",
+    "postal-mime": "^4.0.11",
     "postgres": "^3.4.9",
-    "resend": "^6.30.0",
-    "zod": "^4.6.5"
+    "resend": "^6.34.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260926.1",
+    "@cloudflare/workers-types": "^5.20261019.1",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.6.3",
-    "eslint": "^10.11.0",
-    "globals": "^17.12.0",
+    "@types/node": "^26.6.5",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
     "jsonc-parser": "^3.3.1",
-    "prettier": "3.9.9",
+    "prettier": "3.9.10",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.2",
-    "wrangler": "^4.141.0"
+    "vitest": "^5.0.5",
+    "wrangler": "^4.151.2"
   }
 }
