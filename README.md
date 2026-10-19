@@ -375,6 +375,18 @@ Apply migrations `0093_todoist_sync.sql`, `0094_todoist_sync_options.sql` and `0
 
 `task_comments.task_id` cascades from `task_items`, so deleting a task (`DELETE /task-items`), a project (`DELETE /projects`, which cascades to its tasks) or a vanished Todoist mirror (`src/todoistSync.js`) takes threads with it without the Worker seeing their keys. Each of those paths reads the owner's attachment keys before the delete (`attachmentKeysOf`) and afterwards removes the objects of the keys that no longer have a row (`deleteVanishedAttachments`); nothing is read back when the owner had no attachments. Without the `FILES` binding a comment carrying a file answers `503` while text comments keep working.
 
+## Dependency upgrades
+
+The October 2026 refresh upgrades `postal-mime` from 3.0.1 to 4.0.11.
+[The v4 release notes](https://github.com/postalsys/postal-mime/releases/tag/v4.0.0)
+require Node.js 20+, introduce TypeScript declarations and ESM/CommonJS builds,
+move the internal ESM entry point, and widen attachment disposition types to
+accept arbitrary Content-Disposition tokens. No additional deprecations are
+listed. Cookie imports the package by name and normalizes attachment metadata,
+so no application migration is needed. CI uses Node.js 22; Cloudflare Workers
+provide the required web APIs. Existing ingest parser tests, type checks and
+Worker dry runs cover the upgrade; no schema or pipeline changes are required.
+
 ## Validation
 
 ```sh
