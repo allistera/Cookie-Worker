@@ -112,6 +112,22 @@ describe('auth', () => {
     );
     expect(sqlEnd).toHaveBeenCalled();
   });
+
+  test('retries a dropped feed read on a new connection and closes both clients', async () => {
+    mockQuery
+      .mockRejectedValueOnce(new Error('Network connection lost'))
+      .mockResolvedValueOnce([{ calendarName: 'Empty calendar', id: null }]);
+    const response = await worker.fetch(
+      new Request(`https://cookie-web-calendar.example/calendar-feed.ics?token=${'a'.repeat(64)}`),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('BEGIN:VCALENDAR');
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
   test('availability is authenticated before reading calendars or feeds', async () => {
     verifyAccessToken.mockRejectedValue(new Error('invalid token'));
     const response = await worker.fetch(

@@ -33,6 +33,8 @@ import {
 import { configureOpenAi } from '../../../shared/openai.js';
 import { calendarAvailability } from './calendarAvailability.js';
 import { FEED_PATH, manageCalendarFeeds, readCalendarFeed } from './calendarFeeds.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
+import { isTransientDbError } from '../../../shared/transient-db.js';
 
 /**
  * Routes GET/POST/PATCH/DELETE /calendar-events and /calendars — Cookie-Web's
@@ -150,9 +152,22 @@ const worker = {
     const url = new URL(request.url);
     try {
       if (url.pathname === FEED_PATH) {
-        const sql = createSql(env.HYPERDRIVE.connectionString);
+        let sql = createSql(env.HYPERDRIVE.connectionString);
         try {
-          return await readCalendarFeed(sql, request);
+          return await retryWithBackoff(
+            async (attempt) => {
+              if (attempt > 1) {
+                ctx.waitUntil(endSql(sql));
+                sql = createSql(env.HYPERDRIVE.connectionString);
+              }
+              return readCalendarFeed(sql, request);
+            },
+            {
+              attempts: request.method === 'GET' || request.method === 'HEAD' ? 2 : 1,
+              baseDelayMs: 100,
+              isRetryable: isTransientDbError,
+            },
+          );
         } catch {
           // This request contains a bearer credential. Report only a fixed
           // failure label, never the exception or request URL.
