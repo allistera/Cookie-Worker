@@ -78,6 +78,56 @@ describe('CORS preflight', () => {
 });
 
 describe('auth', () => {
+  test('feed management requires Cookie authentication', async () => {
+    verifyAccessToken.mockRejectedValue(new Error('invalid token'));
+    const response = await worker.fetch(request('/calendar-feeds'), env, ctx);
+    expect(response.status).toBe(401);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('a feed request uses its own token instead of browser authentication', async () => {
+    const response = await worker.fetch(
+      new Request(`https://cookie-web-calendar.example/calendar-feed.ics?token=${'a'.repeat(64)}`),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(404);
+    expect(verifyAccessToken).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  test('feed failures never send request credentials or raw errors to monitoring', async () => {
+    const token = 'a'.repeat(64);
+    mockQuery.mockRejectedValue(new Error(`sensitive ${token}`));
+    const response = await worker.fetch(
+      new Request(`https://cookie-web-calendar.example/calendar-feed.ics?token=${token}`),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    expect(captureHandledException).toHaveBeenCalledWith(
+      'calendar-feed',
+      expect.objectContaining({ message: 'Calendar feed unavailable' }),
+      env,
+    );
+    expect(sqlEnd).toHaveBeenCalled();
+  });
+
+  test('retries a dropped feed read on a new connection and closes both clients', async () => {
+    mockQuery
+      .mockRejectedValueOnce(new Error('Network connection lost'))
+      .mockResolvedValueOnce([{ calendarName: 'Empty calendar', id: null }]);
+    const response = await worker.fetch(
+      new Request(`https://cookie-web-calendar.example/calendar-feed.ics?token=${'a'.repeat(64)}`),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('BEGIN:VCALENDAR');
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(sqlEnd).toHaveBeenCalledTimes(2);
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
   test('availability is authenticated before reading calendars or feeds', async () => {
     verifyAccessToken.mockRejectedValue(new Error('invalid token'));
     const response = await worker.fetch(
