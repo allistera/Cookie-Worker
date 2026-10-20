@@ -17,14 +17,17 @@ import {
   CALLBACK_PATH,
   GoogleReauthRequired,
   beginAuthorization,
+  claimAuthorizationCode,
   completeAuthorization,
   consumeAuthorizationState,
+  decryptToken,
   disconnect,
   getAccessToken,
   isGoogleConfigured,
   loadConnection,
   loadConnectionIfAvailable,
   saveSelectedCalendars,
+  stageAuthorizationCode,
 } from './googleAuth.js';
 
 export const GOOGLE_API_URL = 'https://www.googleapis.com/calendar/v3';
@@ -849,57 +852,103 @@ export async function authorizeGoogle(sql, userId, body, requestUrl, env) {
     return Response.json({ error: 'returnTo must be a Cookie URL' }, { status: 400 });
   }
   const redirectUri = `${requestUrl.origin}${CALLBACK_PATH}`;
-  const url = await beginAuthorization(sql, userId, { redirectUri, returnTo }, env);
-  return Response.json({ url });
+  const pending = await beginAuthorization(sql, userId, { redirectUri, returnTo }, env);
+  return Response.json(pending, { headers: { 'Cache-Control': 'no-store' } });
 }
 
 /**
  * GET /google-calendar/callback — Google sends the browser here. Unauthenticated
- * by nature (a top-level navigation), so the state row is the only link to a
- * user; without a valid one there is nowhere to redirect, and a plain page says
- * so.
+ * by nature (a top-level navigation). It only stages an encrypted code and
+ * returns a fresh completion handle; the authenticated SPA must prove the
+ * initiating browser transaction before anything is exchanged with Google.
  *
  * @param {import('postgres').Sql} sql
  * @param {URL} url
  * @param {GoogleCalendarEnv} env
- * @param {Overrides} [overrides]
  */
-export async function handleGoogleCallback(sql, url, env, overrides = {}) {
+export async function handleGoogleCallback(sql, url, env) {
   const state = url.searchParams.get('state') ?? '';
-  const pending = isGoogleConfigured(env) ? await consumeAuthorizationState(sql, state) : null;
+  const code = url.searchParams.get('code');
+  const failed = Boolean(url.searchParams.get('error')) || !code;
+  const pending = !isGoogleConfigured(env)
+    ? null
+    : failed
+      ? await consumeAuthorizationState(sql, state)
+      : await stageAuthorizationCode(sql, state, /** @type {string} */ (code), env);
   if (!pending) {
     return new Response(
       'This Google sign-in link has expired or was already used. Return to Cookie and try again.',
-      { status: 400, headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
+      {
+        status: 400,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
+        },
+      },
     );
   }
 
   const back = new URL(pending.returnTo);
-  const code = url.searchParams.get('code');
-  if (url.searchParams.get('error') || !code) {
+  if (failed) {
     back.searchParams.set('google', 'error');
     back.searchParams.set(
       'reason',
       url.searchParams.get('error') === 'access_denied' ? 'denied' : 'failed',
     );
-    return Response.redirect(back.toString(), 302);
+  } else if ('completion' in pending) {
+    // Fragments do not enter HTTP request logs or Referrer headers. Neither
+    // a Google code nor the original state is returned to the SPA.
+    back.hash = new URLSearchParams({ google_completion: pending.completion }).toString();
   }
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: back.toString(),
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+    },
+  });
+}
 
+/**
+ * Authenticated POST /google-calendar action=complete. No token exchange can
+ * happen until both the Cookie account and browser transaction match.
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {any} body
+ * @param {GoogleCalendarEnv} env
+ * @param {Overrides} [overrides]
+ */
+export async function finishGoogleAuthorization(sql, userId, body, env, overrides = {}) {
+  const headers = { 'Cache-Control': 'no-store' };
+  if (!isGoogleConfigured(env))
+    return Response.json({ error: 'Google Calendar is not configured' }, { status: 503, headers });
+  const pending = await claimAuthorizationCode(sql, userId, body.completion, body.verifier);
+  if (!pending)
+    return Response.json(
+      { error: 'This Google sign-in could not be verified. Start again in this browser.' },
+      { status: 400, headers },
+    );
   try {
+    const code = await decryptToken(
+      pending.codeEncrypted,
+      /** @type {string} */ (env.GOOGLE_TOKEN_ENCRYPTION_KEY),
+    );
     await completeAuthorization(
       sql,
-      pending.userId,
+      userId,
       { code, redirectUri: pending.redirectUri },
       env,
       overrides.fetchImpl,
     );
-    back.searchParams.set('google', 'connected');
-  } catch (error) {
-    console.error('Google Calendar connection failed:', /** @type {Error} */ (error).message);
-    back.searchParams.set('google', 'error');
-    back.searchParams.set('reason', 'failed');
+    return Response.json({ connected: true }, { headers });
+  } catch {
+    return Response.json(
+      { error: 'Google Calendar could not be connected. Start sign-in again.' },
+      { status: 502, headers },
+    );
   }
-  return Response.redirect(back.toString(), 302);
 }
 
 /**

@@ -3,7 +3,11 @@ import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage, MAX_ENRICHMENT_ATTEMPTS } from './enrich.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
-import { sweepSearchDrift } from './searchDriftSweep.js';
+import {
+  sweepSearchDrift,
+  sweepWorkspaceSearchDrift,
+  WORKSPACE_SWEEP_CRON,
+} from './searchDriftSweep.js';
 import { purgeExpiredSpam } from './spamRetentionSweep.js';
 import { purgeExpiredNotificationEvents } from './notificationEventsSweep.js';
 import { createSql, endSql } from '../../../shared/db.js';
@@ -272,11 +276,17 @@ const worker = {
 
   /**
    * Repairs interrupted best-effort enrichment without touching delivery.
-   * @param {ScheduledController} _controller
+   * @param {ScheduledController} controller
    * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string}} env
    * @param {ExecutionContext} ctx
    */
-  async scheduled(_controller, env, ctx) {
+  async scheduled(controller, env, ctx) {
+    if (controller.cron === WORKSPACE_SWEEP_CRON) {
+      const repair = sweepWorkspaceSearchDrift(env, { createSql });
+      ctx.waitUntil(repair);
+      await repair;
+      return;
+    }
     configureOpenAi(env);
     // The sweeps run side by side so one failure cannot stop another, and the
     // handler awaits them all so the cron invocation lives until they finish

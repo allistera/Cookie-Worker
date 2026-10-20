@@ -11,6 +11,7 @@ import { createDocument, deleteDocument, getDocuments, updateDocument } from './
 import { getEnrichmentSettings, putEnrichmentSettings } from './enrichmentSettings.js';
 import { deleteFile, getFile, getFileContent, listFiles, updateFile, uploadFile } from './files.js';
 import { getDocumentImageUrl, postImageUpload } from './imageUpload.js';
+import { runObjectCleanup } from './objectCleanup.js';
 import { getInterests, putInterests } from './interests.js';
 import { createProject, deleteProject, getProjects, updateProject } from './projects.js';
 import { getTaskActivity, getTaskProgress, putTaskGoals } from './taskActivity.js';
@@ -404,6 +405,7 @@ async function route(url, request, sql, userId, env) {
     return getDocumentImageUrl(url, userId, {
       issueSignedToken,
       presignUrl,
+      sql,
       token: env.BLOB_READ_WRITE_TOKEN,
     });
   }
@@ -483,7 +485,15 @@ const worker = {
    */
   async scheduled(controller, env, _ctx) {
     tagTrigger('scheduled');
-    await runScheduledTodoistSyncs(env, new Date(controller.scheduledTime));
+    const results = await Promise.allSettled([
+      runScheduledTodoistSyncs(env, new Date(controller.scheduledTime)),
+      runObjectCleanup(env, (error) => captureHandledException('object_cleanup', error, env)),
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        captureHandledException('scheduled', result.reason, env);
+      }
+    }
   },
 
   /**

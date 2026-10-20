@@ -5,6 +5,7 @@
 
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
+import { DeliveryError, findDelivery, stopUnconfirmedDelivery } from './deliveryLedger.js';
 import {
   AttachmentSlotBusyError,
   buildReadReceiptUrl,
@@ -12,6 +13,7 @@ import {
   deliverMail,
   parseRecipients,
   refundOutboundEmailQuota,
+  resumeDelivery,
   storeSentMessage,
 } from './outbound.js';
 
@@ -73,9 +75,80 @@ export function parseScheduledFor(sendAt) {
   return new Date(timestamp).toISOString();
 }
 
+/** @param {unknown} value */
+function normalizedTimestamp(value) {
+  const timestamp = Date.parse(String(value ?? ''));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : String(value ?? '');
+}
+
+/**
+ * Match the original intent without revalidating resources or time relative to
+ * now: a receipt must remain readable after its upload or reply is deleted.
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: unknown, attachmentIds?: string[], followUpAt?: unknown}} send
+ */
+export async function scheduledSendRequestHash({
+  recipients,
+  subject,
+  text,
+  html,
+  replyToMessageId,
+  scheduledFor,
+  attachmentIds = [],
+  followUpAt,
+}) {
+  return [
+    ...new Uint8Array(
+      await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(
+          JSON.stringify({
+            recipients,
+            subject,
+            text,
+            html: html ?? null,
+            replyToMessageId,
+            scheduledFor: normalizedTimestamp(scheduledFor),
+            // postgres returns UUIDs in lower case after attachment resolution.
+            attachmentIds: attachmentIds.map((id) => id.toLowerCase()),
+            followUpAt:
+              followUpAt === null || followUpAt === undefined
+                ? null
+                : normalizedTimestamp(followUpAt),
+          }),
+        ),
+      ),
+    ),
+  ]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * @param {import('postgres').Sql | import('postgres').TransactionSql} sql
+ * @param {string} userId
+ * @param {string} requestId
+ * @param {string} requestHash
+ */
+export async function findScheduledSend(sql, userId, requestId, requestHash) {
+  const [existing] = await sql`
+    SELECT id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor",
+      follow_up_at AS "followUpAt", status, last_error AS "lastError",
+      request_hash AS "requestHash"
+    FROM scheduled_sends WHERE user_id = ${userId} AND request_id = ${requestId}
+  `;
+  if (!existing) return null;
+  const { requestHash: existingHash, ...scheduledSend } = existing;
+  if (existingHash !== requestHash) {
+    throw Object.assign(new Error('Request id already used for a different scheduled email'), {
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
+  }
+  return scheduledSend;
+}
+
 // Inserts a pending scheduled_sends row, capped at MAX_PENDING_SCHEDULED_SENDS
 // per user so a runaway client can't queue unbounded future sends. Returns
-// null if the cap is hit.
+// null if the cap is hit, or replayed: true for a concurrently created request.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -97,27 +170,16 @@ export async function createScheduledSend(
   },
 ) {
   const requestHash = requestId
-    ? [
-        ...new Uint8Array(
-          await crypto.subtle.digest(
-            'SHA-256',
-            new TextEncoder().encode(
-              JSON.stringify({
-                recipients,
-                subject,
-                text,
-                html: html ?? null,
-                replyToMessageId,
-                scheduledFor,
-                attachmentIds: attachments.map((attachment) => attachment.id),
-                followUpAt: followUpAt ?? null,
-              }),
-            ),
-          ),
-        ),
-      ]
-        .map((byte) => byte.toString(16).padStart(2, '0'))
-        .join('')
+    ? await scheduledSendRequestHash({
+        recipients,
+        subject,
+        text,
+        html,
+        replyToMessageId,
+        scheduledFor,
+        attachmentIds: attachments.map((attachment) => attachment.id),
+        followUpAt,
+      })
     : null;
   // The count-then-insert cap is not safe under READ COMMITTED on its own:
   // two concurrent transactions can both snapshot count = MAX - 1 and both
@@ -125,22 +187,9 @@ export async function createScheduledSend(
   // attempts so the cap actually holds.
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtext(${userId}::text)::bigint)`;
-    if (requestId) {
-      const [existing] = await tx`
-        SELECT id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor",
-          follow_up_at AS "followUpAt", request_hash AS "requestHash"
-        FROM scheduled_sends WHERE user_id = ${userId} AND request_id = ${requestId}
-      `;
-      if (existing) {
-        if (existing.requestHash !== requestHash) {
-          throw Object.assign(
-            new Error('Request id already used for a different scheduled email'),
-            { code: 'IDEMPOTENCY_CONFLICT' },
-          );
-        }
-        delete existing.requestHash;
-        return existing;
-      }
+    if (requestId && requestHash) {
+      const existing = await findScheduledSend(tx, userId, requestId, requestHash);
+      if (existing) return { ...existing, replayed: true };
     }
     const [row] = await tx`
       INSERT INTO scheduled_sends
@@ -152,7 +201,7 @@ export async function createScheduledSend(
         WHERE s.user_id = ${userId} AND s.status = 'pending'
       ) < ${MAX_PENDING_SCHEDULED_SENDS}
       RETURNING id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor",
-                follow_up_at AS "followUpAt"
+                follow_up_at AS "followUpAt", status, last_error AS "lastError"
     `;
     if (!row) return null;
     if (attachments.length) {
@@ -183,7 +232,7 @@ export async function listScheduledSends(sql, userId) {
     SELECT s.id, s.to_addresses AS "toAddresses", s.subject, s.scheduled_for AS "scheduledFor",
            s.follow_up_at AS "followUpAt", s.status, s.last_error AS "lastError"
     FROM scheduled_sends s
-    WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed')
+    WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed', 'uncertain')
     ORDER BY s.scheduled_for ASC
   `;
 }
@@ -212,6 +261,10 @@ async function cancelScheduledSendWithoutAttachments(sql, userId, id) {
              s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", '[]'::jsonb AS attachments
       FROM scheduled_sends s
       WHERE s.id = ${id} AND s.user_id = ${userId} AND s.status = 'pending'
+        AND NOT EXISTS (
+          SELECT 1 FROM outbound_deliveries d
+          WHERE d.user_id = s.user_id AND d.source_key = 'scheduled-send/' || s.id::text
+        )
       FOR UPDATE
     `;
     if (!row) return null;
@@ -251,6 +304,10 @@ export async function cancelScheduledSend(sql, userId, id) {
                ), '[]'::jsonb) AS attachments
         FROM scheduled_sends s
         WHERE s.id = ${id} AND s.user_id = ${userId} AND s.status = 'pending'
+          AND NOT EXISTS (
+            SELECT 1 FROM outbound_deliveries d
+            WHERE d.user_id = s.user_id AND d.source_key = 'scheduled-send/' || s.id::text
+          )
         FOR UPDATE
       `;
       if (!row) return null;
@@ -315,7 +372,8 @@ async function claimDueScheduledSends(sql, limit) {
                     'filename', COALESCE(a.filename, oa.filename),
                     'content_type', COALESCE(a.content_type, oa.content_type),
                     'size_bytes', COALESCE(a.size_bytes, oa.size_bytes),
-                    'blob_url', COALESCE(a.blob_url, oa.blob_url)
+                    'blob_url', COALESCE(a.blob_url, oa.blob_url),
+                    'source', CASE WHEN oa.id IS NOT NULL THEN 'upload' ELSE 'inbound' END
                   ) ORDER BY ssa.position)
                   FROM scheduled_send_attachments ssa
                   LEFT JOIN attachments a ON a.id = ssa.attachment_id
@@ -404,11 +462,22 @@ async function markScheduledSendFailed(sql, id, error, attempts = null) {
  * @returns {Promise<{status: string, storedMessageUuid: string | null}>}
  */
 export async function deliverScheduledSend(sql, row, services) {
+  const prior = await findDelivery(sql, row.user_id, `scheduled-send/${row.id}`);
+  if (prior?.provider_id) {
+    const repaired = await resumeDelivery(sql, prior, services);
+    await sql`UPDATE scheduled_sends SET status = 'sent',
+      sent_at = coalesce(sent_at, ${prior.accepted_at}::timestamptz),
+      sent_message_id = ${repaired.messageUuid}, claimed_at = NULL
+      WHERE id = ${row.id} AND user_id = ${row.user_id}`;
+    return { status: 'sent', storedMessageUuid: repaired.inserted ? repaired.messageUuid : null };
+  }
   if (row.attempts >= MAX_SCHEDULED_SEND_ATTEMPTS) {
     // Only an expired lease reaches here: every earlier attempt ended without
     // resolving the row, so stop instead of re-sending it yet again.
-    await markScheduledSendFailed(sql, row.id, 'Delivery could not be completed or confirmed');
-    return { status: 'failed', storedMessageUuid: null };
+    await stopUnconfirmedDelivery(sql, row.user_id, `scheduled-send/${row.id}`);
+    await sql`UPDATE scheduled_sends SET status = 'uncertain', claimed_at = NULL,
+      last_error = 'Delivery needs confirmation before retrying' WHERE id = ${row.id}`;
+    return { status: 'unconfirmed', storedMessageUuid: null };
   }
   const [owner] = await sql`SELECT 1 AS "exists" FROM users WHERE id = ${row.user_id}`;
   if (!owner) {
@@ -462,6 +531,19 @@ export async function deliverScheduledSend(sql, row, services) {
       services,
     );
   } catch (err) {
+    if (err instanceof DeliveryError) {
+      const terminal = ['DELIVERY_UNCERTAIN', 'DELIVERY_CONFLICT'].includes(err.code);
+      const rejected = err.code === 'DELIVERY_REJECTED';
+      if (rejected) await refundOutboundEmailQuota(sql, row.user_id);
+      await sql`UPDATE scheduled_sends
+        SET status = ${terminal ? 'uncertain' : rejected ? 'failed' : 'pending'},
+            last_error = ${err.message}, claimed_at = NULL, attempts = attempts + 1
+        WHERE id = ${row.id}`;
+      return {
+        status: terminal ? 'unconfirmed' : rejected ? 'failed' : 'retried',
+        storedMessageUuid: null,
+      };
+    }
     // Another attachment send held this isolate's payload slot: nothing was
     // loaded or sent, so the row goes back without spending an attempt.
     if (err instanceof AttachmentSlotBusyError) {
@@ -472,12 +554,14 @@ export async function deliverScheduledSend(sql, row, services) {
     const attempts = row.attempts + 1;
     const errorMessage = /** @type {Error} */ (err).message;
     console.error(`scheduled send ${row.id} delivery failed (attempt ${attempts}):`, errorMessage);
-    // Nothing went out, so give the minute's quota back instead of letting a
-    // provider outage consume the user's allowance through retries.
-    await refundOutboundEmailQuota(sql, row.user_id);
+    // A failed bookkeeping write can follow an ambiguous provider result.
+    // Keep its quota charge and let the ledger enforce the original deadline.
     if (attempts >= MAX_SCHEDULED_SEND_ATTEMPTS) {
-      await markScheduledSendFailed(sql, row.id, errorMessage, attempts);
-      return { status: 'failed', storedMessageUuid: null };
+      await stopUnconfirmedDelivery(sql, row.user_id, `scheduled-send/${row.id}`);
+      await sql`UPDATE scheduled_sends SET status = 'uncertain', attempts = ${attempts},
+        last_error = 'Delivery needs confirmation before retrying', claimed_at = NULL
+        WHERE id = ${row.id}`;
+      return { status: 'unconfirmed', storedMessageUuid: null };
     }
     await sql`
       UPDATE scheduled_sends
@@ -605,13 +689,13 @@ async function sweepResolvedState(sql, services, blobDeleteBudget) {
 // whatever is left waits for a lighter tick.
 /**
  * @param {import('postgres').Sql} sql
- * @param {import('./outbound.js').SendServices} services
+ * @param {import('./outbound.js').SendServices} _services
  * @param {number} limit
  */
-async function sweepOrphanedUploads(sql, services, limit) {
+async function sweepOrphanedUploads(sql, _services, limit) {
   if (limit <= 0) return;
   try {
-    const orphans = await sql`
+    await sql`
       DELETE FROM outbound_attachments oa
       WHERE oa.id IN (
         SELECT candidate.id
@@ -626,6 +710,10 @@ async function sweepOrphanedUploads(sql, services, limit) {
             SELECT 1 FROM draft_attachments da
             WHERE da.outbound_attachment_id = candidate.id
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM outbound_delivery_uploads du
+            WHERE du.outbound_attachment_id = candidate.id
+          )
         ORDER BY candidate.created_at
         LIMIT ${limit}
       )
@@ -634,17 +722,8 @@ async function sweepOrphanedUploads(sql, services, limit) {
                   SELECT 1 FROM attachments a WHERE a.blob_url = oa.blob_url
                 ) AS "blobUnreferenced"
     `;
-    for (const orphan of orphans) {
-      if (!orphan.blobUnreferenced) continue;
-      try {
-        await services.deleteBlob(orphan.blob_url);
-      } catch (err) {
-        console.error(
-          'failed to delete orphaned attachment blob:',
-          /** @type {Error} */ (err).message,
-        );
-      }
-    }
+    // Migration 0103 queues physical deletion transactionally. Its consumer
+    // rechecks live references and retains failed jobs for another attempt.
   } catch (err) {
     console.error('orphaned-upload sweep failed:', /** @type {Error} */ (err).message);
   }

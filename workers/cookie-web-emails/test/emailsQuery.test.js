@@ -32,6 +32,17 @@ function captureQuery() {
 const USER_ID = '99999999-9999-4999-8999-999999999999';
 
 describe('fetchEmails', () => {
+  test('makes unfinished classification reviewable without bypassing ownership or screening', () => {
+    const capture = captureQuery();
+    fetchEmails(capture.sql, USER_ID, 50, null, 'processing');
+    expect(capture.query()).toContain("ai.status IS DISTINCT FROM 'completed'");
+    expect(capture.query()).toContain("m.screening_status = 'allowed'");
+    expect(capture.query()).toContain('m.user_id = ?');
+    expect(capture.query()).toContain('NOT m.is_deleted');
+    expect(capture.query()).toContain('NOT m.is_archived AND NOT m.is_sent');
+    expect(capture.query()).toContain('ai.status AS ai_status');
+    expect(capture.query()).toContain('LIMIT ?');
+  });
   test.each([
     ['screening', 'held'],
     ['blocked', 'blocked'],
@@ -122,7 +133,7 @@ describe('fetchEmails', () => {
     expect(capture.query()).toContain('m.scheduled_for > now()');
     expect(capture.query()).not.toContain("? = 'snoozed'");
     expect(capture.query()).toContain(
-      'GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, c.id',
+      'GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, ai.status, ai.enrichment_attempts, c.id',
     );
   });
 

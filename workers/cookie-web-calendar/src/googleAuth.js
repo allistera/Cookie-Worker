@@ -3,12 +3,11 @@
 //
 // The browser never sees a Google token. Settings asks this Worker for an
 // authorization URL, the browser follows it to Google, and Google sends the
-// person back to this Worker's /google-calendar/callback, which exchanges the
-// code and stores the refresh token encrypted (AES-256-GCM under the
-// GOOGLE_TOKEN_ENCRYPTION_KEY secret) before redirecting back to Settings.
-// The callback is a top-level navigation, so it cannot carry an Auth0 bearer
-// token: the single-use `state` row — bound to the signed-in user when the
-// flow started — is what ties the code to a Cookie account.
+// person back to this Worker's /google-calendar/callback. That callback only
+// stages the encrypted code and returns a fresh completion handle. Settings
+// finishes with its Auth0 bearer token and a verifier kept in sessionStorage
+// before leaving. Forwarding the consent URL to another browser therefore
+// cannot connect that browser's Google account to the initiating Cookie user.
 //
 // Landing the callback on the Worker rather than on the SPA is deliberate:
 // auth0-spa-js treats any `code` + `state` pair on the app's own URL as its
@@ -32,6 +31,13 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 // valid token does not watch it lapse mid-flight.
 const ACCESS_TOKEN_SKEW_MS = 60 * 1000;
 const TOKEN_TIMEOUT_MS = 10_000;
+const BINDING_RE = /^[A-Za-z0-9_-]{43}$/;
+
+/** @param {string} value */
+export async function authorizationDigest(value) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * @typedef {{
@@ -101,13 +107,16 @@ export { decryptToken, encryptToken };
  */
 export async function beginAuthorization(sql, userId, { redirectUri, returnTo }, env) {
   const state = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const verifier = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = await authorizationDigest(verifier);
   const expiresAt = new Date(Date.now() + STATE_TTL_MS);
   // Expired states are cleared opportunistically: nothing else ever reads
   // them, and a row per abandoned attempt is all that would otherwise pile up.
   await sql`DELETE FROM google_calendar_oauth_states WHERE expires_at < now()`;
   await sql`
-    INSERT INTO google_calendar_oauth_states (state, user_id, redirect_uri, return_to, expires_at)
-    SELECT ${state}, ${userId}, ${redirectUri}, ${returnTo}, ${expiresAt}
+    INSERT INTO google_calendar_oauth_states
+      (state, user_id, redirect_uri, return_to, expires_at, browser_challenge)
+    SELECT ${state}, ${userId}, ${redirectUri}, ${returnTo}, ${expiresAt}, ${challenge}
     WHERE EXISTS (SELECT 1 FROM users WHERE id = ${userId})
   `;
 
@@ -123,11 +132,11 @@ export async function beginAuthorization(sql, userId, { redirectUri, returnTo },
   url.searchParams.set('access_type', 'offline');
   url.searchParams.set('prompt', 'consent');
   url.searchParams.set('include_granted_scopes', 'true');
-  return url.toString();
+  return { url: url.toString(), verifier };
 }
 
 /**
- * Redeems and deletes a state. Returns null when it is unknown or expired.
+ * Cancels a state. This never exchanges a code or grants access.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} state
@@ -143,6 +152,65 @@ export async function consumeAuthorizationState(sql, state) {
   `;
   if (!row || row.expired) return null;
   return { userId: row.userId, redirectUri: row.redirectUri, returnTo: row.returnTo };
+}
+
+/**
+ * Stage a code without exchanging it. The fresh handle is deliberately
+ * unrelated to state: the person who started a transplanted consent flow
+ * knows state and their own verifier, but must not be able to poll for or
+ * redeem the code returned in the other browser.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} state
+ * @param {string} code
+ * @param {GoogleEnv} env
+ */
+export async function stageAuthorizationCode(sql, state, code, env) {
+  if (!state || state.length > 128 || !code || code.length > 4096) return null;
+  const completion = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const completionHash = await authorizationDigest(completion);
+  const encrypted = await encryptToken(
+    code,
+    /** @type {string} */ (env.GOOGLE_TOKEN_ENCRYPTION_KEY),
+  );
+  const [pending] = await sql`
+    UPDATE google_calendar_oauth_states
+    SET completion_hash = ${completionHash}, code_encrypted = ${encrypted}
+    WHERE state = ${state} AND expires_at > now()
+      AND browser_challenge IS NOT NULL AND completion_hash IS NULL
+    RETURNING return_to AS "returnTo"
+  `;
+  return pending ? { returnTo: pending.returnTo, completion } : null;
+}
+
+/**
+ * Atomically claim a completion for its original Cookie account and browser.
+ * A wrong account/verifier must not consume another browser's transaction.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {unknown} completion
+ * @param {unknown} verifier
+ */
+export async function claimAuthorizationCode(sql, userId, completion, verifier) {
+  if (
+    typeof completion !== 'string' ||
+    !BINDING_RE.test(completion) ||
+    typeof verifier !== 'string' ||
+    !BINDING_RE.test(verifier)
+  )
+    return null;
+  const [completionHash, challenge] = await Promise.all([
+    authorizationDigest(completion),
+    authorizationDigest(verifier),
+  ]);
+  const [pending] = await sql`
+    DELETE FROM google_calendar_oauth_states
+    WHERE completion_hash = ${completionHash} AND browser_challenge = ${challenge}
+      AND user_id = ${userId} AND expires_at > now() AND code_encrypted IS NOT NULL
+    RETURNING redirect_uri AS "redirectUri", code_encrypted AS "codeEncrypted"
+  `;
+  return pending ?? null;
 }
 
 /**

@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+vi.mock('../src/deliveryLedger.js', async (importOriginal) => {
+  const { ledgerFixture } = await import('./ledgerFixture.js');
+  return ledgerFixture(await importOriginal());
+});
 
 // Ported from Cookie-Web's api/__tests__/send-handler.test.js and
 // send-scheduled.test.js — the same scripted query sequences and
@@ -52,6 +56,26 @@ vi.mock('resend', () => ({
     emails = { send: (/** @type {any[]} */ ...args) => resendSend(...args) };
   },
 }));
+vi.mock('../src/autoReplyProvider.js', () => ({
+  AUTO_REPLY_PROVIDER_TIMEOUT_MS: 10_000,
+  sendAutoReply: async (payload, key) => {
+    const sdkPayload = {
+      ...payload,
+      ...(payload.attachments
+        ? {
+            attachments: payload.attachments.map(({ content_type, ...attachment }) => ({
+              ...attachment,
+              contentType: content_type,
+            })),
+          }
+        : {}),
+    };
+    const result = await resendSend(sdkPayload, { idempotencyKey: key });
+    return result.data?.id
+      ? { status: 'sent', providerId: result.data.id }
+      : { status: 'rejected', providerId: null };
+  },
+}));
 
 const getBlob = vi.fn();
 vi.mock('@vercel/blob', () => ({
@@ -70,7 +94,8 @@ vi.mock('../src/sentry.js', () => ({
   captureHandledException: (...args) => captureHandledException(...args),
 }));
 
-const worker = (await import('../src/worker.js')).default;
+const { default: worker, deliveryErrorResponse } = await import('../src/worker.js');
+const { DeliveryError } = await import('../src/deliveryLedger.js');
 const { MAX_OUTBOUND_ATTACHMENT_BYTES } = await import('../src/outbound.js');
 
 const PRODUCTION = 'https://mail.infinitywave.online';
@@ -143,6 +168,16 @@ afterEach(async () => {
 });
 
 describe('POST /send security boundaries', () => {
+  test('reports legacy repeat ambiguity as an explicit 409 requiring a request identity', async () => {
+    const response = deliveryErrorResponse(new DeliveryError('DELIVERY_REQUEST_ID_REQUIRED'));
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toMatchObject({
+      code: 'DELIVERY_REQUEST_ID_REQUIRED',
+      error: expect.stringContaining(
+        'Supply a new requestId only to intentionally send another email',
+      ),
+    });
+  });
   test('answers 503 when Resend or EMAIL_FROM is unconfigured', async () => {
     const response = await worker.fetch(
       request('/send', { body: sendBody() }),
@@ -302,7 +337,7 @@ describe('POST /send security boundaries', () => {
     expect(resendSend).not.toHaveBeenCalled();
   });
 
-  test('refunds the quota and answers 502 when the provider fails', async () => {
+  test('refunds the quota and reports a definitive provider rejection', async () => {
     responses = [
       [{ authorized: true, quota_claimed: true }], // quota claim
       [], // refund update
@@ -310,13 +345,176 @@ describe('POST /send security boundaries', () => {
     resendSend.mockResolvedValue({ data: null, error: { message: 'bounced' } });
     const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'DELIVERY_REJECTED' });
     const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
     expect(queries.some((query) => query.includes('GREATEST(send_count - 1, 0)'))).toBe(true);
   });
 });
 
 describe('POST /send with sendAt (schedule creation)', () => {
+  const attachmentId = '22222222-2222-4222-8222-222222222222';
+  const replyId = '33333333-3333-4333-8333-333333333333';
+
+  // First create through the public handler so retries compare against the
+  // actual stored hash, not a second test implementation of the hash.
+  async function createOriginalSchedule() {
+    const sendAt = futureIso();
+    const followUpAt = futureIso(20 * 60_000);
+    const outgoing = {
+      sendAt,
+      followUpAt,
+      requestId: 'schedule-retry-1',
+      replyToMessageId: replyId,
+      attachmentIds: [attachmentId],
+    };
+    const scheduledSend = {
+      id: 'sched-retry',
+      toAddresses: 'recipient@example.com',
+      subject: 'Hello',
+      scheduledFor: sendAt,
+      followUpAt,
+      status: 'pending',
+      lastError: null,
+    };
+    responses = [
+      [], // Early request lookup
+      [{ id: replyId }],
+      [
+        {
+          id: attachmentId,
+          filename: 'plan.pdf',
+          content_type: 'application/pdf',
+          size_bytes: 3,
+          blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
+        },
+      ],
+      [], // Advisory lock
+      [], // Request lookup inside the lock
+      [scheduledSend],
+      [], // Attachment links
+    ];
+    const response = await worker.fetch(
+      request('/send', { body: sendBody(outgoing) }),
+      clockEnv,
+      ctx,
+    );
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ scheduledSend });
+    await Promise.all(waited);
+    expect(clockArm).toHaveBeenCalledOnce();
+    const insert = mockQuery.mock.calls.find(([parts]) =>
+      parts.join(' ').includes('INSERT INTO scheduled_sends'),
+    );
+    const requestHash = insert
+      ?.slice(1)
+      .find((value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
+    expect(requestHash).toEqual(expect.any(String));
+    mockQuery.mockClear();
+    clockArm.mockClear();
+    call = 0;
+    waited = [];
+    return { outgoing, scheduledSend, requestHash };
+  }
+
+  test.each(['pending', 'sending', 'sent', 'failed', 'uncertain'])(
+    'returns the existing %s outcome after send/reminder times pass and source resources disappear',
+    async (status) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2030-01-01T09:00:00.000Z'));
+      const { outgoing, scheduledSend, requestHash } = await createOriginalSchedule();
+      vi.setSystemTime(new Date('2030-01-02T09:00:00.000Z'));
+      const existing = {
+        ...scheduledSend,
+        status,
+        lastError: status === 'uncertain' ? 'Delivery needs confirmation before retrying' : null,
+      };
+      // No reply/upload rows remain; any attempt to resolve them would fail.
+      responses = [[{ ...existing, requestHash }]];
+
+      const response = await worker.fetch(
+        request('/send', { body: sendBody(outgoing) }),
+        clockEnv,
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ scheduledSend: existing });
+      expect(mockQuery).toHaveBeenCalledOnce();
+      expect(mockQuery.mock.calls[0].slice(1)).toEqual([USER_ID, outgoing.requestId]);
+      expect(clockArm).not.toHaveBeenCalled();
+      expect(resendSend).not.toHaveBeenCalled();
+      expect(getBlob).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    { subject: 'A different email' },
+    { sendAt: '2030-01-01T11:00:00.000Z' },
+    { attachmentIds: [] },
+    { followUpAt: null },
+  ])('rejects changed schedule intent after the original time: %j', async (change) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2030-01-01T09:00:00.000Z'));
+    const { outgoing, scheduledSend, requestHash } = await createOriginalSchedule();
+    vi.setSystemTime(new Date('2030-01-02T09:00:00.000Z'));
+    responses = [[{ ...scheduledSend, requestHash }]];
+
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ ...outgoing, ...change }) }),
+      clockEnv,
+      ctx,
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'DELIVERY_CONFLICT' });
+    expect(mockQuery).toHaveBeenCalledOnce();
+    expect(clockArm).not.toHaveBeenCalled();
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('does not recreate a missing original schedule after its send time', async () => {
+    responses = [[]];
+    const response = await worker.fetch(
+      request('/send', {
+        body: sendBody({ sendAt: futureIso(-60_000), requestId: 'missing-schedule' }),
+      }),
+      clockEnv,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(mockQuery).toHaveBeenCalledOnce();
+    expect(mockQuery.mock.calls[0].slice(1)).toEqual([USER_ID, 'missing-schedule']);
+    expect(clockArm).not.toHaveBeenCalled();
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('does not rearm a schedule created by an overlapping request', async () => {
+    const { outgoing, scheduledSend, requestHash } = await createOriginalSchedule();
+    responses = [
+      [], // Not yet visible to the early lookup
+      [{ id: replyId }],
+      [
+        {
+          id: attachmentId,
+          filename: 'plan.pdf',
+          size_bytes: 3,
+          blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
+        },
+      ],
+      [], // Advisory lock
+      [{ ...scheduledSend, requestHash }], // Other request committed before the lock
+    ];
+    const response = await worker.fetch(
+      request('/send', { body: sendBody(outgoing) }),
+      clockEnv,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ scheduledSend });
+    expect(mockQuery.mock.calls.some(([parts]) => parts.join(' ').includes('INSERT'))).toBe(false);
+    expect(clockArm).not.toHaveBeenCalled();
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
   test('queues a scheduled_sends row instead of calling the provider', async () => {
     responses = [
       [], // advisory lock (sql.begin)
@@ -777,8 +975,7 @@ describe('POST /send/flush', () => {
     expect(resendSend).not.toHaveBeenCalled();
   });
 
-  test('marks a row failed once it has exhausted its retry attempts', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  test('marks a row failed when its provider attempt is definitively rejected', async () => {
     responses = [
       [
         {
@@ -811,10 +1008,6 @@ describe('POST /send/flush', () => {
       failed: 1,
       unconfirmed: 0,
     });
-    expect(consoleError).toHaveBeenCalledWith(
-      'scheduled send sched-1 delivery failed (attempt 5):',
-      'bounced',
-    );
   });
 
   test('keeps a delivered row leased when marking it sent fails', async () => {

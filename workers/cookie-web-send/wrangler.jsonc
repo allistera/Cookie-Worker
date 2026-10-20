@@ -23,6 +23,8 @@
   // Every request opens a Hyperdrive connection before any route work, so
   // run the isolate near the database rather than near the browser.
   "placement": { "mode": "smart" },
+  // Separate invocation budget for durable delivery/copy reconciliation.
+  "triggers": { "crons": ["*/15 * * * *"] },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
   // Exact-time "Send Later" delivery: one alarm per the earliest pending send
   // (src/scheduledSendClock.js). The flusher cron remains the safety net.

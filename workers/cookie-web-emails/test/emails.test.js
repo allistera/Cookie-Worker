@@ -36,6 +36,7 @@ describe('handleList', () => {
       starredCount: 0,
       screeningCount: 0,
       blockedCount: 0,
+      processingCount: 0,
       userId: USER_ID,
     });
   });
@@ -136,6 +137,7 @@ describe('handleState', () => {
       starredCount: 0,
       screeningCount: 0,
       blockedCount: 0,
+      processingCount: 0,
       userId: USER_ID,
     });
   });
@@ -155,6 +157,7 @@ describe('handleState', () => {
       starredCount: 0,
       screeningCount: 0,
       blockedCount: 0,
+      processingCount: 0,
       userId: USER_ID,
     });
   });

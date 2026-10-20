@@ -10,6 +10,16 @@ import { Buffer } from 'node:buffer';
 
 import { hasControlChars, isValidEmailAddress } from '../../../shared/email-validation.js';
 import { validId } from '../../../shared/pagination.js';
+import {
+  acceptDelivery,
+  claimDelivery,
+  completeDelivery,
+  deferCopyRepair,
+  createDelivery,
+  deferDelivery,
+  DeliveryError,
+  findDelivery,
+} from './deliveryLedger.js';
 
 const SNIPPET_LENGTH = 100;
 export const MAX_OUTBOUND_RECIPIENTS = 20;
@@ -270,6 +280,7 @@ export function parseFollowUpAt(value, after = Date.now()) {
  *   indexSentMessages: (messageUuids: string[]) => void,
  *   armScheduledSendClock?: (scheduledFor: string) => void,
  *   sendAutoReply?: (payload: Record<string, any>, key: string, timeoutMs: number) => Promise<{status: string, providerId: string | null}>,
+ *   sendProvider?: (payload: Record<string, any>, key: string) => Promise<{status: string, providerId: string | null}>,
  * }} SendServices
  */
 
@@ -524,7 +535,7 @@ const LOST_SENT_COPY_RACE = new Error('lost sent-copy race');
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null, attachments?: any[], followUpAt?: string | null}} message
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null, attachments?: any[], followUpAt?: string | null, sentAt?: string | null}} message
  * @param {SendServices} services
  */
 export async function storeSentMessage(
@@ -540,6 +551,7 @@ export async function storeSentMessage(
     readReceiptToken,
     attachments = [],
     followUpAt,
+    sentAt: acceptedAt,
   },
   services,
 ) {
@@ -563,7 +575,7 @@ export async function storeSentMessage(
   const { name: fromName, address: fromAddress } = parseFromEnv(configuredEmailFrom(services.env));
   let messageUuid = lookup.existing_message_id ?? crypto.randomUUID();
   const threadUuid = lookup.thread_id ?? crypto.randomUUID();
-  const sentAt = new Date().toISOString();
+  const sentAt = acceptedAt ?? new Date().toISOString();
   const recipientsJson = JSON.stringify({
     to: recipients.map((address) => ({ name: null, address })),
     cc: [],
@@ -723,7 +735,7 @@ export async function replyThreadingHeaders(sql, userId, replyToMessageId) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[], followUpAt?: string | null}} message
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[], followUpAt?: string | null, requestId?: string | null}} message
  * @param {SendServices} services
  */
 export async function deliverMail(
@@ -739,14 +751,17 @@ export async function deliverMail(
     readReceiptToken,
     attachments = [],
     followUpAt,
+    requestId = null,
   },
   services,
 ) {
+  const key = idempotencyKey ?? `immediate-send/${crypto.randomUUID()}`;
+  const existing = await findDelivery(sql, userId, key, requestId);
+  if (existing) return resumeDelivery(sql, existing, services);
   const receiptToken = readReceiptToken ?? (await receiptTokenFor(idempotencyKey));
   const receiptUrl = buildReadReceiptUrl(receiptToken);
   const trackedHtml = appendReadReceipt(html, text, receiptUrl);
 
-  const resend = services.createResend(services.env.RESEND_API_KEY);
   /** @type {Record<string, unknown>} */
   const payload = {
     from: configuredEmailFrom(services.env),
@@ -765,49 +780,149 @@ export async function deliverMail(
       console.error('failed to load reply threading headers:', /** @type {Error} */ (err).message);
     }
   }
-  /** @param {Record<string, unknown>} body */
-  const send = (body) =>
-    idempotencyKey ? resend.emails.send(body, { idempotencyKey }) : resend.emails.send(body);
-  // The attachment-bearing body exists only inside its slot, so the encoded
-  // bytes are unreachable once the provider call returns, before the sent
-  // copy is stored and before the next forward starts loading.
-  const { data, error } = attachments.length
-    ? await withAttachmentPayloadSlot(async () =>
-        send({
-          ...payload,
-          attachments: await loadProviderAttachments(attachments, services.readBlob),
-        }),
-      )
-    : await send(payload);
-  if (error) throw new Error(error.message || 'Failed to send email');
+  const copy = {
+    recipients,
+    subject,
+    text,
+    html,
+    replyToMessageId,
+    readReceiptToken: receiptUrl ? receiptToken : null,
+    attachments,
+    followUpAt: followUpAt ?? null,
+  };
+  const delivery = await createDelivery(sql, userId, key, payload, copy, requestId);
+  return resumeDelivery(sql, delivery, services);
+}
 
+/** @param {any} sql @param {any} delivery @param {SendServices} services */
+export async function resumeDelivery(sql, delivery, services) {
+  const claim = await claimDelivery(sql, delivery);
+  let row = claim.row;
+  if (claim.send) {
+    /** @param {Record<string, any>} payload */
+    const send = async (payload) => {
+      // Payload loading must not turn an eligible claim into a send after the
+      // original provider idempotency window.
+      if (row.retry_until && Date.now() >= new Date(row.retry_until).getTime()) {
+        return { status: 'uncertain', providerId: null };
+      }
+      if (services.sendProvider) return services.sendProvider(payload, row.source_key);
+      // Injection seam for existing provider tests. Production uses the
+      // fixed-origin, deadline-bound adapter in createSendServices.
+      const result = await services
+        .createResend(services.env.RESEND_API_KEY)
+        .emails.send(payload, { idempotencyKey: row.source_key });
+      return result.data?.id
+        ? { status: 'sent', providerId: result.data.id }
+        : { status: 'rejected', providerId: null };
+    };
+    let outcome;
+    try {
+      const attachments = row.copy_payload.attachments ?? [];
+      outcome = attachments.length
+        ? await withAttachmentPayloadSlot(async () =>
+            send({
+              ...row.provider_payload,
+              attachments: await loadProviderAttachments(attachments, services.readBlob),
+            }),
+          )
+        : await send(row.provider_payload);
+    } catch {
+      outcome = { status: 'retry', providerId: null };
+    }
+    if (outcome.status !== 'sent' || !outcome.providerId) {
+      const state = await deferDelivery(sql, row, outcome.status);
+      throw new DeliveryError(
+        state === 'uncertain'
+          ? 'DELIVERY_UNCERTAIN'
+          : state === 'rejected'
+            ? 'DELIVERY_REJECTED'
+            : 'DELIVERY_PENDING',
+      );
+    }
+    // The intent is already durable. If the receipt write fails, a same-key
+    // retry can recover the provider ID within its original 23-hour window.
+    row = {
+      ...row,
+      provider_id: outcome.providerId,
+      accepted_at: new Date().toISOString(),
+    };
+    try {
+      row = await acceptDelivery(sql, row, outcome.providerId);
+    } catch {
+      console.warn('outbound_delivery_confirmation_pending');
+    }
+  }
+  if (row.status === 'complete') {
+    return {
+      resendId: row.provider_id,
+      messageUuid: row.sent_message_id,
+      inserted: false,
+      sentCopyPending: false,
+    };
+  }
   let messageUuid = null;
-  // Only a real insert is new mail for the search index; a replay resolves to
-  // an id that is already indexed (or already marked for the drift sweep).
   let inserted = false;
+  let sentCopyPending = true;
   try {
     ({ messageUuid, inserted } = await storeSentMessage(
       sql,
-      userId,
+      row.user_id,
       {
-        recipients,
-        subject,
-        text,
-        html,
-        replyToMessageId,
-        resendId: data.id,
-        readReceiptToken: receiptUrl ? receiptToken : null,
-        attachments,
-        followUpAt,
+        ...row.copy_payload,
+        resendId: row.provider_id,
+        sentAt: row.accepted_at ? new Date(row.accepted_at).toISOString() : null,
       },
-      services,
+      { ...services, env: { ...services.env, EMAIL_FROM: row.provider_payload.from } },
     ));
-  } catch (err) {
-    // Sending always wins: a storage failure is logged but the mail really
-    // did go out, so this must never be treated as a failed send.
-    console.error('failed to store sent copy:', /** @type {Error} */ (err).message);
+    await acceptDelivery(sql, row, row.provider_id);
+    if (typeof messageUuid !== 'string') throw new Error('The sent copy is unavailable');
+    await completeDelivery(sql, row, messageUuid);
+    sentCopyPending = false;
+  } catch {
+    console.warn('outbound_sent_copy_pending');
+    try {
+      await deferCopyRepair(sql, row);
+    } catch {
+      // The durable intent remains eligible after database recovery.
+    }
   }
-  return { resendId: data.id, messageUuid, inserted };
+  return { resendId: row.provider_id, messageUuid, inserted, sentCopyPending };
+}
+
+/**
+ * A dedicated cron invocation bounds replay I/O independently of scheduled
+ * sends. Accepted copies cost no provider calls. Uncertain rows retain their
+ * payload and upload references for owner review, and are never sent again.
+ * @param {any} sql @param {SendServices} services
+ */
+export async function reconcileOutboundDeliveries(sql, services) {
+  const rows = await sql`SELECT * FROM outbound_deliveries
+    WHERE status IN ('pending', 'sending', 'accepted')
+      AND (claimed_at IS NULL OR claimed_at < now() - interval '2 minutes')
+    ORDER BY updated_at, id LIMIT 5`;
+  let budget = 25;
+  const indexed = [];
+  for (const row of rows) {
+    const cost = row.provider_id ? 0 : 1 + (row.copy_payload.attachments?.length ?? 0);
+    if (cost > budget) continue;
+    budget -= cost;
+    try {
+      const result = await resumeDelivery(sql, row, services);
+      if (result.inserted && result.messageUuid) indexed.push(result.messageUuid);
+    } catch (error) {
+      if (error instanceof DeliveryError && error.code === 'DELIVERY_UNCERTAIN') {
+        if (row.source_key.startsWith('scheduled-send/')) {
+          await sql`UPDATE scheduled_sends SET status = 'uncertain', claimed_at = NULL,
+            last_error = 'Delivery needs confirmation before retrying'
+            WHERE id = ${row.source_key.slice('scheduled-send/'.length)}::uuid AND user_id = ${row.user_id}`;
+        }
+      } else if (!(error instanceof DeliveryError)) {
+        throw error;
+      }
+    }
+  }
+  services.indexSentMessages(indexed);
 }
 
 /**

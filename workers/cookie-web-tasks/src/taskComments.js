@@ -1,3 +1,5 @@
+import { readFormBody, bodyErrorResponse } from '../../../shared/read-body.js';
+import { queueObjectCleanup } from './objectCleanup.js';
 // Discussion threads on tasks (Cookie-Web migration 0096): one task_comments
 // row per entry, in time order, holding text, an attached file, or both.
 // An attachment's bytes go to the FILES R2 bucket under <user_id>/<uuid>,
@@ -129,9 +131,15 @@ export async function createTaskComment(request, sql, userId, env, deps) {
 
   let form;
   try {
-    form = await request.formData();
-  } catch {
-    return Response.json({ error: 'Content-Type must be multipart/form-data' }, { status: 400 });
+    form = await readFormBody(request, {
+      maxBytes: MAX_FILE_BYTES + MULTIPART_OVERHEAD_BYTES,
+      fields: ['task', 'body', 'file'],
+    });
+  } catch (error) {
+    return (
+      bodyErrorResponse(error) ??
+      Response.json({ error: 'Invalid multipart body' }, { status: 400 })
+    );
   }
   const taskField = form.get('task');
   const taskId = validId(taskField) ? String(taskField) : null;
@@ -176,6 +184,7 @@ export async function createTaskComment(request, sql, userId, env, deps) {
       size_bytes: bytes.byteLength,
       object_key: objectKey,
     };
+    await queueObjectCleanup(sql, 'r2', objectKey, 24);
     await env.FILES.put(objectKey, bytes, { httpMetadata: { contentType: mimeType } });
   }
 

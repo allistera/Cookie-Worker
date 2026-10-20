@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../src/deliveryLedger.js', async (importOriginal) => {
+  const { ledgerFixture } = await import('./ledgerFixture.js');
+  return ledgerFixture(await importOriginal());
+});
 
 // Ported from Cookie-Web's api/__tests__/send.test.js — the helper half.
 // buildReadReceiptUrl loses its "deployed environment" gate (this Worker only

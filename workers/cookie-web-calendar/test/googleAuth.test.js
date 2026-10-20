@@ -5,6 +5,8 @@ import {
   GOOGLE_TOKEN_URL,
   GoogleReauthRequired,
   beginAuthorization,
+  authorizationDigest,
+  claimAuthorizationCode,
   completeAuthorization,
   consumeAuthorizationState,
   decryptToken,
@@ -14,6 +16,7 @@ import {
   isGoogleConfigured,
   loadConnection,
   loadConnectionIfAvailable,
+  stageAuthorizationCode,
 } from '../src/googleAuth.js';
 import { createMockSql } from './helpers.js';
 
@@ -93,17 +96,16 @@ describe('token encryption', () => {
 describe('beginAuthorization', () => {
   it('stores a single-use state for the user and builds the consent URL', async () => {
     const sql = createMockSql([[], []]);
-    const url = new URL(
-      await beginAuthorization(
-        sql,
-        USER_ID,
-        {
-          redirectUri: 'https://calendar-api.example/google-calendar/callback',
-          returnTo: 'https://mail.example/settings/calendar',
-        },
-        env,
-      ),
+    const authorization = await beginAuthorization(
+      sql,
+      USER_ID,
+      {
+        redirectUri: 'https://calendar-api.example/google-calendar/callback',
+        returnTo: 'https://mail.example/settings/calendar',
+      },
+      env,
     );
+    const url = new URL(authorization.url);
 
     expect(url.origin + url.pathname).toBe('https://accounts.google.com/o/oauth2/v2/auth');
     expect(url.searchParams.get('client_id')).toBe(env.GOOGLE_CLIENT_ID);
@@ -116,6 +118,9 @@ describe('beginAuthorization', () => {
     expect(url.searchParams.get('scope')).toContain('auth/calendar.calendarlist.readonly');
     const state = url.searchParams.get('state');
     expect(state).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+    expect(authorization.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(url.toString()).not.toContain(authorization.verifier);
+    expect(sql.calls[1].values[5]).toBe(await authorizationDigest(authorization.verifier));
 
     expect(sql.calls[0].text).toContain('DELETE FROM google_calendar_oauth_states');
     expect(sql.calls[1].text).toContain('INSERT INTO google_calendar_oauth_states');
@@ -125,6 +130,39 @@ describe('beginAuthorization', () => {
       'https://calendar-api.example/google-calendar/callback',
       'https://mail.example/settings/calendar',
     ]);
+  });
+});
+
+describe('browser-bound completion', () => {
+  it('stages only encrypted code and returns a fresh handle unrelated to state', async () => {
+    const sql = createMockSql([[{ returnTo: 'https://app/settings/calendar' }]]);
+    const pending = await stageAuthorizationCode(sql, 'original-state', 'google-code', env);
+    expect(pending?.completion).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(sql.calls[0].values[0]).toBe(await authorizationDigest(pending?.completion ?? ''));
+    expect(await decryptToken(String(sql.calls[0].values[1]), KEY)).toBe('google-code');
+    expect(sql.calls[0].text).toContain('completion_hash IS NULL');
+    expect(sql.calls[0].text).toContain('browser_challenge IS NOT NULL');
+    expect(await stageAuthorizationCode(createMockSql([[]]), 'unknown', 'code', env)).toBeNull();
+  });
+
+  it('claims only an unexpired completion for the same user and verifier', async () => {
+    const sql = createMockSql([[{ redirectUri: 'https://api/cb', codeEncrypted: 'encrypted' }]]);
+    const completion = 'c'.repeat(43);
+    const verifier = 'v'.repeat(43);
+    expect(await claimAuthorizationCode(sql, USER_ID, completion, verifier)).toEqual({
+      redirectUri: 'https://api/cb',
+      codeEncrypted: 'encrypted',
+    });
+    expect(sql.calls[0].values).toEqual([
+      await authorizationDigest(completion),
+      await authorizationDigest(verifier),
+      USER_ID,
+    ]);
+    expect(sql.calls[0].text).toContain('expires_at > now()');
+    expect(sql.calls[0].text).toContain('DELETE FROM google_calendar_oauth_states');
+    const invalid = createMockSql();
+    expect(await claimAuthorizationCode(invalid, USER_ID, 'original-state', verifier)).toBeNull();
+    expect(invalid.calls).toHaveLength(0);
   });
 });
 

@@ -25,6 +25,7 @@ import { CALLBACK_PATH } from './googleAuth.js';
 import {
   authorizeGoogle,
   disconnectGoogle,
+  finishGoogleAuthorization,
   getGoogleStatus,
   handleGoogleCallback,
   updateGoogleSelection,
@@ -100,6 +101,9 @@ async function route(url, request, sql, userId, env) {
   if (resource === 'google-calendar') {
     if (request.method === 'POST' && body.action === 'authorize') {
       return authorizeGoogle(sql, userId, body, url, env);
+    }
+    if (request.method === 'POST' && body.action === 'complete') {
+      return finishGoogleAuthorization(sql, userId, body, env);
     }
     if (request.method === 'POST') {
       return Response.json({ error: 'Unsupported action' }, { status: 400 });
@@ -178,9 +182,9 @@ const worker = {
         }
       }
       // Google redirects the browser here after sign-in. A top-level
-      // navigation carries no Auth0 bearer token; the single-use state it
-      // carries was bound to the signed-in user when the flow began
-      // (googleAuth.js), which is what authenticates it instead.
+      // navigation carries no Auth0 bearer token, so this callback only
+      // stages the code. Authenticated action=complete also requires the
+      // original browser's verifier and the fresh callback handle.
       if (request.method === 'GET' && url.pathname === CALLBACK_PATH) {
         const sql = createSql(env.HYPERDRIVE.connectionString);
         try {

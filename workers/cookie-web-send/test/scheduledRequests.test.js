@@ -20,7 +20,10 @@ test('returns the original scheduled row on retry without inserting another deli
     (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value),
   );
   const retry = createMockSql([[], [{ id: 'scheduled-1', requestHash: hash }]]);
-  expect(await createScheduledSend(retry, 'owner', send)).toEqual({ id: 'scheduled-1' });
+  expect(await createScheduledSend(retry, 'owner', send)).toEqual({
+    id: 'scheduled-1',
+    replayed: true,
+  });
   expect(retry.calls.some((call) => call.text.includes('INSERT'))).toBe(false);
   expect(retry.calls[1].values).toEqual(['owner', 'request-1']);
 });

@@ -118,7 +118,8 @@ export const tools = [
     title: 'Send an email',
     description:
       'Sends email immediately from the owner’s address (or schedules it with sendAt). ' +
-      'Recipients get it; this cannot be undone. Pass requestId to make retries safe.',
+      'Recipients get it; this cannot be undone. A requestId is required: reuse it for every retry ' +
+      'of this email and choose a new one only for an intentional new email.',
     inputSchema: z.object({
       to: z.array(email).min(1).max(20),
       subject: z.string().min(1).max(998),
@@ -132,8 +133,7 @@ export const tools = [
       requestId: z
         .string()
         .regex(/^[A-Za-z0-9._:-]{1,128}$/)
-        .optional()
-        .describe('Idempotency key for safe retries'),
+        .describe('Required logical message id. Reuse for retries; use a new id for a new email.'),
     }),
     outputSchema: z.object({
       status: z.enum(['sent', 'scheduled']),

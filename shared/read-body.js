@@ -8,8 +8,59 @@
 export class BodyTooLargeError extends Error {}
 export class InvalidJsonError extends Error {}
 export class UnsupportedContentTypeError extends Error {}
+export class InvalidFormError extends Error {}
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * Bound the entire multipart stream, including ignored fields and framing,
+ * before asking the runtime to parse it. Each allowed field occurs at most once.
+ * @param {Request} request
+ * @param {{maxBytes: number, fields: string[]}} options
+ */
+export async function readFormBody(request, { maxBytes, fields }) {
+  const contentType = request.headers.get('content-type') ?? '';
+  if (contentType.split(';')[0].trim().toLowerCase() !== 'multipart/form-data') {
+    throw new InvalidFormError('Content-Type must be multipart/form-data');
+  }
+  if (Number(request.headers.get('content-length')) > maxBytes) {
+    throw new BodyTooLargeError('Payload too large');
+  }
+  const reader = request.body?.getReader();
+  if (!reader) throw new InvalidFormError('Missing multipart body');
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        void reader.cancel().catch(() => undefined);
+        throw new BodyTooLargeError('Payload too large');
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  let form;
+  try {
+    form = await new Response(new Blob(chunks), {
+      headers: { 'content-type': contentType },
+    }).formData();
+  } catch (cause) {
+    throw new InvalidFormError('Invalid multipart body', { cause });
+  }
+  const seen = new Set();
+  for (const key of form.keys()) {
+    if (!fields.includes(key) || seen.has(key)) {
+      throw new InvalidFormError('Unexpected or duplicate multipart field');
+    }
+    seen.add(key);
+  }
+  return form;
+}
 
 /**
  * Reads and parses a JSON request body with an explicit size cap and an
@@ -86,6 +137,9 @@ export function bodyErrorResponse(error) {
   }
   if (error instanceof InvalidJsonError) {
     return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  if (error instanceof InvalidFormError) {
+    return Response.json({ error: error.message }, { status: 400 });
   }
   return null;
 }

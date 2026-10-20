@@ -25,7 +25,9 @@
     // Triggers run on UTC; each tick syncs the enabled connections whose own
     // clock reads 07:00–20:00, so the window follows each account's zone and
     // its daylight-saving changes. The ticks outside every window are cheap:
-    // one query, no Todoist call.
+    // one query, no Todoist call. The same tick separately runs bounded
+    // private-object cleanup (src/objectCleanup.js), including a page of
+    // legacy document-image inventory.
     "crons": ["0 * * * *"],
   },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
