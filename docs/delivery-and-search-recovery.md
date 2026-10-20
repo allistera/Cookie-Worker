@@ -29,6 +29,16 @@ automatic retry. `DELIVERY_CONFLICT` means a client reused an identity for
 different content. The browser keeps the frozen request in its account-scoped
 local recovery store until delivery is confirmed.
 
+The MCP `cookie_send_email` tool requires a caller-supplied `requestId`, reused
+for every retry and changed only for an intentional new message. Older direct
+API clients may omit it for a first send and replay the same completed receipt
+within the original 24-hour window. After that window, a completed immediate
+delivery without an explicit identity returns HTTP 409 with
+`DELIVERY_REQUEST_ID_REQUIRED`; a new intended email requires a new request ID.
+The server neither silently replays the old success nor invents a new send.
+Unresolved accepted deliveries still repair their original copy, while
+uncertain deliveries still require confirmation.
+
 Migration 0104 conservatively marks legacy leased or previously attempted
 scheduled messages uncertain, including exhausted failures, because their first provider attempt is unknown.
 Inspect those entries before any manual resend. To investigate an uncertainty,

@@ -150,7 +150,13 @@ export function createSendServices(env, ctx) {
 /** @param {unknown} error */
 export function deliveryErrorResponse(error) {
   if (!(error instanceof DeliveryError)) return null;
-  const status = ['DELIVERY_UNCERTAIN', 'DELIVERY_CONFLICT'].includes(error.code) ? 409 : 503;
+  const status = [
+    'DELIVERY_UNCERTAIN',
+    'DELIVERY_CONFLICT',
+    'DELIVERY_REQUEST_ID_REQUIRED',
+  ].includes(error.code)
+    ? 409
+    : 503;
   return Response.json(
     { error: error.message, code: error.code },
     { status, headers: { 'Retry-After': '5' } },

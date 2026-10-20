@@ -1,7 +1,7 @@
 import process from 'node:process';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createDelivery, findDelivery } from '../src/deliveryLedger.js';
+import { acceptDelivery, createDelivery, findDelivery } from '../src/deliveryLedger.js';
 import { resumeDelivery } from '../src/outbound.js';
 
 const databaseUrl = process.env.SCREENING_RETENTION_TEST_DATABASE_URL;
@@ -190,6 +190,72 @@ describe.skipIf(!databaseUrl)('durable outbound delivery on PostgreSQL', () => {
         'client-3',
       ),
     ).rejects.toMatchObject({ code: 'DELIVERY_CONFLICT' });
+  });
+
+  it('requires a new explicit identity for an intentional legacy repeat after 24 hours', async () => {
+    const legacy = await createDelivery(sql, OWNER, 'immediate-send/legacy', payload, copy, null);
+    const svc = services();
+    const first = await resumeDelivery(sql, legacy, svc);
+    const replay = await resumeDelivery(sql, legacy, svc);
+    expect(replay.resendId).toBe(first.resendId);
+    expect(svc.sendProvider).toHaveBeenCalledTimes(1);
+    await sql`UPDATE outbound_deliveries SET first_attempt_at = now() - interval '25 hours',
+      retry_until = now() - interval '2 hours' WHERE id = ${legacy.id}`;
+    await expect(resumeDelivery(sql, legacy, svc)).rejects.toMatchObject({
+      code: 'DELIVERY_REQUEST_ID_REQUIRED',
+    });
+    expect(svc.sendProvider).toHaveBeenCalledTimes(1);
+
+    const intentional = await createDelivery(
+      sql,
+      OWNER,
+      'immediate-send/new-identity',
+      payload,
+      copy,
+      'new-request',
+    );
+    svc.sendProvider.mockResolvedValueOnce({ status: 'sent', providerId: 'provider-2' });
+    const newSend = await resumeDelivery(sql, intentional, svc);
+    expect(newSend.resendId).toBe('provider-2');
+    expect(svc.sendProvider).toHaveBeenCalledTimes(2);
+    expect(await sql`SELECT id FROM messages`).toHaveLength(2);
+  });
+
+  it('still repairs a legacy accepted copy past 24 hours under the same identity', async () => {
+    const row = await createDelivery(
+      sql,
+      OWNER,
+      'immediate-send/legacy-accepted',
+      payload,
+      copy,
+      null,
+    );
+    const svc = services();
+    await resumeDelivery(interruptedCopy(sql), row, svc);
+    await sql`UPDATE outbound_deliveries SET first_attempt_at = now() - interval '25 hours',
+      retry_until = now() - interval '2 hours' WHERE id = ${row.id}`;
+    expect((await resumeDelivery(sql, row, svc)).sentCopyPending).toBe(false);
+    expect(svc.sendProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it('never reopens a completed and scrubbed delivery when a slower confirmation arrives', async () => {
+    const row = await createDelivery(
+      sql,
+      OWNER,
+      'immediate-send/monotone',
+      payload,
+      copy,
+      'monotone',
+    );
+    const svc = services();
+    await resumeDelivery(sql, row, svc);
+    const late = await acceptDelivery(sql, row, 'provider-1');
+    expect(late.status).toBe('complete');
+    expect(late.provider_payload).toEqual({});
+    expect(late.copy_payload).toEqual({ followUpAt: null });
+    expect((await resumeDelivery(sql, late, svc)).sentCopyPending).toBe(false);
+    expect(svc.sendProvider).toHaveBeenCalledTimes(1);
+    expect(await sql`SELECT id FROM messages`).toHaveLength(1);
   });
 
   it('protects upload metadata for unresolved deliveries', async () => {

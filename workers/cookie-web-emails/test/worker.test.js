@@ -196,6 +196,7 @@ describe('routing', () => {
       starredCount: 0,
       screeningCount: 0,
       blockedCount: 0,
+      processingCount: 0,
       userId: 'user-1',
     });
   });

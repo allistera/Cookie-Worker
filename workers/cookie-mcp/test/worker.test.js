@@ -228,7 +228,12 @@ describe('tools', () => {
           params: {
             ...TOOLS_LIST_REQUEST.params,
             name: 'cookie_send_email',
-            arguments: { to: ['a@example.com'], subject: 's', text: 't' },
+            arguments: {
+              to: ['a@example.com'],
+              subject: 's',
+              text: 't',
+              requestId: 'scope-check-send',
+            },
           },
         }),
       });

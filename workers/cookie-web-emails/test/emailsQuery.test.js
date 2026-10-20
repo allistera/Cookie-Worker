@@ -133,7 +133,7 @@ describe('fetchEmails', () => {
     expect(capture.query()).toContain('m.scheduled_for > now()');
     expect(capture.query()).not.toContain("? = 'snoozed'");
     expect(capture.query()).toContain(
-      'GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, c.id',
+      'GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, ai.status, ai.enrichment_attempts, c.id',
     );
   });
 

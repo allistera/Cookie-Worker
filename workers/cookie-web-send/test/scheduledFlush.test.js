@@ -1,10 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
 import { deliverScheduledSend, handleFlush } from '../src/scheduled.js';
 import { createMockSql } from './helpers.js';
-import { ledgerFixture } from './ledgerFixture.js';
-vi.mock('../src/deliveryLedger.js', async (importOriginal) =>
-  ledgerFixture(await importOriginal()),
-);
+vi.mock('../src/deliveryLedger.js', async (importOriginal) => {
+  const { ledgerFixture } = await import('./ledgerFixture.js');
+  return ledgerFixture(await importOriginal());
+});
 
 function services() {
   return /** @type {any} */ ({

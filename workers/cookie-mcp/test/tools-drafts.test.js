@@ -203,7 +203,7 @@ describe('drafts tools', () => {
     api.send.post.mockResolvedValue({ id: 'prov', messageId: null });
     const result = await call(
       'cookie_send_email',
-      { to: ['a@example.com'], subject: 'S', text: 'T' },
+      { to: ['a@example.com'], subject: 'S', text: 'T', requestId: 'req-null-copy' },
       api,
     );
     expect(result).toEqual({ status: 'sent', providerId: 'prov', messageId: null });
@@ -221,7 +221,13 @@ describe('drafts tools', () => {
     api.send.post.mockResolvedValue({ scheduledSend });
     const result = await call(
       'cookie_send_email',
-      { to: ['a@example.com'], subject: 'S', text: 'T', sendAt: '2026-10-05T09:00:00Z' },
+      {
+        to: ['a@example.com'],
+        subject: 'S',
+        text: 'T',
+        sendAt: '2026-10-05T09:00:00Z',
+        requestId: 'req-scheduled',
+      },
       api,
     );
     expect(api.send.post.mock.calls[0][1].sendAt).toBe('2026-10-05T09:00:00Z');
@@ -230,11 +236,19 @@ describe('drafts tools', () => {
 
   test('cookie_send_email rejects bad input', () => {
     const tool = byName(tools, 'cookie_send_email');
-    const base = { to: ['a@example.com'], subject: 'S', text: 'T' };
+    const base = { to: ['a@example.com'], subject: 'S', text: 'T', requestId: 'req-valid' };
     expect(() => tool.inputSchema.parse({ ...base, to: [] })).toThrow();
     expect(() => tool.inputSchema.parse({ ...base, to: ['nope'] })).toThrow();
     expect(() => tool.inputSchema.parse({ ...base, text: '' })).toThrow();
     expect(() => tool.inputSchema.parse({ ...base, requestId: 'bad id!' })).toThrow();
+  });
+
+  test('cookie_send_email requires the caller to supply a stable request identity', () => {
+    const tool = byName(tools, 'cookie_send_email');
+    const result = tool.inputSchema.safeParse({ to: ['a@example.com'], subject: 'S', text: 'T' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toContainEqual(expect.objectContaining({ path: ['requestId'] }));
+    expect(tool.description).toContain('reuse it for every retry');
   });
 
   test('cookie_list_scheduled returns scheduled sends', async () => {

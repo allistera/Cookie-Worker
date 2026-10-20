@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { ledgerFixture } from './ledgerFixture.js';
-vi.mock('../src/deliveryLedger.js', async (importOriginal) =>
-  ledgerFixture(await importOriginal()),
-);
+vi.mock('../src/deliveryLedger.js', async (importOriginal) => {
+  const { ledgerFixture } = await import('./ledgerFixture.js');
+  return ledgerFixture(await importOriginal());
+});
 
 // Ported from Cookie-Web's api/__tests__/send-handler.test.js and
 // send-scheduled.test.js — the same scripted query sequences and
@@ -94,7 +94,8 @@ vi.mock('../src/sentry.js', () => ({
   captureHandledException: (...args) => captureHandledException(...args),
 }));
 
-const worker = (await import('../src/worker.js')).default;
+const { default: worker, deliveryErrorResponse } = await import('../src/worker.js');
+const { DeliveryError } = await import('../src/deliveryLedger.js');
 const { MAX_OUTBOUND_ATTACHMENT_BYTES } = await import('../src/outbound.js');
 
 const PRODUCTION = 'https://mail.infinitywave.online';
@@ -167,6 +168,16 @@ afterEach(async () => {
 });
 
 describe('POST /send security boundaries', () => {
+  test('reports legacy repeat ambiguity as an explicit 409 requiring a request identity', async () => {
+    const response = deliveryErrorResponse(new DeliveryError('DELIVERY_REQUEST_ID_REQUIRED'));
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toMatchObject({
+      code: 'DELIVERY_REQUEST_ID_REQUIRED',
+      error: expect.stringContaining(
+        'Supply a new requestId only to intentionally send another email',
+      ),
+    });
+  });
   test('answers 503 when Resend or EMAIL_FROM is unconfigured', async () => {
     const response = await worker.fetch(
       request('/send', { body: sendBody() }),

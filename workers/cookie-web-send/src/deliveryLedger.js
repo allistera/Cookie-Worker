@@ -11,9 +11,11 @@ export class DeliveryError extends Error {
         ? 'Delivery needs confirmation before retrying'
         : code === 'DELIVERY_CONFLICT'
           ? 'Request id already used for a different email'
-          : code === 'DELIVERY_REJECTED'
-            ? 'The email provider rejected this delivery'
-            : 'Delivery is being confirmed. Retry the same request shortly.',
+          : code === 'DELIVERY_REQUEST_ID_REQUIRED'
+            ? 'This legacy request already completed and its 24-hour retry window has ended. Supply a new requestId only to intentionally send another email.'
+            : code === 'DELIVERY_REJECTED'
+              ? 'The email provider rejected this delivery'
+              : 'Delivery is being confirmed. Retry the same request shortly.',
     );
     this.code = code;
   }
@@ -78,10 +80,24 @@ export async function claimDelivery(sql, delivery) {
     const [row] = await tx`SELECT *, clock_timestamp() AS clock FROM outbound_deliveries
       WHERE id = ${delivery.id} AND user_id = ${delivery.user_id} FOR UPDATE`;
     if (!row) throw new Error('Delivery record is unavailable');
+    const now = new Date(row.clock).getTime();
+    // Older clients did not identify logical messages. Within the original
+    // provider window an identical payload remains a retry. After it closes,
+    // returning an old receipt could silently lose an intentional repeat.
+    // Never guess intent or mint a new identity on the client's behalf.
+    if (
+      row.status === 'complete' &&
+      !row.request_id &&
+      row.source_key.startsWith('immediate-send/') &&
+      now >=
+        new Date(row.first_attempt_at ?? row.accepted_at ?? row.created_at).getTime() +
+          24 * 60 * 60 * 1000
+    ) {
+      return { error: 'DELIVERY_REQUEST_ID_REQUIRED' };
+    }
     if (row.provider_id) return { row, send: false };
     if (row.status === 'uncertain') return { error: 'DELIVERY_UNCERTAIN' };
     if (row.status === 'rejected') return { error: 'DELIVERY_REJECTED' };
-    const now = new Date(row.clock).getTime();
     if (row.claimed_at && new Date(row.claimed_at).getTime() > now - DELIVERY_LEASE_MS) {
       return { error: 'DELIVERY_PENDING' };
     }
@@ -110,7 +126,8 @@ export async function claimDelivery(sql, delivery) {
 /** @param {any} sql @param {any} row @param {string} providerId */
 export async function acceptDelivery(sql, row, providerId) {
   const [accepted] = await sql`UPDATE outbound_deliveries SET
-    status = 'accepted', provider_id = ${providerId},
+    status = CASE WHEN status = 'complete' THEN 'complete' ELSE 'accepted' END,
+    provider_id = ${providerId},
     accepted_at = coalesce(accepted_at, clock_timestamp()),
     claimed_at = NULL, claim_token = NULL, last_error = NULL, updated_at = now()
     WHERE id = ${row.id} AND user_id = ${row.user_id}
