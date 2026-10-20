@@ -1,3 +1,4 @@
+import { sanitizeAiSpan } from './aiTracing.js';
 import {
   captureHandledException as captureShared,
   createSentryOptions as createSharedOptions,
@@ -38,7 +39,12 @@ function secrets(env) {
  * @returns {import('@sentry/cloudflare').CloudflareOptions}
  */
 export function createSentryOptions(env) {
-  return createSharedOptions({ service: SERVICE, env });
+  return {
+    ...createSharedOptions({ service: SERVICE, env }),
+    tracesSampleRate: 1,
+    tracePropagationTargets: [],
+    beforeSendSpan: sanitizeAiSpan,
+  };
 }
 
 /**

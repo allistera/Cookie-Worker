@@ -1,3 +1,4 @@
+import { requestAiJson } from './aiTracing.js';
 // POST /document — turns a one-line instruction into a new Documents page:
 // a title plus Editor.js blocks the SPA saves as-is. Editor.js block JSON is
 // a poor fit for a strict JSON schema (every block type has its own data
@@ -6,7 +7,7 @@
 // numbered, checklist), fenced code and `---` dividers. Anything else
 // becomes a paragraph rather than failing the request.
 
-import { responsesUrl, DEFAULT_MODEL, clean } from './openai.js';
+import { DEFAULT_MODEL, clean } from './openai.js';
 import { parseOutputJson } from '../../../shared/openai.js';
 
 const MAX_TITLE = 200;
@@ -182,49 +183,53 @@ export function markdownToBlocks(markdown, maxBlocks = MAX_BLOCKS) {
  * @param {string} model
  */
 export async function generateDocument(instruction, apiKey, model) {
-  const response = await fetch(responsesUrl(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    signal: AbortSignal.timeout(30_000),
-    body: JSON.stringify({
-      model,
-      max_output_tokens: 3000,
-      input: [
-        {
-          role: 'system',
-          content:
-            "You write documents for one private user's notes app. Follow the user instruction and produce a complete, well-structured document. " +
-            'Write the body as Markdown using only: headings (#, ##, ###), paragraphs, bullet lists (-), numbered lists (1.), checklists (- [ ]), fenced code blocks (```) and --- dividers. ' +
-            'No HTML, no tables, no front matter, and do not repeat the title as a heading. Return only the requested JSON.',
-        },
-        { role: 'user', content: JSON.stringify({ instruction }) },
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'document',
-          strict: true,
-          schema: {
-            type: 'object',
-            properties: { title: { type: 'string' }, markdown: { type: 'string' } },
-            required: ['title', 'markdown'],
-            additionalProperties: false,
+  return requestAiJson(
+    model,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({
+        model,
+        max_output_tokens: 3000,
+        input: [
+          {
+            role: 'system',
+            content:
+              "You write documents for one private user's notes app. Follow the user instruction and produce a complete, well-structured document. " +
+              'Write the body as Markdown using only: headings (#, ##, ###), paragraphs, bullet lists (-), numbered lists (1.), checklists (- [ ]), fenced code blocks (```) and --- dividers. ' +
+              'No HTML, no tables, no front matter, and do not repeat the title as a heading. Return only the requested JSON.',
+          },
+          { role: 'user', content: JSON.stringify({ instruction }) },
+        ],
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'document',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: { title: { type: 'string' }, markdown: { type: 'string' } },
+              required: ['title', 'markdown'],
+              additionalProperties: false,
+            },
           },
         },
-      },
-    }),
-  });
-  if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-  const parsed = parseOutputJson(await response.json());
-  const title = clean(parsed?.title, MAX_TITLE);
-  const blocks = markdownToBlocks(parsed?.markdown);
-  if (!title || !blocks.length) {
-    throw new Error('OpenAI Responses API returned an invalid document');
-  }
-  return { title, blocks };
+      }),
+    },
+    (payload) => {
+      const parsed = parseOutputJson(payload);
+      const title = clean(parsed?.title, MAX_TITLE);
+      const blocks = markdownToBlocks(parsed?.markdown);
+      if (!title || !blocks.length) {
+        throw new Error('OpenAI Responses API returned an invalid document');
+      }
+      return { title, blocks };
+    },
+  );
 }
 
 /**
