@@ -39,6 +39,15 @@ The server neither silently replays the old success nor invents a new send.
 Unresolved accepted deliveries still repair their original copy, while
 uncertain deliveries still require confirmation.
 
+Scheduled retries use the original `requestId`, payload and `sendAt`. A matching
+request returns HTTP 200 with the existing `scheduledSend`, even after its send
+or reminder time has passed or its source upload has been cleaned up. Its
+`status` is `pending`, `sending`, `sent`, `failed` or `uncertain`, and `lastError`
+describes a recorded failure. This lookup never dispatches mail or rearms the
+clock. Changed content returns HTTP 409 with `DELIVERY_CONFLICT`. New schedules
+still require a future time and return HTTP 201; a missing original request
+with a past send time cannot create a replacement schedule.
+
 Migration 0104 conservatively marks legacy leased or previously attempted
 scheduled messages uncertain, including exhausted failures, because their first provider attempt is unknown.
 Inspect those entries before any manual resend. To investigate an uncertainty,

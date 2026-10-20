@@ -75,9 +75,80 @@ export function parseScheduledFor(sendAt) {
   return new Date(timestamp).toISOString();
 }
 
+/** @param {unknown} value */
+function normalizedTimestamp(value) {
+  const timestamp = Date.parse(String(value ?? ''));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : String(value ?? '');
+}
+
+/**
+ * Match the original intent without revalidating resources or time relative to
+ * now: a receipt must remain readable after its upload or reply is deleted.
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: unknown, attachmentIds?: string[], followUpAt?: unknown}} send
+ */
+export async function scheduledSendRequestHash({
+  recipients,
+  subject,
+  text,
+  html,
+  replyToMessageId,
+  scheduledFor,
+  attachmentIds = [],
+  followUpAt,
+}) {
+  return [
+    ...new Uint8Array(
+      await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(
+          JSON.stringify({
+            recipients,
+            subject,
+            text,
+            html: html ?? null,
+            replyToMessageId,
+            scheduledFor: normalizedTimestamp(scheduledFor),
+            // postgres returns UUIDs in lower case after attachment resolution.
+            attachmentIds: attachmentIds.map((id) => id.toLowerCase()),
+            followUpAt:
+              followUpAt === null || followUpAt === undefined
+                ? null
+                : normalizedTimestamp(followUpAt),
+          }),
+        ),
+      ),
+    ),
+  ]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * @param {import('postgres').Sql | import('postgres').TransactionSql} sql
+ * @param {string} userId
+ * @param {string} requestId
+ * @param {string} requestHash
+ */
+export async function findScheduledSend(sql, userId, requestId, requestHash) {
+  const [existing] = await sql`
+    SELECT id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor",
+      follow_up_at AS "followUpAt", status, last_error AS "lastError",
+      request_hash AS "requestHash"
+    FROM scheduled_sends WHERE user_id = ${userId} AND request_id = ${requestId}
+  `;
+  if (!existing) return null;
+  const { requestHash: existingHash, ...scheduledSend } = existing;
+  if (existingHash !== requestHash) {
+    throw Object.assign(new Error('Request id already used for a different scheduled email'), {
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
+  }
+  return scheduledSend;
+}
+
 // Inserts a pending scheduled_sends row, capped at MAX_PENDING_SCHEDULED_SENDS
 // per user so a runaway client can't queue unbounded future sends. Returns
-// null if the cap is hit.
+// null if the cap is hit, or replayed: true for a concurrently created request.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -99,27 +170,16 @@ export async function createScheduledSend(
   },
 ) {
   const requestHash = requestId
-    ? [
-        ...new Uint8Array(
-          await crypto.subtle.digest(
-            'SHA-256',
-            new TextEncoder().encode(
-              JSON.stringify({
-                recipients,
-                subject,
-                text,
-                html: html ?? null,
-                replyToMessageId,
-                scheduledFor,
-                attachmentIds: attachments.map((attachment) => attachment.id),
-                followUpAt: followUpAt ?? null,
-              }),
-            ),
-          ),
-        ),
-      ]
-        .map((byte) => byte.toString(16).padStart(2, '0'))
-        .join('')
+    ? await scheduledSendRequestHash({
+        recipients,
+        subject,
+        text,
+        html,
+        replyToMessageId,
+        scheduledFor,
+        attachmentIds: attachments.map((attachment) => attachment.id),
+        followUpAt,
+      })
     : null;
   // The count-then-insert cap is not safe under READ COMMITTED on its own:
   // two concurrent transactions can both snapshot count = MAX - 1 and both
@@ -127,22 +187,9 @@ export async function createScheduledSend(
   // attempts so the cap actually holds.
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtext(${userId}::text)::bigint)`;
-    if (requestId) {
-      const [existing] = await tx`
-        SELECT id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor",
-          follow_up_at AS "followUpAt", request_hash AS "requestHash"
-        FROM scheduled_sends WHERE user_id = ${userId} AND request_id = ${requestId}
-      `;
-      if (existing) {
-        if (existing.requestHash !== requestHash) {
-          throw Object.assign(
-            new Error('Request id already used for a different scheduled email'),
-            { code: 'IDEMPOTENCY_CONFLICT' },
-          );
-        }
-        delete existing.requestHash;
-        return existing;
-      }
+    if (requestId && requestHash) {
+      const existing = await findScheduledSend(tx, userId, requestId, requestHash);
+      if (existing) return { ...existing, replayed: true };
     }
     const [row] = await tx`
       INSERT INTO scheduled_sends
@@ -154,7 +201,7 @@ export async function createScheduledSend(
         WHERE s.user_id = ${userId} AND s.status = 'pending'
       ) < ${MAX_PENDING_SCHEDULED_SENDS}
       RETURNING id, to_addresses AS "toAddresses", subject, scheduled_for AS "scheduledFor",
-                follow_up_at AS "followUpAt"
+                follow_up_at AS "followUpAt", status, last_error AS "lastError"
     `;
     if (!row) return null;
     if (attachments.length) {

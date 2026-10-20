@@ -26,9 +26,11 @@ import {
 import {
   cancelScheduledSend,
   createScheduledSend,
+  findScheduledSend,
   handleFlush,
   listScheduledSends,
   parseScheduledFor,
+  scheduledSendRequestHash,
 } from './scheduled.js';
 import { handleFollowUp } from './followUp.js';
 import { flushWithOutOfOffice, runOutOfOfficeInBackground } from './outOfOffice.js';
@@ -225,24 +227,40 @@ async function handleSend(sql, userId, request, services) {
   let replyTo = validId(replyToMessageId) ? String(replyToMessageId) : null;
 
   if (sendAt !== undefined) {
-    const scheduledFor = parseScheduledFor(sendAt);
-    if (!scheduledFor) {
-      return Response.json(
-        { error: 'sendAt must be an ISO timestamp at least a minute out' },
-        { status: 400 },
-      );
-    }
-    const parsedFollowUpAt =
-      followUpAt === null || followUpAt === undefined
-        ? null
-        : parseFollowUpAt(followUpAt, scheduledFor);
-    if (followUpAt !== null && followUpAt !== undefined && !parsedFollowUpAt) {
-      return Response.json(
-        { error: 'followUpAt must be an ISO timestamp at least a minute after sendAt' },
-        { status: 400 },
-      );
-    }
     try {
+      // Check the authenticated owner's frozen intent before future-time or
+      // resource validation. A replay can outlive its send time and uploads.
+      if (clientRequestId) {
+        const requestHash = await scheduledSendRequestHash({
+          recipients,
+          subject,
+          text,
+          html: bodyHtml,
+          replyToMessageId: replyTo,
+          scheduledFor: sendAt,
+          attachmentIds,
+          followUpAt,
+        });
+        const previous = await findScheduledSend(sql, userId, clientRequestId, requestHash);
+        if (previous) return Response.json({ scheduledSend: previous });
+      }
+      const scheduledFor = parseScheduledFor(sendAt);
+      if (!scheduledFor) {
+        return Response.json(
+          { error: 'sendAt must be an ISO timestamp at least a minute out' },
+          { status: 400 },
+        );
+      }
+      const parsedFollowUpAt =
+        followUpAt === null || followUpAt === undefined
+          ? null
+          : parseFollowUpAt(followUpAt, scheduledFor);
+      if (followUpAt !== null && followUpAt !== undefined && !parsedFollowUpAt) {
+        return Response.json(
+          { error: 'followUpAt must be an ISO timestamp at least a minute after sendAt' },
+          { status: 400 },
+        );
+      }
       const owned = await ownedReplyToMessageId(sql, userId, replyTo);
       if (owned.missing) {
         return Response.json({ error: 'Reply target not found' }, { status: 404 });
@@ -254,7 +272,7 @@ async function handleSend(sql, userId, request, services) {
       if (resolved.invalid || resolved.tooLarge) {
         return Response.json({ error: 'Attachments exceed the allowed size' }, { status: 400 });
       }
-      const scheduledSend = await createScheduledSend(sql, userId, {
+      const result = await createScheduledSend(sql, userId, {
         recipients,
         subject,
         text,
@@ -265,15 +283,19 @@ async function handleSend(sql, userId, request, services) {
         followUpAt: parsedFollowUpAt,
         requestId: clientRequestId,
       });
-      if (!scheduledSend) {
+      if (!result) {
         return Response.json({ error: 'Too many pending scheduled sends' }, { status: 429 });
       }
-      services.armScheduledSendClock?.(scheduledFor);
-      return Response.json({ scheduledSend }, { status: 201 });
+      const { replayed, ...scheduledSend } = result;
+      if (!replayed) services.armScheduledSendClock?.(scheduledFor);
+      return Response.json({ scheduledSend }, { status: replayed ? 200 : 201 });
     } catch (err) {
       if (/** @type {{code?: string}} */ (err).code === 'IDEMPOTENCY_CONFLICT')
         return Response.json(
-          { error: 'Request id already used for a different scheduled email' },
+          {
+            error: 'Request id already used for a different scheduled email',
+            code: 'DELIVERY_CONFLICT',
+          },
           { status: 409 },
         );
       console.error('POST /send (schedule) failed:', err);
