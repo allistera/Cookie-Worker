@@ -6,7 +6,12 @@ vi.mock('../src/sentry.js', async (importOriginal) => {
   return { ...actual, captureHandledException };
 });
 
-import { SWEEP_LIMIT, sweepSearchDrift } from '../src/searchDriftSweep.js';
+import {
+  SWEEP_LIMIT,
+  WORKSPACE_SWEEP_LIMIT,
+  sweepSearchDrift,
+  sweepWorkspaceSearchDrift,
+} from '../src/searchDriftSweep.js';
 
 const ENV = {
   HYPERDRIVE: { connectionString: 'postgres://user:pass@example/db' },
@@ -16,6 +21,54 @@ const ENV = {
 
 const ID_1 = '11111111-1111-4111-8111-111111111111';
 const ID_2 = '22222222-2222-4222-8222-222222222222';
+
+describe('bounded workspace search repair', () => {
+  it('retries documents and child task edits, stamping only after successful indexing', async () => {
+    const document = { id: ID_1, row_version: '7', updated_at: new Date(0), title: 'Changed' };
+    const task = {
+      id: ID_2,
+      row_version: '8',
+      child_versions: 'child:9',
+      updated_at: new Date(0),
+      subtasks: ['Edited child'],
+    };
+    const docsSql = createMockSql([[document], []]);
+    const tasksSql = createMockSql([[task], []]);
+    const createSql = vi.fn().mockReturnValueOnce(docsSql).mockReturnValueOnce(tasksSql);
+    const add = vi.fn(async (_env, descriptor) => {
+      const client = descriptor.name === 'documents' ? docsSql : tasksSql;
+      // There has been no optimistic stamp when the index request begins.
+      expect(client.calls).toHaveLength(1);
+      return { taskUid: 1, status: 'succeeded' };
+    });
+    await sweepWorkspaceSearchDrift(ENV, { createSql, add });
+    expect(add.mock.calls.map((call) => call[1].name)).toEqual(['documents', 'task_items']);
+    expect(docsSql.mock.calls[0].slice(1)).toEqual([WORKSPACE_SWEEP_LIMIT]);
+    expect(tasksSql.mock.calls[0].slice(1)).toEqual([WORKSPACE_SWEEP_LIMIT]);
+    expect(docsSql.calls[1].text).toContain('t.xmin::text = v.row_version');
+    expect(tasksSql.calls[1].text).toContain('= v.child_versions');
+    expect(tasksSql.mock.calls[1].slice(1)).toContainEqual(['child:9']);
+    expect(docsSql.end).toHaveBeenCalledOnce();
+    expect(tasksSql.end).toHaveBeenCalledOnce();
+  });
+
+  it('keeps failed documents dirty while continuing task recovery', async () => {
+    const docsSql = createMockSql([[{ id: ID_1, row_version: '1', updated_at: new Date(0) }]]);
+    const tasksSql = createMockSql([
+      [{ id: ID_2, row_version: '2', updated_at: new Date(0), child_versions: '' }],
+      [],
+    ]);
+    const createSql = vi.fn().mockReturnValueOnce(docsSql).mockReturnValueOnce(tasksSql);
+    const add = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Index task failed'))
+      .mockResolvedValueOnce(undefined);
+    await sweepWorkspaceSearchDrift(ENV, { createSql, add });
+    expect(docsSql.calls).toHaveLength(1);
+    expect(tasksSql.calls).toHaveLength(2);
+    expect(add).toHaveBeenCalledTimes(2);
+  });
+});
 
 /**
  * Minimal postgres.js-shaped tagged-template mock, matching the createMockSql

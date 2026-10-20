@@ -1,6 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
 import { deliverScheduledSend, handleFlush } from '../src/scheduled.js';
 import { createMockSql } from './helpers.js';
+import { ledgerFixture } from './ledgerFixture.js';
+vi.mock('../src/deliveryLedger.js', async (importOriginal) =>
+  ledgerFixture(await importOriginal()),
+);
 
 function services() {
   return /** @type {any} */ ({
@@ -30,7 +34,7 @@ describe('expired lease reclaim', () => {
     expect(claim).toMatch(/attempts = s\.attempts \+ CASE WHEN s\.status = 'sending' THEN 1/);
   });
 
-  test('marks a reclaimed row failed without resending once attempts are exhausted', async () => {
+  test('requires confirmation without resending once attempts are exhausted', async () => {
     const sql = createMockSql([[]]);
     const svc = services();
     const result = await deliverScheduledSend(
@@ -39,9 +43,9 @@ describe('expired lease reclaim', () => {
       svc,
     );
 
-    expect(result).toEqual({ status: 'failed', storedMessageUuid: null });
+    expect(result).toEqual({ status: 'unconfirmed', storedMessageUuid: null });
     expect(sql.calls).toHaveLength(1);
-    expect(sql.calls[0].text).toContain("SET status = 'failed'");
+    expect(sql.calls[0].text).toContain("SET status = 'uncertain'");
     expect(sql.calls[0].values).toContain('sched-1');
     // No owner lookup or quota claim: the row is resolved before any send work.
     expect(
@@ -73,7 +77,7 @@ describe('orphaned-upload sweep', () => {
     );
   });
 
-  test('deletes an orphan blob but keeps one a sent copy still shares', async () => {
+  test('removes orphan metadata while durable cleanup owns physical deletion', async () => {
     const sql = createMockSql([
       [], // claim
       [], // resolved scheduled_sends sweep
@@ -90,11 +94,11 @@ describe('orphaned-upload sweep', () => {
     expect(orphanSweep(sql).text).toMatch(
       /NOT EXISTS \(\s*SELECT 1 FROM attachments a WHERE a\.blob_url = oa\.blob_url/,
     );
-    expect(svc.deleteBlob).toHaveBeenCalledTimes(1);
-    expect(svc.deleteBlob).toHaveBeenCalledWith('https://blob.example/orphan.pdf');
+    expect(svc.deleteBlob).not.toHaveBeenCalled();
+    expect(orphanSweep(sql).text).toContain('FROM outbound_delivery_uploads du');
   });
 
-  test('keeps sweeping and still answers the flush when one blob delete fails', async () => {
+  test('does not depend on blob availability to enqueue orphan cleanup', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const sql = createMockSql([
       [],
@@ -110,12 +114,8 @@ describe('orphaned-upload sweep', () => {
     const response = await handleFlush(sql, svc);
 
     expect(response.status).toBe(200);
-    expect(svc.deleteBlob).toHaveBeenCalledTimes(2);
-    expect(svc.deleteBlob).toHaveBeenLastCalledWith('https://blob.example/second.pdf');
-    expect(consoleError).toHaveBeenCalledWith(
-      'failed to delete orphaned attachment blob:',
-      'blob store unavailable',
-    );
+    expect(svc.deleteBlob).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
   });
 });
 
@@ -300,7 +300,7 @@ describe('a reclaimed lease', () => {
     expect(sql.calls.at(-1).text).toContain("SET status = 'pending'");
   });
 
-  test('refunds the slot it claimed when the provider fails', async () => {
+  test('refunds the slot when the first provider attempt is definitively rejected', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const sql = scriptedSql([
       [{ exists: 1 }],
@@ -312,7 +312,7 @@ describe('a reclaimed lease', () => {
 
     const result = await deliverScheduledSend(sql, dueRow({ reclaimed: true, attempts: 1 }), svc);
 
-    expect(result.status).toBe('retried');
+    expect(result.status).toBe('failed');
     const quota = quotaQueries(sql.calls);
     expect(quota).toHaveLength(2);
     expect(quota[1].text).toContain('send_count - 1');

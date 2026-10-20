@@ -1,6 +1,6 @@
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
-import { del, get } from '@vercel/blob';
+import { get } from '@vercel/blob';
 import { Resend } from 'resend';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { createSql, withUserSql } from '../../../shared/db.js';
@@ -19,6 +19,8 @@ import {
   parseAttachmentIds,
   refundOutboundEmailQuota,
   resolveOwnedAttachments,
+  reconcileOutboundDeliveries,
+  resumeDelivery,
   validateOutboundMessage,
 } from './outbound.js';
 import {
@@ -31,6 +33,8 @@ import {
 import { handleFollowUp } from './followUp.js';
 import { flushWithOutOfOffice, runOutOfOfficeInBackground } from './outOfOffice.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
+import { sendAutoReply } from './autoReplyProvider.js';
+import { DeliveryError, findDelivery } from './deliveryLedger.js';
 
 // Names the single ScheduledSendClock instance (see scheduledSendClock.js).
 const SCHEDULED_SEND_CLOCK_NAME = 'scheduled-sends';
@@ -110,8 +114,24 @@ export function createSendServices(env, ctx) {
     env,
     createResend: (apiKey) => new Resend(apiKey),
     readBlob: (blobUrl) => get(blobUrl, { access: 'private', token: env.BLOB_READ_WRITE_TOKEN }),
-    // Used only by the flush job's orphaned-upload sweep.
-    deleteBlob: (blobUrl) => del(blobUrl, { token: env.BLOB_READ_WRITE_TOKEN }),
+    // Physical deletion is owned by the durable cleanup queue.
+    deleteBlob: async () => undefined,
+    sendProvider: (payload, key) =>
+      sendAutoReply(
+        {
+          ...payload,
+          ...(Array.isArray(payload.attachments)
+            ? {
+                attachments: payload.attachments.map(({ contentType, ...attachment }) => ({
+                  ...attachment,
+                  content_type: contentType,
+                })),
+              }
+            : {}),
+        },
+        key,
+        env.RESEND_API_KEY,
+      ),
     indexSentMessage: (messageUuid) =>
       indexAfterResponse(env, ctx, (sql) => syncMessageToMeili(sql, env, messageUuid)),
     // One flush stores up to FLUSH_BATCH_SIZE sent copies; index them in a
@@ -125,6 +145,16 @@ export function createSendServices(env, ctx) {
       ctx.waitUntil(armScheduledSendClock(env, scheduledFor));
     },
   };
+}
+
+/** @param {unknown} error */
+export function deliveryErrorResponse(error) {
+  if (!(error instanceof DeliveryError)) return null;
+  const status = ['DELIVERY_UNCERTAIN', 'DELIVERY_CONFLICT'].includes(error.code) ? 409 : 503;
+  return Response.json(
+    { error: error.message, code: error.code },
+    { status, headers: { 'Retry-After': '5' } },
+  );
 }
 
 /** @param {import('./sentry.js').SendEnv} env */
@@ -246,6 +276,36 @@ async function handleSend(sql, userId, request, services) {
   }
 
   let attachments;
+  const immediateKey = await immediateSendIdempotencyKey(userId, {
+    recipients,
+    subject,
+    text,
+    html: bodyHtml,
+    replyToMessageId: replyTo,
+    attachmentIds,
+    requestId: clientRequestId,
+  });
+  // A receipt replay must survive upload cleanup or a reminder time passing.
+  // New requests still undergo all ownership and quota checks below.
+  try {
+    const previous = await findDelivery(sql, userId, immediateKey, clientRequestId);
+    if (previous) {
+      const result = await resumeDelivery(sql, previous, services);
+      if (result.inserted && result.messageUuid) services.indexSentMessage(result.messageUuid);
+      return Response.json({
+        id: result.resendId,
+        messageId: result.messageUuid,
+        sentCopyPending: result.sentCopyPending,
+        followUpScheduled: previous.copy_payload.followUpAt
+          ? Boolean(result.messageUuid)
+          : undefined,
+      });
+    }
+  } catch (error) {
+    const response = deliveryErrorResponse(error);
+    if (response) return response;
+    throw error;
+  }
   const parsedFollowUpAt =
     followUpAt === null || followUpAt === undefined ? null : parseFollowUpAt(followUpAt);
   if (followUpAt !== null && followUpAt !== undefined && !parsedFollowUpAt) {
@@ -284,7 +344,7 @@ async function handleSend(sql, userId, request, services) {
   }
 
   try {
-    const { resendId, messageUuid, inserted } = await deliverMail(
+    const { resendId, messageUuid, inserted, sentCopyPending } = await deliverMail(
       sql,
       userId,
       {
@@ -294,15 +354,8 @@ async function handleSend(sql, userId, request, services) {
         html: bodyHtml,
         replyToMessageId: replyTo,
         followUpAt: parsedFollowUpAt,
-        idempotencyKey: await immediateSendIdempotencyKey(userId, {
-          recipients,
-          subject,
-          text,
-          html: bodyHtml,
-          replyToMessageId: replyTo,
-          attachmentIds,
-          requestId: clientRequestId,
-        }),
+        idempotencyKey: immediateKey,
+        requestId: clientRequestId,
         attachments,
       },
       services,
@@ -320,14 +373,22 @@ async function handleSend(sql, userId, request, services) {
     return Response.json({
       id: resendId,
       messageId: messageUuid,
+      sentCopyPending,
       followUpScheduled: parsedFollowUpAt ? Boolean(messageUuid) : undefined,
     });
   } catch (err) {
+    const deliveryResponse = deliveryErrorResponse(err);
+    if (deliveryResponse) {
+      if (err instanceof DeliveryError && err.code === 'DELIVERY_REJECTED') {
+        await refundOutboundEmailQuota(sql, userId);
+      }
+      return deliveryResponse;
+    }
     console.error('Resend send failed:', err);
     // The quota was claimed but no email was delivered — refund it so a
     // provider outage doesn't lock the user out of sending for the minute.
-    await refundOutboundEmailQuota(sql, userId);
     if (err instanceof AttachmentSlotBusyError) {
+      await refundOutboundEmailQuota(sql, userId);
       return Response.json(
         { error: 'Another attachment send is in progress, try again shortly' },
         { status: 503, headers: { 'Retry-After': '5' } },
@@ -376,6 +437,15 @@ async function handleScheduled(sql, userId, request) {
 }
 
 const worker = {
+  /** @param {ScheduledController} _controller @param {any} env @param {ExecutionContext} ctx */
+  async scheduled(_controller, env, ctx) {
+    const sql = createSql(env.HYPERDRIVE.connectionString);
+    try {
+      await reconcileOutboundDeliveries(sql, createSendServices(env, ctx));
+    } finally {
+      await sql.end({ timeout: 2 }).catch(() => undefined);
+    }
+  },
   /**
    * Routes POST /send, GET/DELETE /send/scheduled (was ?resource=scheduled),
    * and POST /send/flush (was ?resource=flush). The flush job authenticates

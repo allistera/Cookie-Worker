@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { ledgerFixture } from './ledgerFixture.js';
+vi.mock('../src/deliveryLedger.js', async (importOriginal) =>
+  ledgerFixture(await importOriginal()),
+);
 
 // Ported from Cookie-Web's api/__tests__/send-handler.test.js and
 // send-scheduled.test.js — the same scripted query sequences and
@@ -50,6 +54,26 @@ const resendSend = vi.fn();
 vi.mock('resend', () => ({
   Resend: class {
     emails = { send: (/** @type {any[]} */ ...args) => resendSend(...args) };
+  },
+}));
+vi.mock('../src/autoReplyProvider.js', () => ({
+  AUTO_REPLY_PROVIDER_TIMEOUT_MS: 10_000,
+  sendAutoReply: async (payload, key) => {
+    const sdkPayload = {
+      ...payload,
+      ...(payload.attachments
+        ? {
+            attachments: payload.attachments.map(({ content_type, ...attachment }) => ({
+              ...attachment,
+              contentType: content_type,
+            })),
+          }
+        : {}),
+    };
+    const result = await resendSend(sdkPayload, { idempotencyKey: key });
+    return result.data?.id
+      ? { status: 'sent', providerId: result.data.id }
+      : { status: 'rejected', providerId: null };
   },
 }));
 
@@ -302,7 +326,7 @@ describe('POST /send security boundaries', () => {
     expect(resendSend).not.toHaveBeenCalled();
   });
 
-  test('refunds the quota and answers 502 when the provider fails', async () => {
+  test('refunds the quota and reports a definitive provider rejection', async () => {
     responses = [
       [{ authorized: true, quota_claimed: true }], // quota claim
       [], // refund update
@@ -310,7 +334,8 @@ describe('POST /send security boundaries', () => {
     resendSend.mockResolvedValue({ data: null, error: { message: 'bounced' } });
     const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'DELIVERY_REJECTED' });
     const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
     expect(queries.some((query) => query.includes('GREATEST(send_count - 1, 0)'))).toBe(true);
   });
@@ -777,8 +802,7 @@ describe('POST /send/flush', () => {
     expect(resendSend).not.toHaveBeenCalled();
   });
 
-  test('marks a row failed once it has exhausted its retry attempts', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  test('marks a row failed when its provider attempt is definitively rejected', async () => {
     responses = [
       [
         {
@@ -811,10 +835,6 @@ describe('POST /send/flush', () => {
       failed: 1,
       unconfirmed: 0,
     });
-    expect(consoleError).toHaveBeenCalledWith(
-      'scheduled send sched-1 delivery failed (attempt 5):',
-      'bounced',
-    );
   });
 
   test('keeps a delivered row leased when marking it sent fails', async () => {
