@@ -320,6 +320,32 @@ Wrangler logs local forwarding instead of delivering. Posting the fixture again 
 
 The database password belongs to Hyperdrive, not Worker secrets. GitHub Actions passes production secrets to Wrangler during deployment.
 
+### Private calendar feeds
+
+`cookie-web-calendar` serves read-only iCalendar subscriptions for native
+Cookie calendars. Authenticated `GET /calendar-feeds` lists enabled calendar
+IDs, `POST /calendar-feeds` with `{ "calendarId": "…" }` generates or replaces
+a link, and `DELETE /calendar-feeds` with the same body revokes it. The raw
+256-bit token is returned only by POST; only its SHA-256 digest is stored.
+Cookie-Web's Settings → Calendars provides the controls.
+
+Subscribers use `GET` or `HEAD /calendar-feed.ics?token=…`. Token possession
+grants access to one calendar's full event details, never write access.
+Imported subscriptions and Google calendars are excluded. Exports use stable
+UIDs, floating local times, date-only all-day spans, and recurrence rules that
+preserve Cookie's month-end/leap-day behaviour. Private conditional requests
+use an ETag derived from the complete response, including deletions and
+renames. Feeds exceeding 10,000 stored events return 503 rather than a partial
+calendar that clients could interpret as deleted events.
+
+Apply Cookie-Web migration `0101_calendar_feeds.sql` before deploying this
+Worker; management returns 503 until it exists, without affecting other
+calendar routes. No new environment variables or secrets are required.
+Automatic invocation logs and traces are disabled for this Worker because
+request URLs carry bearer tokens; sanitized application metrics and errors
+remain enabled. Do not add full-URL logging, request tracing, or URL-bearing
+Logpush exports for this endpoint without redacting `token` first.
+
 ### Google Calendar
 
 `cookie-web-calendar` lets a Cookie user sign in with Google from Settings → Calendars, choose which Google calendars appear in Cookie, and view, create, edit and delete their events from the Calendar view. Nothing is mirrored: each `GET /calendar-events` window asks the Google Calendar API for the selected calendars' events (expanded instances, in the `timeZone` query parameter's zone) and merges them with the stored rows; a `google:<calendarId>:<eventId>` id on `POST/PATCH/DELETE /calendar-events` goes straight to Google. A Google outage returns the stored events with a `googleError` message rather than failing the request. Repeating events can be edited one occurrence at a time; changing how one repeats, and attendees, stay in Google Calendar.

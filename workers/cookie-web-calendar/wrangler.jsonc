@@ -14,10 +14,10 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 0.2,
-    // Export Cloudflare automatic traces over OTLP to Honeycomb (EU). The
-    // endpoint and API key live in the "honeycomb-traces" destination in the
-    // Cloudflare dashboard, not in this repo.
-    "traces": { "enabled": true, "destinations": ["honeycomb-traces"], "head_sampling_rate": 0.2 },
+    // Feed URLs contain bearer tokens. Automatic invocation logs and traces
+    // record request URLs, so keep only the application's sanitized logs.
+    "logs": { "enabled": true, "invocation_logs": false },
+    "traces": { "enabled": false },
   },
   // Every request opens a Hyperdrive connection before any route work, so
   // run the isolate near the database rather than near the browser.

@@ -32,6 +32,7 @@ import {
 
 import { configureOpenAi } from '../../../shared/openai.js';
 import { calendarAvailability } from './calendarAvailability.js';
+import { FEED_PATH, manageCalendarFeeds, readCalendarFeed } from './calendarFeeds.js';
 
 /**
  * Routes GET/POST/PATCH/DELETE /calendar-events and /calendars — Cookie-Web's
@@ -51,6 +52,7 @@ import { calendarAvailability } from './calendarAvailability.js';
  * @param {import('./sentry.js').CalendarEnv} env
  */
 async function route(url, request, sql, userId, env) {
+  if (url.pathname === '/calendar-feeds') return manageCalendarFeeds(sql, userId, request);
   const segments = url.pathname.split('/').filter(Boolean);
   const resource = segments.length === 1 ? segments[0] : null;
   if (
@@ -147,6 +149,19 @@ const worker = {
 
     const url = new URL(request.url);
     try {
+      if (url.pathname === FEED_PATH) {
+        const sql = createSql(env.HYPERDRIVE.connectionString);
+        try {
+          return await readCalendarFeed(sql, request);
+        } catch {
+          // This request contains a bearer credential. Report only a fixed
+          // failure label, never the exception or request URL.
+          captureHandledException('calendar-feed', new Error('Calendar feed unavailable'), env);
+          return new Response(null, { status: 503, headers: { 'Cache-Control': 'no-store' } });
+        } finally {
+          ctx.waitUntil(endSql(sql));
+        }
+      }
       // Google redirects the browser here after sign-in. A top-level
       // navigation carries no Auth0 bearer token; the single-use state it
       // carries was bound to the signed-in user when the flow began
