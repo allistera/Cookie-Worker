@@ -1,3 +1,4 @@
+import { requestAiJson } from './aiTracing.js';
 // POST /document — turns a one-line instruction into a new Documents page:
 // a title plus Editor.js blocks the SPA saves as-is. Editor.js block JSON is
 // a poor fit for a strict JSON schema (every block type has its own data
@@ -6,7 +7,7 @@
 // numbered, checklist), fenced code and `---` dividers. Anything else
 // becomes a paragraph rather than failing the request.
 
-import { responsesUrl, DEFAULT_MODEL, clean } from './openai.js';
+import { DEFAULT_MODEL, clean } from './openai.js';
 import { parseOutputJson } from '../../../shared/openai.js';
 
 const MAX_TITLE = 200;
@@ -182,7 +183,7 @@ export function markdownToBlocks(markdown, maxBlocks = MAX_BLOCKS) {
  * @param {string} model
  */
 export async function generateDocument(instruction, apiKey, model) {
-  const response = await fetch(responsesUrl(), {
+  const payload = await requestAiJson(model, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -217,8 +218,7 @@ export async function generateDocument(instruction, apiKey, model) {
       },
     }),
   });
-  if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-  const parsed = parseOutputJson(await response.json());
+  const parsed = parseOutputJson(payload);
   const title = clean(parsed?.title, MAX_TITLE);
   const blocks = markdownToBlocks(parsed?.markdown);
   if (!title || !blocks.length) {

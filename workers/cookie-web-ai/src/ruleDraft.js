@@ -1,4 +1,5 @@
-import { responsesUrl, DEFAULT_MODEL } from './openai.js';
+import { requestAiJson } from './aiTracing.js';
+import { DEFAULT_MODEL } from './openai.js';
 import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
 
 const FIELDS = ['subject', 'body', 'from', 'to'];
@@ -116,7 +117,7 @@ export async function handleRuleDraft(sql, userId, body, env, claimQuota = async
       SELECT id, name FROM labels WHERE user_id = ${userId} AND kind = 'user'
       ORDER BY name
     `;
-    const response = await fetch(responsesUrl(), {
+    const payload = await requestAiJson(model, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
@@ -154,8 +155,7 @@ export async function handleRuleDraft(sql, userId, body, env, claimQuota = async
         },
       }),
     });
-    if (!response.ok) throw new Error('Rule generation request failed');
-    const result = parseOutputJson(await response.json());
+    const result = parseOutputJson(payload);
     if (result?.draft === null && validText(result.error, 300)) {
       return Response.json({ error: result.error.trim() }, { status: 422 });
     }

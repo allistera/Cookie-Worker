@@ -1,9 +1,10 @@
+import { requestAiJson } from './aiTracing.js';
 // Ported from Cookie-Web's api/compose.js. Behaviorally identical (same
 // queries, same validation, same response shapes/status codes) — only the
 // (req, res) mutation style becomes returning a Response, and configuration
 // comes from the Worker env instead of process.env.
 
-import { responsesUrl, DEFAULT_MODEL, clean } from './openai.js';
+import { DEFAULT_MODEL, clean } from './openai.js';
 import { parseOutputJson } from '../../../shared/openai.js';
 import { validId } from '../../../shared/pagination.js';
 
@@ -54,7 +55,7 @@ export async function generateDraft(input, apiKey, model, mode = 'draft') {
         required: ['subject', 'text'],
         additionalProperties: false,
       };
-  const response = await fetch(responsesUrl(), {
+  const payload = await requestAiJson(model, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -84,8 +85,7 @@ export async function generateDraft(input, apiKey, model, mode = 'draft') {
       },
     }),
   });
-  if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-  const parsed = parseOutputJson(await response.json());
+  const parsed = parseOutputJson(payload);
   if (parsed.text === null || parsed.text === undefined) {
     throw new Error(`OpenAI Responses API returned an invalid ${isSnippet ? 'snippet' : 'draft'}`);
   }

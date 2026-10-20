@@ -81,8 +81,20 @@ Every Worker reports uncaught failures to the same Sentry project through `Sentr
 - Workers answering more than one trigger tag each invocation `scheduled` or `http`.
 - Request bodies, headers, cookies, query parameters, user identity, AI inputs and outputs, and stack-frame variables are all switched off.
 - Connection strings and API tokens are stripped from messages and stack traces before capture, and from the structured log lines beside them.
-- Sampling is off (`tracesSampleRate: 0`); errors only.
+- Sampling is off (`tracesSampleRate: 0`) except for the AI Worker described below.
 - Without `SENTRY_DSN` the client stays disabled, so local development and dry runs report nothing. A `wrangler dev` session that does have a DSN in `.dev.vars` is still kept out: events whose stack frames point at a `.wrangler/tmp` bundle are dropped before they leave the isolate.
+
+The `cookie-web-ai` Worker additionally samples model calls at 100%, using the
+existing Sentry client and `SENTRY_DSN` for `antosik-allister/cookie-web`. Its raw
+OpenAI Responses requests emit `gen_ai.chat` spans with model names, latency,
+failures, and input/output token totals (cache and reasoning counts are subsets).
+Document chat sends a random UUID for each chat session, reused across turns and
+retries and reset when switching documents. Older clients may omit the ID.
+These spans group in Sentry Conversations; transcripts remain empty because the
+existing policy excludes prompts, responses, document content, and user identity.
+Other span names and attributes are scrubbed before sending. No second SDK or
+exporter is installed. Live ingestion still needs verification after deployment
+with an authenticated Sentry MCP connection.
 
 Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by the `Deploy` workflow) and `SENTRY_ENVIRONMENT` (variable, set in each `wrangler.jsonc`).
 

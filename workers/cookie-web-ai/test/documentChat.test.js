@@ -204,3 +204,15 @@ describe('document AI handler', () => {
     expect(JSON.stringify(await response.json())).not.toContain('test-key');
   });
 });
+
+test('accepts only opaque UUID conversation IDs while supporting older clients', () => {
+  const body = { instruction: 'Help me write', history: [] };
+  expect(validateChat(body).conversationId).toBeNull();
+  const conversationId = '11111111-1111-4111-8111-111111111111';
+  expect(validateChat({ ...body, conversationId }).conversationId).toBe(conversationId);
+  for (const invalid of ['person@example.com', 'document-name', 123, {}]) {
+    expect(() => validateChat({ ...body, conversationId: invalid })).toThrow(
+      'Invalid conversation ID',
+    );
+  }
+});
