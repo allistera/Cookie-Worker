@@ -19,6 +19,7 @@ const FOLDERS = new Set([
   'label',
   'screening',
   'blocked',
+  'processing',
 ]);
 
 // Folder predicates are inlined (not `${folder} = 'inbox'`) so Postgres can
@@ -29,6 +30,8 @@ const FOLDERS = new Set([
  * @param {string} [labelName]
  */
 export function folderPredicate(sql, folder, labelName) {
+  if (folder === 'processing')
+    return sql`NOT m.is_archived AND NOT m.is_sent AND ai.status IS DISTINCT FROM 'completed'`;
   if (folder === 'screening') return sql`NOT m.is_sent AND m.screening_status = 'held'`;
   if (folder === 'blocked') return sql`NOT m.is_sent AND m.screening_status = 'blocked'`;
   if (folder === 'done') return sql`m.is_archived`;
@@ -129,7 +132,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
            to_char((${sortAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS sort_cursor,
            m.sent_at, m.is_unread, m.is_starred, m.screening_status,
            m.is_sent, m.is_archived, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
-           ai.priority,
+           ai.priority, ai.status AS ai_status, ai.enrichment_attempts,
            BOOL_OR(
              NULLIF(BTRIM(t.ai_summary), '') IS NOT NULL
              AND t.ai_summary_message_id = (
@@ -159,7 +162,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
     LEFT JOIN message_labels ml ON ml.message_id = m.id
     LEFT JOIN labels l ON l.id = ml.label_id
     WHERE m.user_id = ${userId}
-    GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, c.id
+    GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, ai.status, ai.enrichment_attempts, c.id
     ORDER BY ${sortAt} DESC, m.id DESC
     LIMIT ${limit + 1}
   `;
@@ -243,7 +246,7 @@ export function fetchScheduledCount(sql, userId) {
   return sql`
     SELECT count(*)::int AS scheduled
     FROM scheduled_sends s
-    WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed')
+    WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed', 'uncertain')
   `;
 }
 
@@ -306,8 +309,15 @@ export function fetchMailboxCounts(sql, userId) {
       ) AS snoozed,
       (
         SELECT count(*)::int FROM scheduled_sends s
-        WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed')
+        WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed', 'uncertain')
       ) AS scheduled,
+      (
+        SELECT count(*)::int
+        FROM messages m LEFT JOIN message_ai ai ON ai.message_id = m.id
+        WHERE m.user_id = ${userId} AND m.screening_status = 'allowed'
+          AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+          AND ai.status IS DISTINCT FROM 'completed'
+      ) AS processing,
       (
         SELECT json_build_object(
           'starred', count(*) FILTER (WHERE m.is_starred AND m.screening_status = 'allowed')::int,
@@ -338,6 +348,7 @@ export async function handleState(sql, userId) {
       spamCount: counts?.spam ?? 0,
       snoozedCount: counts?.snoozed ?? 0,
       scheduledCount: counts?.scheduled ?? 0,
+      processingCount: counts?.processing ?? 0,
       starredCount: presenceRow?.starred ?? 0,
       screeningCount: presenceRow?.screening ?? 0,
       blockedCount: presenceRow?.blocked ?? 0,
@@ -427,6 +438,7 @@ export async function handleList(sql, userId, url) {
       payload.spamCount = counts?.spam ?? 0;
       payload.snoozedCount = counts?.snoozed ?? 0;
       payload.scheduledCount = counts?.scheduled ?? 0;
+      payload.processingCount = counts?.processing ?? 0;
       payload.starredCount = presenceRow?.starred ?? 0;
       payload.screeningCount = presenceRow?.screening ?? 0;
       payload.blockedCount = presenceRow?.blocked ?? 0;
