@@ -76,3 +76,42 @@ describe('model tracing', () => {
     ).toBe('worker');
   });
 });
+
+describe('route output validation stays inside the model span', () => {
+  test.each([
+    ['malformed JSON', 'private malformed output'],
+    [
+      'invalid proposal',
+      JSON.stringify({ reply: 'private reply', proposal: { title: 'private' } }),
+    ],
+  ])('marks completed document chat with %s as failed', async (_name, output_text) => {
+    const { generateDocumentChat } = await import('../src/documentChat.js');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(Response.json({ status: 'completed', output_text })),
+    );
+    await expect(
+      generateDocumentChat({ instruction: 'test', history: [], document: null }, 'key', 'model'),
+    ).rejects.toThrow();
+    expect(span.setStatus).toHaveBeenCalledWith({ code: 2 });
+    expect(span.setAttribute).toHaveBeenCalledWith('error.type', 'model_request_failed');
+    expect(JSON.stringify(span.setAttribute.mock.calls)).not.toContain('private');
+  });
+
+  test('returns a validated result without marking the call as failed', async () => {
+    const { generateDocumentChat } = await import('../src/documentChat.js');
+    const result = { reply: 'Valid reply', proposal: null };
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ status: 'completed', output_text: JSON.stringify(result) }),
+        ),
+    );
+    await expect(
+      generateDocumentChat({ instruction: 'test', history: [], document: null }, 'key', 'model'),
+    ).resolves.toEqual(result);
+    expect(span.setStatus).not.toHaveBeenCalled();
+  });
+});

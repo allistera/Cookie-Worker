@@ -183,48 +183,53 @@ export function markdownToBlocks(markdown, maxBlocks = MAX_BLOCKS) {
  * @param {string} model
  */
 export async function generateDocument(instruction, apiKey, model) {
-  const payload = await requestAiJson(model, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    signal: AbortSignal.timeout(30_000),
-    body: JSON.stringify({
-      model,
-      max_output_tokens: 3000,
-      input: [
-        {
-          role: 'system',
-          content:
-            "You write documents for one private user's notes app. Follow the user instruction and produce a complete, well-structured document. " +
-            'Write the body as Markdown using only: headings (#, ##, ###), paragraphs, bullet lists (-), numbered lists (1.), checklists (- [ ]), fenced code blocks (```) and --- dividers. ' +
-            'No HTML, no tables, no front matter, and do not repeat the title as a heading. Return only the requested JSON.',
-        },
-        { role: 'user', content: JSON.stringify({ instruction }) },
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'document',
-          strict: true,
-          schema: {
-            type: 'object',
-            properties: { title: { type: 'string' }, markdown: { type: 'string' } },
-            required: ['title', 'markdown'],
-            additionalProperties: false,
+  return requestAiJson(
+    model,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({
+        model,
+        max_output_tokens: 3000,
+        input: [
+          {
+            role: 'system',
+            content:
+              "You write documents for one private user's notes app. Follow the user instruction and produce a complete, well-structured document. " +
+              'Write the body as Markdown using only: headings (#, ##, ###), paragraphs, bullet lists (-), numbered lists (1.), checklists (- [ ]), fenced code blocks (```) and --- dividers. ' +
+              'No HTML, no tables, no front matter, and do not repeat the title as a heading. Return only the requested JSON.',
+          },
+          { role: 'user', content: JSON.stringify({ instruction }) },
+        ],
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'document',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: { title: { type: 'string' }, markdown: { type: 'string' } },
+              required: ['title', 'markdown'],
+              additionalProperties: false,
+            },
           },
         },
-      },
-    }),
-  });
-  const parsed = parseOutputJson(payload);
-  const title = clean(parsed?.title, MAX_TITLE);
-  const blocks = markdownToBlocks(parsed?.markdown);
-  if (!title || !blocks.length) {
-    throw new Error('OpenAI Responses API returned an invalid document');
-  }
-  return { title, blocks };
+      }),
+    },
+    (payload) => {
+      const parsed = parseOutputJson(payload);
+      const title = clean(parsed?.title, MAX_TITLE);
+      const blocks = markdownToBlocks(parsed?.markdown);
+      if (!title || !blocks.length) {
+        throw new Error('OpenAI Responses API returned an invalid document');
+      }
+      return { title, blocks };
+    },
+  );
 }
 
 /**

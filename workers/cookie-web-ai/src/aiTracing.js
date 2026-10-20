@@ -3,8 +3,12 @@ import { responsesUrl } from './openai.js';
 
 // Raw fetch calls are not covered by the OpenAI SDK integration. Capture only
 // model metadata and token totals; never prompts, documents, or response text.
-/** @param {string} model @param {RequestInit} options */
-export async function requestAiJson(model, options) {
+/**
+ * @param {string} model
+ * @param {RequestInit} options
+ * @param {(payload: any) => any} [validate]
+ */
+export async function requestAiJson(model, options, validate = (payload) => payload) {
   return Sentry.startSpan(
     {
       op: 'gen_ai.chat',
@@ -36,7 +40,8 @@ export async function requestAiJson(model, options) {
           span.setStatus({ code: 2 });
           span.setAttribute('error.type', 'incomplete_response');
         }
-        return payload;
+        // Keep output parsing and route-specific validation inside the span.
+        return await validate(payload);
       } catch (error) {
         span.setStatus({ code: 2 });
         span.setAttribute('error.type', 'model_request_failed');
