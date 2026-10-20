@@ -22,6 +22,12 @@ vi.mock('postgres', () => ({
 
 const put = vi.fn().mockResolvedValue({ url: 'https://blob.example/photo.png' });
 vi.mock('@vercel/blob', () => ({ put: (/** @type {any[]} */ ...args) => put(...args) }));
+const runObjectCleanup = vi.fn(async () => undefined);
+vi.mock('../src/objectCleanup.js', () => ({
+  runObjectCleanup: (/** @type {any[]} */ ..._args) => runObjectCleanup(),
+  queueObjectCleanup: async () => undefined,
+  registerDocumentImage: async () => undefined,
+}));
 
 const verifyAccessToken = vi.fn();
 vi.mock('../../../shared/auth-jwt.js', () => ({
@@ -71,6 +77,7 @@ beforeEach(() => {
   verifyAccessToken.mockResolvedValue({ userId: 'user-1', email: 'owner@example.com' });
   mockQuery.mockReset().mockResolvedValue([]);
   put.mockResolvedValue({ url: 'https://blob.example/photo.png' });
+  runObjectCleanup.mockReset().mockResolvedValue(undefined);
   env.FILES.get.mockReset();
   vi.stubGlobal(
     'fetch',
@@ -245,9 +252,24 @@ describe('scheduled — Todoist sync', () => {
   const KEY = btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, i) => i + 1)));
   const controller = /** @type {any} */ ({ scheduledTime: Date.parse('2026-12-01T09:00:00Z') });
 
-  test('does nothing without the encryption key', async () => {
+  test('still runs storage cleanup when Todoist has no encryption key', async () => {
     await worker.scheduled(controller, env, ctx);
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(runObjectCleanup).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports a cleanup failure independently of Todoist', async () => {
+    const failure = new Error('cleanup unavailable');
+    runObjectCleanup.mockRejectedValueOnce(failure);
+    await worker.scheduled(controller, env, ctx);
+    expect(captureHandledException).toHaveBeenCalledWith('scheduled', failure, env);
+  });
+
+  test('runs cleanup even when the Todoist connection query fails', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('Todoist query unavailable'));
+    await worker.scheduled(controller, { ...env, TODOIST_TOKEN_ENCRYPTION_KEY: KEY }, ctx);
+    expect(runObjectCleanup).toHaveBeenCalledTimes(1);
+    expect(captureHandledException).toHaveBeenCalled();
   });
 
   test('syncs each enabled connection inside its local window and skips the rest', async () => {

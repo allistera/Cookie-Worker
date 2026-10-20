@@ -1,3 +1,4 @@
+import { readFormBody, bodyErrorResponse } from '../../../shared/read-body.js';
 // Stores a document image in Cookie's private Vercel Blob store (the same
 // store as mail attachments). Client-supplied MIME types and filenames are
 // not trusted: bytes are sniffed, and the object key is a generated UUID
@@ -6,6 +7,7 @@
 // GET /tasks/document-image, issued only to the image's owner.
 
 import { privateBlobPathname } from '../../../shared/private-blob.js';
+import { registerDocumentImage } from './objectCleanup.js';
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const UPLOAD_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
@@ -72,11 +74,29 @@ export async function postImageUpload(request, deps, blobToken) {
     return Response.json({ error: 'Image storage is not configured' }, { status: 503 });
   }
 
+  if (deps.allowRequest && deps.sql && deps.userId) {
+    const allowed = await deps.allowRequest(
+      deps.sql,
+      deps.userId,
+      'image-upload',
+      UPLOAD_RATE_LIMIT,
+    );
+    if (!allowed) {
+      return Response.json({ error: 'Too many uploads, slow down' }, { status: 429 });
+    }
+  }
+
   let form;
   try {
-    form = await request.formData();
-  } catch {
-    return Response.json({ error: 'Content-Type must be multipart/form-data' }, { status: 400 });
+    form = await readFormBody(request, {
+      maxBytes: MAX_IMAGE_BYTES + 64 * 1024,
+      fields: ['image'],
+    });
+  } catch (error) {
+    return (
+      bodyErrorResponse(error) ??
+      Response.json({ error: 'Invalid multipart body' }, { status: 400 })
+    );
   }
 
   const file = form.get('image');
@@ -91,18 +111,6 @@ export async function postImageUpload(request, deps, blobToken) {
     );
   }
 
-  if (deps.allowRequest && deps.sql && deps.userId) {
-    const allowed = await deps.allowRequest(
-      deps.sql,
-      deps.userId,
-      'image-upload',
-      UPLOAD_RATE_LIMIT,
-    );
-    if (!allowed) {
-      return Response.json({ error: 'Too many uploads, slow down' }, { status: 429 });
-    }
-  }
-
   try {
     const fileData = await file.arrayBuffer();
     const sniffed = sniffImageType(fileData);
@@ -112,12 +120,16 @@ export async function postImageUpload(request, deps, blobToken) {
         { status: 400 },
       );
     }
-    const pathname = `documents/${deps.userId || 'anon'}/${crypto.randomUUID()}.${sniffed.ext}`;
+    if (!deps.sql || !deps.userId) {
+      return Response.json({ error: 'Image ownership is unavailable' }, { status: 503 });
+    }
+    const pathname = `documents/${deps.userId}/${crypto.randomUUID()}.${sniffed.ext}`;
+    await registerDocumentImage(deps.sql, deps.userId, pathname);
     const blob = await deps.put(pathname, fileData, {
       access: 'private',
       contentType: sniffed.type,
       token: /** @type {string} */ (blobToken),
-      addRandomSuffix: true,
+      addRandomSuffix: false,
     });
     return Response.json({ url: blob.url });
   } catch (error) {
@@ -139,6 +151,7 @@ export async function postImageUpload(request, deps, blobToken) {
  *   issueSignedToken: typeof import('@vercel/blob').issueSignedToken,
  *   presignUrl: typeof import('@vercel/blob').presignUrl,
  *   token: string | undefined,
+ *   sql: import('postgres').Sql,
  *   now?: () => number,
  * }} ImageSigner
  */
@@ -171,6 +184,14 @@ export async function getDocumentImageUrl(requestUrl, userId, signer) {
   // Only the owner's own uploads: pathnames are documents/<userId>/<uuid>...
   // A decoded ".." would still start with this prefix, so reject it outright.
   if (!pathname.startsWith(`documents/${userId}/`) || pathname.includes('..')) {
+    return Response.json({ error: 'Image not found' }, { status: 404, headers: noStore });
+  }
+  const [image] = await signer.sql`
+    SELECT pathname FROM document_images
+    WHERE pathname = ${pathname} AND user_id = ${userId}
+      AND deleting_at IS NULL AND deleted_at IS NULL
+  `;
+  if (!image) {
     return Response.json({ error: 'Image not found' }, { status: 404, headers: noStore });
   }
   const validUntil = (signer.now?.() ?? Date.now()) + SIGNED_URL_TTL_MS;

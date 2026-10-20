@@ -104,9 +104,9 @@ describe('listFiles', () => {
 });
 
 describe('uploadFile', () => {
-  it('writes the object then the row and returns the row', async () => {
+  it('registers cleanup before writing bytes, then stores metadata and returns the row', async () => {
     const env = { FILES: r2() };
-    const sql = createMockSql([[PUBLIC_ROW]]);
+    const sql = createMockSql([[], [PUBLIC_ROW]]);
     const response = await uploadFile(uploadRequest(), sql, USER, env, allow);
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({ file: PUBLIC_ROW });
@@ -115,8 +115,10 @@ describe('uploadFile', () => {
       expect.any(ArrayBuffer),
       { httpMetadata: { contentType: 'application/pdf' } },
     );
-    expect(sql.calls[0].text).toContain('INSERT INTO document_files');
-    expect(sql.calls[0].values).toEqual(
+    expect(sql.calls[0].text).toContain('INSERT INTO object_cleanup_jobs');
+    expect(sql.mock.invocationCallOrder[0]).toBeLessThan(env.FILES.put.mock.invocationCallOrder[0]);
+    expect(sql.calls[1].text).toContain('INSERT INTO document_files');
+    expect(sql.calls[1].values).toEqual(
       expect.arrayContaining([USER, null, 'notes.pdf', 'application/pdf', 10]),
     );
   });
@@ -125,7 +127,7 @@ describe('uploadFile', () => {
     const env = { FILES: r2() };
     await uploadFile(
       uploadRequest({ name: 'x.bin', type: 'text/plain', bytes: pngBytes() }),
-      createMockSql([[PUBLIC_ROW]]),
+      createMockSql([[], [PUBLIC_ROW]]),
       USER,
       env,
       allow,
@@ -137,7 +139,7 @@ describe('uploadFile', () => {
     const env = { FILES: r2() };
     await uploadFile(
       uploadRequest({ name: 'x.bin', type: '', bytes: new Uint8Array([1, 2, 3]) }),
-      createMockSql([[PUBLIC_ROW]]),
+      createMockSql([[], [PUBLIC_ROW]]),
       USER,
       env,
       allow,
@@ -163,7 +165,7 @@ describe('uploadFile', () => {
   it('deletes the object when the row insert fails', async () => {
     const env = { FILES: r2() };
     const sql = createMockSql();
-    sql.mockRejectedValueOnce(new Error('insert failed'));
+    sql.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('insert failed'));
     const response = await uploadFile(uploadRequest(), sql, USER, env, allow);
     expect(response.status).toBe(500);
     expect(env.FILES.delete).toHaveBeenCalledWith(env.FILES.put.mock.calls[0][0]);

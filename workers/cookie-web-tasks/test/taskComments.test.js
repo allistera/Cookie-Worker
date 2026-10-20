@@ -183,7 +183,7 @@ describe('POST /task-comments', () => {
       body: '',
       attachment: { name: 'shot.png', mimeType: 'image/png', sizeBytes: 10 },
     };
-    const sql = createMockSql([[{ id: TASK_ID }], [stored]]);
+    const sql = createMockSql([[{ id: TASK_ID }], [], [stored]]);
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
     const response = await createTaskComment(
       postRequest({ file: { name: 'shot.png', type: 'text/plain', bytes: png } }),
@@ -201,7 +201,9 @@ describe('POST /task-comments', () => {
       { httpMetadata: { contentType: 'image/png' } },
     );
     expect(sql.calls[0].text).toContain('SELECT id FROM task_items WHERE id = ? AND user_id = ?');
-    expect(sql.calls[1].values).toEqual([
+    expect(sql.calls[1].text).toContain('INSERT INTO object_cleanup_jobs');
+    expect(sql.mock.invocationCallOrder[1]).toBeLessThan(env.FILES.put.mock.invocationCallOrder[0]);
+    expect(sql.calls[2].values).toEqual([
       USER,
       '',
       'shot.png',
@@ -215,7 +217,7 @@ describe('POST /task-comments', () => {
 
   it('removes the object again when the task vanished before the locked insert', async () => {
     const env = { FILES: r2() };
-    const sql = createMockSql([[{ id: TASK_ID }], []]);
+    const sql = createMockSql([[{ id: TASK_ID }], [], []]);
     const response = await createTaskComment(
       postRequest({ file: { name: 'a.bin', type: '', bytes: new Uint8Array([1, 2]) } }),
       sql,
@@ -233,6 +235,7 @@ describe('POST /task-comments', () => {
     const env = { FILES: r2() };
     const sql = createMockSql();
     sql.mockImplementationOnce(() => Promise.resolve([{ id: TASK_ID }]));
+    sql.mockImplementationOnce(() => Promise.resolve([]));
     sql.mockImplementationOnce(() => Promise.reject(new Error('insert failed')));
     const response = await createTaskComment(
       postRequest({ body: 'x', file: { name: 'a.bin', type: '', bytes: new Uint8Array([1, 2]) } }),

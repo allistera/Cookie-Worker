@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { getDocumentImageUrl, postImageUpload, sniffImageType } from '../src/imageUpload.js';
+import { createMockSql } from './helpers.js';
 
 function pngBytes(length = 16) {
   const bytes = new Uint8Array(Math.max(length, 8));
@@ -33,9 +34,10 @@ describe('sniffImageType', () => {
 describe('postImageUpload', () => {
   it('stores the image under a generated key and returns its blob URL', async () => {
     const put = vi.fn().mockResolvedValue({ url: 'https://blob.example/photo.png' });
+    const sql = createMockSql();
     const response = await postImageUpload(
       uploadRequest(),
-      { put, userId: 'user-1' },
+      { put, userId: 'user-1', sql },
       'blob-token',
     );
 
@@ -48,9 +50,12 @@ describe('postImageUpload', () => {
         access: 'private',
         contentType: 'image/png',
         token: 'blob-token',
-        addRandomSuffix: true,
+        addRandomSuffix: false,
       },
     );
+    expect(sql.calls[0].text).toContain('INSERT INTO document_images');
+    expect(sql.calls[0].values).toEqual([put.mock.calls[0][0], 'user-1']);
+    expect(sql.mock.invocationCallOrder[0]).toBeLessThan(put.mock.invocationCallOrder[0]);
   });
 
   it('rejects a request with no image field', async () => {
@@ -64,7 +69,7 @@ describe('postImageUpload', () => {
 
     const response = await postImageUpload(request, { put }, 'blob-token');
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toContain('No image file provided');
+    expect((await response.json()).error).toContain('Unexpected or duplicate multipart field');
     expect(put).not.toHaveBeenCalled();
   });
 
@@ -78,6 +83,42 @@ describe('postImageUpload', () => {
 
     const response = await postImageUpload(request, { put }, 'blob-token');
     expect(response.status).toBe(400);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('checks quota before consuming the upload stream', async () => {
+    const put = vi.fn();
+    const request = uploadRequest();
+    const getReader = vi.spyOn(/** @type {ReadableStream} */ (request.body), 'getReader');
+    const response = await postImageUpload(
+      request,
+      {
+        put,
+        sql: /** @type {any} */ ({}),
+        userId: 'owner',
+        allowRequest: vi.fn().mockResolvedValue(false),
+      },
+      'blob-token',
+    );
+    expect(response.status).toBe(429);
+    expect(getReader).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('bounds undeclared extra multipart data before storage', async () => {
+    const form = new FormData();
+    form.set('image', new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'tiny.png'));
+    form.set('padding', 'x'.repeat(6 * 1024 * 1024));
+    const put = vi.fn();
+    const response = await postImageUpload(
+      new Request('https://example.invalid', {
+        method: 'POST',
+        body: form,
+      }),
+      { put },
+      'blob-token',
+    );
+    expect(response.status).toBe(413);
     expect(put).not.toHaveBeenCalled();
   });
 
@@ -116,7 +157,11 @@ describe('postImageUpload', () => {
 
   it('500s and does not leak details when Blob storage fails', async () => {
     const put = vi.fn().mockRejectedValue(new Error('blob API down'));
-    const response = await postImageUpload(uploadRequest(), { put }, 'blob-token');
+    const response = await postImageUpload(
+      uploadRequest(),
+      { put, userId: 'user-1', sql: createMockSql() },
+      'blob-token',
+    );
 
     expect(response.status).toBe(500);
     expect(JSON.stringify(await response.json())).not.toContain('blob API down');
@@ -130,7 +175,7 @@ describe('postImageUpload failures', () => {
     const report = vi.fn();
     const response = await postImageUpload(
       uploadRequest(),
-      { put, report, userId: 'user-1' },
+      { put, report, userId: 'user-1', sql: createMockSql() },
       'blob-token',
     );
     expect(response.status).toBe(500);
@@ -147,6 +192,7 @@ describe('getDocumentImageUrl', () => {
       issueSignedToken: vi.fn().mockResolvedValue('signed-token'),
       presignUrl: vi.fn().mockResolvedValue({ presignedUrl: `${own}?sig=1` }),
       token: 'blob-token',
+      sql: createMockSql([[{ pathname: `documents/${USER}/abc-XYZ.png` }]]),
       now: () => Date.parse('2026-09-27T09:00:00Z'),
       ...overrides,
     };
@@ -205,5 +251,13 @@ describe('getDocumentImageUrl', () => {
   it('503s without a storage token', async () => {
     const response = await getDocumentImageUrl(requestFor(own), USER, signer({ token: undefined }));
     expect(response.status).toBe(503);
+  });
+
+  it('refuses a new signed link for an image pending deletion or already deleted', async () => {
+    const s = signer({ sql: createMockSql([[]]) });
+    const response = await getDocumentImageUrl(requestFor(own), USER, s);
+    expect(response.status).toBe(404);
+    expect(s.issueSignedToken).not.toHaveBeenCalled();
+    expect(s.sql.calls[0].text).toContain('deleting_at IS NULL AND deleted_at IS NULL');
   });
 });

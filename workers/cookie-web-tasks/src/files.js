@@ -1,3 +1,4 @@
+import { readFormBody, bodyErrorResponse } from '../../../shared/read-body.js';
 // Uploaded files in the Documents tree. Metadata lives in document_files;
 // bytes live in the private R2 bucket bound as FILES, keyed by
 // <user_id>/<uuid> so a key never carries a client-supplied name. Bytes only
@@ -5,6 +6,7 @@
 
 import { cleanText, fetchOwnedFolder } from './documents.js';
 import { validId } from '../../../shared/pagination.js';
+import { queueObjectCleanup } from './objectCleanup.js';
 
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 // Multipart framing around the file itself; a declared body past this is
@@ -131,9 +133,15 @@ export async function uploadFile(request, sql, userId, env, deps) {
 
   let form;
   try {
-    form = await request.formData();
-  } catch {
-    return Response.json({ error: 'Content-Type must be multipart/form-data' }, { status: 400 });
+    form = await readFormBody(request, {
+      maxBytes: MAX_FILE_BYTES + MULTIPART_OVERHEAD_BYTES,
+      fields: ['file', 'folder'],
+    });
+  } catch (error) {
+    return (
+      bodyErrorResponse(error) ??
+      Response.json({ error: 'Invalid multipart body' }, { status: 400 })
+    );
   }
   const file = form.get('file');
   if (!(file instanceof File)) {
@@ -158,6 +166,7 @@ export async function uploadFile(request, sql, userId, env, deps) {
   const mimeType = sniffFileType(bytes) ?? cleanMimeType(file.type);
   const objectKey = `${userId}/${crypto.randomUUID()}`;
 
+  await queueObjectCleanup(sql, 'r2', objectKey, 24);
   await env.FILES.put(objectKey, bytes, { httpMetadata: { contentType: mimeType } });
   try {
     const [row] = await sql`

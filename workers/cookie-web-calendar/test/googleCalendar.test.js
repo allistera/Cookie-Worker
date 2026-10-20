@@ -8,6 +8,7 @@ import {
   createGoogleEvent,
   deleteGoogleEvent,
   disconnectGoogle,
+  finishGoogleAuthorization,
   getGoogleStatus,
   googleCalendarEntries,
   handleGoogleCallback,
@@ -937,25 +938,25 @@ describe('handleGoogleCallback', () => {
     expired: false,
   };
 
-  it('exchanges the code for the state owner and sends the browser back to Settings', async () => {
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }),
-    );
-    const sql = createMockSql([[pending], []]);
+  it('stages the code without exchanging tokens and returns a fresh fragment handle', async () => {
+    const sql = createMockSql([[pending]]);
     const response = await handleGoogleCallback(
       sql,
       new URL(
         'https://calendar-api.infinitywave.online/google-calendar/callback?code=abc&state=s1',
       ),
       env,
-      { fetchImpl },
     );
     expect(response.status).toBe(302);
-    expect(response.headers.get('Location')).toBe(
-      `${PRODUCTION}/settings/calendar?google=connected`,
-    );
-    expect(sql.calls[0].values[0]).toBe('s1');
-    expect(sql.calls[1].values[0]).toBe(USER_ID);
+    const location = new URL(response.headers.get('Location') ?? '');
+    expect(location.origin + location.pathname).toBe(`${PRODUCTION}/settings/calendar`);
+    expect(location.search).toBe('');
+    expect(location.hash).toMatch(/^#google_completion=[A-Za-z0-9_-]{43}$/);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).toContain('UPDATE google_calendar_oauth_states');
+    expect(sql.calls[0].values[2]).toBe('s1');
   });
 
   it('reports a refusal or a failed exchange back to Settings, and a dead state as plain text', async () => {
@@ -968,18 +969,6 @@ describe('handleGoogleCallback', () => {
     );
     expect(denied.headers.get('Location')).toBe(
       `${PRODUCTION}/settings/calendar?google=error&reason=denied`,
-    );
-
-    const failed = await handleGoogleCallback(
-      createMockSql([[pending]]),
-      new URL(
-        'https://calendar-api.infinitywave.online/google-calendar/callback?code=bad&state=s1',
-      ),
-      env,
-      { fetchImpl: vi.fn(async () => jsonResponse({ error: 'invalid_grant' }, 400)) },
-    );
-    expect(failed.headers.get('Location')).toBe(
-      `${PRODUCTION}/settings/calendar?google=error&reason=failed`,
     );
 
     const dead = await handleGoogleCallback(
@@ -1000,6 +989,38 @@ describe('handleGoogleCallback', () => {
       {},
     );
     expect(unconfigured.status).toBe(400);
+  });
+});
+
+describe('finishGoogleAuthorization', () => {
+  const body = { completion: 'c'.repeat(43), verifier: 'v'.repeat(43) };
+
+  it('does not exchange a code when account, browser, expiry or single-use lookup fails', async () => {
+    const fetchImpl = vi.fn();
+    const response = await finishGoogleAuthorization(createMockSql([[]]), USER_ID, body, env, {
+      fetchImpl,
+    });
+    expect(response.status).toBe(400);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('exchanges a successfully claimed encrypted code for the authenticated user', async () => {
+    const sql = createMockSql([
+      [
+        {
+          redirectUri: 'https://calendar-api.infinitywave.online/google-calendar/callback',
+          codeEncrypted: await encryptToken('claimed-code', KEY),
+        },
+      ],
+      [],
+    ]);
+    const fetchImpl = vi.fn(async (_url, _init) =>
+      jsonResponse({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }),
+    );
+    const response = await finishGoogleAuthorization(sql, USER_ID, body, env, { fetchImpl });
+    expect(response.status).toBe(200);
+    expect(sql.calls[1].values[0]).toBe(USER_ID);
+    expect(new URLSearchParams(fetchImpl.mock.calls[0][1].body).get('code')).toBe('claimed-code');
   });
 });
 
