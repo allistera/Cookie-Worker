@@ -356,16 +356,15 @@ async function createDivider(sql, userId, body) {
   if (body.afterId !== undefined) {
     if (!validId(body.afterId))
       return Response.json({ error: 'A valid anchor task is required' }, { status: 400 });
-    return sql.begin(async (tx) => {
-      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 2))`;
-      const [anchor] = await tx`SELECT id FROM task_items WHERE user_id = ${userId}
+    // createTaskItem already holds the owner lock and transaction.
+    const [anchor] = await sql`SELECT id FROM task_items WHERE user_id = ${userId}
         AND id = ${body.afterId} AND project_id IS NOT DISTINCT FROM ${projectId}::uuid
         AND parent_id IS NULL FOR UPDATE`;
-      if (!anchor) return Response.json({ error: 'Anchor task not found' }, { status: 404 });
-      const { afterId, ...fields } = body;
-      const response = await createDivider(/** @type {any} */ (tx), userId, fields);
-      const { item } = await response.json();
-      const [placed] = await tx`
+    if (!anchor) return Response.json({ error: 'Anchor task not found' }, { status: 404 });
+    const { afterId, ...fields } = body;
+    const response = await createDivider(sql, userId, fields);
+    const { item } = await response.json();
+    const [placed] = await sql`
         WITH ordered AS (
           SELECT id, row_number() OVER (ORDER BY position, created_at, id) AS n
           FROM task_items WHERE user_id = ${userId}
@@ -382,8 +381,7 @@ async function createDivider(sql, userId, body) {
           RETURNING t.id, t.position
         ) SELECT position FROM updated WHERE id = ${item.id}
       `;
-      return Response.json({ item: { ...item, position: placed.position } }, { status: 201 });
-    });
+    return Response.json({ item: { ...item, position: placed.position } }, { status: 201 });
   }
   // Optional heading; absent or blank is a plain rule.
   const content = cleanText(body?.content, MAX_DIVIDER_TEXT_LENGTH) ?? '';
