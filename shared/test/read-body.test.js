@@ -3,11 +3,49 @@ import {
   BodyTooLargeError,
   InvalidJsonError,
   InvalidFormError,
+  UnsupportedContentTypeError,
+  bodyErrorResponse,
   readJsonBody,
   readFormBody,
 } from '../read-body.js';
 
 describe('bounded multipart streams', () => {
+  it.each([undefined, 'application/json'])('rejects content type %s', async (contentType) => {
+    const request = new Request('https://example.invalid', {
+      method: 'POST',
+      headers: contentType ? { 'content-type': contentType } : {},
+    });
+    await expect(readFormBody(request, { maxBytes: 100, fields: [] })).rejects.toThrow(
+      'Content-Type must be multipart/form-data',
+    );
+  });
+
+  it('rejects declared oversized uploads before reading', async () => {
+    const request = new Request('https://example.invalid', {
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary=test', 'content-length': '101' },
+    });
+    await expect(readFormBody(request, { maxBytes: 100, fields: [] })).rejects.toBeInstanceOf(
+      BodyTooLargeError,
+    );
+  });
+
+  it('distinguishes missing and malformed multipart bodies', async () => {
+    const headers = { 'content-type': 'multipart/form-data; boundary=test' };
+    await expect(
+      readFormBody(new Request('https://example.invalid', { method: 'POST', headers }), {
+        maxBytes: 100,
+        fields: [],
+      }),
+    ).rejects.toThrow('Missing multipart body');
+    await expect(
+      readFormBody(
+        new Request('https://example.invalid', { method: 'POST', headers, body: 'broken' }),
+        { maxBytes: 100, fields: [] },
+      ),
+    ).rejects.toThrow('Invalid multipart body');
+  });
+
   it('cancels undeclared oversized multipart before parsing', async () => {
     let consumed = 0;
     let cancelled = false;
@@ -56,6 +94,37 @@ describe('bounded multipart streams', () => {
 });
 
 describe('bounded JSON streams', () => {
+  it.each([undefined, 'text/plain'])('rejects required JSON content type %s', async (type) => {
+    const request = new Request('https://example.invalid', {
+      method: 'POST',
+      headers: type ? { 'content-type': type } : {},
+    });
+    await expect(readJsonBody(request, { requireContentType: true })).rejects.toBeInstanceOf(
+      UnsupportedContentTypeError,
+    );
+  });
+
+  it('accepts a JSON content type with charset', async () => {
+    const request = new Request('https://example.invalid', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: '{"ok":true}',
+    });
+    await expect(readJsonBody(request, { requireContentType: true })).resolves.toEqual({
+      ok: true,
+    });
+  });
+
+  it('rejects declared oversized JSON bodies before reading', async () => {
+    const request = new Request('https://example.invalid', {
+      method: 'POST',
+      headers: { 'content-length': '101' },
+    });
+    await expect(readJsonBody(request, { maxBytes: 100 })).rejects.toBeInstanceOf(
+      BodyTooLargeError,
+    );
+  });
+
   it('cancels a body without Content-Length before consuming the whole upload', async () => {
     let consumed = 0;
     let cancelled = false;
@@ -104,5 +173,22 @@ describe('bounded JSON streams', () => {
     await expect(
       readJsonBody(new Request('https://example.invalid', { method: 'POST', body: '{' })),
     ).rejects.toBeInstanceOf(InvalidJsonError);
+  });
+});
+
+describe('body error responses', () => {
+  it.each([
+    [new BodyTooLargeError(), 413, 'Payload too large'],
+    [new UnsupportedContentTypeError('Use JSON'), 415, 'Use JSON'],
+    [new InvalidJsonError(), 400, 'Invalid JSON body'],
+    [new InvalidFormError('Missing field'), 400, 'Missing field'],
+  ])('maps %s to HTTP %s', async (error, status, message) => {
+    const response = bodyErrorResponse(error);
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error: message });
+  });
+
+  it('leaves unrelated errors for the caller', () => {
+    expect(bodyErrorResponse(new Error('database unavailable'))).toBeNull();
   });
 });
