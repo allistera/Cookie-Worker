@@ -610,3 +610,26 @@ are collapsed.
 Deploy Cookie-Web migration `0099_project_favorites.sql` before the task Worker,
 then the web client. `GET /projects` and project write responses include the
 boolean `isFavorite`; `PATCH /projects` accepts it to add or remove a favorite.
+
+### Application metrics
+
+All 15 Workers emit `worker.invocations` (counter) and `worker.duration`
+(distribution, milliseconds) through the existing `SENTRY_DSN`. The wrapper runs
+inside `withSentry`, so the SDK flushes metrics with the invocation. Metrics are
+available by default in the installed Sentry v11 SDK; no dependency upgrade or
+additional secret is required. They are independent of trace and console-log
+sampling.
+
+Filter by `service`, `trigger` (`fetch`, `scheduled`, `email`, or `queue`),
+`outcome`, and HTTP `status` where applicable. HTTP 5xx responses and thrown
+exceptions have outcome `error`; other returned responses have outcome `success`
+(use status to distinguish 4xx). Durations measure handler completion, not stream
+consumption or detached `waitUntil` work. A caught background failure still uses
+existing error reporting. Shared `beforeSendMetric` filtering admits only these
+metric names and fixed attributes, excluding request URLs, user identity, email
+content, arbitrary SDK context, and secrets.
+
+After deployment, invoke each service and check these names in Sentry's
+Application Metrics view. Local runs with a DSN can emit metrics; leave
+`SENTRY_DSN` unset locally to avoid mixing development traffic with production.
+Dashboard ingestion requires authenticated Sentry access and is not verified by CI.

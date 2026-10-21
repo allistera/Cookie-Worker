@@ -1,3 +1,4 @@
+import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { createSql, endSql, withUserSql } from '../../../shared/db.js';
@@ -244,5 +245,5 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withRequestMetrics(worker, 'cookie-web-calendar'),
+  withApplicationMetrics(withRequestMetrics(worker, 'cookie-web-calendar'), 'cookie-web-calendar'),
 );

@@ -1,3 +1,4 @@
+import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
@@ -155,5 +156,8 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withRequestMetrics(worker, 'cookie-web-notifications'),
+  withApplicationMetrics(
+    withRequestMetrics(worker, 'cookie-web-notifications'),
+    'cookie-web-notifications',
+  ),
 );

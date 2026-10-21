@@ -1,3 +1,4 @@
+import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { withUserSql } from '../../../shared/db.js';
@@ -107,5 +108,5 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withRequestMetrics(worker, 'cookie-web-labels'),
+  withApplicationMetrics(withRequestMetrics(worker, 'cookie-web-labels'), 'cookie-web-labels'),
 );

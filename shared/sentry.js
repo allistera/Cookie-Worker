@@ -4,6 +4,7 @@
 // isolate. Workers layer their own filtering on top through `beforeSend`.
 
 import * as Sentry from '@sentry/cloudflare';
+import { sanitizeMetric } from './applicationMetrics.js';
 
 /**
  * @typedef {{SENTRY_DSN?: string, SENTRY_ENVIRONMENT?: string}} SentryEnv
@@ -29,6 +30,7 @@ export function createSentryOptions({ service, env, trigger, beforeSend }) {
     enabled: Boolean(env.SENTRY_DSN),
     environment: env.SENTRY_ENVIRONMENT ?? 'production',
     tracesSampleRate: 0,
+    beforeSendMetric: (metric) => sanitizeMetric(metric, service),
     // SDK v11 turned this on by default; keep non-Error throws without a
     // synthetic call-site stack, as in v10, so issue grouping stays stable.
     attachStacktrace: false,
