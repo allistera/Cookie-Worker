@@ -14,7 +14,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['workers/*/src/**/*.js', 'shared/**/*.js'],
-      exclude: ['**/__tests__/**', '**/*.{test,spec}.js'],
+      exclude: ['**/__tests__/**', '**/test/**', '**/*.{test,spec}.js'],
       reporter: ['text', 'json', 'json-summary', 'lcov'],
       thresholds: {
         perFile: true,
