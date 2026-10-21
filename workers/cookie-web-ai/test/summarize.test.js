@@ -4,6 +4,7 @@ import {
   buildThreadTranscript,
   fetchThreadMessages,
   generateThreadSummary,
+  handleSummarize,
   normalizeThreadSummary,
   saveThreadSummary,
 } from '../src/summarize.js';
@@ -41,6 +42,119 @@ function messages() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe('summary request handling', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const env = { OPENAI_API_KEY: 'test-key' };
+  function database(rows = messages(), saved = [{ id: 'thread-1' }]) {
+    /** @type {any} */
+    const sql = vi.fn().mockResolvedValueOnce(rows).mockResolvedValueOnce(saved);
+    return sql;
+  }
+  function model(summary = 'Cabinets arrive Tuesday.') {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(Response.json({ output_text: JSON.stringify({ summary }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  test('returns a saved summary with the latest message and selected model', async () => {
+    const sql = database();
+    const fetchMock = model();
+    const response = await handleSummarize(
+      sql,
+      'owner',
+      { id },
+      { ...env, OPENAI_SUMMARY_MODEL: 'custom' },
+    );
+    expect(await response.json()).toEqual({
+      summary: 'Cabinets arrive Tuesday.',
+      threadId: 'thread-1',
+      latestMessageId: 'message-2',
+      messageCount: 2,
+      model: 'custom',
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).model).toBe('custom');
+    expect(sql).toHaveBeenCalledTimes(2);
+  });
+
+  test('falls back to the compose model and reports concurrent thread changes', async () => {
+    const fetchMock = model();
+    const response = await handleSummarize(
+      database(messages(), []),
+      'owner',
+      { id },
+      { ...env, OPENAI_COMPOSE_MODEL: 'compose-model' },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Thread changed while summarizing' });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).model).toBe('compose-model');
+  });
+
+  test('returns not found before claiming quota', async () => {
+    const quota = vi.fn();
+    const response = await handleSummarize(database([]), 'owner', { id }, env, quota);
+    expect(response.status).toBe(404);
+    expect(quota).not.toHaveBeenCalled();
+  });
+
+  test('rejects an oversized aggregate transcript before quota or model calls', async () => {
+    const rows = Array.from({ length: 6 }, () => ({
+      ...messages()[0],
+      body_text: 'x'.repeat(19000),
+    }));
+    const quota = vi.fn();
+    const fetchMock = model();
+    const response = await handleSummarize(database(rows), 'owner', { id }, env, quota);
+    expect(response.status).toBe(413);
+    expect(quota).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('preserves a quota denial response without generating or saving', async () => {
+    const sql = database();
+    const fetchMock = model();
+    const denied = Response.json({ error: 'Quota exhausted' }, { status: 429 });
+    expect(await handleSummarize(sql, 'owner', { id }, env, async () => denied)).toBe(denied);
+    expect(sql).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test.each(['', '   '])('rejects an empty model summary %j', async (summary) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    model(summary);
+    const sql = database();
+    const response = await handleSummarize(sql, 'owner', { id }, env);
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: 'AI summarization failed' });
+    expect(sql).toHaveBeenCalledOnce();
+  });
+
+  test('handles a database read failure without contacting the model', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = database();
+    sql.mockReset().mockRejectedValue(new Error('Database unavailable'));
+    const fetchMock = model();
+    const response = await handleSummarize(sql, 'owner', { id }, env);
+    expect(response.status).toBe(502);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('formats missing metadata and unnamed recipients without undefined labels', () => {
+    const transcript = buildThreadTranscript([
+      { recipients: { to: [null, {}, { address: 'recipient@example.com' }] } },
+      {},
+    ]);
+    expect(transcript).toContain('From: Unknown sender');
+    expect(transcript).toContain('To: recipient@example.com');
+    expect(transcript).toContain('To: Unknown recipient');
+    expect(transcript).toContain('Subject: (no subject)');
+    expect(transcript).toContain('(no plain-text body)');
+    expect(normalizeThreadSummary(null)).toBe('');
+  });
 });
 
 describe('thread summarization', () => {
