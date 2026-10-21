@@ -1,3 +1,4 @@
+import { withHealthCheck } from '../../../shared/health.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
@@ -132,5 +133,5 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withRequestMetrics(worker, 'cookie-web-emails'),
+  withRequestMetrics(withHealthCheck(worker), 'cookie-web-emails'),
 );

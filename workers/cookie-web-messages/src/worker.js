@@ -1,3 +1,4 @@
+import { withHealthCheck } from '../../../shared/health.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { get, getDownloadUrl, issueSignedToken, presignUrl } from '@vercel/blob';
@@ -240,5 +241,5 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withRequestMetrics(worker, 'cookie-web-messages'),
+  withRequestMetrics(withHealthCheck(worker), 'cookie-web-messages'),
 );
