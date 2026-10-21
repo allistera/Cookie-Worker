@@ -1,4 +1,5 @@
 import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
+import { withHealthCheck } from '../../../shared/health.js';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
@@ -87,5 +88,5 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withApplicationMetrics(withRequestMetrics(worker, 'cookie-mcp'), 'cookie-mcp'),
+  withApplicationMetrics(withRequestMetrics(withHealthCheck(worker), 'cookie-mcp'), 'cookie-mcp'),
 );

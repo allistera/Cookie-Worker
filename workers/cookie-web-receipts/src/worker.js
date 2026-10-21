@@ -1,4 +1,5 @@
 import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
+import { withHealthCheck } from '../../../shared/health.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
@@ -84,5 +85,8 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withApplicationMetrics(withRequestMetrics(worker, 'cookie-web-receipts'), 'cookie-web-receipts'),
+  withApplicationMetrics(
+    withRequestMetrics(withHealthCheck(worker), 'cookie-web-receipts'),
+    'cookie-web-receipts',
+  ),
 );

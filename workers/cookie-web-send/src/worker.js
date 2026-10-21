@@ -1,4 +1,5 @@
 import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
+import { withHealthCheck } from '../../../shared/health.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
 import { get } from '@vercel/blob';
@@ -610,5 +611,8 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withApplicationMetrics(withRequestMetrics(worker, 'cookie-web-send'), 'cookie-web-send'),
+  withApplicationMetrics(
+    withRequestMetrics(withHealthCheck(worker), 'cookie-web-send'),
+    'cookie-web-send',
+  ),
 );
