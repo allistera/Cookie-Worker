@@ -12,6 +12,7 @@ function database() {
 }
 beforeEach(() => vi.spyOn(console, 'error').mockImplementation(() => {}));
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -58,7 +59,8 @@ describe('calendar AI request failures', () => {
   test.each([undefined, 'compose-model'])(
     'uses the default generator and model fallback %s',
     async (composeModel) => {
-      vi.spyOn(Date.prototype, 'toISOString').mockReturnValue('2026-10-20T12:00:00.000Z');
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-10-20T12:00:00.000Z'));
       const fetchMock = vi
         .fn()
         .mockResolvedValue(Response.json({ output_text: JSON.stringify(draft) }));
