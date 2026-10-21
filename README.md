@@ -35,6 +35,20 @@ frontend; no migration or new secret is needed.
 
 The `data-enricher` triage policy adapts Eric Porres's MIT-licensed [Email Triage Skill](https://github.com/ericporres/email-triage-plugin): **Reply Needed** and **Review** messages are shown individually, while **Noise** is summarized by category and omitted from AI Inbox rows. Cookie applies the policy to its own Postgres mailbox through the OpenAI Responses API; it does not embed the Claude plugin or depend on Gmail MCP at runtime.
 
+## HTTP health checks
+
+The eleven `cookie-web-*` API Workers and `cookie-mcp` expose public
+`GET /health` and `HEAD /health` liveness routes, before authentication and
+dependency setup. They return `200`, `Cache-Control: no-store`, and
+`{"status":"ok"}` (no body for HEAD). Other methods receive `405`.
+Existing application routes and internal service-binding authorization remain
+unchanged. No new binding or secret is required.
+
+Cookie-Web's `/api/health` aggregates these routes with separate Postgres and
+Meilisearch checks. Deploy these twelve Workers before the companion web
+endpoint; the aggregate reports `503` until every monitored route responds.
+These probes do not execute cron/email handlers or call paid upstream APIs.
+
 ## Repository structure
 
 ```text
