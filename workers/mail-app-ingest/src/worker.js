@@ -1,3 +1,4 @@
+import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import * as Sentry from '@sentry/cloudflare';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage, MAX_ENRICHMENT_ATTEMPTS } from './enrich.js';
@@ -456,7 +457,10 @@ export async function recoverPendingEnrichment(env) {
   console.log(JSON.stringify({ event: 'ai_recovery_complete', attempted: rows.length }));
 }
 
-export default Sentry.withSentry(createSentryOptions, worker);
+export default Sentry.withSentry(
+  createSentryOptions,
+  withApplicationMetrics(worker, 'mail-app-ingest'),
+);
 
 // Cloudflare refuses to forward mail whose sender failed SPF, DKIM, or DMARC.
 const UNAUTHENTICATED_SENDER_ERROR = /non-authenticated emails cannot be forwarded/iu;

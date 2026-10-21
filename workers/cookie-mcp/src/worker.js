@@ -1,3 +1,4 @@
+import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import { withHealthCheck } from '../../../shared/health.js';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { withRequestMetrics } from '../../../shared/performance.js';
@@ -87,5 +88,5 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withRequestMetrics(withHealthCheck(worker), 'cookie-mcp'),
+  withApplicationMetrics(withRequestMetrics(withHealthCheck(worker), 'cookie-mcp'), 'cookie-mcp'),
 );

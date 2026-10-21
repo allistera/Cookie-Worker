@@ -43,6 +43,7 @@ describe('createSentryOptions', () => {
   test('opts out of every category of personal data', () => {
     expect(createSentryOptions({ service: 'a-worker', env: { SENTRY_DSN: DSN } })).toMatchObject({
       tracesSampleRate: 0,
+      beforeSendMetric: expect.any(Function),
       attachStacktrace: false,
     });
     // toEqual, not toMatchObject: a category left out falls back to the

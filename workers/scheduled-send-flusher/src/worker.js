@@ -1,3 +1,4 @@
+import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 // Cookie-Web's "Send Later" feature (scheduled_sends table + scheduled_for
 // column) needs something to actually call the mail provider once a
 // scheduled row is due — unlike inbound snooze, whose due rows just become
@@ -150,4 +151,7 @@ const worker = {
   },
 };
 
-export default Sentry.withSentry(createSentryOptions, worker);
+export default Sentry.withSentry(
+  createSentryOptions,
+  withApplicationMetrics(worker, 'scheduled-send-flusher'),
+);

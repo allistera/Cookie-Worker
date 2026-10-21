@@ -1,3 +1,4 @@
+import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import { withHealthCheck } from '../../../shared/health.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
@@ -245,5 +246,8 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withRequestMetrics(withHealthCheck(worker), 'cookie-web-calendar'),
+  withApplicationMetrics(
+    withRequestMetrics(withHealthCheck(worker), 'cookie-web-calendar'),
+    'cookie-web-calendar',
+  ),
 );
