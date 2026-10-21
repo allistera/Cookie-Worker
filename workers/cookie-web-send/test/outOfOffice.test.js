@@ -247,3 +247,44 @@ describe('durable automatic reply delivery', () => {
     expect(state.deliveries.get(DELIVERY).payload.text).toBe(SETTINGS.text);
   });
 });
+
+describe('definite automatic reply rejection', () => {
+  test('releases quota and the sender so a later arrival can be sent', async () => {
+    const { sql, state, newDelivery } = autoReplyDatabase();
+    const claimed = await claimAutoReply(sql, candidate, FROM);
+    expect(
+      await dispatchAutoReply(
+        sql,
+        claimed,
+        services(async () => ({ status: 'rejected' })),
+      ),
+    ).toBe('failed');
+    expect(state.quota).toBe(0);
+    expect(state.senders.size).toBe(0);
+    expect(state.deliveries.get(DELIVERY).quota_reserved).toBe(false);
+    const next = '55555555-5555-4555-8555-555555555555';
+    state.deliveries.set(next, newDelivery(next, MESSAGE));
+    expect(await claimAutoReply(sql, { id: next, user_id: OWNER }, FROM)).not.toBeNull();
+    expect(state.quota).toBe(1);
+  });
+  test('retains quota and sender protection after an ambiguous earlier attempt', async () => {
+    const { sql, state } = autoReplyDatabase();
+    const first = await claimAutoReply(sql, candidate, FROM);
+    await dispatchAutoReply(
+      sql,
+      first,
+      services(async () => ({ status: 'retry' })),
+    );
+    state.now = new Date(state.now.getTime() + 180_000);
+    const second = await claimAutoReply(sql, candidate, FROM);
+    expect(
+      await dispatchAutoReply(
+        sql,
+        second,
+        services(async () => ({ status: 'rejected' })),
+      ),
+    ).toBe('uncertain');
+    expect(state.quota).toBe(1);
+    expect(state.senders.size).toBe(1);
+  });
+});

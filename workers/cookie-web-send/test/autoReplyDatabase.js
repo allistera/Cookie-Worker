@@ -203,6 +203,17 @@ export function autoReplyDatabase({ queued = true } = {}) {
         });
       return [];
     }
+    if (text.startsWith('DELETE FROM out_of_office_senders')) {
+      for (const [key, sender] of state.senders) {
+        if (sender.user_id === v[0] && sender.delivery_id === v[1]) state.senders.delete(key);
+      }
+      return [];
+    }
+    if (text.startsWith('UPDATE outbound_email_quotas')) {
+      if (state.now.toISOString().slice(0, 16) === new Date(v[1]).toISOString().slice(0, 16))
+        state.quota = Math.max(0, state.quota - 1);
+      return [];
+    }
     if (text.startsWith('UPDATE out_of_office_senders')) {
       const resolving = text.includes('blocked = false');
       const [owner, id] = resolving ? [v[1], v[2]] : v;
@@ -224,7 +235,9 @@ export function autoReplyDatabase({ queued = true } = {}) {
       const [id, owner] = v.slice(-2);
       const row = find(id, owner);
       if (!row) return [];
-      if (text.includes("status = 'sending'")) {
+      if (text.includes('quota_reserved = false')) {
+        row.quota_reserved = false;
+      } else if (text.includes("status = 'sending'")) {
         Object.assign(row, {
           status: 'sending',
           attempts: row.attempts + 1,

@@ -968,6 +968,8 @@ describe('patchMessage', () => {
       expect(sql.calls[1].values).toContain('spam');
       expect(texts[2]).toMatch(/INSERT INTO labels/);
       expect(texts[2]).toContain("'Spam', '#64748b', 'system'");
+      expect(texts[2]).toContain("WHERE labels.kind = 'system'");
+      expect(texts[2]).not.toContain("SET kind = 'system'");
       expect(texts[3]).toMatch(/INSERT INTO message_labels/);
       expect(sql.calls[3].values).toContain(SPAM_LABEL_ID);
     });

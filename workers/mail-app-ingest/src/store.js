@@ -135,6 +135,8 @@ export async function storeEmail(sql, record, ownerEmail) {
           AND thread_id = ${threadId}
           AND is_sent
           AND follow_up_at IS NOT NULL
+          AND EXISTS (SELECT 1 FROM messages arrival
+            WHERE arrival.id = ${messageUuid} AND arrival.screening_status = 'allowed')
           AND sent_at < ${sentAt}::timestamptz
       `;
     }

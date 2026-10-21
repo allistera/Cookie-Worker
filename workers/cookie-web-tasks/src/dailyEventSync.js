@@ -15,19 +15,7 @@ import { matchTimeLine } from './dailyEventLines.js';
 /** @param {number} n */
 const pad2 = (n) => String(n).padStart(2, '0');
 
-// Editor.js paragraph/list-item text is HTML (inline bold/italic/link markup
-// from the toolbar) — strip tags before matching or extracting a title so
-// formatting can't break the pattern or leak markup into the event title.
-/** @param {any} html */
-function plainText(html) {
-  return String(html ?? '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .trim();
-}
+import { plainText } from './plainText.js';
 
 /** @param {any} text */
 export function parseTimeLine(text) {
