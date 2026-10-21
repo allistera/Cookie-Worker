@@ -10,7 +10,9 @@ beforeEach(() => vi.resetAllMocks());
 
 describe('application metrics', () => {
   it('supplies safe defaults when attributes are missing', () => {
-    expect(sanitizeMetric({ name: 'worker.invocations', value: 1 }, 'worker')).toEqual({
+    expect(
+      sanitizeMetric({ name: 'worker.invocations', value: 1, type: 'counter' }, 'worker'),
+    ).toEqual({
       name: 'worker.invocations',
       value: 1,
       type: 'counter',
@@ -24,10 +26,11 @@ describe('application metrics', () => {
         {
           name: 'worker.duration',
           value: 0,
+          type: 'distribution',
           attributes: { status, trigger: 'unknown', outcome: 'unknown' },
         },
         'worker',
-      ).attributes,
+      )?.attributes,
     ).toEqual({ service: 'worker', trigger: 'fetch', outcome: 'error' });
   });
 

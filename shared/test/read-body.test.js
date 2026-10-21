@@ -184,8 +184,8 @@ describe('body error responses', () => {
     [new InvalidFormError('Missing field'), 400, 'Missing field'],
   ])('maps %s to HTTP %s', async (error, status, message) => {
     const response = bodyErrorResponse(error);
-    expect(response.status).toBe(status);
-    expect(await response.json()).toEqual({ error: message });
+    expect(response?.status).toBe(status);
+    expect(await response?.json()).toEqual({ error: message });
   });
 
   it('leaves unrelated errors for the caller', () => {

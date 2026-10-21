@@ -45,8 +45,12 @@ describe('enrichment settings', () => {
   test('normalizes duplicate days and defaults the omitted timezone', () => {
     const input = normalizeEnrichmentSettings();
     input.schedule.days = ['sun', 'mon', 'sun'];
-    delete input.schedule.timezone;
-    expect(validateEnrichmentSettings(input)).toEqual({
+    expect(
+      validateEnrichmentSettings({
+        ...input,
+        schedule: { ...input.schedule, timezone: undefined },
+      }),
+    ).toEqual({
       value: {
         ...input,
         schedule: { ...input.schedule, days: ['mon', 'sun'], timezone: 'Europe/London' },
