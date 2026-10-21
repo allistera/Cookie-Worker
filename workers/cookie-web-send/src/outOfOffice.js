@@ -248,7 +248,21 @@ export async function dispatchAutoReply(sql, claimed, services, deadline = Infin
     }
     if (outcome.status === 'uncertain' || (outcome.status === 'rejected' && row.attempts > 1))
       return finish(tx, row, 'uncertain', 'provider_confirmation_required');
-    if (outcome.status === 'rejected') return finish(tx, row, 'failed', 'provider_rejected');
+    if (outcome.status === 'rejected') {
+      // Only a first-attempt rejection proves the reservation was unused.
+      // Keep compensation in this transaction so a crash cannot refund twice.
+      await tx`DELETE FROM out_of_office_senders
+        WHERE user_id = ${row.user_id} AND delivery_id = ${row.id}`;
+      if (row.quota_reserved) {
+        await tx`UPDATE outbound_email_quotas
+          SET send_count = GREATEST(send_count - 1, 0), updated_at = now()
+          WHERE user_id = ${row.user_id} AND send_count > 0
+            AND window_start = date_trunc('minute', ${row.first_attempt_at}::timestamptz)`;
+        await tx`UPDATE out_of_office_deliveries SET quota_reserved = false
+          WHERE id = ${row.id} AND user_id = ${row.user_id}`;
+      }
+      return finish(tx, row, 'failed', 'provider_rejected');
+    }
     const next = new Date(
       now.getTime() + Math.min(3600, 60 * 2 ** row.attempts) * 1000,
     ).toISOString();

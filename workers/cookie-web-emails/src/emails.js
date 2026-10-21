@@ -228,6 +228,7 @@ export function fetchSnoozedCount(sql, userId) {
     WHERE m.user_id = ${userId}
       AND m.screening_status = 'allowed'
       AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+      AND ai.status = 'completed'
       AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
       AND m.scheduled_for > now()
   `;
@@ -304,6 +305,7 @@ export function fetchMailboxCounts(sql, userId) {
         FROM messages m LEFT JOIN message_ai ai ON ai.message_id = m.id
         WHERE m.user_id = ${userId} AND m.screening_status = 'allowed'
           AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
+          AND ai.status = 'completed'
           AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
           AND m.scheduled_for > now()
       ) AS snoozed,

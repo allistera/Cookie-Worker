@@ -252,6 +252,7 @@ describe('fetchSnoozedCount', () => {
     expect(query).toContain("COALESCE(ai.spam_verdict, 'inbox') <> 'spam'");
     expect(query).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
     expect(query).toContain('count(m.id)::int AS snoozed');
+    expect(query).toContain("ai.status = 'completed'");
   });
 });
 

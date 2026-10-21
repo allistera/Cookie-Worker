@@ -105,6 +105,14 @@ export async function registerTaskLabels(sql, userId, names) {
  * @param {URL} url
  */
 export async function getTaskItems(sql, userId, url) {
+  if (url.searchParams.get('view') === 'count') {
+    const ids = [...new Set((url.searchParams.get('projects') ?? '').split(',').filter(Boolean))];
+    if (!ids.length || !ids.every(validId))
+      return Response.json({ error: 'projects must contain valid project ids' }, { status: 400 });
+    const [result] = await sql`SELECT count(*)::int AS count FROM task_items
+      WHERE user_id = ${userId} AND project_id = ANY(${ids}::uuid[]) AND kind = 'task'`;
+    return Response.json({ count: result.count });
+  }
   if (url.searchParams.get('view') === 'page') return getTaskPage(sql, userId, url);
   if (url.searchParams.get('view') === 'detail') return getTaskDetail(sql, userId, url);
   if (url.searchParams.get('view') === 'calendar') return getCalendarTaskItems(sql, userId, url);
@@ -344,6 +352,36 @@ async function createDivider(sql, userId, body) {
     if (!validId(projectId) || !(await fetchOwnedProject(sql, userId, projectId)).length) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
+  }
+  if (body.afterId !== undefined) {
+    if (!validId(body.afterId))
+      return Response.json({ error: 'A valid anchor task is required' }, { status: 400 });
+    // createTaskItem already holds the owner lock and transaction.
+    const [anchor] = await sql`SELECT id FROM task_items WHERE user_id = ${userId}
+        AND id = ${body.afterId} AND project_id IS NOT DISTINCT FROM ${projectId}::uuid
+        AND parent_id IS NULL FOR UPDATE`;
+    if (!anchor) return Response.json({ error: 'Anchor task not found' }, { status: 404 });
+    const { afterId, ...fields } = body;
+    const response = await createDivider(sql, userId, fields);
+    const { item } = await response.json();
+    const [placed] = await sql`
+        WITH ordered AS (
+          SELECT id, row_number() OVER (ORDER BY position, created_at, id) AS n
+          FROM task_items WHERE user_id = ${userId}
+            AND project_id IS NOT DISTINCT FROM ${projectId}::uuid AND parent_id IS NULL
+            AND id <> ${item.id}
+        ), anchor AS (SELECT n FROM ordered WHERE id = ${afterId}),
+        slots AS (
+          SELECT id, ordered.n + CASE WHEN ordered.n > anchor.n THEN 1 ELSE 0 END AS position
+          FROM ordered CROSS JOIN anchor
+          UNION ALL SELECT ${item.id}::uuid, n + 1 FROM anchor
+        ), updated AS (
+          UPDATE task_items t SET position = slots.position, updated_at = now()
+          FROM slots WHERE t.id = slots.id AND t.user_id = ${userId}
+          RETURNING t.id, t.position
+        ) SELECT position FROM updated WHERE id = ${item.id}
+      `;
+    return Response.json({ item: { ...item, position: placed.position } }, { status: 201 });
   }
   // Optional heading; absent or blank is a plain rule.
   const content = cleanText(body?.content, MAX_DIVIDER_TEXT_LENGTH) ?? '';

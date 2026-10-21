@@ -102,6 +102,7 @@ describe('storeEmail', () => {
     expect(sql.transactions[0][1].text).toContain('AS is_duplicate');
     expect(sql.transactions[0][2].text).toContain('INSERT INTO messages');
     expect(sql.transactions[0][3].text).toContain('SET follow_up_at = NULL');
+    expect(sql.transactions[0][3].text).toContain("arrival.screening_status = 'allowed'");
     expect(sql.transactions[0][3].text).toContain('user_id =');
     expect(sql.transactions[0][3].text).toContain('thread_id =');
     expect(sql.transactions[0][3].text).toContain('sent_at <');

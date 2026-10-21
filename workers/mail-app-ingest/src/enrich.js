@@ -438,7 +438,8 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
           SELECT m.user_id, 'Spam', '#64748b', 'system', 'High-confidence spam detected by Cookie AI', false
           FROM messages m WHERE m.id = ${messageUuid}
           ON CONFLICT (user_id, name) DO UPDATE
-          SET kind = 'system', auto_apply = false
+          SET auto_apply = false
+          WHERE labels.kind = 'system'
           RETURNING id
         `;
         if (spamLabel) {

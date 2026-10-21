@@ -8,20 +8,7 @@
 
 import { flattenWorkbookCellText } from './univerTableData.js';
 
-// Editor.js paragraph/header/list-item text is HTML (inline bold/italic/link
-// markup from the toolbar) — strip tags so formatting can't leak into search
-// text. Local copy of dailyEventSync.js's identical helper: entangling two
-// unrelated modules through a 6-line string utility isn't worth the coupling.
-/** @param {any} html */
-function plainText(html) {
-  return String(html ?? '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .trim();
-}
+import { plainText } from './plainText.js';
 
 /** @param {string[]} lines @param {string} text */
 function pushIf(lines, text) {

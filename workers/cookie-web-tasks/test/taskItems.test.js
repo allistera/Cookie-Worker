@@ -1350,3 +1350,53 @@ describe('estimated task duration', () => {
     expect(sql.calls[0].text).toContain('t.duration_minutes AS "durationMinutes"');
   });
 });
+
+describe('project deletion count', () => {
+  it('counts tasks across projects in one owner-scoped query, including completed tasks', async () => {
+    const sql = createMockSql([[{ count: 603 }]]);
+    const response = await getTaskItems(
+      sql,
+      USER_ID,
+      url(`?view=count&projects=${PROJECT_ID},${ITEM_ID}`),
+    );
+    expect(await response.json()).toEqual({ count: 603 });
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].values).toEqual([USER_ID, [PROJECT_ID, ITEM_ID]]);
+    expect(sql.calls[0].text).toContain("kind = 'task'");
+    expect(sql.calls[0].text).not.toContain('completed_at IS NULL');
+  });
+  it('rejects invalid project ids without querying', async () => {
+    const sql = createMockSql();
+    expect((await getTaskItems(sql, USER_ID, url('?view=count&projects=bad'))).status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
+  });
+});
+
+describe('anchored divider insertion', () => {
+  it('renumbers the complete project order instead of a bounded client page', async () => {
+    const sql = createMockSql([
+      [{ id: PROJECT_ID }],
+      [{ id: ITEM_ID }],
+      [{ id: PROJECT_ID }],
+      [{ id: 'divider', position: 999 }],
+      [{ position: 2 }],
+    ]);
+    const response = await createTaskItem(sql, USER_ID, {
+      kind: 'divider',
+      projectId: PROJECT_ID,
+      afterId: ITEM_ID,
+    });
+    expect(response.status).toBe(201);
+    expect((await response.json()).item.position).toBe(2);
+    const reorder = sql.calls.at(-1).text;
+    expect(reorder).toContain('row_number() OVER');
+    expect(reorder).not.toContain('LIMIT');
+    expect(sql.begin).toHaveBeenCalledOnce();
+  });
+  it('refuses a missing or foreign anchor before inserting', async () => {
+    const sql = createMockSql([[]]);
+    const response = await createTaskItem(sql, USER_ID, { kind: 'divider', afterId: ITEM_ID });
+    expect(response.status).toBe(404);
+    expect(sql.calls.some((call) => call.text.includes('INSERT'))).toBe(false);
+  });
+});
