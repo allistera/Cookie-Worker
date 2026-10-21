@@ -39,6 +39,25 @@ describe('configureOpenAi', () => {
 });
 
 describe('parseOutputJson', () => {
+  test('skips absent items and non-text content before finding JSON output', () => {
+    expect(
+      parseOutputJson({
+        output: [
+          null,
+          {},
+          {
+            content: [
+              null,
+              { type: 'refusal' },
+              { type: 'output_text', text: 42 },
+              { type: 'output_text', text: '{"ok":true}' },
+            ],
+          },
+        ],
+      }),
+    ).toEqual({ ok: true });
+  });
+
   test('parses top-level output_text', () => {
     expect(parseOutputJson({ output_text: '{"ok":true}' })).toEqual({ ok: true });
   });

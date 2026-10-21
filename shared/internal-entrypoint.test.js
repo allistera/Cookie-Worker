@@ -10,6 +10,14 @@ function entrypointFor(fetch) {
 }
 
 describe('Internal entrypoint', () => {
+  test('preserves upstream status without forwarding a non-JSON body', async () => {
+    const result = await entrypointFor(
+      async () => new Response('upstream unavailable', { status: 502 }),
+    ).call(identity, { method: 'GET', path: '/messages' });
+    expect(result).toEqual({ status: 502, body: null });
+    expect(internalCaller()).toBeUndefined();
+  });
+
   test('runs the worker inside the identity scope and returns status and JSON', async () => {
     const fetch = vi.fn(async (request) => {
       expect(internalCaller()).toEqual(identity);

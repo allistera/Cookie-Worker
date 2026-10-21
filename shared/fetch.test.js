@@ -28,6 +28,20 @@ describe('fetchWithTimeout', () => {
 });
 
 describe('readTextCapped', () => {
+  test('preserves the size error when cancelling an oversized stream fails', async () => {
+    const response = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(5));
+        },
+        cancel() {
+          throw new Error('source disconnected');
+        },
+      }),
+    );
+    await expect(readTextCapped(response, 4)).rejects.toThrow('Response exceeded 4 bytes');
+  });
+
   test('reads a streamed body under the cap', async () => {
     await expect(readTextCapped(new Response('hello feed'), 1024)).resolves.toBe('hello feed');
   });

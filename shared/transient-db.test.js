@@ -40,6 +40,18 @@ describe('isTransientDbError', () => {
 });
 
 describe('retryWithFreshClient', () => {
+  it('preserves a successful task result when closing its client fails', async () => {
+    const sql = client();
+    sql.end.mockRejectedValue(new Error('connection already closed'));
+    await expect(
+      retryWithFreshClient(
+        () => sql,
+        async () => 'saved',
+      ),
+    ).resolves.toBe('saved');
+    expect(sql.end).toHaveBeenCalledWith({ timeout: 2 });
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
