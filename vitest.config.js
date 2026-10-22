@@ -11,6 +11,13 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    coverage: {
+      provider: 'v8',
+      reportOnFailure: true,
+      include: ['workers/*/src/**/*.js', 'shared/**/*.js'],
+      exclude: ['**/__tests__/**', '**/test/**', '**/*.{test,spec}.js'],
+      reporter: ['text', 'json', 'json-summary', 'lcov'],
+    },
     restoreMocks: true,
     clearMocks: true,
   },

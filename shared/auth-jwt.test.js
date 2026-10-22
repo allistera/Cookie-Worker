@@ -1,11 +1,109 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { errors } from 'jose';
-import { verifyAccessToken } from './auth-jwt.js';
+import { AuthFailure, authFailureResponse, verifyAccessToken } from './auth-jwt.js';
 import { runAsInternalCaller } from './internal-identity.js';
 
 const env = { AUTH0_DOMAIN: 'tenant.example.auth0.com', AUTH0_AUDIENCE: 'https://cookie-web/api' };
 const request = new Request('https://cookie-web-api.example/labels', {
   headers: { Authorization: 'Bearer signed-token' },
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('authentication responses and cache boundaries', () => {
+  test.each([
+    [new AuthFailure('internal details', 401), 401, 'Unauthorized'],
+    [new AuthFailure('internal details', 403), 403, 'Forbidden'],
+    [new AuthFailure('internal details', 503), 503, 'Authentication unavailable'],
+    [new Error('internal details'), 401, 'Unauthorized'],
+  ])('maps failures to a public HTTP response: %s', async (failure, status, message) => {
+    const response = authFailureResponse(failure);
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error: message });
+  });
+
+  test.each(['AbortError', 'TimeoutError'])(
+    'treats a signing-key %s as temporary unavailability',
+    async (name) => {
+      const failure = Object.assign(new Error('request interrupted'), { name });
+      await expect(
+        verifyAccessToken(
+          request,
+          env,
+          fakeSql(() => []),
+          fakeJoseOverrides(async () => {
+            throw failure;
+          }),
+        ),
+      ).rejects.toMatchObject({ status: 503, cause: failure });
+    },
+  );
+
+  test('refreshes a mailbox lookup at the cache expiry boundary', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const verify = fakeJoseOverrides(async () => ({ payload: { sub: 'auth0|ttl-boundary' } }));
+    const sql = fakeSql(async () => [{ id: 'mailbox', email: 'owner@example.com' }]);
+    await verifyAccessToken(request, env, sql, verify);
+    clock.mockReturnValue(1_000_000 + 5 * 60 * 1000 - 1);
+    await verifyAccessToken(request, env, sql, verify);
+    expect(sql).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(1_000_000 + 5 * 60 * 1000);
+    sql.mockResolvedValue([]);
+    await expect(verifyAccessToken(request, env, sql, verify)).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(sql).toHaveBeenCalledTimes(2);
+  });
+
+  test('evicts the oldest mailbox entry when the subject cache reaches capacity', async () => {
+    let subject = '';
+    const verify = fakeJoseOverrides(async () => ({ payload: { sub: subject } }));
+    const sql = fakeSql(async () => [{ id: subject, email: 'owner@example.com' }]);
+    for (let index = 0; index <= 1000; index++) {
+      subject = `auth0|capacity-${index}`;
+      await verifyAccessToken(request, env, sql, verify);
+    }
+    expect(sql).toHaveBeenCalledTimes(1001);
+    await verifyAccessToken(request, env, sql, verify);
+    expect(sql).toHaveBeenCalledTimes(1001);
+    subject = 'auth0|capacity-0';
+    await verifyAccessToken(request, env, sql, verify);
+    expect(sql).toHaveBeenCalledTimes(1002);
+  });
+
+  test('reuses issuer key sets and evicts the oldest when the issuer cache fills', async () => {
+    const verifyJwt = vi.fn(
+      /** @param {string} _token @param {unknown} _keySet */
+      async (_token, _keySet) => ({ payload: { sub: 'auth0|issuer-capacity' } }),
+    );
+    const overrides = fakeJoseOverrides(verifyJwt);
+    delete overrides.jwks;
+    const sql = fakeSql(async () => [{ id: 'mailbox', email: 'owner@example.com' }]);
+    for (let index = 0; index < 5; index++) {
+      await verifyAccessToken(
+        request,
+        { ...env, AUTH0_DOMAIN: `issuer-${index}.example.com` },
+        sql,
+        overrides,
+      );
+    }
+    const firstKeys = verifyJwt.mock.calls[0][1];
+    const latestKeys = verifyJwt.mock.calls[4][1];
+    await verifyAccessToken(
+      request,
+      { ...env, AUTH0_DOMAIN: 'issuer-4.example.com' },
+      sql,
+      overrides,
+    );
+    expect(verifyJwt.mock.calls[5][1]).toBe(latestKeys);
+    await verifyAccessToken(
+      request,
+      { ...env, AUTH0_DOMAIN: 'issuer-0.example.com' },
+      sql,
+      overrides,
+    );
+    expect(verifyJwt.mock.calls[6][1]).not.toBe(firstKeys);
+  });
 });
 
 /**

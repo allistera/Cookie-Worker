@@ -94,7 +94,11 @@ vi.mock('../src/sentry.js', () => ({
   captureHandledException: (...args) => captureHandledException(...args),
 }));
 
-const { default: worker, deliveryErrorResponse } = await import('../src/worker.js');
+const {
+  default: worker,
+  deliveryErrorResponse,
+  createSendServices,
+} = await import('../src/worker.js');
 const { DeliveryError } = await import('../src/deliveryLedger.js');
 const { MAX_OUTBOUND_ATTACHMENT_BYTES } = await import('../src/outbound.js');
 
@@ -1259,5 +1263,62 @@ describe('search indexing of sent mail', () => {
       'meilisearch unreachable',
     );
     consoleError.mockRestore();
+  });
+});
+
+describe('send service background work', () => {
+  test('skips an empty indexing batch without opening a connection', () => {
+    createSendServices(env, ctx).indexSentMessages([]);
+    expect(waited).toEqual([]);
+    expect(clients).toEqual([]);
+    expect(syncMessagesToMeili).not.toHaveBeenCalled();
+  });
+
+  test('releases the indexing connection even when its close fails', async () => {
+    sqlEnd.mockRejectedValueOnce(new Error('connection already closed'));
+    createSendServices(env, ctx).indexSentMessages(['first', 'second']);
+    await expect(Promise.all(waited)).resolves.toEqual([undefined]);
+    expect(syncMessagesToMeili).toHaveBeenCalledWith(clients[0], env, ['first', 'second']);
+    expect(sqlEnd).toHaveBeenCalledWith({ timeout: 2 });
+  });
+
+  test('contains connection setup failures in the background task', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      createSendServices({ ...env, HYPERDRIVE: undefined }, ctx).indexSentMessage('copy');
+      await expect(Promise.all(waited)).resolves.toEqual([undefined]);
+      expect(syncMessageToMeili).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith('failed to index sent mail for search:', expect.any(String));
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test('tolerates deployments without a scheduled-send clock', async () => {
+    createSendServices(env, ctx).armScheduledSendClock?.('2027-01-01T12:00:00Z');
+    await expect(Promise.all(waited)).resolves.toEqual([undefined]);
+    expect(clockArm).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      response: new Response(null, { status: 503 }),
+      rejection: undefined,
+      message: 'clock responded 503',
+    },
+    { response: undefined, rejection: 'clock offline', message: 'clock offline' },
+  ])('contains clock failures: $message', async ({ response, rejection, message }) => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      if (response) clockArm.mockResolvedValueOnce(response);
+      else clockArm.mockRejectedValueOnce(rejection);
+      createSendServices(clockEnv, ctx).armScheduledSendClock?.('2027-01-01T12:00:00Z');
+      await expect(Promise.all(waited)).resolves.toEqual([undefined]);
+      expect(log).toHaveBeenCalledWith(
+        JSON.stringify({ event: 'scheduled_send_arm_failed', error: message }),
+      );
+    } finally {
+      log.mockRestore();
+    }
   });
 });

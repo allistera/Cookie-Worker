@@ -39,6 +39,42 @@ const reason = (changes = {}, prefs = settings) =>
   autoReplySuppression({ ...message, ...changes }, prefs, from, now);
 
 describe('dated out-of-office settings', () => {
+  test.each([null, [], 'settings'])('rejects non-object settings: %j', (value) => {
+    expect(outOfOfficeError(value)).toBe('Invalid settings.');
+  });
+
+  test.each([-1, 1.5, Number.MAX_SAFE_INTEGER])('rejects invalid revision %s', (revision) => {
+    expect(outOfOfficeError({ ...settings, revision })).toBe('Invalid settings revision.');
+  });
+
+  test('requires an explicit enabled boolean', () => {
+    expect(outOfOfficeError({ ...settings, enabled: 'yes' })).toBe(
+      'Choose whether out of office is enabled.',
+    );
+  });
+
+  test.each([null, '', 'x'.repeat(10001), 'control\u0001'])(
+    'rejects invalid reply text: %j',
+    (text) => {
+      expect(outOfOfficeError({ ...settings, text })).toBe(
+        'Enter a plain-text message of at most 10,000 characters.',
+      );
+    },
+  );
+
+  test.each([null, '', '文'.repeat(333)])('rejects invalid subjects: %j', (subject) => {
+    expect(outOfOfficeError({ ...settings, subject })).toBe(
+      'Enter a subject of at most 998 bytes without control characters.',
+    );
+  });
+
+  test('permits multiline replies while preserving valid activation metadata', () => {
+    const value = { ...settings, text: 'Hello\n\tThank you\r\nGoodbye' };
+    expect(outOfOfficeError(value)).toBeNull();
+    expect(outOfOfficeSettings(value)).toEqual(value);
+    expect(outOfOfficeSettings({ ...value, activatedAt: 123 }).activatedAt).toBeNull();
+  });
+
   test('defaults safely to disabled and validates impossible dates, zones and header injection', () => {
     expect(outOfOfficeSettings(null).enabled).toBe(false);
     expect(outOfOfficeError(settings)).toBeNull();
@@ -70,6 +106,19 @@ describe('dated out-of-office settings', () => {
 });
 
 describe('eligibility fails closed', () => {
+  test.each([null, {}, { key: 'from' }, { key: 42, value: 'sender@example.com' }])(
+    'rejects malformed headers: %j',
+    (header) => {
+      expect(reason({ headers: [header] })).toBe('invalid_headers');
+    },
+  );
+
+  test('refuses invalid arrival and activation times', () => {
+    expect(reason({ created_at: 'not a date' })).toBe('outside_activation');
+    expect(reason({}, { ...settings, activatedAt: 'not a date' })).toBe('outside_activation');
+    expect(reason({ created_at: '2026-10-25T13:00:00Z' })).toBe('outside_activation');
+  });
+
   test('uses database arrival time and the enabled revision, never sent_at or a later enable', () => {
     expect(reason({ sent_at: '1900-01-01' })).toBeNull();
     expect(reason({ created_at: '2026-10-24T09:59:59Z' })).toBe('outside_activation');

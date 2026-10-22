@@ -1249,6 +1249,50 @@ describe('getAttachment on a dropped connection', () => {
 });
 
 describe('deferred calendar enrichment', () => {
+  test.each([null, 'invalid'])(
+    'rejects invalid invite message id %s before querying',
+    async (id) => {
+      const sql = createMockSql();
+      expect((await getCalendarInvite(sql, USER_ID, id)).status).toBe(400);
+      expect(sql).not.toHaveBeenCalled();
+    },
+  );
+
+  test('returns no invite when the owned message has no calendar attachment', async () => {
+    const sql = createMockSql([[{ id: MESSAGE_ID }], []]);
+    const readBlob = vi.fn();
+    const response = await getCalendarInvite(sql, USER_ID, MESSAGE_ID, { readBlob });
+    expect(await response.json()).toEqual({ calendar_invite: null });
+    expect(response.headers.get('Server-Timing')).toContain('attachments');
+    expect(readBlob).not.toHaveBeenCalled();
+  });
+
+  test('returns parsed invite metadata from the owned message attachment', async () => {
+    const sql = createMockSql([
+      [{ id: MESSAGE_ID }],
+      [
+        {
+          id: ATTACHMENT_ID,
+          filename: 'invite.ics',
+          content_type: 'text/calendar',
+          size_bytes: 200,
+          downloadable: true,
+          blob_url: 'https://store.private.blob.vercel-storage.com/invite.ics',
+        },
+      ],
+    ]);
+    const readBlob = vi.fn(async () => ({
+      stream: new Response(
+        'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:meeting\r\nDTSTART:20261021T120000Z\r\nDTEND:20261021T130000Z\r\nSUMMARY:Review\r\nEND:VEVENT\r\nEND:VCALENDAR',
+      ).body,
+    }));
+    const response = await getCalendarInvite(sql, USER_ID, MESSAGE_ID, { readBlob });
+    expect((await response.json()).calendar_invite).toMatchObject({
+      title: 'Review',
+      start_at: '2026-10-21T12:00:00.000Z',
+    });
+    expect(readBlob).toHaveBeenCalledOnce();
+  });
   test('returns the body without downloading the invite', async () => {
     const readBlob = vi.fn(() => new Promise(() => {}));
     const sql = createMockSql([
@@ -1288,6 +1332,60 @@ describe('deferred calendar enrichment', () => {
     expect(sql.calls[0].values).toEqual([MESSAGE_ID, USER_ID]);
     expect(readBlob).not.toHaveBeenCalled();
   });
+});
+
+describe('unsubscribe fallback failures', () => {
+  test('falls back to a safe manual URL after a failing one-click status', async () => {
+    const url = 'https://news.example.com/unsubscribe';
+    const sql = createMockSql([
+      [
+        {
+          headers: [
+            { key: 'List-Unsubscribe', value: `<${url}>` },
+            { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+          ],
+        },
+      ],
+    ]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ requestPublicHttps: vi.fn().mockResolvedValue({ status: 503 }) }),
+    );
+    expect(await response.json()).toEqual({ status: 'manual', method: 'link', url });
+  });
+
+  test.each([true, false])(
+    'handles mailto delivery failure with a safe fallback URL present: %s',
+    async (hasLink) => {
+      const url = 'https://news.example.com/unsubscribe';
+      const sql = createMockSql([
+        [
+          {
+            headers: [
+              {
+                key: 'List-Unsubscribe',
+                value: `<mailto:unsubscribe@example.com>${hasLink ? `, <${url}>` : ''}`,
+              },
+            ],
+          },
+        ],
+      ]);
+      const sendEmail = vi.fn().mockRejectedValue(new Error('mail provider unavailable'));
+      const response = await postMessage(
+        sql,
+        USER_ID,
+        { id: MESSAGE_ID, action: 'unsubscribe' },
+        unsubscribeDeps({ resendApiKey: 'test-key', emailFrom: 'sender@example.com', sendEmail }),
+      );
+      expect(response.status).toBe(hasLink ? 200 : 502);
+      expect(await response.json()).toEqual(
+        hasLink ? { status: 'manual', method: 'link', url } : { error: 'Failed to unsubscribe' },
+      );
+      expect(sendEmail).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 describe('postMessage — not important', () => {

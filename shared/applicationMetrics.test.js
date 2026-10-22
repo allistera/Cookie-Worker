@@ -9,6 +9,31 @@ import { sanitizeMetric, withApplicationMetrics } from './applicationMetrics.js'
 beforeEach(() => vi.resetAllMocks());
 
 describe('application metrics', () => {
+  it('supplies safe defaults when attributes are missing', () => {
+    expect(
+      sanitizeMetric({ name: 'worker.invocations', value: 1, type: 'counter' }, 'worker'),
+    ).toEqual({
+      name: 'worker.invocations',
+      value: 1,
+      type: 'counter',
+      attributes: { service: 'worker', trigger: 'fetch', outcome: 'error' },
+    });
+  });
+
+  it.each([undefined, '200', 200.5, 99, 600])('drops invalid status %s', (status) => {
+    expect(
+      sanitizeMetric(
+        {
+          name: 'worker.duration',
+          value: 0,
+          type: 'distribution',
+          attributes: { status, trigger: 'unknown', outcome: 'unknown' },
+        },
+        'worker',
+      )?.attributes,
+    ).toEqual({ service: 'worker', trigger: 'fetch', outcome: 'error' });
+  });
+
   it.each(['fetch', 'scheduled', 'email', 'queue'])(
     'measures %s and preserves arguments and results',
     async (trigger) => {
