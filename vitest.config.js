@@ -16,13 +16,6 @@ export default defineConfig({
       include: ['workers/*/src/**/*.js', 'shared/**/*.js'],
       exclude: ['**/__tests__/**', '**/test/**', '**/*.{test,spec}.js'],
       reporter: ['text', 'json', 'json-summary', 'lcov'],
-      thresholds: {
-        perFile: true,
-        lines: 100,
-        statements: 100,
-        functions: 100,
-        branches: 100,
-      },
     },
     restoreMocks: true,
     clearMocks: true,

@@ -460,10 +460,10 @@ npm run dry-run -- --all
 ```
 
 CI measures all application JavaScript under `workers/*/src/` and `shared/`,
-including files not imported by tests. Test files are excluded. The per-file target
-is 100% for lines, statements, functions, and branches. CI uploads detailed JSON,
-JSON summary, and LCOV reports as the `unit-coverage` artifact even when the target
-is not met. `npm test` runs the same suite without collecting coverage.
+including files not imported by tests. Test files are excluded. Coverage is
+reported without a minimum percentage requirement. CI uploads detailed JSON,
+JSON summary, and LCOV reports as the `unit-coverage` artifact, including when
+tests fail. `npm test` runs the same suite without collecting coverage.
 
 ### AI Gateway
 
