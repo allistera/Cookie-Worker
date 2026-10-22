@@ -18,6 +18,14 @@ export function sanitizeMetric(metric, service) {
     ...(metric.name === 'worker.duration' ? { unit: 'millisecond' } : {}),
     attributes: {
       service,
+      // Preserve deployment labels added by the SDK before this hook, so
+      // environment/release filters include these metrics.
+      ...(typeof source['sentry.environment'] === 'string'
+        ? { 'sentry.environment': source['sentry.environment'] }
+        : {}),
+      ...(typeof source['sentry.release'] === 'string'
+        ? { 'sentry.release': source['sentry.release'] }
+        : {}),
       trigger:
         typeof source.trigger === 'string' && triggers.has(source.trigger)
           ? source.trigger

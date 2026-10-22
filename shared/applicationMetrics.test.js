@@ -9,6 +9,56 @@ import { sanitizeMetric, withApplicationMetrics } from './applicationMetrics.js'
 beforeEach(() => vi.resetAllMocks());
 
 describe('application metrics', () => {
+  it('preserves deployment filters without retaining private SDK context', () => {
+    expect(
+      sanitizeMetric(
+        {
+          name: 'worker.invocations',
+          value: 1,
+          type: 'counter',
+          attributes: {
+            trigger: 'scheduled',
+            outcome: 'success',
+            'sentry.environment': 'production',
+            'sentry.release': 'release-123',
+            'user.email': 'private@example.com',
+            'sentry.replay_id': 'private-session',
+            url: 'https://example.com/private',
+          },
+        },
+        'test-worker',
+      ),
+    ).toEqual({
+      name: 'worker.invocations',
+      value: 1,
+      type: 'counter',
+      attributes: {
+        service: 'test-worker',
+        trigger: 'scheduled',
+        outcome: 'success',
+        'sentry.environment': 'production',
+        'sentry.release': 'release-123',
+      },
+    });
+  });
+
+  it('drops malformed deployment metadata', () => {
+    expect(
+      sanitizeMetric(
+        {
+          name: 'worker.invocations',
+          value: 1,
+          type: 'counter',
+          attributes: {
+            'sentry.environment': { private: 'mail' },
+            'sentry.release': ['private'],
+          },
+        },
+        'test-worker',
+      )?.attributes,
+    ).toEqual({ service: 'test-worker', trigger: 'fetch', outcome: 'error' });
+  });
+
   it('supplies safe defaults when attributes are missing', () => {
     expect(
       sanitizeMetric({ name: 'worker.invocations', value: 1, type: 'counter' }, 'worker'),

@@ -649,10 +649,14 @@ exceptions have outcome `error`; other returned responses have outcome `success`
 (use status to distinguish 4xx). Durations measure handler completion, not stream
 consumption or detached `waitUntil` work. A caught background failure still uses
 existing error reporting. Shared `beforeSendMetric` filtering admits only these
-metric names and fixed attributes, excluding request URLs, user identity, email
+metric names, fixed attributes, and SDK environment/release labels so dashboard
+filters work, excluding request URLs, user identity, email
 content, arbitrary SDK context, and secrets.
 
 After deployment, invoke each service and check these names in Sentry's
 Application Metrics view. Local runs with a DSN can emit metrics; leave
 `SENTRY_DSN` unset locally to avoid mixing development traffic with production.
 Dashboard ingestion requires authenticated Sentry access and is not verified by CI.
+When investigating missing metrics from older releases, clear the environment
+filter: those releases stripped the SDK environment/release labels. Successful
+envelope responses verify transport acceptance, not dashboard visibility.
