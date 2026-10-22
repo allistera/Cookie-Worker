@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BodyTooLargeError,
   InvalidJsonError,
@@ -173,6 +173,34 @@ describe('bounded JSON streams', () => {
     await expect(
       readJsonBody(new Request('https://example.invalid', { method: 'POST', body: '{' })),
     ).rejects.toBeInstanceOf(InvalidJsonError);
+  });
+});
+
+describe('failed stream cancellation', () => {
+  it.each(['json', 'multipart'])('preserves the size error for %s bodies', async (kind) => {
+    const cancel = vi.fn(() => Promise.reject(new Error('source cleanup failed')));
+    const request = new Request('https://example.invalid', {
+      method: 'POST',
+      headers: {
+        'content-type': kind === 'json' ? 'application/json' : 'multipart/form-data; boundary=test',
+      },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(101));
+        },
+        cancel,
+      }),
+      ...{ duplex: 'half' },
+    });
+
+    const read =
+      kind === 'json'
+        ? readJsonBody(request, { maxBytes: 100 })
+        : readFormBody(request, { maxBytes: 100, fields: [] });
+
+    await expect(read).rejects.toBeInstanceOf(BodyTooLargeError);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(request.body?.locked).toBe(false);
   });
 });
 
