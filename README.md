@@ -461,9 +461,12 @@ npm run dry-run -- --all
 
 CI measures all application JavaScript under `workers/*/src/` and `shared/`,
 including files not imported by tests. Test files are excluded. Coverage is
-reported without a minimum percentage requirement. CI uploads detailed JSON,
-JSON summary, and LCOV reports as the `unit-coverage` artifact, including when
-tests fail. `npm test` runs the same suite without collecting coverage.
+reported without a minimum percentage requirement. The GitHub Actions job summary
+shows overall line, statement, function, and branch coverage. Download the
+`unit-coverage` artifact and open `lcov-report/index.html` to browse coverage by
+file; detailed JSON, JSON summary, and LCOV data are also included. Reports are
+generated and published even when tests fail. `npm test` runs the same suite
+without collecting coverage.
 
 ### AI Gateway
 
