@@ -10,3 +10,7 @@ SENTRY_DSN=""
 
 # Required to retain inbound attachment bytes in Cookie-Web's private Blob store.
 BLOB_READ_WRITE_TOKEN=""
+
+# Optional, production only. Read-only Email Routing token for the catch-all
+# routing drift check; it runs only with EMAIL_ROUTING_ZONE_ID set as well.
+CLOUDFLARE_EMAIL_ROUTING_TOKEN=""

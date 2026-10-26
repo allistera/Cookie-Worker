@@ -1,5 +1,6 @@
 import {
   captureHandledException as captureShared,
+  captureHandledMessage as captureSharedMessage,
   createSentryOptions as createSharedOptions,
 } from '../../../shared/sentry.js';
 
@@ -55,4 +56,20 @@ export function createSentryOptions(env) {
  */
 export function captureHandledException(operation, err, secrets = [], extra = {}) {
   captureShared(SERVICE, operation, err, secrets, extra);
+}
+
+/**
+ * Report a standing inbound-health condition: a stale feed, a stuck backlog, or
+ * routing drift. Each condition has a fixed fingerprint, so its repeats on every
+ * cron tick stay one issue.
+ *
+ * @param {string} condition Stable name of the condition; it becomes the fingerprint.
+ * @param {string} message Fixed text; variable detail belongs in `extra`.
+ * @param {Record<string, unknown>} [extra]
+ */
+export function captureInboundHealthIssue(condition, message, extra = {}) {
+  captureSharedMessage(SERVICE, 'inbound_health', message, {
+    fingerprint: [SERVICE, 'inbound_health', condition],
+    extra,
+  });
 }

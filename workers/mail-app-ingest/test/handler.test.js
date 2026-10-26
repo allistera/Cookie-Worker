@@ -11,6 +11,28 @@ import worker, {
 import { MAX_ENRICHMENT_ATTEMPTS } from '../src/enrich.js';
 import { simpleFixture, fakeMessage } from './helpers.js';
 
+// One text part and one base64 PDF whose bytes decode to POSTER-MARKER.
+const attachmentFixture = `From: Alice <alice@example.com>
+To: Inbox <inbox@example.org>
+Subject: With a file
+Message-ID: <attachment@example.com>
+Date: Wed, 08 Jul 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+
+See the attached file.
+--b1
+Content-Type: application/pdf; name="plan.pdf"
+Content-Disposition: attachment; filename="plan.pdf"
+Content-Transfer-Encoding: base64
+
+UE9TVEVSLU1BUktFUg==
+--b1--
+`;
+
 vi.mock('postgres', () => ({
   default: vi.fn(),
 }));
@@ -27,6 +49,8 @@ vi.mock('../../../shared/meiliSync.js', () => ({ syncMessageToMeili, syncMessage
 
 vi.mock('@sentry/cloudflare', () => ({
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  withMonitor: vi.fn((_slug, callback) => callback()),
   withSentry: vi.fn((_options, handler) => handler),
 }));
 
@@ -320,6 +344,24 @@ describe('email handler', () => {
     expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({
       event: 'store_skipped_oversize',
     });
+  });
+
+  // With no blob token every upload fails before any bytes leave the Worker, so
+  // the report is the only trace of the attachment and must name it by index.
+  test('reports each failed attachment upload with its message id and index, never its bytes', async () => {
+    postgres.mockReturnValue(sqlReturning());
+    const message = fakeMessage(attachmentFixture);
+    await worker.email(message, env(), ctx());
+    expect(message.forward).toHaveBeenCalledOnce();
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    const [error, options] = sentry.captureException.mock.calls[0];
+    expect(error.message).toBe('BLOB_READ_WRITE_TOKEN is not configured');
+    expect(options).toMatchObject({
+      tags: { service: 'mail-app-ingest', operation: 'attachment_upload' },
+      extra: { message_id: '<attachment@example.com>', attachment_index: 0 },
+    });
+    expect(JSON.stringify(sentry.captureException.mock.calls)).not.toContain('POSTER-MARKER');
+    expect(JSON.stringify(mockedConsoleLog().mock.calls)).not.toContain('POSTER-MARKER');
   });
 
   test('does not log bodies or connection strings on failure', async () => {
@@ -705,6 +747,73 @@ describe('scheduled recovery', () => {
     // The owner's address is personal data and stays out of Sentry.
     expect(JSON.stringify(sentry.captureException.mock.calls[0][1])).not.toContain('owner_email');
     expect(clients.every((sql) => sql.end.mock.calls.length === 1)).toBe(true);
+  });
+});
+
+describe('scheduled monitoring', () => {
+  beforeEach(() => {
+    postgres.mockReset();
+    sentry.captureException.mockReset();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  test('checks each cron schedule in under its own stable monitor', async () => {
+    postgres.mockReturnValue(sqlReturning());
+    await worker.scheduled(
+      /** @type {any} */ ({ cron: '*/15 * * * *' }),
+      env({ OPENAI_API_KEY: 'key' }),
+      ctx(),
+    );
+    expect(sentry.withMonitor).toHaveBeenLastCalledWith(
+      'mail-app-ingest-sweeps',
+      expect.any(Function),
+      {
+        schedule: { type: 'crontab', value: '*/15 * * * *' },
+        checkinMargin: 5,
+        maxRuntime: 10,
+        timezone: 'UTC',
+      },
+    );
+
+    await worker.scheduled(/** @type {any} */ ({ cron: '7,22,37,52 * * * *' }), env(), ctx());
+    expect(sentry.withMonitor).toHaveBeenLastCalledWith(
+      'mail-app-ingest-workspace-search-drift',
+      expect.any(Function),
+      expect.objectContaining({ schedule: { type: 'crontab', value: '7,22,37,52 * * * *' } }),
+    );
+  });
+
+  // A health check that throws must not stop the ingest sweeps. The failing query
+  // here is the stale-inbound check; the recovery sweep must still run.
+  test('still runs the ingest sweeps when a health check throws', async () => {
+    const base = sqlReturning();
+    /** @type {any} */
+    const sql = vi.fn(async (strings, ...values) => {
+      if (strings.join('?').includes('max(m.created_at)')) throw new Error('health query failed');
+      return base(strings, ...values);
+    });
+    sql.begin = base.begin;
+    sql.end = base.end;
+    sql.json = base.json;
+    postgres.mockReturnValue(sql);
+
+    await expect(
+      worker.scheduled(
+        /** @type {any} */ ({ cron: '*/15 * * * *' }),
+        env({ OPENAI_API_KEY: 'key' }),
+        ctx(),
+      ),
+    ).resolves.toBeUndefined();
+
+    const ranRecovery = base.mock.calls.some((call) =>
+      call[0].join('?').includes("ai.status IN ('pending', 'failed')"),
+    );
+    expect(ranRecovery).toBe(true);
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { service: 'mail-app-ingest', operation: 'inbound_health' },
+      extra: { check: 'stale_inbound' },
+    });
   });
 });
 

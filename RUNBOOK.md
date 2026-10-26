@@ -82,9 +82,21 @@ AI failures do not block forwarding or storage. Inspect the OpenAI response, rat
 
 ## Email routing
 
-Cloudflare Email Routing must target this Worker for the intended recipient address. The Worker validates the incoming recipient against `OWNER_EMAIL`.
+Cloudflare Email Routing must target this Worker for the intended recipient address, or send everything to it through the catch-all rule. The Worker does not check the envelope recipient. It stores each message for the user whose `users.email` equals `OWNER_EMAIL`; if no user matches, storage fails, the message is not forwarded, and the sending MTA retries it.
 
-If messages are not stored, confirm the exact recipient address, Hyperdrive project, and current database schema. Delivery may still succeed through the forwarding fallback.
+If messages are not stored, confirm the exact recipient address, Hyperdrive project, and current database schema. Messages over the 10 MiB parse cap, or with too many MIME boundary lines, are forwarded without being stored; every other message is forwarded only after its storage commits.
+
+## Inbound health
+
+Two Sentry cron monitors watch the scheduled work: `mail-app-ingest-sweeps` (every 15 minutes) and `mail-app-ingest-workspace-search-drift` (at 7, 22, 37 and 52 past the hour). Sentry creates each monitor on its first check-in. A cron that stops running shows as a missed check-in.
+
+After the sweeps, the 15-minute run also checks inbound health. Each failing condition is reported as an error-level Sentry message with a fixed fingerprint, so repeats on later ticks stay one issue:
+
+- `Inbound mail has gone quiet` (`inbound-stale`): the newest stored inbound message is older than `INBOUND_STALE_HOURS` (default 12). That default sits above the 120-day p99 gap of 6.4 hours. Gaps of 16.7, 17.9 and 20.4 hours have each occurred, so a natural quiet spell that long will alert. Check the catch-all rule first.
+- `Message enrichment has stayed pending` (`pending-enrichment`): a message's classification has been pending for longer than `PENDING_ENRICHMENT_MAX_MINUTES` (default 60). Check `OPENAI_API_KEY`, the shared AI budget, and recent `ai_recovery` reports.
+- `Catch-all email routing no longer delivers to mail-app-ingest` (`email-routing-drift`): the catch-all rule is disabled or has no worker action naming this Worker. The check needs both `CLOUDFLARE_EMAIL_ROUTING_TOKEN` (a secret) and `EMAIL_ROUTING_ZONE_ID` (a variable). Without them it is skipped, and one log line says so. The token needs zone-scoped read access to Email Routing rules; confirm the exact permission name in Cloudflare's token form.
+
+A check that cannot run is reported as an `inbound_health` exception. The checks never throw, and a failing check does not stop the sweeps. The owner's address is never sent to Sentry.
 
 ## Local development
 
