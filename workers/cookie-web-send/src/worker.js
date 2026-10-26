@@ -37,7 +37,7 @@ import {
 import { handleFollowUp } from './followUp.js';
 import { flushWithOutOfOffice, runOutOfOfficeInBackground } from './outOfOffice.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
-import { sendAutoReply } from './autoReplyProvider.js';
+import { sendAutoReply, USER_SEND_PROVIDER_TIMEOUT_MS } from './autoReplyProvider.js';
 import { DeliveryError, findDelivery } from './deliveryLedger.js';
 
 // Names the single ScheduledSendClock instance (see scheduledSendClock.js).
@@ -135,6 +135,8 @@ export function createSendServices(env, ctx) {
         },
         key,
         env.RESEND_API_KEY,
+        fetch,
+        USER_SEND_PROVIDER_TIMEOUT_MS,
       ),
     indexSentMessage: (messageUuid) =>
       indexAfterResponse(env, ctx, (sql) => syncMessageToMeili(sql, env, messageUuid)),

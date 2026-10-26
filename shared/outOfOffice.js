@@ -146,6 +146,51 @@ export function senderIdentity(configuredFrom) {
   return normaliseAddress(/<([^<>]+)>\s*$/.exec(configuredFrom)?.[1] ?? configuredFrom);
 }
 
+/**
+ * The first header with this name (case-insensitive), or null. Stored headers
+ * are the {key, value} entries parse.js keeps.
+ * @param {unknown} headers
+ * @param {string} name
+ * @returns {string | null}
+ */
+function headerValue(headers, name) {
+  if (!Array.isArray(headers)) return null;
+  const entry = headers.find(
+    (header) => typeof header?.key === 'string' && header.key.toLowerCase() === name,
+  );
+  return typeof entry?.value === 'string' ? entry.value : null;
+}
+
+/**
+ * The one mailbox a header names, reduced to its bare address. Display names and
+ * comments are dropped. A list of several addresses, or anything that is not a
+ * single valid address, names no reply target.
+ * @param {string | null} value
+ * @returns {string | null}
+ */
+function singleMailboxAddress(value) {
+  if (value === null) return null;
+  const text = value.replace(/\([^()]*\)/g, ' ').trim();
+  const angled = [...text.matchAll(/<([^<>]*)>/g)].map((match) => match[1].trim());
+  if (angled.length > 1 || (angled.length === 0 && text.includes(','))) return null;
+  return normaliseAddress(angled.length === 1 ? angled[0] : text);
+}
+
+/**
+ * Where an automatic reply goes: the address in the From header. The envelope
+ * sender is never used. Behind Gmail forwarding it is Gmail's rewrite address
+ * rather than the sender's.
+ *
+ * Reply-To is deliberately not followed. It is not covered by the sender's DKIM
+ * signature unless the sender signs it, so following it would let an
+ * unauthenticated header choose where an automatic reply is delivered.
+ * @param {unknown} headers
+ * @returns {string | null}
+ */
+export function replyTargetAddress(headers) {
+  return singleMailboxAddress(headerValue(headers, 'from'));
+}
+
 /** @param {any} message @param {any} settings @param {string} from @param {Date | string | number} now */
 export function autoReplySuppression(message, settings, from, now) {
   if (outOfOfficeStatus(settings, now) !== 'active') return 'inactive';
@@ -173,17 +218,28 @@ export function autoReplySuppression(message, settings, from, now) {
     return 'screened';
   if (message.ai_status !== 'completed' || message.spam_verdict !== 'inbox')
     return 'unclassified_or_spam';
-  const recipient = normaliseAddress(message.envelope_from);
+  // Unknown header representation is not evidence of eligibility.
+  if (!Array.isArray(message.headers)) return 'missing_headers';
+  for (const header of message.headers) {
+    if (typeof header?.key !== 'string' || typeof header?.value !== 'string')
+      return 'invalid_headers';
+  }
+  // The reply goes to the address the sender named in the headers, never to the
+  // envelope sender (see replyTargetAddress).
+  const target = replyTargetAddress(message.headers);
   const author = normaliseAddress(message.from_address);
-  if (!recipient || !author) return 'invalid_or_null_sender';
-  // The envelope destination is an alias delivered to this owner by ingest.
-  // Require it in To/Cc as well: Bcc-only mail must not expose the mailbox via
-  // an automatic reply. Do not invent ownership from a spoofable header alone.
-  const mailbox = normaliseAddress(message.envelope_to);
+  if (!target || !author) return 'invalid_or_null_sender';
+  // Mail must be addressed to the owner: To or Cc names the owner's own address
+  // (users.email) or the address it was delivered to (envelope_to, which Gmail
+  // forwarding does not keep in To). Bcc-only mail must not expose the mailbox via
+  // an automatic reply, and no ownership is invented from a spoofable header alone.
+  const owned = new Set(
+    [normaliseAddress(message.owner_email), normaliseAddress(message.envelope_to)].filter(Boolean),
+  );
   const visibleRecipients = ['to', 'cc'].flatMap((kind) =>
     Array.isArray(message.recipients?.[kind]) ? message.recipients[kind] : [],
   );
-  if (!mailbox || !visibleRecipients.some((entry) => normaliseAddress(entry?.address) === mailbox))
+  if (!visibleRecipients.some((entry) => owned.has(normaliseAddress(entry?.address))))
     return 'not_addressed_to_mailbox';
   const self = new Set(
     [
@@ -192,19 +248,13 @@ export function autoReplySuppression(message, settings, from, now) {
       senderIdentity(from),
     ].filter(Boolean),
   );
-  if (!senderIdentity(from) || self.has(recipient) || self.has(author)) return 'self';
+  if (!senderIdentity(from) || self.has(target) || self.has(author)) return 'self';
   if (
-    /^(?:mailer-daemon|postmaster|no[._-]?reply|do[._-]?not[._-]?reply)(?:[+.-]|@)/i.test(
-      recipient,
-    ) ||
+    /^(?:mailer-daemon|postmaster|no[._-]?reply|do[._-]?not[._-]?reply)(?:[+.-]|@)/i.test(target) ||
     /^(?:mailer-daemon|postmaster|no[._-]?reply|do[._-]?not[._-]?reply)(?:[+.-]|@)/i.test(author)
   )
     return 'automated_sender';
-  // Unknown header representation is not evidence of eligibility.
-  if (!Array.isArray(message.headers)) return 'missing_headers';
   for (const header of message.headers) {
-    if (typeof header?.key !== 'string' || typeof header?.value !== 'string')
-      return 'invalid_headers';
     const key = header.key.toLowerCase();
     const value = header.value.trim().toLowerCase();
     if (

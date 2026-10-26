@@ -41,5 +41,16 @@
     "typescript": "^7.0.2",
     "vitest": "^5.0.5",
     "wrangler": "^4.151.2"
+  },
+  "overrides": {
+    "@vercel/blob": {
+      "undici": "6.29.1"
+    },
+    "@vercel/cli-config": {
+      "zod": "4.6.7"
+    },
+    "miniflare": {
+      "undici": "7.30.1"
+    }
   }
 }

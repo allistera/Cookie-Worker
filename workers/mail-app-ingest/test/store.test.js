@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { PROMPT_VERSION } from '../src/enrich.js';
 import { emailAlreadyStored, storeEmail } from '../src/store.js';
 import { createMockSql } from './helpers.js';
 
@@ -51,6 +52,8 @@ describe('storeEmail', () => {
     expect(sql.transactions[0][3].values).toContainEqual({ __pgJson: { to: [], cc: [], bcc: [] } });
     expect(sql.transactions[0][3].values).toContainEqual({ __pgJson: [] });
     expect(sql.transactions[0][4].text).toContain('INSERT INTO message_ai');
+    // The pending row carries the same prompt version that enrichment writes.
+    expect(sql.transactions[0][4].values).toContain(PROMPT_VERSION);
     expect(sql.transactions[0][5].text).toContain('FROM label_rules');
   });
 
@@ -107,6 +110,8 @@ describe('storeEmail', () => {
     expect(sql.transactions[0][3].text).toContain('thread_id =');
     expect(sql.transactions[0][3].text).toContain('sent_at <');
     expect(sql.transactions[0][4].text).toContain('INSERT INTO message_ai');
+    // The pending row carries the same prompt version that enrichment writes.
+    expect(sql.transactions[0][4].values).toContain(PROMPT_VERSION);
     expect(sql.transactions[0][5].text).toContain('FROM label_rules');
     expect(sql.transactions[0][6].text).toContain('UPDATE threads');
   });

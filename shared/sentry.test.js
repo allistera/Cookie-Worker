@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('@sentry/cloudflare', () => ({
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
   setTag: vi.fn(),
 }));
 
 /** @type {any} */
 const sentry = await import('@sentry/cloudflare');
-const { captureHandledException, createSentryOptions, redact, tagTrigger } =
+const { captureHandledException, captureHandledMessage, createSentryOptions, redact, tagTrigger } =
   await import('./sentry.js');
 
 const DSN = 'https://public@example.ingest.sentry.io/1';
@@ -169,6 +170,21 @@ describe('captureHandledException', () => {
     captureHandledException('a-worker', 'store', 'plain failure');
 
     expect(sentry.captureException.mock.calls[0][0]).toMatchObject({ message: 'plain failure' });
+  });
+});
+
+describe('captureHandledMessage', () => {
+  test('reports an error-level message under its fingerprint, tagged by service and operation', () => {
+    captureHandledMessage('mail-app-ingest', 'inbound_health', 'Inbound mail has gone quiet', {
+      fingerprint: ['mail-app-ingest', 'inbound_health', 'stale-inbound'],
+      extra: { age_hours: 13 },
+    });
+    expect(sentry.captureMessage).toHaveBeenCalledWith('Inbound mail has gone quiet', {
+      level: 'error',
+      fingerprint: ['mail-app-ingest', 'inbound_health', 'stale-inbound'],
+      tags: { service: 'mail-app-ingest', operation: 'inbound_health' },
+      extra: { age_hours: 13 },
+    });
   });
 });
 

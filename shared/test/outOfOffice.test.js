@@ -8,6 +8,8 @@ import {
   outOfOfficeStatus,
 } from '../outOfOffice.js';
 
+const FROM_HEADER = { key: 'From', value: 'Sender <sender@example.com>' };
+
 const settings = {
   revision: 1,
   enabled: true,
@@ -27,7 +29,7 @@ const message = {
   envelope_to: 'mail@example.com',
   recipients: { to: [{ address: 'mail@example.com' }], cc: [] },
   owner_email: 'owner@example.com',
-  headers: [],
+  headers: [FROM_HEADER],
   ai_status: 'completed',
   spam_verdict: 'inbox',
   is_sent: false,
@@ -141,11 +143,17 @@ describe('eligibility fails closed', () => {
     [{ screening_status: 'pending' }, 'screened'],
     [{ is_deleted: true }, 'not_inbound'],
     [{ is_sent: true }, 'not_inbound'],
-    [{ envelope_from: '<>' }, 'invalid_or_null_sender'],
-    [{ envelope_from: '' }, 'invalid_or_null_sender'],
-    [{ envelope_from: 'mail@example.com' }, 'self'],
+    [{ headers: [{ key: 'From', value: '<>' }] }, 'invalid_or_null_sender'],
+    [{ headers: [{ key: 'From', value: '' }] }, 'invalid_or_null_sender'],
+    [{ headers: [] }, 'invalid_or_null_sender'],
+    [{ headers: [{ key: 'Reply-To', value: 'not an address' }] }, 'invalid_or_null_sender'],
+    [
+      { headers: [{ key: 'From', value: 'Sender <a@example.com>, Other <b@example.com>' }] },
+      'invalid_or_null_sender',
+    ],
+    [{ headers: [{ key: 'From', value: 'Cookie <mail@example.com>' }] }, 'self'],
     [{ from_address: 'OWNER@example.com' }, 'self'],
-    [{ envelope_from: 'no-reply@example.com' }, 'automated_sender'],
+    [{ headers: [{ key: 'From', value: 'no-reply@example.com' }] }, 'automated_sender'],
     [{ headers: null }, 'missing_headers'],
     [
       { recipients: { to: [], cc: [], bcc: [{ address: 'mail@example.com' }] } },
@@ -154,22 +162,22 @@ describe('eligibility fails closed', () => {
     [{ recipients: { to: [{ address: 'someone-else@example.com' }] } }, 'not_addressed_to_mailbox'],
   ])('suppresses unsafe arrival %j', (changes, expected) => expect(reason(changes)).toBe(expected));
   test.each([
-    ['Auto-Submitted', 'auto-replied'],
-    ['Auto-Submitted', 'auto-generated'],
-    ['X-Auto-Response-Suppress', 'All'],
-    ['List-Id', 'list.example.com'],
-    ['List-Unsubscribe', '<https://example.com>'],
-    ['Precedence', 'bulk'],
-    ['Precedence', 'list'],
-    ['X-Loop', 'anything'],
-    ['X-Autoreply', 'yes'],
-    ['Content-Type', 'multipart/report; report-type=delivery-status'],
-    ['Return-Path', '<>'],
-  ])('suppresses loop/list header %s', (key, value) => {
-    expect(reason({ headers: [{ key, value }] })).not.toBeNull();
+    ['Auto-Submitted', 'auto-replied', 'automated'],
+    ['Auto-Submitted', 'auto-generated', 'automated'],
+    ['X-Auto-Response-Suppress', 'All', 'suppressed_header'],
+    ['List-Id', 'list.example.com', 'list_or_loop'],
+    ['List-Unsubscribe', '<https://example.com>', 'list_or_loop'],
+    ['Precedence', 'bulk', 'bulk'],
+    ['Precedence', 'list', 'bulk'],
+    ['X-Loop', 'anything', 'list_or_loop'],
+    ['X-Autoreply', 'yes', 'list_or_loop'],
+    ['Content-Type', 'multipart/report; report-type=delivery-status', 'delivery_report'],
+    ['Return-Path', '<>', 'null_return_path'],
+  ])('suppresses loop/list header %s: %s', (key, value, expected) => {
+    expect(reason({ headers: [FROM_HEADER, { key, value }] })).toBe(expected);
   });
   test('accepts ordinary mail and normalizes only the address case/whitespace', () => {
-    expect(reason({ headers: [{ key: 'Auto-Submitted', value: 'no' }] })).toBeNull();
+    expect(reason({ headers: [FROM_HEADER, { key: 'Auto-Submitted', value: 'no' }] })).toBeNull();
     expect(reason({ recipients: { to: [], cc: [{ address: 'MAIL@example.com' }] } })).toBeNull();
     expect(normaliseAddress(' Sender+tag@Example.COM ')).toBe('sender+tag@example.com');
     expect(normaliseAddress('sender@example.com\r\nBcc: other@example.com')).toBeNull();

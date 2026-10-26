@@ -4,16 +4,21 @@ import {
   flushWithOutOfOffice,
   runOutOfOfficeInBackground,
 } from '../src/outOfOffice.js';
-import { sendAutoReply } from '../src/autoReplyProvider.js';
+import {
+  AUTO_REPLY_PROVIDER_TIMEOUT_MS,
+  sendAutoReply,
+  USER_SEND_PROVIDER_TIMEOUT_MS,
+} from '../src/autoReplyProvider.js';
 
 describe('automatic provider payload and failure contract', () => {
   test('sends exactly the reviewed text, configured identity, loop headers and stable key', async () => {
     const payload = autoReplyPayload(
       { subject: 'Away', text: '<b>Literal text</b>' },
       {
-        envelope_from: 'Sender@example.com',
+        // Gmail's forwarding rewrite address is never the reply target.
+        envelope_from: 'owner+caf_=sender=example.com@gmail.com',
         message_id: '<source@example.com>',
-        headers: [{ key: 'reply-to', value: 'attacker@example.com' }],
+        headers: [{ key: 'From', value: 'Sender <Sender@example.com>' }],
       },
       'Cookie <mail@example.com>',
     );
@@ -98,6 +103,56 @@ describe('automatic provider payload and failure contract', () => {
       status: 'retry',
       providerId: null,
     });
+  });
+  test('gives a user send the 20-second provider budget and keeps automatic replies at 10 seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      // The provider never answers; only the adapter's own timer can end the call.
+      const stalled = /** @type {typeof fetch} */ (
+        (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            });
+          })
+      );
+      /** @param {number} ms */
+      const elapse = async (ms) => {
+        await vi.advanceTimersByTimeAsync(ms);
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      };
+      expect(AUTO_REPLY_PROVIDER_TIMEOUT_MS).toBe(10_000);
+      expect(USER_SEND_PROVIDER_TIMEOUT_MS).toBe(20_000);
+      const settled = { automatic: false, user: false, capped: false };
+      const automatic = sendAutoReply({}, 'auto-key', 'test', stalled).then(() => {
+        settled.automatic = true;
+      });
+      const user = sendAutoReply(
+        {},
+        'user-key',
+        'test',
+        stalled,
+        USER_SEND_PROVIDER_TIMEOUT_MS,
+      ).then(() => {
+        settled.user = true;
+      });
+      // A caller asking for more than the user budget is capped at it.
+      const capped = sendAutoReply({}, 'capped-key', 'test', stalled, 60_000).then(() => {
+        settled.capped = true;
+      });
+
+      await elapse(9_999);
+      expect(settled).toEqual({ automatic: false, user: false, capped: false });
+      await elapse(1);
+      expect(settled).toEqual({ automatic: true, user: false, capped: false });
+      await elapse(9_999);
+      expect(settled).toEqual({ automatic: true, user: false, capped: false });
+      await elapse(1);
+      expect(settled).toEqual({ automatic: true, user: true, capped: true });
+      await Promise.all([automatic, user, capped]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

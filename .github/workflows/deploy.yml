@@ -45,7 +45,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - run: npx --yes npm@11 ci
       - run: npm run lint
       - run: npm run types -- --all --check
       - run: npm run typecheck
@@ -65,7 +65,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - run: npx --yes npm@11 ci
 
       - name: Validate selected Worker
         if: inputs.worker != 'all'

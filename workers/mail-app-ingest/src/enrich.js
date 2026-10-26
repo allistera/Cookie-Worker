@@ -4,6 +4,7 @@ import { parseOutputJson, responsesUrl } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { AUTO_ARCHIVE_THRESHOLD, autoArchiveRules } from '../../../shared/autoArchive.js';
 import { applyAutoArchive } from './autoArchive.js';
+import { ensureSpamLabel } from '../../../shared/spamLabel.js';
 
 export const AI_FETCH_TIMEOUT_MS = 60_000;
 export const AI_MODEL = 'gpt-5.6-luna';
@@ -433,19 +434,11 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
         `;
       }
       if (verdict === 'spam') {
-        const [spamLabel] = await tx`
-          INSERT INTO labels (user_id, name, color, kind, description, auto_apply)
-          SELECT m.user_id, 'Spam', '#64748b', 'system', 'High-confidence spam detected by Cookie AI', false
-          FROM messages m WHERE m.id = ${messageUuid}
-          ON CONFLICT (user_id, name) DO UPDATE
-          SET auto_apply = false
-          WHERE labels.kind = 'system'
-          RETURNING id
-        `;
-        if (spamLabel) {
+        const spamLabelId = await ensureSpamLabel(tx, messageUuid);
+        if (spamLabelId) {
           await tx`
             INSERT INTO message_labels (message_id, label_id, source, confidence, model, prompt_version)
-            VALUES (${messageUuid}, ${spamLabel.id}, 'ai', ${score}, ${model}, ${PROMPT_VERSION})
+            VALUES (${messageUuid}, ${spamLabelId}, 'ai', ${score}, ${model}, ${PROMPT_VERSION})
             ON CONFLICT (message_id, label_id) DO NOTHING
           `;
         }

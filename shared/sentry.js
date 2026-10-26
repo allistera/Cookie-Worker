@@ -124,6 +124,25 @@ export function captureHandledException(service, operation, err, secrets = [], e
 }
 
 /**
+ * Report a condition the Worker detected without an exception, such as a feed
+ * that has gone quiet. The fingerprint groups every occurrence of one condition
+ * into one issue, so keep `message` fixed and put the variable detail in `extra`.
+ *
+ * @param {string} service
+ * @param {string} operation
+ * @param {string} message
+ * @param {{fingerprint: string[], extra?: Record<string, unknown>}} options
+ */
+export function captureHandledMessage(service, operation, message, { fingerprint, extra = {} }) {
+  Sentry.captureMessage(message, {
+    level: 'error',
+    fingerprint,
+    tags: { service, operation },
+    extra,
+  });
+}
+
+/**
  * @param {unknown} err
  * @param {...(string | undefined)} secrets
  */

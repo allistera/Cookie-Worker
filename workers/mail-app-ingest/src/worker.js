@@ -11,6 +11,7 @@ import {
 } from './searchDriftSweep.js';
 import { purgeExpiredSpam } from './spamRetentionSweep.js';
 import { purgeExpiredNotificationEvents } from './notificationEventsSweep.js';
+import { runInboundHealthChecks } from './inboundHealth.js';
 import { createSql, endSql } from '../../../shared/db.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
@@ -31,6 +32,26 @@ export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 // the shared inbound AI budget (exhaustion defers without spending an
 // attempt), so this only bounds how fast a backlog drains, not what it costs.
 export const RECOVERY_BATCH_SIZE = 10;
+// One stable Sentry cron monitor per schedule. Sentry creates each monitor from
+// its schedule on the first check-in, then reports a missed or failed run.
+export const SWEEPS_MONITOR = { slug: 'mail-app-ingest-sweeps', schedule: '*/15 * * * *' };
+export const WORKSPACE_SWEEP_MONITOR = {
+  slug: 'mail-app-ingest-workspace-search-drift',
+  schedule: WORKSPACE_SWEEP_CRON,
+};
+
+/**
+ * @param {string} schedule
+ * @returns {NonNullable<Parameters<typeof Sentry.withMonitor>[2]>}
+ */
+function monitorConfig(schedule) {
+  return {
+    schedule: { type: 'crontab', value: schedule },
+    checkinMargin: 5,
+    maxRuntime: 10,
+    timezone: 'UTC',
+  };
+}
 
 const worker = {
   /**
@@ -283,28 +304,43 @@ const worker = {
    */
   async scheduled(controller, env, ctx) {
     if (controller.cron === WORKSPACE_SWEEP_CRON) {
-      const repair = sweepWorkspaceSearchDrift(env, { createSql });
-      ctx.waitUntil(repair);
-      await repair;
+      await Sentry.withMonitor(
+        WORKSPACE_SWEEP_MONITOR.slug,
+        () => {
+          const repair = sweepWorkspaceSearchDrift(env, { createSql });
+          ctx.waitUntil(repair);
+          return repair;
+        },
+        monitorConfig(WORKSPACE_SWEEP_MONITOR.schedule),
+      );
       return;
     }
     configureOpenAi(env);
-    // The sweeps run side by side so one failure cannot stop another, and the
-    // handler awaits them all so the cron invocation lives until they finish
-    // rather than ending at return with the work cut short.
-    const sweeps = Promise.allSettled([
-      recoverPendingEnrichment(env),
-      sweepSearchDrift(env, { createSql }),
-      purgeExpiredSpam(env, { createSql }),
-      purgeExpiredNotificationEvents(env, { createSql }),
-    ]);
-    ctx.waitUntil(sweeps);
-    for (const result of await sweeps) {
-      // Each sweep reports its own failures; this only catches one that escaped.
-      if (result.status === 'rejected') {
-        captureHandledException('scheduled', result.reason, [env.HYPERDRIVE.connectionString]);
-      }
-    }
+    await Sentry.withMonitor(
+      SWEEPS_MONITOR.slug,
+      async () => {
+        // The sweeps run side by side so one failure cannot stop another, and the
+        // handler awaits them all so the cron invocation lives until they finish
+        // rather than ending at return with the work cut short.
+        const sweeps = Promise.allSettled([
+          recoverPendingEnrichment(env),
+          sweepSearchDrift(env, { createSql }),
+          purgeExpiredSpam(env, { createSql }),
+          purgeExpiredNotificationEvents(env, { createSql }),
+        ]);
+        ctx.waitUntil(sweeps);
+        for (const result of await sweeps) {
+          // Each sweep reports its own failures; this only catches one that escaped.
+          if (result.status === 'rejected') {
+            captureHandledException('scheduled', result.reason, [env.HYPERDRIVE.connectionString]);
+          }
+        }
+        // Only after the ingest sweeps, and it never throws: a failing health
+        // check cannot change the outcome of the sweeps or the cron.
+        await runInboundHealthChecks(env, { createSql });
+      },
+      monitorConfig(SWEEPS_MONITOR.schedule),
+    );
   },
 };
 

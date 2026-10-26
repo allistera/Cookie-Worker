@@ -58,6 +58,7 @@ vi.mock('resend', () => ({
 }));
 vi.mock('../src/autoReplyProvider.js', () => ({
   AUTO_REPLY_PROVIDER_TIMEOUT_MS: 10_000,
+  USER_SEND_PROVIDER_TIMEOUT_MS: 20_000,
   sendAutoReply: async (payload, key) => {
     const sdkPayload = {
       ...payload,

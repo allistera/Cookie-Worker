@@ -248,6 +248,30 @@ describe('durable automatic reply delivery', () => {
   });
 });
 
+describe('reply target for forwarded mail', () => {
+  test('queues the reply to the From address of Gmail-forwarded mail, not the envelope sender', async () => {
+    const { sql, state } = autoReplyDatabase({ queued: false });
+    // Gmail forwarding: To names the owner's own address, envelope_to is the
+    // alias, and the envelope sender is Gmail's +caf_ rewrite address.
+    Object.assign(/** @type {any} */ (state.messages.get(MESSAGE)), {
+      from_address: 'alice@example.com',
+      envelope_from: 'owner+caf_=alice=example.com@gmail.com',
+      envelope_to: 'helloo@allisterantosik.com',
+      recipients: { to: [{ address: 'owner@example.com' }], cc: [] },
+      headers: [{ key: 'From', value: 'Alice <alice@example.com>' }],
+    });
+    expect(await enqueueAutoReplies(sql, FROM)).toBe(1);
+    const deliveries = [...state.deliveries.values()];
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({
+      status: 'pending',
+      reason: null,
+      recipient: 'alice@example.com',
+      payload: { to: ['alice@example.com'] },
+    });
+  });
+});
+
 describe('definite automatic reply rejection', () => {
   test('releases quota and the sender so a later arrival can be sent', async () => {
     const { sql, state, newDelivery } = autoReplyDatabase();

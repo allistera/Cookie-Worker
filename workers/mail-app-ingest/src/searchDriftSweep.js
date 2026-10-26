@@ -98,9 +98,11 @@ export async function sweepWorkspaceSearchDrift(env, deps = {}) {
  * `search_indexed_at IS NULL` is the drift marker: a fresh INSERT has never
  * been indexed, and every handler that changes an indexed field sets the
  * column back to NULL before attempting its own immediate sync. So this sweep
- * is the safety net for two cases — writers that cannot reach Meilisearch at
- * all (Cookie-Web's `api/send.js` runs on Vercel with no Meilisearch client),
- * and writers whose immediate sync failed or was cut short.
+ * is the safety net for writers that index after their response: mail ingest,
+ * cookie-web-send's sent copies, and document and task saves. A sync that
+ * fails, or runs past its waitUntil budget, leaves the row NULL until this
+ * sweep stamps it. (Cookie-Web's `api/send.js` only proxies to cookie-web-send
+ * now and writes no message rows.)
  *
  * The ORDER BY matches `messages_search_drift_idx (created_at) WHERE
  * search_indexed_at IS NULL` from migration 0055 so the partial index is
