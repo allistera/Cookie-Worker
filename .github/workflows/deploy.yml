@@ -42,10 +42,10 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
-      - run: npm ci
+      - run: npx --yes npm@11 ci
       - run: npm run lint
       - run: npm run types -- --all --check
       - run: npm run typecheck
@@ -62,10 +62,10 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
-      - run: npm ci
+      - run: npx --yes npm@11 ci
 
       - name: Validate selected Worker
         if: inputs.worker != 'all'
