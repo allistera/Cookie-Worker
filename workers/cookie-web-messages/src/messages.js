@@ -12,6 +12,7 @@ import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import { privateBlobPathname } from '../../../shared/private-blob.js';
 import { validId } from '../../../shared/pagination.js';
+import { ensureSpamLabel } from '../../../shared/spamLabel.js';
 
 const SIGNED_URL_TTL_MS = 5 * 60 * 1000;
 // Unsubscribe actions can perform outbound POSTs or send email, so cap the
@@ -962,19 +963,11 @@ async function applySpamVerdict(tx, messageId, isSpam) {
       error_code = NULL, processed_at = now(), updated_at = now()
   `;
   if (isSpam) {
-    const [spamLabel] = await tx`
-      INSERT INTO labels (user_id, name, color, kind, description, auto_apply)
-      SELECT m.user_id, 'Spam', '#64748b', 'system', 'High-confidence spam detected by Cookie AI', false
-      FROM messages m WHERE m.id = ${messageId}
-      ON CONFLICT (user_id, name) DO UPDATE
-      SET auto_apply = false
-          WHERE labels.kind = 'system'
-      RETURNING id
-    `;
-    if (spamLabel) {
+    const spamLabelId = await ensureSpamLabel(tx, messageId);
+    if (spamLabelId) {
       await tx`
         INSERT INTO message_labels (message_id, label_id, source)
-        VALUES (${messageId}, ${spamLabel.id}, 'manual')
+        VALUES (${messageId}, ${spamLabelId}, 'manual')
         ON CONFLICT (message_id, label_id) DO NOTHING
       `;
     }

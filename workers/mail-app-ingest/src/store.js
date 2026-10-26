@@ -1,4 +1,5 @@
 import { applyLabelRules } from './rules.js';
+import { PROMPT_VERSION } from './enrich.js';
 
 // jsonb writes use tx.json(value), never JSON.stringify(value) bound with a
 // trailing ::jsonb cast: postgres.js sends an already-stringified parameter
@@ -143,7 +144,7 @@ export async function storeEmail(sql, record, ownerEmail) {
 
     await tx`
       INSERT INTO message_ai (message_id, status, provider, prompt_version)
-      VALUES (${messageUuid}, 'pending', 'openai', 'email-enrichment-v1')
+      VALUES (${messageUuid}, 'pending', 'openai', ${PROMPT_VERSION})
       ON CONFLICT (message_id) DO NOTHING
     `;
 

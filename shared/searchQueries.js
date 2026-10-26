@@ -38,7 +38,7 @@ export function messagesPage(sql, { afterId, limit }) {
     SELECT
       m.id, m.xmin::text AS row_version, m.user_id, m.from_name, m.from_address, m.recipients, m.subject, m.body_text,
       m.sent_at, m.scheduled_for, m.is_unread, m.is_starred, m.is_archived, m.is_sent, m.is_deleted,
-      ai.spam_verdict,
+      m.screening_status, ai.spam_verdict,
       EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
       COALESCE(
         json_agg(json_build_object('name', l.name) ORDER BY l.name)
@@ -99,7 +99,7 @@ export function messagesDriftPage(sql, { limit }) {
     SELECT
       m.id, m.xmin::text AS row_version, m.user_id, m.from_name, m.from_address, m.recipients, m.subject, m.body_text,
       m.sent_at, m.scheduled_for, m.is_unread, m.is_starred, m.is_archived, m.is_sent, m.is_deleted,
-      ai.spam_verdict,
+      m.screening_status, ai.spam_verdict,
       EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id) AS has_attachments,
       COALESCE(
         json_agg(json_build_object('name', l.name) ORDER BY l.name)
