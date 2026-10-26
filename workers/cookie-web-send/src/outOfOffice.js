@@ -2,8 +2,8 @@ import {
   autoReplySuppression,
   hasUnsafeControls,
   lockOutOfOfficeDispatch,
-  normaliseAddress,
   outOfOfficeSettings,
+  replyTargetAddress,
 } from '../../../shared/outOfOffice.js';
 import { claimOutboundEmailQuota, configuredEmailFrom, storeSentMessage } from './outbound.js';
 import { AUTO_REPLY_PROVIDER_TIMEOUT_MS, sendAutoReply } from './autoReplyProvider.js';
@@ -31,7 +31,7 @@ export function autoReplyPayload(settings, message, from) {
   }
   return {
     from,
-    to: [normaliseAddress(message.envelope_from)],
+    to: [replyTargetAddress(message.headers)],
     subject: settings.subject,
     text: settings.text,
     headers,
@@ -44,7 +44,7 @@ export async function enqueueAutoReplies(sql, from, deadline = Infinity) {
   // The arrival snapshot is never backfilled; current prefs alone cannot prove
   // that the owner had enabled the responder when a message was received.
   const arrivals = await sql`
-    SELECT m.id, m.user_id, m.created_at, m.message_id, m.from_address, m.envelope_from,
+    SELECT m.id, m.user_id, m.created_at, m.message_id, m.from_address,
            m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed, m.screening_status,
            m.out_of_office_revision, u.email AS owner_email, u.prefs -> 'outOfOffice' AS settings,
            ai.status AS ai_status, ai.spam_verdict, clock_timestamp() AS clock
@@ -64,7 +64,7 @@ export async function enqueueAutoReplies(sql, from, deadline = Infinity) {
     const payload = autoReplyPayload(settings, message, from);
     await sql`INSERT INTO out_of_office_deliveries
       (user_id, message_id, settings_revision, recipient, payload, status, reason)
-      VALUES (${message.user_id}, ${message.id}, ${settings.revision}, ${normaliseAddress(message.envelope_from) ?? ''},
+      VALUES (${message.user_id}, ${message.id}, ${settings.revision}, ${replyTargetAddress(message.headers) ?? ''},
         ${sql.json(payload)}, ${reason ? 'suppressed' : 'pending'}, ${reason})
       ON CONFLICT (user_id, message_id) DO NOTHING`;
   }
@@ -108,7 +108,7 @@ async function currentSuppression(tx, row, owner, from, now, { lock }) {
   if (row.payload.from !== from) return 'sender_identity_changed';
   const [message] = lock
     ? await tx`
-      SELECT m.id, m.created_at, m.message_id, m.from_address, m.envelope_from,
+      SELECT m.id, m.created_at, m.message_id, m.from_address,
              m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed, m.screening_status,
              m.out_of_office_revision, ai.status AS ai_status, ai.spam_verdict
       FROM messages m JOIN message_ai ai ON ai.message_id = m.id
@@ -116,7 +116,7 @@ async function currentSuppression(tx, row, owner, from, now, { lock }) {
       FOR UPDATE OF m, ai NOWAIT
     `
     : await tx`
-      SELECT m.id, m.created_at, m.message_id, m.from_address, m.envelope_from,
+      SELECT m.id, m.created_at, m.message_id, m.from_address,
              m.envelope_to, m.recipients, m.headers, m.is_sent, m.is_deleted, m.auto_reply_suppressed, m.screening_status,
              m.out_of_office_revision, ai.status AS ai_status, ai.spam_verdict
       FROM messages m JOIN message_ai ai ON ai.message_id = m.id
