@@ -54,7 +54,7 @@ export function autoReplyDatabase({ queued = true } = {}) {
           envelope_from: 'sender@example.com',
           envelope_to: 'mail@example.com',
           recipients: { to: [{ address: 'mail@example.com' }], cc: [] },
-          headers: [],
+          headers: [{ key: 'From', value: 'Sender <sender@example.com>' }],
           ai_status: 'completed',
           spam_verdict: 'inbox',
           is_sent: false,

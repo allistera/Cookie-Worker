@@ -132,6 +132,7 @@ export async function parseEmail(message) {
     subject: stripNul(parsed.subject ?? ''),
     bodyPrefix: (textSource || rawHtml).slice(0, 1024),
   });
+  const rawSize = message.rawSize ?? rawByteLength(raw);
 
   return {
     messageId,
@@ -145,12 +146,14 @@ export async function parseEmail(message) {
     },
     subject: capString(parsed.subject ?? '', MAX_SUBJECT_BYTES).value,
     snippet: makeSnippet(textCap.value),
-    bodyText: textCap.value,
+    bodyText: textCap.truncated
+      ? `${truncationNotice(rawSize)}\n\n${textCap.value}`
+      : textCap.value,
     bodyHtml: htmlCap.value || null,
     sentAt,
     headers,
     attachments: normalizeAttachments(parsed.attachments ?? []),
-    rawSize: message.rawSize ?? rawByteLength(raw),
+    rawSize,
     truncated: textCap.truncated || htmlCap.truncated,
     envelopeFrom,
     envelopeTo,
@@ -179,6 +182,22 @@ export function capString(value, maxBytes) {
     value: decoder.decode(bytes.slice(0, maxBytes)).replace(/\uFFFD+$/u, ''),
     truncated: true,
   };
+}
+
+/**
+ * The line a truncated plain-text body starts with, so the owner can tell the
+ * stored text is partial. The size is the whole message as it arrived.
+ *
+ * @param {number} rawSize
+ */
+export function truncationNotice(rawSize) {
+  return `[Cookie: this message was too large to store in full. Only its first ${formatSize(BODY_CAP_BYTES)} of text is kept; the full message is ${formatSize(rawSize)}. Open it in your mailbox for the rest.]`;
+}
+
+/** @param {number} bytes */
+function formatSize(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
 }
 
 /**

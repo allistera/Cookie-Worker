@@ -84,6 +84,29 @@ Content-Type: text/html; charset=utf-8
     expect(record.bodyHtml).toContain('<p>');
   });
 
+  test('starts a truncated plain-text body with a notice that gives the message size', async () => {
+    const raw = `From: a@example.com
+To: b@example.com
+Subject: Long
+Message-ID: <long@example.com>
+Content-Type: text/plain; charset=utf-8
+
+${'a'.repeat(600 * 1024)}`;
+    const record = await parseEmail(fakeMessage(raw));
+    expect(record.truncated).toBe(true);
+    expect(record.bodyText).toMatch(/^\[Cookie: this message was too large to store in full\./u);
+    expect(record.bodyText).toContain('Only its first 512 KB of text is kept');
+    expect(record.bodyText).toContain('the full message is 600 KB.');
+    // The snippet previews the text itself, so the notice does not leak into it.
+    expect(record.snippet).not.toContain('too large');
+  });
+
+  test('leaves a complete plain-text body without a notice', async () => {
+    const record = await parseEmail(fakeMessage(simpleFixture));
+    expect(record.truncated).toBe(false);
+    expect(record.bodyText).not.toContain('too large to store');
+  });
+
   test('caps bodies and marks truncated', () => {
     const capped = capString('a'.repeat(600 * 1024), 512 * 1024);
     expect(capped.truncated).toBe(true);
