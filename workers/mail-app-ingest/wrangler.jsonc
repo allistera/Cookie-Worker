@@ -39,5 +39,9 @@
     // (MEILISEARCH_API_KEY) set via `wrangler secret put`. Leave the URL empty
     // to keep the existing Postgres keyword search until the project is ready.
     "MEILISEARCH_URL": "https://meilisearch.infinitywave.online",
+    // Zone holding the catch-all Email Routing rule, read by the routing drift
+    // check. The zone id is a public identifier. The check also needs the
+    // CLOUDFLARE_EMAIL_ROUTING_TOKEN secret, set with `wrangler secret put`.
+    "EMAIL_ROUTING_ZONE_ID": "3229b7c3936cb8d42c7a67b55ed53df7",
   },
 }
