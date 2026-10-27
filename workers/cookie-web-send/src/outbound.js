@@ -275,6 +275,7 @@ export function parseFollowUpAt(value, after = Date.now()) {
  *   env: import('./sentry.js').SendEnv,
  *   createResend: (apiKey: string | undefined) => any,
  *   readBlob: (url: string) => Promise<{stream: ReadableStream<Uint8Array> | null} | null>,
+ *   putBlob: (pathname: string, body: ArrayBuffer, options: {access: 'private', token: string, contentType: string, addRandomSuffix: boolean, allowOverwrite: boolean, multipart: boolean}) => Promise<{url: string}>,
  *   deleteBlob: (url: string) => Promise<unknown>,
  *   indexSentMessage: (messageUuid: string) => void,
  *   indexSentMessages: (messageUuids: string[]) => void,
