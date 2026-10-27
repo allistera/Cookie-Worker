@@ -2,7 +2,7 @@ import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import { withHealthCheck } from '../../../shared/health.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
 import * as Sentry from '@sentry/cloudflare';
-import { get } from '@vercel/blob';
+import { del, get, put } from '@vercel/blob';
 import { Resend } from 'resend';
 import { authFailureResponse, verifyAccessToken } from '../../../shared/auth-jwt.js';
 import { createSql, withUserSql } from '../../../shared/db.js';
@@ -34,6 +34,7 @@ import {
   parseScheduledFor,
   scheduledSendRequestHash,
 } from './scheduled.js';
+import { handleAttachments } from './attachments.js';
 import { handleFollowUp } from './followUp.js';
 import { flushWithOutOfOffice, runOutOfOfficeInBackground } from './outOfOffice.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
@@ -118,8 +119,10 @@ export function createSendServices(env, ctx) {
     env,
     createResend: (apiKey) => new Resend(apiKey),
     readBlob: (blobUrl) => get(blobUrl, { access: 'private', token: env.BLOB_READ_WRITE_TOKEN }),
-    // Physical deletion is owned by the durable cleanup queue.
-    deleteBlob: async () => undefined,
+    putBlob: (pathname, body, options) => put(pathname, body, options),
+    // Physical deletion is owned by the durable cleanup queue; this is only
+    // for a composer upload whose row could not be recorded after the put.
+    deleteBlob: (blobUrl) => del(blobUrl, { token: env.BLOB_READ_WRITE_TOKEN }),
     sendProvider: (payload, key) =>
       sendAutoReply(
         {
@@ -497,8 +500,12 @@ const worker = {
 
     const url = new URL(request.url);
     const segments = url.pathname.split('/').filter(Boolean);
+    // /send, /send/<resource>, and /send/attachments/<id>.
     const resource =
-      segments[0] === 'send' && segments.length <= 2 ? (segments[1] ?? 'send') : null;
+      segments[0] === 'send' &&
+      (segments.length <= 2 || (segments[1] === 'attachments' && segments.length === 3))
+        ? (segments[1] ?? 'send')
+        : null;
     const services = createSendServices(env, ctx);
     if (resource === 'scheduled' && request.method === 'GET') {
       // Listing is a pure read, so a dropped Hyperdrive connection gets one
@@ -522,7 +529,10 @@ const worker = {
     }
     const sql = createSql(env.HYPERDRIVE.connectionString);
     try {
-      if (!resource || !['send', 'scheduled', 'flush', 'follow-up'].includes(resource)) {
+      if (
+        !resource ||
+        !['send', 'scheduled', 'flush', 'follow-up', 'attachments'].includes(resource)
+      ) {
         return Response.json({ error: 'Not Found' }, { status: 404 });
       }
 
@@ -573,6 +583,8 @@ const worker = {
       try {
         if (resource === 'follow-up') {
           response = await handleFollowUp(sql, userId, request);
+        } else if (resource === 'attachments') {
+          response = await handleAttachments(request, url, segments[2], sql, userId, services);
         } else if (resource === 'scheduled') {
           response = await handleScheduled(sql, userId, request);
         } else {

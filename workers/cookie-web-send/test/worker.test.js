@@ -79,8 +79,12 @@ vi.mock('../src/autoReplyProvider.js', () => ({
 }));
 
 const getBlob = vi.fn();
+const putBlob = vi.fn();
+const delBlob = vi.fn();
 vi.mock('@vercel/blob', () => ({
   get: (...args) => getBlob(...args),
+  put: (...args) => putBlob(...args),
+  del: (...args) => delBlob(...args),
 }));
 
 const verifyAccessToken = vi.fn();
@@ -1112,6 +1116,17 @@ describe('routing, auth, and cleanup', () => {
     expect(response.status).toBe(405);
   });
 
+  test('a path below /send/attachments/:id is not a route', async () => {
+    const response = await worker.fetch(
+      request('/send/attachments/22222222-2222-2222-2222-222222222222/extra', {
+        method: 'DELETE',
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(404);
+  });
+
   test('closes the sql connection on a successful request', async () => {
     responses = [[]];
     await worker.fetch(request('/send/scheduled', { method: 'GET' }), env, ctx);
@@ -1321,5 +1336,81 @@ describe('send service background work', () => {
     } finally {
       log.mockRestore();
     }
+  });
+});
+
+describe('composer attachment uploads', () => {
+  const ATTACHMENT_ID = '22222222-2222-2222-2222-222222222222';
+
+  /** @param {string} name */
+  function uploadRequest(name = 'report.pdf') {
+    const form = new FormData();
+    form.set('file', new File([new Uint8Array([1, 2, 3])], name, { type: 'application/pdf' }));
+    return request('/send/attachments', { body: form });
+  }
+
+  test('requires a bearer token', async () => {
+    verifyAccessToken.mockRejectedValue(new Error('nope'));
+    const response = await worker.fetch(uploadRequest(), env, ctx);
+    expect(response.status).toBe(401);
+    expect(putBlob).not.toHaveBeenCalled();
+  });
+
+  test('stores an upload and returns the registered row without its blob url', async () => {
+    const stored = {
+      id: ATTACHMENT_ID,
+      filename: 'report.pdf',
+      content_type: 'application/pdf',
+      size_bytes: 3,
+    };
+    responses = [[{ allowed: true }], [], [stored]];
+    putBlob.mockResolvedValue({
+      url: 'https://store.private.blob.vercel-storage.com/outbound-attachments/u/report-x.pdf',
+    });
+    const response = await worker.fetch(uploadRequest(), env, ctx);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ attachment: stored });
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION);
+    expect(putBlob).toHaveBeenCalledWith(
+      `outbound-attachments/${USER_ID}/report.pdf`,
+      expect.any(ArrayBuffer),
+      expect.objectContaining({ access: 'private', token: 'blob-token' }),
+    );
+    expect(sqlEnd).toHaveBeenCalledOnce();
+  });
+
+  test('answers 503 when the blob token is missing', async () => {
+    const response = await worker.fetch(
+      uploadRequest(),
+      { ...env, BLOB_READ_WRITE_TOKEN: undefined },
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('deletes an unreferenced upload', async () => {
+    responses = [[{ found: true, deleted: true }]];
+    const response = await worker.fetch(
+      request(`/send/attachments/${ATTACHMENT_ID}`, { method: 'DELETE' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(204);
+    // Physical deletion belongs to the queued cleanup job, not this request.
+    expect(delBlob).not.toHaveBeenCalled();
+  });
+
+  test('reports a storage failure as a handled 500', async () => {
+    responses = [[{ allowed: true }]];
+    putBlob.mockRejectedValue(new Error('blob down'));
+    const response = await worker.fetch(uploadRequest(), env, ctx);
+    expect(response.status).toBe(500);
+    expect(captureHandledException).toHaveBeenCalledWith(
+      'send',
+      expect.any(Error),
+      env,
+      expect.objectContaining({ path: '/send/attachments', method: 'POST' }),
+    );
   });
 });

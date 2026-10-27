@@ -1,25 +1,16 @@
 import { del, list } from '@vercel/blob';
 import { createSql, endSql } from '../../../shared/db.js';
+import { queueObjectCleanup } from '../../../shared/objectCleanup.js';
 
 const BATCH_SIZE = 50;
 const IMAGE_GRACE_HOURS = 24;
 const IMAGE_PATH =
   /^documents\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/[A-Za-z0-9._-]+$/;
 
-/**
- * Persist intent before uploading bytes, so even a crash between put and the
- * metadata insert leaves a retryable cleanup pointer. Deletion triggers bring
- * an existing job forward when a registered object is removed.
- * @param {import('postgres').Sql | import('postgres').TransactionSql} sql
- * @param {'r2' | 'blob'} storage @param {string} key @param {number} [delayHours]
- */
-export async function queueObjectCleanup(sql, storage, key, delayHours = 0) {
-  await sql`
-    INSERT INTO object_cleanup_jobs (storage, object_key, available_at)
-    VALUES (${storage}, ${key}, now() + ${delayHours} * interval '1 hour')
-    ON CONFLICT (storage, object_key) DO NOTHING
-  `;
-}
+// Shared with cookie-web-send, whose composer uploads record the same
+// pointer before their row insert; re-exported so this Worker's callers
+// and test doubles keep importing it from here.
+export { queueObjectCleanup };
 
 /**
  * Register before Blob put, with a deterministic UUID pathname. A failed put
