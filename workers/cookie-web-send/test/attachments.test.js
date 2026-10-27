@@ -49,8 +49,8 @@ describe('sanitizeAttachmentFilename', () => {
   });
 
   it('strips control characters that could forge provider headers', () => {
-    expect(sanitizeAttachmentFilename('bad\r\nContent-Type: text/html\u0000.pdf')).toBe(
-      'badContent-Type: text/html.pdf',
+    expect(sanitizeAttachmentFilename('bad\r\nX-Injected: yes\u0000.pdf')).toBe(
+      'badX-Injected: yes.pdf',
     );
   });
 
