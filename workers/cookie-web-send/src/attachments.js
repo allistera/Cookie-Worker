@@ -4,19 +4,14 @@ import { allowRequest } from '../../../shared/rate-limit.js';
 import { bodyErrorResponse, readFormBody } from '../../../shared/read-body.js';
 import { MAX_OUTBOUND_ATTACHMENT_BYTES } from './outbound.js';
 
-// Composer uploads for clients that cannot stream to Vercel Blob themselves.
-// Cookie-Web's browser hands bytes straight to Blob under a client token
-// minted by its Vercel `/api/send?resource=upload-token` route, then registers
-// the result; that works only through Vercel's JavaScript SDK. The iOS app
-// posts the file here instead and gets back the same `outbound_attachments`
-// row, so drafts (`attachmentIds` on cookie-web-drafts) and `POST /send`
-// consume both kinds of upload identically.
-
-// The same prefix the Vercel token route mints for, so the two paths share
-// the cleanup and ownership rules keyed on it.
+// Composer uploads for both clients. The iOS app and Cookie-Web's browser
+// each post the file here and get back the same `outbound_attachments` row,
+// so drafts (`attachmentIds` on cookie-web-drafts) and `POST /send` consume
+// every upload identically. Cookie-Web used to stream bytes to Blob under a
+// client token minted by a Vercel route; rows from that era share this
+// prefix, so the cleanup and ownership rules keyed on it still cover them.
 const ATTACHMENT_BLOB_PREFIX = 'outbound-attachments';
-// Same scope and budget as Vercel's token route: one allowance per user
-// however the file arrives.
+// One allowance per user however the file arrives.
 const UPLOAD_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
 // Multipart framing around the file itself; a declared body past the file
 // cap plus this is refused before a byte is read.
