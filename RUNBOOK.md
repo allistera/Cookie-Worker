@@ -76,6 +76,12 @@ The same 15-minute cron that recovers enrichment also sweeps up to 200 such rows
 
 Two workflows back this up: `search-drift-repair.yml` reindexes drifted rows from CI, and `search-reindex.yml` rebuilds an index from scratch. The workflow drains oldest-first while the in-Worker sweep takes newest-first, so recent mail becomes searchable quickly and a large backlog still drains from the tail.
 
+### Where Meilisearch runs
+
+Since 2026-10-28 the Meilisearch instance behind `meilisearch.infinitywave.online` runs on the Oracle Cloud Always Free VM in Amsterdam that also hosts the agent workspace, not on the home server. It is a Docker Compose stack in `/home/ubuntu/meilisearch` on that VM: a pinned `getmeili/meilisearch` container bound to localhost, plus a `cloudflared` sidecar that runs the locally managed tunnel `cookie-meilisearch` (configured in `cloudflared/config.yml` there, not in the Zero Trust dashboard). The master key is in that directory's `.env`; the Workers' runtime key (`cookie-workers`: search, document add and delete, task polling) and the reindex key (`cookie-reindex`: index, settings, document and task management) are in `.keys`. All three files are owner-readable only.
+
+Search returns 503 whenever this instance is unreachable, and the vectors exist only in Meilisearch, so a new or restored instance needs `search-reindex.yml` with target `all`. Oracle reclaims idle Always Free instances; if the VM disappears, search goes with it. To move the index elsewhere, point the CNAME `meilisearch.infinitywave.online` at the new tunnel, rotate `MEILISEARCH_API_KEY` on the five Workers that use it (`cookie-web-search`, `cookie-web-send`, `cookie-web-messages`, `cookie-web-tasks`, `mail-app-ingest`) and in GitHub, rotate `MEILISEARCH_REINDEX_KEY` in GitHub, then reindex.
+
 Cookie-Web's `api/send.js` now proxies to `cookie-web-send`, which owns sending and starts background indexing on its own connection. Deploy the updated send Worker before the Web adapter; scheduled and immediate sends share follow-up reminder handling.
 
 AI failures do not block forwarding or storage. Inspect the OpenAI response, rate limits, secret configuration, database connectivity, and migration state.
