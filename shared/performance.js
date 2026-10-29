@@ -1,3 +1,5 @@
+import { labelRequestSpan } from './tracing.js';
+
 // Only fixed operation names, status codes and durations. Never record URLs,
 // tokens, mailbox IDs, message content or SQL parameters.
 export function createTimings() {
@@ -22,6 +24,7 @@ export function withRequestMetrics(worker, service) {
   return {
     ...worker,
     async fetch(request, env, ctx) {
+      labelRequestSpan(request);
       const start = performance.now();
       const response = await worker.fetch(request, env, ctx);
       if (request.method === 'OPTIONS') return response;

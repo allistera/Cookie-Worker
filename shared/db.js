@@ -1,15 +1,24 @@
 import postgres from 'postgres';
 import { authFailureResponse, verifyAccessToken } from './auth-jwt.js';
+import { connectionAttributes, instrumentSql } from './db-tracing.js';
 import { retryWithBackoff } from './retry.js';
+import { setSpanAttributes } from './tracing.js';
 import { isTransientDbError } from './transient-db.js';
 
-/** @param {string} databaseUrl */
+/**
+ * A client whose queries show up as spans in a traced invocation
+ * (shared/db-tracing.js); outside one it is the plain driver client.
+ *
+ * @param {string} databaseUrl
+ */
 export function createSql(databaseUrl) {
+  /** @type {import('postgres').Sql} */
+  let sql;
   try {
     // No ssl option: Hyperdrive terminates TLS to the origin database itself;
     // asking the driver for TLS makes every connect fail and retry until the
     // invocation dies with "Too many subrequests".
-    return postgres(databaseUrl, {
+    sql = postgres(databaseUrl, {
       prepare: false,
       max: 1,
       idle_timeout: 20,
@@ -19,6 +28,7 @@ export function createSql(databaseUrl) {
     // The driver's parse error can quote the URL, credentials included.
     throw new Error('database connection string is not valid');
   }
+  return instrumentSql(sql, connectionAttributes(databaseUrl));
 }
 
 /**
@@ -61,6 +71,7 @@ export async function withUserSql(request, env, ctx, { retryable }, handle) {
           const dropped = sql;
           ctx.waitUntil(dropped.end({ timeout: 2 }).catch(() => undefined));
           sql = createSql(env.HYPERDRIVE.connectionString);
+          setSpanAttributes({ 'cookie.request.retried': true });
           console.log(
             JSON.stringify({
               event: 'request_retried',

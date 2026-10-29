@@ -14,6 +14,7 @@ import { purgeExpiredNotificationEvents } from './notificationEventsSweep.js';
 import { runInboundHealthChecks } from './inboundHealth.js';
 import { createSql, endSql } from '../../../shared/db.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
+import { setSpanAttributes } from '../../../shared/tracing.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import {
   captureHandledException,
@@ -64,6 +65,7 @@ const worker = {
     const rawSize = message.rawSize ?? 0;
     if (rawSize > MAX_PARSE_BYTES) {
       console.log(JSON.stringify({ event: 'store_skipped_oversize', raw_size: rawSize }));
+      setSpanAttributes({ 'cookie.ingest.outcome': 'skipped_oversize' });
       await message.forward(env.FORWARD_TO);
       return;
     }
@@ -124,6 +126,13 @@ const worker = {
           truncated: record.truncated,
         }),
       );
+      // The trace's view of the same outcome: counts and flags, no identifiers.
+      setSpanAttributes({
+        'cookie.ingest.outcome': storeResult.outcome,
+        'cookie.ingest.attachments': record.attachments.length,
+        'cookie.ingest.attachments_skipped': uploaded?.skipped ?? 0,
+        'cookie.ingest.truncated': record.truncated,
+      });
     } catch (err) {
       // A boundary-line bomb is a permanent property of the message: storing
       // it would build an enormous MIME tree, and rethrowing would make the
@@ -137,6 +146,7 @@ const worker = {
             raw_size: rawSize,
           }),
         );
+        setSpanAttributes({ 'cookie.ingest.outcome': 'skipped_mime_parts' });
         await message.forward(env.FORWARD_TO);
         return;
       }
@@ -154,6 +164,7 @@ const worker = {
       // reports only if that late store fails (store_late); the MTA retry
       // covers a store that never settles.
       const lateStore = Boolean(storePromise && record && isStoreTimeout(err) && sql);
+      setSpanAttributes({ 'cookie.ingest.outcome': lateStore ? 'store_late' : 'store_failed' });
       if (!lateStore) {
         captureHandledException('store', err, [env.HYPERDRIVE.connectionString], {
           message_id: record?.messageId,
@@ -256,11 +267,17 @@ const worker = {
 
     try {
       await message.forward(env.FORWARD_TO);
+      setSpanAttributes({ 'cookie.forward.outcome': 'forwarded' });
     } catch (err) {
       // Transient forward errors propagate so the sending MTA retries
       // (idempotent storage makes the retry safe). Permanent errors would
       // retry forever and bounce, so once the message is safely stored we
       // accept it and only log the lost forward.
+      setSpanAttributes({
+        'cookie.forward.outcome': isTransientForwardError(err)
+          ? 'failed_transient'
+          : 'failed_permanent',
+      });
       if (!storeResult || !isPermanentForwardError(err)) {
         // Transient errors are filtered out of Sentry (see createSentryOptions),
         // so this log line is their only trail.
