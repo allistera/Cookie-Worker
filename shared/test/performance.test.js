@@ -1,7 +1,48 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createTimings, withRequestMetrics } from '../performance.js';
+import { createTracingRecorder } from '../../test/fixtures/tracing-recorder.js';
+
+const recorder = vi.hoisted(() => ({ current: /** @type {any} */ (null) }));
+
+vi.mock('cloudflare:workers', () => ({
+  tracing: {
+    getActiveSpan: () => recorder.current?.tracing.getActiveSpan(),
+    /** @param {string} name */
+    startSpan: (name) => recorder.current?.tracing.startSpan(name),
+  },
+}));
+
+const { createTimings, withRequestMetrics } = await import('../performance.js');
 
 describe('request performance metrics', () => {
+  it('names the invocation span after the route template, never the identifier', async () => {
+    recorder.current = createTracingRecorder();
+    try {
+      const worker = withRequestMetrics(
+        {
+          async fetch() {
+            return new Response(null);
+          },
+        },
+        'tasks',
+      );
+      await worker.fetch(
+        new Request(
+          'https://private.invalid/tasks/7f3a1c2e-9b4d-4e8f-a1b2-c3d4e5f6a7b8?token=secret',
+          {
+            method: 'PATCH',
+          },
+        ),
+        { PERFORMANCE_SAMPLE_RATE: 0 },
+        {},
+      );
+      expect(recorder.current.root.name).toBe('PATCH /tasks/{id}');
+      expect(recorder.current.root.attributes).toEqual({ 'http.route': '/tasks/{id}' });
+      expect(JSON.stringify(recorder.current.root)).not.toContain('7f3a1c2e');
+    } finally {
+      recorder.current = null;
+    }
+  });
+
   it('preserves response data and records only fixed labels and timings', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {

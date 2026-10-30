@@ -112,6 +112,38 @@ with an authenticated Sentry MCP connection.
 
 Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by the `Deploy` workflow) and `SENTRY_ENVIRONMENT` (variable, set in each `wrangler.jsonc`).
 
+## Tracing
+
+Every Worker except `cookie-web-calendar` exports Cloudflare's automatic
+Workers traces over OTLP to Honeycomb (EU), one dataset per Worker, through the
+`honeycomb-traces` destination configured in the Cloudflare dashboard (the
+`observability.traces` block in each `wrangler.jsonc`). Cloudflare records the
+handler invocation, every outbound `fetch` and every `hyperdrive_connect`; no
+OpenTelemetry SDK is installed. [`shared/tracing.js`](shared/tracing.js) adds
+the rest through the runtime's `tracing` API, and all of it is a no-op when an
+invocation is not sampled or tracing is off:
+
+- Request spans are renamed from the bare method to `GET /messages/{id}` and
+  carry `http.route`, so health probes (`/health`) and real routes can be told
+  apart. Identifier segments (UUIDs, numbers, hex ids, long tokens) become
+  `{id}` and never reach the trace.
+- Each Postgres query made through `createSql` is a span named after its
+  operation (`SELECT`, `INSERT`, `COMMIT`) with `db.system.name`,
+  `db.namespace`, `db.operation.name`, `server.address`, the row count and, on
+  failure, `error.type` (the SQLSTATE or driver code). Query text and
+  parameters are never recorded ([`shared/db-tracing.js`](shared/db-tracing.js)).
+- A failure a Worker caught and reported through `captureHandledException` is
+  attached to the invocation span as an exception with `error.type` and
+  `cookie.error.operation`, without marking the span failed.
+- `mail-app-ingest` records the outcome of each delivery (`cookie.ingest.*`,
+  `cookie.forward.outcome`) as counts and flags.
+
+Span attributes follow the same policy as the structured logs: operation
+names, outcomes, counts, status codes and durations only. Do not add user,
+mailbox or message identifiers, addresses, URLs with tokens or SQL parameters.
+Cloudflare's own `email` span does carry `cloudflare.email.from` and
+`cloudflare.email.to`; that is set by the runtime and cannot be changed here.
+
 ## Cookie Web API Workers
 
 Calendar subscriptions accept `https://` and `webcal://` feeds from known

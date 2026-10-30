@@ -5,6 +5,7 @@
 
 import * as Sentry from '@sentry/cloudflare';
 import { sanitizeMetric } from './applicationMetrics.js';
+import { recordHandledError } from './tracing.js';
 
 /**
  * @typedef {{SENTRY_DSN?: string, SENTRY_ENVIRONMENT?: string}} SentryEnv
@@ -105,7 +106,9 @@ export function tagTrigger(trigger) {
 
 /**
  * Report a failure the Worker deliberately caught. The `withSentry` wrapper
- * only sees what escapes a handler, and these never do.
+ * only sees what escapes a handler, and these never do. The same scrubbed
+ * error is attached to the invocation's trace span, so a request that went
+ * on after a failed step still shows what failed.
  *
  * @param {string} service
  * @param {string} operation
@@ -114,7 +117,9 @@ export function tagTrigger(trigger) {
  * @param {Record<string, unknown>} [extra]
  */
 export function captureHandledException(service, operation, err, secrets = [], extra = {}) {
-  Sentry.captureException(sanitizeError(err, secrets), {
+  const safeError = sanitizeError(err, secrets);
+  recordHandledError(safeError, operation);
+  Sentry.captureException(safeError, {
     tags: {
       service,
       operation,

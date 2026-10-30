@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { createTracingRecorder } from '../test/fixtures/tracing-recorder.js';
 
 vi.mock('@sentry/cloudflare', () => ({
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   setTag: vi.fn(),
+}));
+
+const recorder = vi.hoisted(() => ({ current: /** @type {any} */ (null) }));
+
+vi.mock('cloudflare:workers', () => ({
+  tracing: {
+    getActiveSpan: () => recorder.current?.tracing.getActiveSpan(),
+    /** @param {string} name */
+    startSpan: (name) => recorder.current?.tracing.startSpan(name),
+  },
 }));
 
 /** @type {any} */
@@ -24,6 +35,7 @@ function errorEvent(event = {}) {
 beforeEach(() => {
   sentry.captureException.mockReset();
   sentry.setTag.mockReset();
+  recorder.current = null;
 });
 
 describe('createSentryOptions', () => {
@@ -170,6 +182,25 @@ describe('captureHandledException', () => {
     captureHandledException('a-worker', 'store', 'plain failure');
 
     expect(sentry.captureException.mock.calls[0][0]).toMatchObject({ message: 'plain failure' });
+  });
+
+  test('attaches the scrubbed error to the traced invocation span', () => {
+    recorder.current = createTracingRecorder();
+    const error = Object.assign(new Error('push postgres://user:pass@example/db failed'), {
+      code: 'ECONNRESET',
+    });
+
+    captureHandledException('a-worker', 'meili_sync', error, ['postgres://user:pass@example/db']);
+
+    const { root } = recorder.current;
+    expect(root.exceptions).toEqual([
+      expect.objectContaining({ name: 'Error', message: 'push [redacted] failed' }),
+    ]);
+    expect(root.attributes).toEqual({
+      'error.type': 'Error',
+      'cookie.error.operation': 'meili_sync',
+    });
+    expect(JSON.stringify(root.exceptions)).not.toContain('pass@example');
   });
 });
 

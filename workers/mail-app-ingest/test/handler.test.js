@@ -10,6 +10,7 @@ import worker, {
 } from '../src/worker.js';
 import { MAX_ENRICHMENT_ATTEMPTS } from '../src/enrich.js';
 import { simpleFixture, fakeMessage } from './helpers.js';
+import { createTracingRecorder } from '../../../test/fixtures/tracing-recorder.js';
 
 // One text part and one base64 PDF whose bytes decode to POSTER-MARKER.
 const attachmentFixture = `From: Alice <alice@example.com>
@@ -52,6 +53,16 @@ vi.mock('@sentry/cloudflare', () => ({
   captureMessage: vi.fn(),
   withMonitor: vi.fn((_slug, callback) => callback()),
   withSentry: vi.fn((_options, handler) => handler),
+}));
+
+const recorder = vi.hoisted(() => ({ current: /** @type {any} */ (null) }));
+
+vi.mock('cloudflare:workers', () => ({
+  tracing: {
+    getActiveSpan: () => recorder.current?.tracing.getActiveSpan(),
+    /** @param {string} name */
+    startSpan: (name) => recorder.current?.tracing.startSpan(name),
+  },
 }));
 
 /** @type {any} */
@@ -166,6 +177,26 @@ describe('email handler', () => {
       outcome: 'inserted',
     });
     expect(sql.end).toHaveBeenCalled();
+  });
+
+  test('records the ingest outcome on the trace without any identifier', async () => {
+    recorder.current = createTracingRecorder();
+    try {
+      postgres.mockReturnValue(sqlReturning());
+      await worker.email(fakeMessage(simpleFixture), env(), ctx());
+      const { root } = recorder.current;
+      expect(root.attributes).toEqual({
+        'cookie.ingest.outcome': 'inserted',
+        'cookie.ingest.attachments': 0,
+        'cookie.ingest.attachments_skipped': 0,
+        'cookie.ingest.truncated': false,
+        'cookie.forward.outcome': 'forwarded',
+      });
+      // No Message-ID, address or subject from the fixture reaches the span.
+      expect(JSON.stringify(root)).not.toMatch(/@example|Subject/u);
+    } finally {
+      recorder.current = null;
+    }
   });
 
   test('stores and forwards mail when the AI budget is exhausted', async () => {
