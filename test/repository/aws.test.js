@@ -2,7 +2,7 @@ import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
-import { createHandler, workerEnv } from '../../aws/server.js';
+import { createHandler, drain, workerEnv } from '../../aws/server.js';
 import { AWS_WORKERS } from '../../aws/workers.js';
 import { serviceConfig } from '../../scripts/aws-service-config.mjs';
 import { entrySource, readWorkerVars } from '../../scripts/build-aws.mjs';
@@ -91,13 +91,14 @@ describe('AWS Web Function', () => {
     await once(server, 'listening');
     const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
     const headers = { 'x-forwarded-host': 'receipts-api.infinitywave.online' };
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
       const health = await fetch(`http://127.0.0.1:${port}/health`, { headers });
       expect(await health.json()).toEqual({ status: 'ok' });
 
-      // No database in this test: the image still goes back, and the open is attempted after.
+      // No database in this test: the image still goes back, and the open is attempted in the
+      // background, where its failure is logged and never reaches the recipient.
       const pixel = await fetch(
         `http://127.0.0.1:${port}/read-receipts?token=7f3a1b2c-1d2e-4f50-9a6b-0c1d2e3f4a5b`,
         { headers: { ...headers, 'cf-connecting-ip': '198.51.100.7' } },
@@ -105,7 +106,11 @@ describe('AWS Web Function', () => {
       expect(pixel.status).toBe(200);
       expect(pixel.headers.get('content-type')).toBe('image/gif');
       expect((await pixel.arrayBuffer()).byteLength).toBeGreaterThan(0);
-      expect(pending.size).toBe(1);
+      await drain(pending, 1_000);
+      expect(errorLog).toHaveBeenCalledWith(
+        'GET /read-receipts (pixel) failed:',
+        expect.any(Error),
+      );
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
