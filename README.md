@@ -87,6 +87,27 @@ To add a Worker, create `workers/<name>/src/index.js`, `wrangler.jsonc`, `jsconf
 
 Python capsules (`main` ending in `.py`, with the `python_workers` compatibility flag) skip `jsconfig.json` and the per-Worker TypeScript check but go through the same discovery, types, and dry-run gates. None exist today — `data-enricher` was prototyped in Python and rewritten in JavaScript because vendored PyPI packages (via pywrangler) pushed the bundle past the free-plan size cap and Python still lacks a Hyperdrive driver. If a Python Worker returns, its deploys must go through `uv run pywrangler deploy` so vendored packages ship with it.
 
+## AWS Web Function
+
+Workers move to AWS one at a time. Those listed in `aws/workers.js` run in one Node HTTP server inside the Lambda Web Function `cookie-web`, which Cookie-Infra owns behind CloudFront. Today that is `cookie-web-receipts`. The Worker code is unchanged: `aws/server.js` hands each request to the Worker that owns its hostname, with an env and execution context shaped like Cloudflare's.
+
+- `env` holds the Worker's `wrangler.jsonc` vars, the secrets `aws/workers.js` names, and a `HYPERDRIVE.connectionString` built from `DATABASE_URL` with TLS required.
+- `ctx.waitUntil` work keeps running after the response. On shutdown the server waits for it, up to Lambda's one-second limit.
+- The CloudFront Function sets `CF-Connecting-IP`, so client-IP code works unchanged.
+- `cloudflare:workers` maps to `aws/cloudflare-workers.js`, so tracing is a no-op. Cloudflare's automatic Honeycomb traces have no AWS counterpart yet.
+
+```sh
+npm run aws:build                                        # bundles dist/aws/index.js
+AWS_LAMBDA_HTTP_ENDPOINT=localhost:3000 node dist/aws/index.js
+curl -H 'x-forwarded-host: receipts-api.infinitywave.online' localhost:3000/health
+```
+
+The **Deploy to AWS** workflow (`deploy-aws.yml`) builds the package, creates a revision, and waits until CloudFront serves it. It needs the repository variable `AWS_DEPLOY_ROLE_ARN` and the `DATABASE_URL` and `SENTRY_DSN` secrets. Rollback is a revert on `main` and another run. To move a Worker:
+
+1. Add it to `aws/workers.js` with its hostname and secret names, and pass those secrets in the deploy step of `deploy-aws.yml`.
+2. Run **Deploy to AWS**, then call the Worker through CloudFront before DNS moves: `curl -H 'Host: <hostname>' https://<cloudfront_domain>/health`.
+3. Remove the Worker's `custom_domain` route from its `wrangler.jsonc`, deploy it to Cloudflare, and add the hostname to `local.dns_hosts` in Cookie-Infra. Cron triggers, Durable Objects and service bindings need more work first; see Cookie-Infra's `docs/cutover.md`.
+
 ## Error reporting
 
 Every Worker reports uncaught failures to the same Sentry project through `Sentry.withSentry`, and the failures it catches on purpose through explicit captures. The shared policy lives in [`shared/sentry.js`](shared/sentry.js); each Worker adds a thin `src/sentry.js` naming itself and listing the secrets it holds.

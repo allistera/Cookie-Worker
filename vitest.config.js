@@ -14,7 +14,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reportOnFailure: true,
-      include: ['workers/*/src/**/*.js', 'shared/**/*.js'],
+      include: ['workers/*/src/**/*.js', 'shared/**/*.js', 'aws/**/*.js'],
       exclude: ['**/__tests__/**', '**/test/**', '**/*.{test,spec}.js'],
       reporter: ['text', 'json', 'json-summary', 'lcov'],
     },

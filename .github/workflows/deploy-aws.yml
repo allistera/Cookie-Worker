@@ -1,0 +1,127 @@
+name: Deploy to AWS
+run-name: Deploy to AWS from ${{ github.ref_name }}
+
+# Deploys the Workers listed in aws/workers.js as one new revision of the Lambda Web Function that
+# Cookie-Infra owns. Every name it uses is read from SSM at run time; Cookie-Infra's
+# docs/deploy-contract.md describes them. The Cloudflare deploy in deploy.yml is unaffected.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-aws-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Lint, typecheck, and test
+    runs-on: ubuntu-latest
+    services:
+      retention-postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: retention-test-only
+          POSTGRES_DB: cookie_screening_retention_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cookie_screening_retention_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SCREENING_RETENTION_TEST_DATABASE_URL: postgres://postgres:retention-test-only@127.0.0.1:5432/cookie_screening_retention_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npx --yes npm@11 ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  deploy:
+    name: Deploy the Web Function revision
+    needs: validate
+    runs-on: ubuntu-latest
+    # The deploy role in Cookie-Infra trusts only jobs that run in this environment.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npx --yes npm@11 ci
+      - run: npm run aws:build
+
+      - name: Package
+        working-directory: dist/aws
+        run: zip -qrX ../cookie-web.zip .
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Create the revision and wait until it serves
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          set -euo pipefail
+
+          # The contract: artifact_bucket, artifact_prefix, cloudfront_domain,
+          # execution_role_arn, function_name, endpoint_name and log_group.
+          while IFS=$'\t' read -r name value; do
+            declare "contract_${name##*/}=${value}"
+          done < <(aws ssm get-parameters-by-path --path /cookie/prod/deploy \
+            --query 'Parameters[].[Name,Value]' --output text)
+
+          key="${contract_artifact_prefix}${GITHUB_SHA}.zip"
+          version_id=$(aws s3api put-object --bucket "$contract_artifact_bucket" --key "$key" \
+            --body dist/cookie-web.zip --query VersionId --output text)
+
+          config="$RUNNER_TEMP/service-config.json"
+          trap 'rm -f "$config"' EXIT
+          (umask 077 && EXECUTION_ROLE_ARN="$contract_execution_role_arn" \
+            LOG_GROUP="$contract_log_group" node scripts/aws-service-config.mjs > "$config")
+
+          build_config=$(jq -cn --arg bucket "$contract_artifact_bucket" --arg key "$key" \
+            --arg version "$version_id" \
+            '{codeConfig: {s3Object: {bucket: $bucket, key: $key, versionId: $version}},
+              runtimeConfig: {runtime: "nodejs24.x"}}')
+          revision=$(aws lambda-web create-web-function-revision \
+            --function-name "$contract_function_name" \
+            --build-config "$build_config" \
+            --service-config "file://$config" \
+            --query revisionId --output text)
+          aws lambda-web wait web-function-revision-active \
+            --function-name "$contract_function_name" --revision-id "$revision"
+          echo "Revision $revision is active; waiting for it to serve $GITHUB_SHA"
+
+          # The endpoint follows the newest active revision. CloudFront's own domain is no API
+          # hostname, so the server answers /health there itself, with the commit it runs.
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 10 "https://${contract_cloudfront_domain}/health" |
+              jq -e --arg version "$GITHUB_SHA" '.version == $version' > /dev/null; then
+              echo "Deployed ${GITHUB_SHA::7} as revision $revision" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Revision $revision did not serve $GITHUB_SHA on /health within five minutes"
+          exit 1
