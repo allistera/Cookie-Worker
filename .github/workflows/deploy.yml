@@ -181,6 +181,10 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers/cookie-web-notifications
           command: deploy
+          # NTFY_TOKEN_ENCRYPTION_KEY is not synced here, like the Google and
+          # Todoist keys: without it ntfy still works for topics that need no
+          # access token, and Settings hides the token field. Set it once
+          # with `wrangler secret put` (README, "ntfy notifications").
           secrets: |
             SENTRY_DSN
         env:

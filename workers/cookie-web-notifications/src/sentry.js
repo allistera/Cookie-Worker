@@ -13,20 +13,21 @@ const SERVICE = 'cookie-web-notifications';
  *   SENTRY_DSN?: string,
  *   AUTH0_DOMAIN?: string,
  *   AUTH0_AUDIENCE?: string,
+ *   NTFY_TOKEN_ENCRYPTION_KEY?: string,
  * }} NotificationsEnv
  */
 
 /**
- * Nothing this Worker holds is secret in the message-content sense (Auth0's
- * domain/audience are public identifiers, already shipped in Cookie-Web's own
- * client bundle), but the Hyperdrive connection string carries the database
- * password, so it still gets scrubbed like every other Worker's does.
+ * Auth0's domain/audience are public identifiers, already shipped in
+ * Cookie-Web's own client bundle, but the Hyperdrive connection string
+ * carries the database password and NTFY_TOKEN_ENCRYPTION_KEY unlocks every
+ * stored ntfy access token, so both get scrubbed like every other Worker's.
  *
  * @param {NotificationsEnv} env
  * @returns {(string | undefined)[]}
  */
 function secrets(env) {
-  return [env.HYPERDRIVE.connectionString];
+  return [env.HYPERDRIVE.connectionString, env.NTFY_TOKEN_ENCRYPTION_KEY];
 }
 
 /**

@@ -13,20 +13,23 @@ import {
   disableNtfySubscription,
   getNtfySubscription,
   NtfyPublishError,
+  NtfySettingsError,
+  saveNtfySubscription,
   sendNtfyTest,
 } from './ntfy.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 /**
  * Routes POST /notification-event — the single endpoint Cookie-Web's
- * api/notification-event.js served.
+ * api/notification-event.js served — and the ntfy settings under /ntfy.
  *
  * @param {URL} url
  * @param {Request} request
  * @param {import('postgres').Sql} sql
  * @param {string} userId
+ * @param {{baseUrl: string, tokenKey?: string}} ntfy
  */
-async function route(url, request, sql, userId, ntfyBaseUrl) {
+async function route(url, request, sql, userId, ntfy) {
   if (url.pathname === '/ntfy/test') {
     if (request.method !== 'POST') {
       return Response.json(
@@ -35,9 +38,7 @@ async function route(url, request, sql, userId, ntfyBaseUrl) {
       );
     }
     try {
-      return Response.json(
-        await sendNtfyTest(sql, userId, { baseUrl: ntfyBaseUrl || DEFAULT_BASE_URL }),
-      );
+      return Response.json(await sendNtfyTest(sql, userId, ntfy));
     } catch (error) {
       if (error instanceof Error && error.message === 'ntfy subscription is not enabled') {
         return Response.json({ error: 'ntfy notifications are not enabled' }, { status: 409 });
@@ -61,17 +62,40 @@ async function route(url, request, sql, userId, ntfyBaseUrl) {
   }
   if (url.pathname === '/ntfy') {
     if (request.method === 'GET') {
-      return Response.json(
-        (await getNtfySubscription(sql, userId, { baseUrl: ntfyBaseUrl })) || {
-          enabled: false,
-        },
-        {
+      return Response.json(await getNtfySubscription(sql, userId, ntfy), {
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+    // PUT saves the server, topic and token Settings sent; POST is the older
+    // switch-only setup (a generated topic on the default server), kept for
+    // a web client deployed before the form existed.
+    if (request.method === 'PUT') {
+      let body;
+      try {
+        body = await readJsonBody(request);
+      } catch (error) {
+        const errorResponse = bodyErrorResponse(error);
+        if (errorResponse) return errorResponse;
+        throw error;
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return Response.json({ error: 'Expected a JSON object' }, { status: 400 });
+      }
+      try {
+        return Response.json(await saveNtfySubscription(sql, userId, body, ntfy), {
           headers: { 'Cache-Control': 'no-store' },
-        },
-      );
+        });
+      } catch (error) {
+        if (error instanceof NtfySettingsError) {
+          const status =
+            error.code === 'topic_taken' ? 409 : error.code === 'tokens_not_configured' ? 501 : 400;
+          return Response.json({ error: error.code, message: error.message }, { status });
+        }
+        throw error;
+      }
     }
     if (request.method === 'POST') {
-      return Response.json(await createNtfySubscription(sql, userId, { baseUrl: ntfyBaseUrl }), {
+      return Response.json(await createNtfySubscription(sql, userId, ntfy), {
         headers: { 'Cache-Control': 'no-store' },
       });
     }
@@ -81,7 +105,7 @@ async function route(url, request, sql, userId, ntfyBaseUrl) {
     }
     return Response.json(
       { error: 'Method not allowed' },
-      { status: 405, headers: { Allow: 'GET, POST, DELETE' } },
+      { status: 405, headers: { Allow: 'GET, PUT, POST, DELETE' } },
     );
   }
   if (url.pathname !== '/notification-event') {
@@ -127,7 +151,11 @@ const worker = {
         env,
         ctx,
         { retryable: request.method === 'GET' || request.method === 'HEAD' },
-        (sql, userId) => route(url, request, sql, userId, env.NTFY_BASE_URL),
+        (sql, userId) =>
+          route(url, request, sql, userId, {
+            baseUrl: env.NTFY_BASE_URL || DEFAULT_BASE_URL,
+            tokenKey: env.NTFY_TOKEN_ENCRYPTION_KEY,
+          }),
       );
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
@@ -144,13 +172,14 @@ const worker = {
     }
   },
 
-  /** @param {ScheduledController} _controller @param {any} env @param {ExecutionContext} ctx */
+  /** @param {ScheduledController} _controller @param {import('./sentry.js').NotificationsEnv} env @param {ExecutionContext} ctx */
   async scheduled(_controller, env, ctx) {
     const sql = createSql(env.HYPERDRIVE.connectionString);
     ctx.waitUntil(
-      deliverPendingNtfy(sql, { baseUrl: env.NTFY_BASE_URL || DEFAULT_BASE_URL }).finally(() =>
-        sql.end({ timeout: 2 }).catch(() => undefined),
-      ),
+      deliverPendingNtfy(sql, {
+        baseUrl: env.NTFY_BASE_URL || DEFAULT_BASE_URL,
+        tokenKey: env.NTFY_TOKEN_ENCRYPTION_KEY,
+      }).finally(() => sql.end({ timeout: 2 }).catch(() => undefined)),
     );
   },
 };

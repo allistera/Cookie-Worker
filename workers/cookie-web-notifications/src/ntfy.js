@@ -1,7 +1,12 @@
 import { fetchWithTimeout } from '../../../shared/fetch.js';
+import { decryptToken, encryptToken } from '../../../shared/token-crypto.js';
 
 export const DEFAULT_BASE_URL = 'https://ntfy.allisterantosik.com';
-const TOPIC_RE = /^[A-Za-z0-9_-]{8,128}$/;
+// ntfy's own topic rule: letters, digits, underscore and hyphen, at most 64.
+const TOPIC_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_SERVER_URL_LENGTH = 200;
+const MAX_TOKEN_LENGTH = 200;
+const TOKEN_HINT_LENGTH = 4;
 const COOKIE_ORIGIN = 'https://mail.infinitywave.online';
 // Cookie-iOS registers this scheme (its bundle id) and opens
 // <scheme>://inbox?open=<message id> on the email — see InboxDeepLink.swift.
@@ -29,6 +34,70 @@ export class NtfyPublishError extends Error {
     this.status = status;
     this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+/** A server URL, topic or token Settings sent that cannot be used. */
+export class NtfySettingsError extends Error {
+  /** @param {string} code @param {string} message */
+  constructor(code, message) {
+    super(message);
+    this.name = 'NtfySettingsError';
+    this.code = code;
+  }
+}
+
+/**
+ * The ntfy server Settings typed in, as the base of every publish URL: https
+ * only (a token travels in the Authorization header), no credentials, query
+ * or fragment, and no trailing slash so the topic can be appended.
+ *
+ * @param {unknown} value
+ */
+export function normalizeServerUrl(value) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > MAX_SERVER_URL_LENGTH) {
+    throw new NtfySettingsError(
+      'invalid_server_url',
+      'Enter the https:// address of an ntfy server.',
+    );
+  }
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new NtfySettingsError(
+      'invalid_server_url',
+      'Enter the https:// address of an ntfy server.',
+    );
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+    throw new NtfySettingsError(
+      'invalid_server_url',
+      'Enter the https:// address of an ntfy server.',
+    );
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+/** @param {unknown} value */
+export function normalizeTopic(value) {
+  const topic = String(value ?? '').trim();
+  if (!TOPIC_RE.test(topic)) {
+    throw new NtfySettingsError(
+      'invalid_topic',
+      'A topic is 1 to 64 letters, digits, hyphens or underscores.',
+    );
+  }
+  return topic;
+}
+
+/** @param {unknown} value */
+function normalizeAccessToken(value) {
+  const token = String(value ?? '').trim();
+  if (!token || token.length > MAX_TOKEN_LENGTH || /\s/.test(token)) {
+    throw new NtfySettingsError('invalid_access_token', 'That access token cannot be used.');
+  }
+  return token;
 }
 
 /** @param {Response} response */
@@ -93,7 +162,7 @@ export function encodeHeaderValue(value) {
 }
 
 /**
- * @param {{topic: string, messageId: string, subject?: string | null, bodyText?: string | null, title?: string | null}} notification
+ * @param {{topic: string, messageId: string, subject?: string | null, bodyText?: string | null, title?: string | null, accessToken?: string | null}} notification
  * @param {{baseUrl?: string, fetchImpl?: typeof fetch, maxAttempts?: number, sleepImpl?: (milliseconds: number) => Promise<void>, canPublish?: () => Promise<boolean>}} [options]
  */
 export async function publishNtfy(notification, options = {}) {
@@ -120,6 +189,11 @@ export async function publishNtfy(notification, options = {}) {
         method: 'POST',
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
+          // ntfy access tokens (ntfy.sh reserved topics, self-hosted servers
+          // with auth) are sent as a bearer token; basic auth is not offered.
+          ...(notification.accessToken
+            ? { Authorization: `Bearer ${notification.accessToken}` }
+            : {}),
           'X-Title': encodeHeaderValue(notification.title || subject),
           'X-Click': `${COOKIE_ORIGIN}/inbox?open=${encodeURIComponent(notification.messageId)}`,
           // Tapping the notification opens the web inbox (works for every ntfy
@@ -148,60 +222,162 @@ export async function publishNtfy(notification, options = {}) {
 }
 
 /**
+ * @typedef {{serverUrl: string, topic: string, enabled: boolean, tokenHint: string, accessTokenEncrypted: string | null}} NtfySubscriptionRow
+ */
+
+/** @param {any} row @returns {NtfySubscriptionRow} */
+function subscriptionFromRow(row) {
+  return {
+    serverUrl: String(row.server_url),
+    topic: String(row.topic),
+    enabled: row.enabled === true,
+    tokenHint: String(row.token_hint ?? ''),
+    accessTokenEncrypted: row.access_token_encrypted ?? null,
+  };
+}
+
+/**
+ * The wire shape Settings renders. The token itself never leaves the Worker;
+ * only its last characters do. `defaultServerUrl` prefills the form for a
+ * user who has not set ntfy up, and `tokensSupported` tells Settings whether
+ * this deployment can hold an access token at all.
+ *
+ * @param {NtfySubscriptionRow | null} subscription
+ * @param {{baseUrl?: string, tokenKey?: string}} options
+ */
+export function publicNtfySettings(subscription, options) {
+  const defaultServerUrl = (options.baseUrl || DEFAULT_BASE_URL).replace(/\/$/, '');
+  return {
+    enabled: subscription?.enabled ?? false,
+    defaultServerUrl,
+    tokensSupported: Boolean(options.tokenKey),
+    ...(subscription
+      ? {
+          serverUrl: subscription.serverUrl,
+          topic: subscription.topic,
+          subscribeUrl: `${subscription.serverUrl}/${subscription.topic}`,
+          tokenHint: subscription.tokenHint,
+        }
+      : {}),
+  };
+}
+
+/** @param {import('postgres').Sql} sql @param {string} userId */
+async function loadSubscription(sql, userId) {
+  const [row] = await sql`
+    SELECT server_url, topic, enabled, token_hint, access_token_encrypted
+    FROM ntfy_subscriptions
+    WHERE user_id = ${userId}
+  `;
+  return row ? subscriptionFromRow(row) : null;
+}
+
+/**
+ * Stores the server, topic and (optionally) access token Settings sent, and
+ * turns delivery on. `accessToken` left out keeps the stored token, `null`
+ * removes it, a string replaces it. A token can only be kept when the Worker
+ * holds the encryption key; the route reports that as not configured.
+ *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{baseUrl?: string, makeTopic?: () => string}} [options]
+ * @param {{serverUrl?: unknown, topic?: unknown, accessToken?: unknown}} input
+ * @param {{baseUrl?: string, tokenKey?: string}} options
+ */
+export async function saveNtfySubscription(sql, userId, input, options) {
+  const serverUrl = normalizeServerUrl(input.serverUrl);
+  const topic = normalizeTopic(input.topic);
+  const hasToken = Object.hasOwn(input, 'accessToken');
+  /** @type {string | null} */
+  let accessTokenEncrypted = null;
+  let tokenHint = '';
+  if (hasToken && input.accessToken !== null) {
+    if (!options.tokenKey) {
+      throw new NtfySettingsError(
+        'tokens_not_configured',
+        'Access tokens are not set up on this Cookie deployment.',
+      );
+    }
+    const token = normalizeAccessToken(input.accessToken);
+    accessTokenEncrypted = await encryptToken(token, options.tokenKey);
+    tokenHint = token.slice(-TOKEN_HINT_LENGTH);
+  }
+  let row;
+  try {
+    // Two Cookie accounts on one server must not share a topic, or each
+    // would receive the other's mail; the unique index on (server_url,
+    // topic) enforces that and surfaces here as 23505.
+    [row] = hasToken
+      ? await sql`
+          INSERT INTO ntfy_subscriptions
+            (user_id, server_url, topic, enabled, access_token_encrypted, token_hint)
+          VALUES
+            (${userId}, ${serverUrl}, ${topic}, true, ${accessTokenEncrypted}, ${tokenHint})
+          ON CONFLICT (user_id) DO UPDATE SET
+            server_url = EXCLUDED.server_url,
+            topic = EXCLUDED.topic,
+            enabled = true,
+            access_token_encrypted = EXCLUDED.access_token_encrypted,
+            token_hint = EXCLUDED.token_hint,
+            updated_at = now()
+          RETURNING server_url, topic, enabled, token_hint, access_token_encrypted
+        `
+      : await sql`
+          INSERT INTO ntfy_subscriptions (user_id, server_url, topic, enabled)
+          VALUES (${userId}, ${serverUrl}, ${topic}, true)
+          ON CONFLICT (user_id) DO UPDATE SET
+            server_url = EXCLUDED.server_url,
+            topic = EXCLUDED.topic,
+            enabled = true,
+            updated_at = now()
+          RETURNING server_url, topic, enabled, token_hint, access_token_encrypted
+        `;
+  } catch (error) {
+    if (/** @type {{code?: string}} */ (error)?.code === '23505') {
+      throw new NtfySettingsError(
+        'topic_taken',
+        'Another Cookie account already uses that topic on this server.',
+      );
+    }
+    throw error;
+  }
+  if (!row) throw new Error('ntfy subscription was not saved');
+  return publicNtfySettings(subscriptionFromRow(row), options);
+}
+
+/**
+ * Turns delivery on for a user who never chose a server or topic, with a
+ * random topic on the default server (the setup Settings offered before the
+ * form existed). An existing subscription is simply re-enabled as it stands.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{baseUrl?: string, tokenKey?: string, makeTopic?: () => string}} [options]
  */
 export async function createNtfySubscription(sql, userId, options = {}) {
   const baseUrl = (options.baseUrl || DEFAULT_BASE_URL).replace(/\/$/, '');
   const makeTopic = options.makeTopic || (() => `cookie-${crypto.randomUUID()}`);
   const [existing] = await sql`
-    SELECT topic, enabled
-    FROM ntfy_subscriptions
+    UPDATE ntfy_subscriptions
+    SET enabled = true, updated_at = now()
     WHERE user_id = ${userId}
+    RETURNING server_url, topic, enabled, token_hint, access_token_encrypted
   `;
-  if (existing) {
-    const [enabled] = await sql`
-      UPDATE ntfy_subscriptions
-      SET enabled = true, updated_at = now()
-      WHERE user_id = ${userId}
-      RETURNING topic, enabled
-    `;
-    return {
-      topic: enabled?.topic || existing.topic,
-      subscribeUrl: `${baseUrl}/${enabled?.topic || existing.topic}`,
-      enabled: enabled?.enabled ?? true,
-    };
-  }
+  if (existing) return publicNtfySettings(subscriptionFromRow(existing), options);
   const topic = makeTopic();
   if (!TOPIC_RE.test(topic)) throw new Error('generated invalid ntfy topic');
   const [created] = await sql`
-    INSERT INTO ntfy_subscriptions (user_id, topic)
-    VALUES (${userId}, ${topic})
-    ON CONFLICT (user_id) DO UPDATE SET topic = EXCLUDED.topic, enabled = true, updated_at = now()
-    RETURNING topic, enabled
+    INSERT INTO ntfy_subscriptions (user_id, server_url, topic)
+    VALUES (${userId}, ${baseUrl}, ${topic})
+    ON CONFLICT (user_id) DO UPDATE SET enabled = true, updated_at = now()
+    RETURNING server_url, topic, enabled, token_hint, access_token_encrypted
   `;
   if (!created) throw new Error('ntfy subscription was not created');
-  return {
-    topic: created.topic,
-    subscribeUrl: `${baseUrl}/${created.topic}`,
-    enabled: created.enabled,
-  };
+  return publicNtfySettings(subscriptionFromRow(created), options);
 }
 
-/** @param {import('postgres').Sql} sql @param {string} userId @param {{baseUrl?: string}} [options] */
+/** @param {import('postgres').Sql} sql @param {string} userId @param {{baseUrl?: string, tokenKey?: string}} [options] */
 export async function getNtfySubscription(sql, userId, options = {}) {
-  const [subscription] = await sql`
-    SELECT topic, enabled
-    FROM ntfy_subscriptions
-    WHERE user_id = ${userId}
-  `;
-  if (!subscription) return null;
-  return {
-    topic: subscription.topic,
-    subscribeUrl: `${(options.baseUrl || DEFAULT_BASE_URL).replace(/\/$/, '')}/${subscription.topic}`,
-    enabled: subscription.enabled,
-  };
+  return publicNtfySettings(await loadSubscription(sql, userId), options);
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId */
@@ -220,16 +396,30 @@ export function disableNtfySubscription(sql, userId) {
 }
 
 /**
+ * The stored access token, or null when the subscription has none. A token
+ * stored under a key the Worker no longer holds cannot be used, so that
+ * publish fails (and is recorded) rather than going out unauthenticated.
+ *
+ * @param {string | null} accessTokenEncrypted
+ * @param {string | undefined} tokenKey
+ */
+async function accessTokenFor(accessTokenEncrypted, tokenKey) {
+  if (!accessTokenEncrypted) return null;
+  if (!tokenKey) throw new Error('ntfy access token cannot be decrypted: no encryption key');
+  return decryptToken(accessTokenEncrypted, tokenKey);
+}
+
+/**
  * Publishes immediately so the user can verify their ntfy subscription
  * without creating a fake email or notification queue record.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{baseUrl?: string, fetchImpl?: typeof fetch}} [options]
+ * @param {{baseUrl?: string, tokenKey?: string, fetchImpl?: typeof fetch}} [options]
  */
 export async function sendNtfyTest(sql, userId, options = {}) {
   const [subscription] = await sql`
-    SELECT topic
+    SELECT server_url, topic, access_token_encrypted
     FROM ntfy_subscriptions
     WHERE user_id = ${userId} AND enabled
   `;
@@ -238,12 +428,13 @@ export async function sendNtfyTest(sql, userId, options = {}) {
   await publishNtfy(
     {
       topic: subscription.topic,
+      accessToken: await accessTokenFor(subscription.access_token_encrypted, options.tokenKey),
       messageId: 'test-notification',
       subject: 'Your ntfy notifications are working.',
       bodyText: 'Your ntfy notifications are working.',
       title: 'Cookie notification test',
     },
-    options,
+    { ...options, baseUrl: subscription.server_url },
   );
   return { sent: true };
 }
@@ -261,13 +452,14 @@ export async function sendNtfyTest(sql, userId, options = {}) {
  * it; a row a later tick has reclaimed is skipped and left to that tick.
  *
  * @param {import('postgres').Sql} sql
- * @param {{baseUrl?: string, fetchImpl?: typeof fetch, limit?: number}} [options]
+ * @param {{baseUrl?: string, tokenKey?: string, fetchImpl?: typeof fetch, limit?: number}} [options]
  */
 export async function deliverPendingNtfy(sql, options = {}) {
   const limit = Number.isInteger(options.limit) ? options.limit : 20;
   const rows = await sql`
     WITH pending AS (
       SELECT event.event_id, event.message_id, subscription.topic,
+             subscription.server_url, subscription.access_token_encrypted,
              message.subject, left(message.body_text, ${BODY_SELECT_CHARS}) AS body_text
       FROM ntfy_notification_events event
       JOIN ntfy_subscriptions subscription ON subscription.user_id = event.user_id
@@ -305,6 +497,7 @@ export async function deliverPendingNtfy(sql, options = {}) {
     FROM pending
     WHERE event.event_id = pending.event_id
     RETURNING pending.event_id, pending.message_id, pending.topic,
+              pending.server_url, pending.access_token_encrypted,
               pending.subject, pending.body_text, event.attempts
   `;
   let delivered = 0;
@@ -317,12 +510,15 @@ export async function deliverPendingNtfy(sql, options = {}) {
       await publishNtfy(
         {
           topic: row.topic,
+          accessToken: await accessTokenFor(row.access_token_encrypted, options.tokenKey),
           messageId: row.message_id,
           subject: row.subject,
           bodyText: row.body_text,
         },
         {
           ...options,
+          // Rows written before each user chose a server carry the default.
+          baseUrl: row.server_url || options.baseUrl,
           canPublish: async () => {
             // The message can be read, archived or deleted, the sender blocked,
             // or notifications switched off while a publish waits to retry.
