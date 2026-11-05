@@ -1,4 +1,5 @@
 import { Meilisearch } from 'meilisearch';
+import { isTransientMeiliError } from './meiliErrors.js';
 
 export { MESSAGES_INDEX } from './meili/messages.js';
 export { EMBEDDER } from './meili/embedder.js';
@@ -193,7 +194,15 @@ async function completedTask(meili, pending) {
       throw new Error(`Meilisearch task ${taskUid} not finished after ${TASK_TIMEOUT_MS}ms`);
     }
     await new Promise((resolve) => setTimeout(resolve, delay));
-    const task = await meili.tasks.getTask(taskUid);
+    let task;
+    try {
+      task = await meili.tasks.getTask(taskUid);
+    } catch (error) {
+      // The write was already accepted. Keep polling its task instead of
+      // re-enqueuing the document batch after one transient gateway failure.
+      if (isTransientMeiliError(error)) continue;
+      throw error;
+    }
     if (task.status === 'enqueued' || task.status === 'processing') continue;
     if (task.status !== 'succeeded') throw new Error(`Meilisearch task ${taskUid} ${task.status}`);
     return { taskUid, status: task.status };

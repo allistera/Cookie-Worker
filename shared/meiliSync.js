@@ -1,5 +1,8 @@
 import { addDocuments, meiliAvailable } from './meili.js';
 import { MESSAGES_INDEX } from './meili/messages.js';
+import { isTransientMeiliError } from './meiliErrors.js';
+
+export { isTransientMeiliError } from './meiliErrors.js';
 
 // Meilisearch accepts or rejects an addDocuments payload as a whole, so one
 // oversized or malformed document would otherwise cost every other document
@@ -19,22 +22,6 @@ function errorText(err) {
 // Meilisearch is self-hosted behind a Cloudflare Tunnel, and a tunnel blip
 // answers 502-504 or 520-530 for a single request (Sentry COOKIE-WEB-1E).
 export const TRANSIENT_RETRY_DELAY_MS = 1000;
-
-/**
- * A failure worth one quick retry: no response at all, or a gateway status
- * from the proxy rather than a verdict from Meilisearch itself.
- *
- * @param {unknown} err
- */
-export function isTransientMeiliError(err) {
-  const error = /** @type {any} */ (err);
-  if (error?.name === 'MeilisearchRequestError') return true;
-  const status = error?.response?.status;
-  return (
-    typeof status === 'number' &&
-    ((status >= 502 && status <= 504) || (status >= 520 && status <= 530))
-  );
-}
 
 /**
  * @param {any} env

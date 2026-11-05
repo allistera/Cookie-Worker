@@ -653,6 +653,39 @@ describe('index acknowledgement', () => {
     expect(finished).toBe(true);
   });
 
+  it('keeps polling the accepted task after a plain-text gateway failure', async () => {
+    const { client, calls } = createMockMeili();
+    client.tasks.getTask.mockRejectedValueOnce(
+      new SyntaxError('Unexpected token \'e\', "error code: 502\n" is not valid JSON'),
+    );
+    await expect(settle(addDocuments(ENV, MESSAGES_INDEX, [], client))).resolves.toEqual({
+      taskUid: 2,
+      status: 'succeeded',
+    });
+    expect(calls.filter((call) => call.method === 'addDocuments')).toHaveLength(1);
+    expect(client.tasks.getTask.mock.calls).toEqual([[2], [2]]);
+  });
+
+  it('does not retry malformed JSON without a gateway signature', async () => {
+    const { client } = createMockMeili();
+    const error = new SyntaxError('Unexpected end of JSON input');
+    client.tasks.getTask.mockRejectedValueOnce(error);
+    await expect(settle(addDocuments(ENV, MESSAGES_INDEX, [], client))).rejects.toBe(error);
+    expect(client.tasks.getTask).toHaveBeenCalledOnce();
+  });
+
+  it('bounds repeated gateway failures by the task deadline', async () => {
+    const { client, calls } = createMockMeili();
+    client.tasks.getTask.mockRejectedValue(
+      Object.assign(new Error('gateway'), { response: { status: 503 } }),
+    );
+    await expect(settle(addDocuments(ENV, MESSAGES_INDEX, [], client))).rejects.toThrow(
+      'not finished after 20000ms',
+    );
+    expect(client.tasks.getTask).toHaveBeenCalledTimes(11);
+    expect(calls.filter((call) => call.method === 'addDocuments')).toHaveLength(1);
+  });
+
   it('backs off between polls and gives up after 20s', async () => {
     const getTask = vi.fn(async (uid) => ({ uid, status: 'processing' }));
     const client = /** @type {any} */ ({
