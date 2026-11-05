@@ -71,6 +71,13 @@ row/child versions must still match. One failed target does not block the other.
 This cron has its own subrequest budget, separate from the existing inbound
 enrichment and message-search cron.
 
+While waiting for an accepted Meilisearch write, transient gateway or transport
+failures retry the status lookup for the same task within the existing
+20-second polling deadline. This includes Cloudflare's plain-text gateway
+responses that the SDK exposes as JSON parsing errors. A failed/canceled task,
+a permanent API rejection, or unrelated malformed JSON still fails immediately.
+A prolonged outage leaves the rows unstamped for a later repair pass.
+
 Track `workspace_search_drift_swept` by target and `oldest_age_seconds`, plus
 `workspace_search_drift_failed`. A continuously growing oldest age calls for
 checking Meilisearch task failures and the incoming edit rate before increasing

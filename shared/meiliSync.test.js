@@ -363,21 +363,27 @@ describe('transient Meilisearch failures', () => {
     expect(isTransientMeiliError(new Error('Meilisearch task 7 failed'))).toBe(false);
   });
 
-  it('retries a chunk once after a tunnel error and stamps it when the retry lands', async () => {
-    vi.useFakeTimers();
-    try {
-      addDocuments.mockRejectedValueOnce(apiError(530));
-      const sql = createMockSql([manyRows(2), []]);
+  it.each([
+    apiError(530),
+    new SyntaxError('Unexpected token \'e\', "error code: 502\\n" is not valid JSON'),
+  ])(
+    'retries a chunk once after a tunnel error and stamps it when the retry lands: %s',
+    async (error) => {
+      vi.useFakeTimers();
+      try {
+        addDocuments.mockRejectedValueOnce(error);
+        const sql = createMockSql([manyRows(2), []]);
 
-      const pending = syncMessagesToMeili(sql, ENV, ['row-0', 'row-1']);
-      await vi.runAllTimersAsync();
+        const pending = syncMessagesToMeili(sql, ENV, ['row-0', 'row-1']);
+        await vi.runAllTimersAsync();
 
-      await expect(pending).resolves.toEqual({ indexed: 2, failed: 0, error: undefined });
-      expect(addDocuments).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+        await expect(pending).resolves.toEqual({ indexed: 2, failed: 0, error: undefined });
+        expect(addDocuments).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('does not retry a document Meilisearch itself rejected', async () => {
     addDocuments.mockRejectedValueOnce(apiError(400));
