@@ -65,13 +65,67 @@ describe('listAll', () => {
       listAll('tok', '/tasks', { fetchImpl: /** @type {any} */ (forbidden) }),
     ).rejects.toBeInstanceOf(TodoistAuthError);
 
-    const broken = vi.fn().mockResolvedValue(jsonResponse({ error: 'down' }, 503));
+    const broken = vi.fn().mockResolvedValue(jsonResponse({ error: 'bad' }, 400));
     const error = await listAll('tok', '/tasks', {
       fetchImpl: /** @type {any} */ (broken),
     }).catch((e) => e);
     expect(error).toBeInstanceOf(TodoistApiError);
     expect(error).not.toBeInstanceOf(TodoistAuthError);
-    expect(error.status).toBe(503);
+    expect(error.status).toBe(400);
+    expect(unauthorized).toHaveBeenCalledOnce();
+    expect(forbidden).toHaveBeenCalledOnce();
+    expect(broken).toHaveBeenCalledOnce();
+  });
+
+  it('retries a failed page without restarting pagination or duplicating rows', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ results: [{ id: '1' }], next_cursor: 'next' }))
+        .mockResolvedValueOnce(jsonResponse({ error: 'unavailable' }, 503))
+        .mockResolvedValueOnce(jsonResponse({ results: [{ id: '2' }], next_cursor: null }));
+      const result = listAll('tok', '/projects', { fetchImpl });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toEqual([{ id: '1' }, { id: '2' }]);
+      const urls = fetchImpl.mock.calls.map(([url]) => String(url));
+      expect(urls[1]).toBe(urls[2]);
+      expect(new URL(urls[2]).searchParams.get('cursor')).toBe('next');
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops after one server-error retry and preserves the Todoist error', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(async () => jsonResponse({ error: 'unavailable' }, 503));
+      const result = listAll('tok', '/projects', { fetchImpl }).catch((error) => error);
+      await vi.runAllTimersAsync();
+      const error = await result;
+      expect(error).toBeInstanceOf(TodoistApiError);
+      expect(error.status).toBe(503);
+      expect(error.message).toBe('Todoist responded 503 for /projects');
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry rate limits or malformed successful responses', async () => {
+    const limited = vi.fn(async () => jsonResponse({ error: 'limited' }, 429));
+    await expect(listAll('tok', '/projects', { fetchImpl: limited })).rejects.toMatchObject({
+      status: 429,
+    });
+    expect(limited).toHaveBeenCalledOnce();
+    const malformed = vi.fn(async () => new Response('invalid JSON'));
+    await expect(listAll('tok', '/projects', { fetchImpl: malformed })).rejects.toMatchObject({
+      status: 200,
+    });
+    expect(malformed).toHaveBeenCalledOnce();
   });
 
   it('refuses a body without the expected array and a cursor that never ends', async () => {
