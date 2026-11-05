@@ -1,14 +1,22 @@
 import { describe, expect, test, vi } from 'vitest';
+import { encryptToken } from '../../../shared/token-crypto.js';
 import {
   createNtfySubscription,
   DELIVERY_CONCURRENCY,
   deliverPendingNtfy,
   encodeHeaderValue,
+  normalizeServerUrl,
+  normalizeTopic,
   NTFY_FETCH_TIMEOUT_MS,
   NtfyPublishError,
+  NtfySettingsError,
   publishNtfy,
+  saveNtfySubscription,
   sendNtfyTest,
 } from '../src/ntfy.js';
+
+// 32 zero bytes, base64: a valid AES-256 key for the token round trips below.
+const TOKEN_KEY = btoa(String.fromCharCode(...new Uint8Array(32)));
 
 /**
  * A fetch stand-in that builds the real Request, as the runtime's fetch does,
@@ -279,6 +287,8 @@ describe('ntfy delivery', () => {
             event_id: 'event-1',
             message_id: 'message-1',
             topic: 'cookie-topic',
+            server_url: 'https://ntfy.example.com',
+            access_token_encrypted: null,
             subject: 'Appointment reminder',
             body_text: 'Please confirm by Friday.',
             attempts: 1,
@@ -292,6 +302,9 @@ describe('ntfy delivery', () => {
     await expect(
       deliverPendingNtfy(sql, { baseUrl: 'https://ntfy.sh', fetchImpl }),
     ).resolves.toEqual({ attempted: 1, delivered: 1, failed: 0 });
+    // The user's own server, not the deployment default.
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://ntfy.example.com/cookie-topic');
+    expect(fetchImpl.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
     expect(sql).toHaveBeenCalledTimes(3);
     expect(sql.mock.calls[2][0].join(' ')).toContain('published_at = now()');
     expect(sql.mock.calls[2][0].join(' ')).toContain('AND attempts =');
@@ -299,6 +312,76 @@ describe('ntfy delivery', () => {
     const [, request] = fetchImpl.mock.calls[0];
     expect(request.headers['X-Title']).toBe('Appointment reminder');
     expect(request.body).toBe('Please confirm by Friday.');
+  });
+
+  test('sends a stored access token as a bearer token', async () => {
+    const sql = /** @type {any} */ (
+      vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            event_id: 'event-1',
+            message_id: 'message-1',
+            topic: 'private-topic',
+            server_url: 'https://ntfy.sh',
+            access_token_encrypted: await encryptToken('tk_secret', TOKEN_KEY),
+            subject: 'Hello',
+            body_text: 'Body',
+            attempts: 1,
+          },
+        ])
+        .mockResolvedValueOnce([{ attempts: 1, eligible: true }])
+        .mockResolvedValueOnce([])
+    );
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+
+    await expect(deliverPendingNtfy(sql, { tokenKey: TOKEN_KEY, fetchImpl })).resolves.toEqual({
+      attempted: 1,
+      delivered: 1,
+      failed: 0,
+    });
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://ntfy.sh/private-topic');
+    expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe('Bearer tk_secret');
+  });
+
+  // Without the key the token cannot be recovered; the push must not go out
+  // unauthenticated (ntfy would answer 403 anyway) and the failure is kept.
+  test('records a failure rather than publishing when a token cannot be decrypted', async () => {
+    const sql = /** @type {any} */ (
+      vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            event_id: 'event-1',
+            message_id: 'message-1',
+            topic: 'private-topic',
+            server_url: 'https://ntfy.sh',
+            access_token_encrypted: await encryptToken('tk_secret', TOKEN_KEY),
+            attempts: 1,
+          },
+        ])
+        .mockResolvedValueOnce([])
+    );
+    const fetchImpl = vi.fn();
+
+    await expect(deliverPendingNtfy(sql, { fetchImpl })).resolves.toEqual({
+      attempted: 1,
+      delivered: 0,
+      failed: 1,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sql.mock.calls[1][0].join(' ')).toContain('SET last_error =');
+    expect(sql.mock.calls[1][1]).toContain('no encryption key');
+  });
+
+  test('selects each subscription server and token alongside the queued event', async () => {
+    const sql = /** @type {any} */ (vi.fn().mockResolvedValueOnce([]));
+
+    await deliverPendingNtfy(sql, { fetchImpl: vi.fn() });
+
+    const query = sql.mock.calls[0][0].join(' ').replace(/\s+/g, ' ');
+    expect(query).toContain('subscription.server_url, subscription.access_token_encrypted');
+    expect(query).toContain('pending.server_url, pending.access_token_encrypted');
   });
 
   // A hung ntfy server must fail the attempt, not stall the whole batch.
@@ -493,55 +576,255 @@ describe('ntfy delivery', () => {
   });
 });
 
-describe('ntfy subscription', () => {
-  test('creates a random topic and returns its subscription URL', async () => {
+describe('ntfy settings', () => {
+  test.each([
+    ['https://ntfy.sh', 'https://ntfy.sh'],
+    ['  https://ntfy.example.com/  ', 'https://ntfy.example.com'],
+    ['https://ntfy.example.com:8443', 'https://ntfy.example.com:8443'],
+    ['HTTPS://NTFY.EXAMPLE.COM', 'https://ntfy.example.com'],
+  ])('accepts the server URL %s as %s', (input, expected) => {
+    expect(normalizeServerUrl(input)).toBe(expected);
+  });
+
+  test.each([
+    ['an http URL', 'http://ntfy.example.com'],
+    ['a bare host', 'ntfy.example.com'],
+    ['embedded credentials', 'https://user:pass@ntfy.example.com'],
+    ['a query string', 'https://ntfy.example.com/?auth=x'],
+    ['an empty value', '   '],
+    ['an overlong value', `https://${'a'.repeat(200)}.example.com`],
+  ])('rejects a server URL with %s', (_name, input) => {
+    expect(() => normalizeServerUrl(input)).toThrow(NtfySettingsError);
+    expect(() => normalizeServerUrl(input)).toThrow(
+      expect.objectContaining({ code: 'invalid_server_url' }),
+    );
+  });
+
+  test.each(['my-topic', 'cookie_1', 'a', 'x'.repeat(64)])('accepts the topic %s', (topic) => {
+    expect(normalizeTopic(` ${topic} `)).toBe(topic);
+  });
+
+  test.each(['', 'has space', 'slash/topic', 'x'.repeat(65), 'émoji'])(
+    'rejects the topic %j',
+    (topic) => {
+      expect(() => normalizeTopic(topic)).toThrow(
+        expect.objectContaining({ code: 'invalid_topic' }),
+      );
+    },
+  );
+
+  test('saves the server and topic without touching a stored token when none is sent', async () => {
+    const sql = /** @type {any} */ (
+      vi.fn().mockResolvedValueOnce([
+        {
+          server_url: 'https://ntfy.sh',
+          topic: 'my-topic',
+          enabled: true,
+          token_hint: 'cret',
+          access_token_encrypted: 'v1:kept',
+        },
+      ])
+    );
+
+    const result = await saveNtfySubscription(
+      sql,
+      'user-1',
+      { serverUrl: 'https://ntfy.sh/', topic: ' my-topic ' },
+      { tokenKey: TOKEN_KEY },
+    );
+
+    const query = sql.mock.calls[0][0].join(' ');
+    expect(query).toContain('INSERT INTO ntfy_subscriptions (user_id, server_url, topic, enabled)');
+    expect(query).not.toContain('access_token_encrypted = EXCLUDED');
+    expect(sql.mock.calls[0].slice(1)).toEqual(['user-1', 'https://ntfy.sh', 'my-topic']);
+    expect(result).toEqual({
+      enabled: true,
+      defaultServerUrl: 'https://ntfy.allisterantosik.com',
+      tokensSupported: true,
+      serverUrl: 'https://ntfy.sh',
+      topic: 'my-topic',
+      subscribeUrl: 'https://ntfy.sh/my-topic',
+      tokenHint: 'cret',
+    });
+    expect(JSON.stringify(result)).not.toContain('v1:kept');
+  });
+
+  test('encrypts a new access token and keeps only its last characters in the clear', async () => {
+    const sql = /** @type {any} */ (
+      vi.fn(
+        async (/** @type {TemplateStringsArray} */ _strings, /** @type {any[]} */ ...values) => [
+          {
+            server_url: values[1],
+            topic: values[2],
+            enabled: true,
+            access_token_encrypted: values[3],
+            token_hint: values[4],
+          },
+        ],
+      )
+    );
+
+    const result = await saveNtfySubscription(
+      sql,
+      'user-1',
+      { serverUrl: 'https://ntfy.sh', topic: 'my-topic', accessToken: 'tk_abcdefgh1234' },
+      { tokenKey: TOKEN_KEY },
+    );
+
+    const values = sql.mock.calls[0].slice(1);
+    expect(values[3]).toMatch(/^v1:/);
+    expect(values[3]).not.toContain('tk_abcdefgh1234');
+    expect(values[4]).toBe('1234');
+    expect(result.tokenHint).toBe('1234');
+    expect(JSON.stringify(result)).not.toContain('tk_abcdefgh1234');
+  });
+
+  test('removes the stored token when null is sent', async () => {
+    const sql = /** @type {any} */ (
+      vi.fn().mockResolvedValueOnce([
+        {
+          server_url: 'https://ntfy.sh',
+          topic: 'my-topic',
+          enabled: true,
+          token_hint: '',
+          access_token_encrypted: null,
+        },
+      ])
+    );
+
+    const result = await saveNtfySubscription(
+      sql,
+      'user-1',
+      { serverUrl: 'https://ntfy.sh', topic: 'my-topic', accessToken: null },
+      {},
+    );
+
+    expect(sql.mock.calls[0][0].join(' ')).toContain('access_token_encrypted = EXCLUDED');
+    expect(sql.mock.calls[0].slice(1)).toEqual(['user-1', 'https://ntfy.sh', 'my-topic', null, '']);
+    expect(result.tokenHint).toBe('');
+  });
+
+  test('refuses a token when the Worker holds no encryption key', async () => {
+    const sql = vi.fn();
+
+    await expect(
+      saveNtfySubscription(
+        /** @type {any} */ (sql),
+        'user-1',
+        { serverUrl: 'https://ntfy.sh', topic: 'my-topic', accessToken: 'tk_secret' },
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'tokens_not_configured' });
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['an invalid server', { serverUrl: 'ftp://x', topic: 'ok' }, 'invalid_server_url'],
+    ['an invalid topic', { serverUrl: 'https://ntfy.sh', topic: 'not ok' }, 'invalid_topic'],
+    [
+      'a token with whitespace',
+      { serverUrl: 'https://ntfy.sh', topic: 'ok', accessToken: 'tk one' },
+      'invalid_access_token',
+    ],
+  ])('rejects %s before writing', async (_name, input, code) => {
+    const sql = vi.fn();
+    await expect(
+      saveNtfySubscription(/** @type {any} */ (sql), 'user-1', input, { tokenKey: TOKEN_KEY }),
+    ).rejects.toMatchObject({ code });
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  test('reports a topic another account already uses on that server', async () => {
+    const sql = /** @type {any} */ (
+      vi.fn().mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }))
+    );
+
+    await expect(
+      saveNtfySubscription(sql, 'user-1', { serverUrl: 'https://ntfy.sh', topic: 'shared' }, {}),
+    ).rejects.toMatchObject({ code: 'topic_taken' });
+  });
+
+  test('creates a random topic on the default server for the switch-only setup', async () => {
     const sql = /** @type {any} */ (
       vi
         .fn()
         .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ topic: 'cookie-generated-topic', enabled: true }])
+        .mockResolvedValueOnce([
+          {
+            server_url: 'https://ntfy.allisterantosik.com',
+            topic: 'cookie-generated-topic',
+            enabled: true,
+            token_hint: '',
+            access_token_encrypted: null,
+          },
+        ])
     );
     const result = await createNtfySubscription(sql, 'user-1', {
       makeTopic: () => 'generated-topic',
     });
 
-    expect(sql).toHaveBeenCalled();
+    expect(sql.mock.calls[1].slice(1)).toEqual([
+      'user-1',
+      'https://ntfy.allisterantosik.com',
+      'generated-topic',
+    ]);
     expect(result).toEqual({
+      enabled: true,
+      defaultServerUrl: 'https://ntfy.allisterantosik.com',
+      tokensSupported: false,
+      serverUrl: 'https://ntfy.allisterantosik.com',
       topic: 'cookie-generated-topic',
       subscribeUrl: 'https://ntfy.allisterantosik.com/cookie-generated-topic',
-      enabled: true,
+      tokenHint: '',
     });
   });
 
-  test('returns the configured self-hosted subscription URL', async () => {
+  test('re-enables an existing subscription on its own server rather than replacing it', async () => {
     const sql = /** @type {any} */ (
-      vi
-        .fn()
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ topic: 'cookie-generated-topic', enabled: true }])
+      vi.fn().mockResolvedValueOnce([
+        {
+          server_url: 'https://ntfy.sh',
+          topic: 'my-topic',
+          enabled: true,
+          token_hint: 'cret',
+          access_token_encrypted: 'v1:kept',
+        },
+      ])
     );
 
     const result = await createNtfySubscription(sql, 'user-1', {
       baseUrl: 'https://ntfy.allisterantosik.com',
-      makeTopic: () => 'generated-topic',
     });
 
-    expect(result.subscribeUrl).toBe('https://ntfy.allisterantosik.com/cookie-generated-topic');
+    expect(sql).toHaveBeenCalledOnce();
+    expect(result.subscribeUrl).toBe('https://ntfy.sh/my-topic');
+    expect(result.tokenHint).toBe('cret');
   });
 
-  test('sends a clearly labelled test notification to the enabled user topic', async () => {
+  test('sends a clearly labelled test notification to the user server and topic', async () => {
     const sql = /** @type {any} */ (
-      vi.fn().mockResolvedValueOnce([{ topic: 'cookie-user-topic' }])
+      vi.fn().mockResolvedValueOnce([
+        {
+          server_url: 'https://ntfy.sh',
+          topic: 'cookie-user-topic',
+          access_token_encrypted: await encryptToken('tk_secret', TOKEN_KEY),
+        },
+      ])
     );
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
 
     await expect(
-      sendNtfyTest(sql, 'user-1', { baseUrl: 'https://ntfy.sh', fetchImpl }),
+      sendNtfyTest(sql, 'user-1', {
+        baseUrl: 'https://ntfy.allisterantosik.com',
+        tokenKey: TOKEN_KEY,
+        fetchImpl,
+      }),
     ).resolves.toEqual({ sent: true });
 
     expect(fetchImpl).toHaveBeenCalledOnce();
     const [url, request] = fetchImpl.mock.calls[0];
     expect(url).toBe('https://ntfy.sh/cookie-user-topic');
+    expect(request.headers.Authorization).toBe('Bearer tk_secret');
     expect(request.headers['X-Title']).toBe('Cookie notification test');
     expect(request.headers['Content-Type']).toBe('text/plain; charset=utf-8');
     expect(request.body).toBe('Your ntfy notifications are working.');

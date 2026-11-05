@@ -114,21 +114,143 @@ describe('auth', () => {
 });
 
 describe('routing', () => {
-  test('GET /ntfy returns the authenticated user subscription', async () => {
-    mockQuery.mockResolvedValueOnce([{ topic: 'cookie-topic', enabled: true }]);
+  const SUBSCRIPTION_ROW = {
+    server_url: 'https://ntfy.sh',
+    topic: 'cookie-topic',
+    enabled: true,
+    token_hint: 'cret',
+    access_token_encrypted: 'v1:ciphertext',
+  };
+
+  test('GET /ntfy returns the authenticated user subscription without its token', async () => {
+    mockQuery.mockResolvedValueOnce([SUBSCRIPTION_ROW]);
     const response = await worker.fetch(request('/ntfy'), env, ctx);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      topic: 'cookie-topic',
-      subscribeUrl: 'https://ntfy.allisterantosik.com/cookie-topic',
       enabled: true,
+      defaultServerUrl: 'https://ntfy.allisterantosik.com',
+      tokensSupported: false,
+      serverUrl: 'https://ntfy.sh',
+      topic: 'cookie-topic',
+      subscribeUrl: 'https://ntfy.sh/cookie-topic',
+      tokenHint: 'cret',
     });
   });
 
-  test('POST /ntfy creates a subscription without exposing another user', async () => {
-    mockQuery
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ topic: 'cookie-generated-topic', enabled: true }]);
+  test('GET /ntfy tells Settings when a user has not set ntfy up', async () => {
+    const response = await worker.fetch(
+      request('/ntfy'),
+      { ...env, NTFY_TOKEN_ENCRYPTION_KEY: 'key' },
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      enabled: false,
+      defaultServerUrl: 'https://ntfy.allisterantosik.com',
+      tokensSupported: true,
+    });
+  });
+
+  test('PUT /ntfy saves the server and topic the user entered', async () => {
+    mockQuery.mockResolvedValueOnce([
+      { ...SUBSCRIPTION_ROW, token_hint: '', access_token_encrypted: null },
+    ]);
+    const response = await worker.fetch(
+      request('/ntfy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverUrl: 'https://ntfy.sh', topic: 'cookie-topic' }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      enabled: true,
+      subscribeUrl: 'https://ntfy.sh/cookie-topic',
+      tokenHint: '',
+    });
+    expect(mockQuery.mock.calls[0][0].join(' ')).toContain('INSERT INTO ntfy_subscriptions');
+    expect(mockQuery.mock.calls[0].slice(1)).toEqual(['user-1', 'https://ntfy.sh', 'cookie-topic']);
+  });
+
+  test('PUT /ntfy rejects an unusable server URL before writing', async () => {
+    const response = await worker.fetch(
+      request('/ntfy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverUrl: 'http://ntfy.sh', topic: 'cookie-topic' }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'invalid_server_url',
+      message: 'Enter the https:// address of an ntfy server.',
+    });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('PUT /ntfy reports a token as unsupported when no encryption key is set', async () => {
+    const response = await worker.fetch(
+      request('/ntfy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverUrl: 'https://ntfy.sh',
+          topic: 'cookie-topic',
+          accessToken: 'tk_secret',
+        }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(501);
+    expect(await response.json()).toMatchObject({ error: 'tokens_not_configured' });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('PUT /ntfy reports a topic another account holds on that server', async () => {
+    mockQuery.mockRejectedValueOnce(Object.assign(new Error('duplicate'), { code: '23505' }));
+    const response = await worker.fetch(
+      request('/ntfy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverUrl: 'https://ntfy.sh', topic: 'cookie-topic' }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'topic_taken' });
+    expect(captureHandledException).not.toHaveBeenCalled();
+  });
+
+  test('PUT /ntfy rejects a non-object body', async () => {
+    const response = await worker.fetch(
+      request('/ntfy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: '[]',
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('POST /ntfy still creates a generated topic on the default server', async () => {
+    mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        server_url: 'https://ntfy.allisterantosik.com',
+        topic: 'cookie-generated-topic',
+        enabled: true,
+        token_hint: '',
+        access_token_encrypted: null,
+      },
+    ]);
     const response = await worker.fetch(
       request('/ntfy', { method: 'POST', body: JSON.stringify({}) }),
       env,
@@ -136,9 +258,13 @@ describe('routing', () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
+      enabled: true,
+      defaultServerUrl: 'https://ntfy.allisterantosik.com',
+      tokensSupported: false,
+      serverUrl: 'https://ntfy.allisterantosik.com',
       topic: 'cookie-generated-topic',
       subscribeUrl: 'https://ntfy.allisterantosik.com/cookie-generated-topic',
-      enabled: true,
+      tokenHint: '',
     });
   });
 
@@ -149,8 +275,10 @@ describe('routing', () => {
     expect(mockQuery.mock.calls[0][0].join(' ')).toContain('UPDATE ntfy_subscriptions');
   });
 
-  test('POST /ntfy/test sends a test notification for the authenticated user', async () => {
-    mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
+  test('POST /ntfy/test sends a test notification to the user server', async () => {
+    mockQuery.mockResolvedValueOnce([
+      { server_url: 'https://ntfy.sh', topic: 'cookie-user-topic', access_token_encrypted: null },
+    ]);
     const ntfyFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal('fetch', ntfyFetch);
 
@@ -158,7 +286,7 @@ describe('routing', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ sent: true });
-    expect(ntfyFetch).toHaveBeenCalledOnce();
+    expect(ntfyFetch).toHaveBeenCalledWith('https://ntfy.sh/cookie-user-topic', expect.any(Object));
   });
 
   test('POST /ntfy/test never falls back to the public ntfy service', async () => {
@@ -306,7 +434,9 @@ describe('a dropped connection', () => {
   test('retries a read once on a fresh connection, and nobody hears of it', async () => {
     mockQuery
       .mockRejectedValueOnce(dropped())
-      .mockResolvedValueOnce([{ topic: 'cookie-topic', enabled: true }]);
+      .mockResolvedValueOnce([
+        { server_url: 'https://ntfy.sh', topic: 'cookie-topic', enabled: true },
+      ]);
     const response = await worker.fetch(request('/ntfy'), env, ctx);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ topic: 'cookie-topic', enabled: true });
