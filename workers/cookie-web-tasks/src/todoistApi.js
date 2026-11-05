@@ -10,6 +10,7 @@
 // every hour; everything else is a TodoistApiError carrying the status.
 
 import { fetchWithTimeout, readTextCapped } from '../../../shared/fetch.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
 
 export const TODOIST_API_URL = 'https://api.todoist.com/api/v1';
 export const PAGE_SIZE = 200;
@@ -46,23 +47,37 @@ export class TodoistAuthError extends TodoistApiError {
 async function getJson(token, path, query, fetchImpl) {
   const url = new URL(`${TODOIST_API_URL}${path}`);
   for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
-  return fetchWithTimeout(
-    url,
-    { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
-    async (response) => {
-      if (response.status === 401 || response.status === 403) {
-        throw new TodoistAuthError(response.status, path);
-      }
-      if (!response.ok) throw new TodoistApiError(response.status, path);
-      const text = await readTextCapped(response, MAX_BODY_BYTES);
-      try {
-        return JSON.parse(text);
-      } catch {
-        throw new TodoistApiError(response.status, path);
-      }
+  return retryWithBackoff(
+    () =>
+      fetchWithTimeout(
+        url,
+        {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        },
+        async (response) => {
+          if (response.status === 401 || response.status === 403) {
+            throw new TodoistAuthError(response.status, path);
+          }
+          if (!response.ok) throw new TodoistApiError(response.status, path);
+          const text = await readTextCapped(response, MAX_BODY_BYTES);
+          try {
+            return JSON.parse(text);
+          } catch {
+            throw new TodoistApiError(response.status, path);
+          }
+        },
+        REQUEST_TIMEOUT_MS,
+        fetchImpl,
+      ),
+    {
+      // A brief Todoist outage should not cost an entire scheduled sync
+      // (COOKIE-WEB-1F). Retry just this GET/page once, within its own timeout.
+      attempts: 2,
+      baseDelayMs: 1000,
+      isRetryable: (error) =>
+        error instanceof TodoistApiError && error.status >= 500 && error.status <= 599,
     },
-    REQUEST_TIMEOUT_MS,
-    fetchImpl,
   );
 }
 

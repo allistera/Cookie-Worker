@@ -453,6 +453,8 @@ Register the callback as an authorised redirect URI on that client: `https://cal
 
 Two further switches on the connection, **Sync projects** (`sync_projects`) and **Sync tasks** (`sync_tasks`, migration `0094`, both on by default), choose what a run mirrors. With projects off, no `task_projects` row is written, moved or removed; tasks are filed under the mirrored project Cookie already holds, or in the Inbox when it holds none. With tasks off, no section or task row is touched (a vanished project holding tasks is unlinked rather than deleted, so the cascade cannot take them), only `GET /projects` is read from Todoist, and the completion cursor `tasks_synced_at` (migration `0095`; the last run that read tasks; `last_synced_at` stays the last successful run of any kind) stands still, so completions made meanwhile are still found when tasks resume. `PUT /tasks/todoist { enabled?, syncProjects?, syncTasks? }` flips any of the three; a flag left out keeps its stored value.
 
+Todoist reads retry a server error (`5xx`) once after one second, repeating only the failed page with a fresh 15-second request timeout. Authentication errors, other client errors (including rate limits), and malformed successful responses fail immediately. A second server failure still records a failed sync for the next scheduled or manual run.
+
 The sync is one-way, Todoist to Cookie (`src/todoistSync.js`). Each run reads every project, section, open task and the last month (or since the previous run) of completed tasks, then under the owner's task advisory lock:
 
 - Projects become `task_projects` rows under their Todoist parent; the Todoist Inbox is Cookie's Inbox (`project_id IS NULL`) and gets no row. Archived and deleted projects are left out.
