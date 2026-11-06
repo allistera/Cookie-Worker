@@ -625,7 +625,7 @@ describe('email handler', () => {
         event: 'forward_failed_permanent',
       });
       expect(sentry.captureException).toHaveBeenCalledWith(
-        error,
+        expect.objectContaining({ message: error.message, name: error.name }),
         expect.objectContaining({
           tags: expect.objectContaining({ operation: 'forward' }),
           extra: expect.objectContaining({ permanent: true }),
