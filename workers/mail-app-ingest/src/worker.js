@@ -519,6 +519,9 @@ export default Sentry.withSentry(
 const UNAUTHENTICATED_SENDER_ERROR = /non-authenticated emails cannot be forwarded/iu;
 
 const PERMANENT_FORWARD_ERRORS = [
+  // Cloudflare includes the upstream SMTP result in this fixed wrapper.
+  // A permanent 5xx refusal cannot be repaired by redelivering the same mail.
+  /^could not send email:.*permanent error \(5\d\d\):/isu,
   UNAUTHENTICATED_SENDER_ERROR,
   /destination address (?:is )?not verified/iu,
 ];

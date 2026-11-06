@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import worker, {
   MAX_PARSE_BYTES,
   RECOVERY_BATCH_SIZE,
+  isPermanentForwardError,
   isStoreTimeout,
   isTransientDbError,
   recoverPendingEnrichment,
@@ -604,6 +605,45 @@ describe('email handler', () => {
     });
   });
 
+  test.each(['inserted', 'duplicate'])(
+    'accepts a permanently rejected SMTP forward after storage is %s, retaining its alert',
+    async (outcome) => {
+      postgres.mockReturnValue(
+        sqlReturning({
+          outcome: outcome === 'inserted' ? 'inserted' : 'duplicate',
+          messageUuid: outcome === 'inserted' ? 'm1' : null,
+        }),
+      );
+      const message = fakeMessage(simpleFixture);
+      const error = new Error(
+        'could not send email: Permanent Unknown error: permanent error (550): 5.7.1 Gmail has detected unsolicited mail',
+      );
+      message.forward.mockRejectedValueOnce(error);
+      await worker.email(message, env(), ctx());
+      expect(message.forward).toHaveBeenCalledOnce();
+      expect(messageFromLog('forward_failed_permanent')).toMatchObject({
+        event: 'forward_failed_permanent',
+      });
+      expect(sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: error.message, name: error.name }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ operation: 'forward' }),
+          extra: expect.objectContaining({ permanent: true }),
+        }),
+      );
+    },
+  );
+
+  test('still rethrows a permanent SMTP forward refusal when no stored copy exists', async () => {
+    const message = fakeMessage('', { rawSize: MAX_PARSE_BYTES + 1 });
+    message.forward.mockRejectedValueOnce(
+      new Error('could not send email: Permanent Unknown error: permanent error (550): rejected'),
+    );
+    await expect(worker.email(message, env(), ctx())).rejects.toThrow('permanent error (550)');
+    expect(message.forward).toHaveBeenCalledOnce();
+    expect(postgres).not.toHaveBeenCalled();
+  });
+
   test('rethrows permanent forward errors when storage also failed', async () => {
     const sql = sqlReturning();
     sql.begin = vi.fn(async () => {
@@ -871,6 +911,17 @@ describe('helpers', () => {
     ).toBe(false);
     expect(isTransientDbError(new Error('Network connection lost.'))).toBe(true);
     expect(isTransientDbError(new Error('syntax error'))).toBe(false);
+  });
+
+  test.each([
+    ['could not send email: Permanent Unknown error: permanent error (550): rejected', true],
+    ['could not send email: Unknown error: permanent error (552): too large', true],
+    ['could not send email: Temporary Unknown error: transient error (421): retry later', false],
+    ['could not send email: Unknown error: permanent error (450): retry later', false],
+    ['permanent error (550): rejected', false],
+    ['could not initialize upstream: Failed to connect using TLS', false],
+  ])('classifies only explicit permanent SMTP 5xx refusals: %s', (message, expected) => {
+    expect(isPermanentForwardError(new Error(message))).toBe(expected);
   });
 
   test('isTransientForwardError matches SMTP 4xx forward errors only', async () => {

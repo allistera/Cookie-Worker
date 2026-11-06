@@ -92,6 +92,15 @@ Cloudflare Email Routing must target this Worker for the intended recipient addr
 
 If messages are not stored, confirm the exact recipient address, Hyperdrive project, and current database schema. Messages over the 10 MiB parse cap, or with too many MIME boundary lines, are forwarded without being stored; every other message is forwarded only after its storage commits.
 
+After a message is stored (or its existing copy is confirmed), an explicit
+Cloudflare `permanent error (5xx)` forwarding refusal is logged as
+`forward_failed_permanent` and reported to Sentry, but the inbound delivery is
+accepted. Replaying the same message cannot repair a permanent Gmail rejection.
+The copy remains available in Cookie; this does not mean Gmail received it.
+Transient SMTP failures and unknown failures still propagate for MTA retry. If
+no stored copy exists, even a permanent forwarding refusal propagates so the
+Worker does not silently accept mail it has neither stored nor forwarded.
+
 ## Inbound health
 
 Two Sentry cron monitors watch the scheduled work: `mail-app-ingest-sweeps` (every 15 minutes) and `mail-app-ingest-workspace-search-drift` (at 7, 22, 37 and 52 past the hour). Sentry creates each monitor on its first check-in. A cron that stops running shows as a missed check-in.
