@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
   checkEmailRoutingDrift,
   checkPendingEnrichment,
@@ -196,12 +196,60 @@ describe('checkEmailRoutingDrift', () => {
     expect(JSON.stringify(check)).not.toContain('owner@example.com');
   });
 
+  test('recovers from a request timeout using a fresh signal and still detects drift', async () => {
+    vi.useFakeTimers();
+    try {
+      const signals = [];
+      const fetchImpl = vi.fn(async (_url, init) => {
+        signals.push(init.signal);
+        if (signals.length === 1) {
+          return new Promise((resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(init.signal.reason));
+          });
+        }
+        return new Response(JSON.stringify({ result: { enabled: false, actions: [] } }));
+      });
+      const result = checkEmailRoutingDrift({ token: 't', zoneId: 'zone-1', fetchImpl });
+      await vi.advanceTimersByTimeAsync(10_999);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toMatchObject({ drifted: true, enabled: false });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(signals[0].aborted).toBe(true);
+      expect(signals[1].aborted).toBe(false);
+      expect(signals[1]).not.toBe(signals[0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('stops after two timeouts instead of retrying forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(
+        async (_url, init) =>
+          new Promise((resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(init.signal.reason));
+          }),
+      );
+      const result = checkEmailRoutingDrift({ token: 't', zoneId: 'zone-1', fetchImpl }).catch(
+        (error) => error,
+      );
+      await vi.runAllTimersAsync();
+      expect(await result).toMatchObject({ name: 'AbortError' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('throws when the API refuses the request', async () => {
     /** @type {typeof fetch} */
-    const fetchImpl = async () => new Response('{"success":false}', { status: 403 });
+    const fetchImpl = vi.fn(async () => new Response('{"success":false}', { status: 403 }));
     await expect(
       checkEmailRoutingDrift({ token: 'token-value', zoneId: 'zone-1', fetchImpl }),
     ).rejects.toThrow('responded 403');
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });
 
