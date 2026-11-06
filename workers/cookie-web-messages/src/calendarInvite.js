@@ -42,13 +42,28 @@ function validDate(value) {
 }
 
 /**
+ * node-ical returns a property that carries parameters, such as
+ * `SUMMARY;LANGUAGE=en-GB:Team sync` from Outlook and Google invites, as
+ * `{ params, val }` rather than a string. Stringifying that object would show
+ * the reader "[object Object]", so unwrap it first.
+ *
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function propertyValue(value) {
+  if (value && typeof value === 'object' && 'val' in value) return value.val;
+  return value;
+}
+
+/**
  * @param {unknown} value
  * @param {number} limit
  * @returns {string | null}
  */
 function boundedText(value, limit) {
-  if (value === null || value === undefined) return null;
-  const text = String(value).trim();
+  const raw = propertyValue(value);
+  if (raw === null || raw === undefined) return null;
+  const text = String(raw).trim();
   return text ? text.slice(0, limit) : null;
 }
 
