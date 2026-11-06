@@ -1,5 +1,6 @@
 import { endSql } from '../../../shared/db.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
+import { retryWithBackoff } from '../../../shared/retry.js';
 import { captureHandledException, captureInboundHealthIssue } from './sentry.js';
 
 // Inbound mail stopped for about 20 hours after the catch-all Email Routing rule
@@ -113,17 +114,27 @@ export async function checkEmailRoutingDrift({
   workerName = EMAIL_ROUTING_WORKER,
 }) {
   const url = `${CLOUDFLARE_API}/zones/${encodeURIComponent(zoneId)}/email/routing/rules/catch_all`;
-  const rule = await fetchWithTimeout(
-    url,
-    { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
-    async (response) => {
-      if (!response.ok)
-        throw new Error(`Cloudflare email routing API responded ${response.status}`);
-      const body = /** @type {any} */ (await response.json());
-      return body?.result ?? null;
+  const rule = await retryWithBackoff(
+    () =>
+      fetchWithTimeout(
+        url,
+        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
+        async (response) => {
+          if (!response.ok)
+            throw new Error(`Cloudflare email routing API responded ${response.status}`);
+          const body = /** @type {any} */ (await response.json());
+          return body?.result ?? null;
+        },
+        ROUTING_TIMEOUT_MS,
+        fetchImpl,
+      ),
+    {
+      // Only our request deadline aborts this read. A transient timeout
+      // (COOKIE-WEB-1R) gets one more chance with a fresh abort controller.
+      attempts: 2,
+      baseDelayMs: 1000,
+      isRetryable: (error) => error instanceof Error && error.name === 'AbortError',
     },
-    ROUTING_TIMEOUT_MS,
-    fetchImpl,
   );
   const actions = Array.isArray(rule?.actions) ? rule.actions : [];
   const namesWorker = actions.some(
