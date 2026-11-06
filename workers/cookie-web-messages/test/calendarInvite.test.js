@@ -46,6 +46,20 @@ describe('extractCalendarInvite', () => {
     expect(readBlob).toHaveBeenCalledOnce();
   });
 
+  test('unwraps text properties that carry parameters such as LANGUAGE', async () => {
+    const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:outlook\r\nDTSTART:20261110T100000Z\r\nDTEND:20261110T110000Z\r\nSUMMARY;LANGUAGE=en-GB:Team sync\r\nDESCRIPTION;LANGUAGE=en-GB:Agenda\\nItems\r\nLOCATION;LANGUAGE=en-GB:Room 4\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+    const readBlob = vi.fn().mockResolvedValue({ stream: streamOf(ics) });
+    const result = await extractCalendarInvite([attachment()], readBlob);
+
+    expect(result).toEqual({
+      title: 'Team sync',
+      description: 'Agenda\nItems',
+      location: 'Room 4',
+      start_at: '2026-11-10T10:00:00.000Z',
+      end_at: '2026-11-10T11:00:00.000Z',
+    });
+  });
+
   test('normalizes the earliest timed VEVENT from a private ICS attachment', async () => {
     const readBlob = vi.fn().mockResolvedValue({ stream: streamOf(LIVE_ICS) });
     const result = await extractCalendarInvite([attachment()], readBlob);
