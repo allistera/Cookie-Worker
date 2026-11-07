@@ -48,6 +48,23 @@ export const MESSAGES_INDEX = {
     ...EMBEDDER,
     documentTemplate: '{{doc.subject}}\n\n{{doc.body}}',
   },
+  // What Meilisearch's conversational search (cookie-web-search's POST /chat)
+  // tells the model about this index, and the text a hit becomes in the
+  // model's context. More of the body than the embedder sees: the model
+  // answers from it, so a cut-off invoice total or meeting time is a wrong
+  // answer, while a vector only has to place the message near its topic.
+  chat: {
+    description:
+      "The user's emails: subject, body, sender, recipients, labels and when each was sent " +
+      '(sent_at, Unix seconds). Search here for anything the user received or sent: ' +
+      'conversations, invoices, bookings, confirmations, newsletters.',
+    documentTemplate:
+      'Email from {{doc.from_name}} <{{doc.from_address}}> to {{ doc.to_address | join: ", " }}, ' +
+      'subject "{{doc.subject}}", sent_at {{doc.sent_at}} (Unix seconds), ' +
+      'labels {{ doc.labels | join: ", " }}:\n{{doc.body}}',
+    documentTemplateMaxBytes: 1500,
+    searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
+  },
   // recipients is a jsonb object shaped {to, cc, bcc}, each an array of
   // strings or {name, address} objects, and to_name/to_address are
   // filterable/searchable arrays (not joined strings). is_spam/scheduled_for

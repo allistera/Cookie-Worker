@@ -296,6 +296,44 @@ describe('POST /ask', () => {
   });
 });
 
+describe('POST /chat', () => {
+  test('rejects malformed JSON without touching quota', async () => {
+    const response = await worker.fetch(request('/chat', { method: 'POST', body: '{' }), env, ctx);
+    expect(response.status).toBe(400);
+    expect(allowRequest).not.toHaveBeenCalled();
+  });
+
+  test('rejects a conversation without a question, without touching quota', async () => {
+    const response = await worker.fetch(
+      request('/chat', { method: 'POST', body: JSON.stringify({ messages: [] }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(400);
+    expect(allowRequest).not.toHaveBeenCalled();
+  });
+
+  test('answers 503 before quota when the chat key is not configured', async () => {
+    const response = await worker.fetch(
+      request('/chat', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Assistant is not configured' });
+    expect(allowRequest).not.toHaveBeenCalled();
+  });
+
+  test('a GET to /chat returns 405', async () => {
+    const response = await worker.fetch(request('/chat'), env, ctx);
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('POST');
+  });
+});
+
 describe('routing and cleanup', () => {
   test('an unknown path returns 404', async () => {
     const response = await worker.fetch(request('/unknown'), env, ctx);

@@ -121,6 +121,17 @@ describe('configureIndex', () => {
     expect(call.args.embedders.default.source).toBe('openAi');
   });
 
+  // Conversational search reads an index's chat settings for what to tell the
+  // model and how to render a hit; they travel with the rest of the settings.
+  it('sends the chat settings for every index', async () => {
+    const { client, calls } = createMockMeili();
+
+    await settle(configureIndex(ENV, MESSAGES_INDEX, client));
+
+    expect(calls[0].args.chat).toEqual(MESSAGES_INDEX.chat);
+    expect(MESSAGES_INDEX.chat.searchParameters.hybrid.embedder).toBe('default');
+  });
+
   // The key reaches Meilisearch through settings; without it the embedder is
   // configured but cannot embed.
   it('passes the OpenAI key to the embedder', async () => {

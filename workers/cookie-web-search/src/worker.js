@@ -7,17 +7,19 @@ import { withUserSql } from '../../../shared/db.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { handleSearch } from './search.js';
 import { handleAsk } from './ask.js';
+import { handleChat } from './chat.js';
 import { getSavedViews, putSavedViews } from './savedViews.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 import { configureOpenAi } from '../../../shared/openai.js';
 
 /**
- * Routes GET /search, GET/PUT /saved-views, and POST /ask — Cookie-Web's api/search.js and
- * api/ask.js, sharing this Worker because they share Meilisearch retrieval
- * (queryParse/meili) and, for ask, the 'ai' quota. Quota is claimed inside
- * handleAsk, not here: search never spends AI quota (Meilisearch embeds
- * server-side), and ask validates its body first — both orderings are
+ * Routes GET /search, GET/PUT /saved-views, POST /ask and POST /chat — all
+ * sharing this Worker because they share Meilisearch retrieval (queryParse/
+ * meili, or Meilisearch's own conversational search for chat) and, for ask
+ * and chat, the 'ai' quota. Quota is claimed inside handleAsk and handleChat,
+ * not here: search never spends AI quota (Meilisearch embeds server-side),
+ * and ask and chat validate their bodies first — both orderings are
  * load-bearing and match the originals.
  *
  * @param {URL} url
@@ -56,6 +58,24 @@ async function route(url, request, sql, userId, env) {
       throw error;
     }
     return handleAsk(sql, userId, body, env, undefined, url.searchParams.get('stream') === '1');
+  }
+
+  if (resource === 'chat') {
+    if (request.method !== 'POST') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'POST' } },
+      );
+    }
+    let body;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) return errorResponse;
+      throw error;
+    }
+    return handleChat(sql, userId, body, env);
   }
 
   if (resource === 'saved-views') {

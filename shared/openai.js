@@ -18,6 +18,15 @@ export function configureOpenAi(env) {
   return baseUrl;
 }
 
+/**
+ * The base every OpenAI-compatible caller should use — including Meilisearch's
+ * chat workspace, which makes its own LLM calls and is pointed at the same
+ * gateway so those calls get the same logs and cost tracking.
+ */
+export function openAiBaseUrl() {
+  return baseUrl;
+}
+
 /** @param {string} path e.g. 'responses' or 'chat/completions' */
 export function openAiUrl(path) {
   return `${baseUrl}/${path}`;

@@ -18,6 +18,16 @@ export const DOCUMENTS_INDEX = {
     ...EMBEDDER,
     documentTemplate: '{{doc.title}}\n\n{{doc.content_text}}',
   },
+  // Conversational search's view of the index; see MESSAGES_INDEX.chat.
+  chat: {
+    description:
+      "The user's own notes and documents: title, tags, starred flag and full text. " +
+      'Search here for notes, plans, lists, drafts and anything the user wrote down.',
+    documentTemplate:
+      'Document "{{doc.title}}" (tags: {{ doc.tags | join: ", " }}):\n{{doc.content_text}}',
+    documentTemplateMaxBytes: 1500,
+    searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
+  },
   toDocument: (row) => ({
     id: row.id,
     user_id: row.user_id,
