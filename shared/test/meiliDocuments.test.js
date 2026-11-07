@@ -42,6 +42,7 @@ describe('documents index descriptor', () => {
       tags: ['home'],
       starred: true,
       updated_at: new Date('2026-08-31T10:00:00Z').getTime(),
+      updated_date: '2026-08-31 10:00 UTC',
     });
   });
 

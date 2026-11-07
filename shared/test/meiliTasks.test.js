@@ -43,6 +43,7 @@ describe('task-items index descriptor', () => {
       subtasks: ['Book flights', 'Reserve hotel'],
       completed: false,
       updated_at: new Date('2026-08-31T10:00:00Z').getTime(),
+      updated_date: '2026-08-31 10:00 UTC',
     });
   });
 
