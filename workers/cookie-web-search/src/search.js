@@ -20,6 +20,9 @@ import { setSpanAttributes } from '../../../shared/tracing.js';
 import { captureHandledException } from './sentry.js';
 
 const MAX_QUERY_CHARS = 500;
+// ids= reads: more than a drawer answer cites (ten per search), fewer than a page.
+const MAX_IDS = 20;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RESULTS = 20;
 
 // GET /search?scope=… defaults and cap. Fixed by the response contract the
@@ -266,6 +269,26 @@ export async function handleSearch(sql, userId, url, env, deps = DEFAULT_DEPS) {
   // depends on byte-for-byte. Absent scope keeps that behavior untouched.
   const scope = url.searchParams.get('scope');
   if (scope) return handleScopedSearch(sql, userId, url, env, scope, deps);
+
+  // ids=<uuid,...> hydrates known messages in the order given, in the same
+  // response shape as a query, without touching Meilisearch. The assistant
+  // drawer uses it to show the emails an answer listed as the inbox list's
+  // results (Cookie-Web stores/inbox.js showAssistantEmails); the ids come
+  // from Meilisearch sources the owner's tenant token already scoped, and
+  // fetchSearchEmails gates on the owner again.
+  const ids = url.searchParams.get('ids');
+  if (ids !== null) {
+    const list = ids.split(',').map((id) => id.trim());
+    if (list.length === 0 || list.length > MAX_IDS || !list.every((id) => UUID.test(id))) {
+      return invalidRequest(`ids must be 1 to ${MAX_IDS} message ids`);
+    }
+    setSpanAttributes({
+      'cookie.search.scope': 'ids',
+      'cookie.search.federated': false,
+      'cookie.search.hits': list.length,
+    });
+    return respondWithEmails(sql, userId, list, createTimings());
+  }
 
   const q = (url.searchParams.get('q') || '').trim();
   const semantic = url.searchParams.get('mode') !== 'keyword';

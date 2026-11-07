@@ -316,6 +316,48 @@ describe('message search engine', () => {
   });
 });
 
+describe('GET /search?ids=', () => {
+  const A = '11111111-1111-4111-8111-aaaaaaaaaaaa';
+  const B = '11111111-1111-4111-8111-bbbbbbbbbbbb';
+
+  it('hydrates the given messages in the given order without Meilisearch', async () => {
+    const sql = createMockSql([
+      [
+        { id: B, subject: 'Second' },
+        { id: A, subject: 'First' },
+      ],
+    ]);
+    const d = deps();
+    const response = await handleSearch(sql, USER_ID, url(`?ids=${A},${B}`), ENV, d);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      emails: [
+        { id: A, subject: 'First' },
+        { id: B, subject: 'Second' },
+      ],
+    });
+    expect(d.hybridSearch).not.toHaveBeenCalled();
+    expect(sql.calls[0].values).toEqual([USER_ID, [A, B]]);
+  });
+
+  it('drops ids that did not hydrate', async () => {
+    const sql = createMockSql([[{ id: B, subject: 'Second' }]]);
+    const response = await handleSearch(sql, USER_ID, url(`?ids=${A},${B}`), ENV, deps());
+    expect(await response.json()).toEqual({ emails: [{ id: B, subject: 'Second' }] });
+  });
+
+  it.each([
+    ['an empty list', ''],
+    ['a non-uuid', 'not-an-id'],
+    ['too many ids', Array.from({ length: 21 }, () => A).join(',')],
+  ])('rejects %s with 400 before touching the database', async (_label, ids) => {
+    const sql = createMockSql();
+    const response = await handleSearch(sql, USER_ID, url(`?ids=${ids}`), ENV, deps());
+    expect(response.status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
+  });
+});
+
 describe('mergeFederatedResults', () => {
   const emailRow = { id: 'm1', subject: 'Roof' };
   const documentRow = {
