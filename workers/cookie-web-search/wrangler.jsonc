@@ -42,6 +42,14 @@
     // (MEILISEARCH_API_KEY) set via `wrangler secret put`. Leave the URL empty
     // to keep the existing Postgres keyword search until the project is ready.
     "MEILISEARCH_URL": "https://meilisearch.infinitywave.online",
-    // OPENAI_ASK_MODEL is an optional override for the default in src/ask.js.
+    // POST /chat (src/chat.js) signs per-user tenant tokens with a second,
+    // chat-capable key (MEILISEARCH_CHAT_API_KEY secret: search +
+    // chatCompletions + chatsSettings.update). A tenant token names its parent
+    // key by uid, so the uid rides along here; it is not a secret. The
+    // workspace is created by the Worker itself on first use.
+    "MEILISEARCH_CHAT_API_KEY_UID": "4f1c6b5e-0003-4000-8000-000000000003",
+    "MEILISEARCH_CHAT_WORKSPACE": "cookie",
+    // OPENAI_ASK_MODEL and OPENAI_CHAT_MODEL are optional overrides for the
+    // defaults in src/ask.js and src/chat.js.
   },
 }

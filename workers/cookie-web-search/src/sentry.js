@@ -15,8 +15,12 @@ const SERVICE = 'cookie-web-search';
  *   AUTH0_AUDIENCE?: string,
  *   OPENAI_API_KEY?: string,
  *   OPENAI_ASK_MODEL?: string,
+ *   OPENAI_CHAT_MODEL?: string,
  *   MEILISEARCH_URL?: string,
  *   MEILISEARCH_API_KEY?: string,
+ *   MEILISEARCH_CHAT_API_KEY?: string,
+ *   MEILISEARCH_CHAT_API_KEY_UID?: string,
+ *   MEILISEARCH_CHAT_WORKSPACE?: string,
  * }} SearchEnv
  */
 
@@ -30,7 +34,12 @@ const SERVICE = 'cookie-web-search';
  * @returns {(string | undefined)[]}
  */
 function secrets(env) {
-  return [env.HYPERDRIVE?.connectionString, env.OPENAI_API_KEY, env.MEILISEARCH_API_KEY];
+  return [
+    env.HYPERDRIVE?.connectionString,
+    env.OPENAI_API_KEY,
+    env.MEILISEARCH_API_KEY,
+    env.MEILISEARCH_CHAT_API_KEY,
+  ];
 }
 
 /**

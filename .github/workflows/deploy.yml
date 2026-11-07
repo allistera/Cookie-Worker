@@ -215,10 +215,12 @@ jobs:
             OPENAI_API_KEY
             SENTRY_DSN
             MEILISEARCH_API_KEY
+            MEILISEARCH_CHAT_API_KEY
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
+          MEILISEARCH_CHAT_API_KEY: ${{ secrets.MEILISEARCH_CHAT_API_KEY }}
 
       - name: Deploy cookie-web-send and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-web-send'

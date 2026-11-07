@@ -124,10 +124,12 @@ function getClient(env) {
 }
 
 /**
+ * Escapes a value for use inside a single-quoted Meilisearch filter string.
+ *
  * @param {string} value
  * @returns {string}
  */
-function escapeFilter(value) {
+export function escapeFilter(value) {
   return value.replace(/[\\']/g, '\\$&');
 }
 
@@ -144,7 +146,9 @@ function clientFor(env, client) {
 
 /**
  * Applies an index descriptor's settings — searchable/filterable/sortable
- * attributes, ranking rules, and the embedder — in one updateSettings call.
+ * attributes, ranking rules, the embedder, and the chat settings that tell
+ * Meilisearch's conversational search what the index holds and how to render
+ * a hit for the model — in one updateSettings call.
  *
  * @param {any} env
  * @param {any} descriptor an index descriptor, e.g. MESSAGES_INDEX
@@ -161,6 +165,7 @@ export async function configureIndex(env, descriptor, client) {
       sortableAttributes: descriptor.sortable,
       ...(descriptor.rankingRules ? { rankingRules: descriptor.rankingRules } : {}),
       ...(descriptor.typoTolerance ? { typoTolerance: descriptor.typoTolerance } : {}),
+      ...(descriptor.chat ? { chat: descriptor.chat } : {}),
       embedders: {
         default: { ...descriptor.embedder, apiKey: env.OPENAI_API_KEY },
       },
