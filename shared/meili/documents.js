@@ -24,8 +24,9 @@ export const DOCUMENTS_INDEX = {
       "The user's own notes and documents: title, tags, starred flag and full text. " +
       'Search here for notes, plans, lists, drafts and anything the user wrote down.',
     documentTemplate:
-      'Document "{{doc.title}}" (tags: {{ doc.tags | join: ", " }}, last edited ' +
-      '{{doc.updated_date}}):\n{{ doc.content_text | strip }}',
+      'Document "{{doc.title}}" (tags: {{ doc.tags | join: ", " }}' +
+      '{% if doc.updated_date %}, last edited {{doc.updated_date}}{% endif %}):\n' +
+      '{{ doc.content_text | strip }}',
     documentTemplateMaxBytes: 1500,
     searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
   },

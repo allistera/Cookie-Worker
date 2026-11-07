@@ -48,7 +48,9 @@ export const MESSAGES_INDEX = {
     ...EMBEDDER,
     documentTemplate: '{{doc.subject}}\n\n{{doc.body}}',
   },
-  // sent_date is neither searchable nor filterable: the chat template reads it.
+  // sent_date is neither searchable nor filterable: the chat template reads it,
+  // behind an {% if %} because Meilisearch's Liquid is strict and errors on a
+  // field a document lacks (rows indexed before the field existed).
   // What Meilisearch's conversational search (cookie-web-search's POST /chat)
   // tells the model about this index, and the text a hit becomes in the
   // model's context. More of the body than the embedder sees: the model
@@ -64,7 +66,8 @@ export const MESSAGES_INDEX = {
       'conversations, invoices, bookings, confirmations, newsletters.',
     documentTemplate:
       'Email from {{doc.from_name}} <{{doc.from_address}}> to {{ doc.to_address | join: ", " }}, ' +
-      'subject "{{doc.subject}}", sent {{doc.sent_date}} (sent_at {{doc.sent_at}}), ' +
+      'subject "{{doc.subject}}"{% if doc.sent_date %}, sent {{doc.sent_date}}{% endif %} ' +
+      '(sent_at {{doc.sent_at}}), ' +
       'labels {{ doc.labels | join: ", " }}:\n{{ doc.body | strip | split: "\n\n" | join: "\n" }}',
     documentTemplateMaxBytes: 1500,
     searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },

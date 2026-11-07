@@ -34,8 +34,8 @@ export const TASKS_INDEX = {
       "The user's to-do tasks: the task text, its description, sub-task titles and " +
       'whether it is completed. Search here for what the user has to do or has done.',
     documentTemplate:
-      'Task "{{doc.content}}" ({% if doc.completed %}completed{% else %}open{% endif %}, ' +
-      'last changed {{doc.updated_date}}): ' +
+      'Task "{{doc.content}}" ({% if doc.completed %}completed{% else %}open{% endif %}' +
+      '{% if doc.updated_date %}, last changed {{doc.updated_date}}{% endif %}): ' +
       '{{ doc.description | strip }}\nSub-tasks: {{ doc.subtasks | join: "; " }}',
     documentTemplateMaxBytes: 800,
     searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
