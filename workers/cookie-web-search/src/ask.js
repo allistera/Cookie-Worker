@@ -14,6 +14,9 @@ import {
 } from '../../../shared/meili.js';
 
 import { openAiUrl } from '../../../shared/openai.js';
+import { isTransientMeiliError } from '../../../shared/meiliErrors.js';
+import { setSpanAttributes } from '../../../shared/tracing.js';
+import { captureHandledException } from './sentry.js';
 const DEFAULT_CHAT_MODEL = 'gpt-4o-mini';
 const MAX_QUESTION_CHARS = 500;
 const CONTEXT_MESSAGES = 6;
@@ -116,7 +119,7 @@ async function retrieveViaMeili(userId, question, env, deps) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
- * @param {{OPENAI_API_KEY?: string, OPENAI_ASK_MODEL?: string}} env
+ * @param {{OPENAI_API_KEY?: string, OPENAI_ASK_MODEL?: string, HYPERDRIVE?: Hyperdrive, MEILISEARCH_API_KEY?: string}} env
  * @param {AskDeps} [deps]
  */
 export async function handleAsk(sql, userId, body, env, deps = DEFAULT_DEPS, stream = false) {
@@ -144,13 +147,34 @@ export async function handleAsk(sql, userId, body, env, deps = DEFAULT_DEPS, str
 
   // Meilisearch is required for retrieval: a failure here is an error, not a
   // silent degradation to fewer or no sources.
+  // The same trace vocabulary as GET /search (see search.js), so a Honeycomb
+  // query over cookie.search.* covers retrieval wherever it happens.
+  setSpanAttributes({
+    'cookie.search.scope': 'ask',
+    'cookie.search.federated': false,
+    'cookie.search.mode': 'hybrid',
+    'cookie.search.legs': MESSAGES_INDEX.name,
+  });
   let ids;
   try {
     ids = await retrieveViaMeili(userId, question, env, deps);
   } catch (err) {
+    // Same split as search.js's searchUnavailable: a gateway blip and a
+    // rejection by Meilisearch are different issues in Sentry.
+    const transient = isTransientMeiliError(err);
     console.error('POST /ask retrieval failed:', /** @type {Error} */ (err).message);
+    setSpanAttributes({
+      'cookie.search.outcome': transient ? 'meili_transient' : 'meili_rejected',
+    });
+    captureHandledException(
+      transient ? 'meili_search_transient' : 'meili_search_rejected',
+      err,
+      env,
+      { scope: 'ask', mode: 'hybrid' },
+    );
     return Response.json({ error: 'Assistant is temporarily unavailable' }, { status: 503 });
   }
+  setSpanAttributes({ 'cookie.search.hits': ids.length, 'cookie.search.outcome': 'ok' });
 
   if (ids.length === 0) {
     const answer = "I couldn't find any emails related to that. Try rephrasing your question.";

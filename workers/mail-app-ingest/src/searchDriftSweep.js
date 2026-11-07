@@ -1,14 +1,19 @@
-import { addDocuments, meiliAvailable } from '../../../shared/meili.js';
+import { addDocuments, failedTasksSince, meiliAvailable } from '../../../shared/meili.js';
 import { DOCUMENTS_INDEX } from '../../../shared/meili/documents.js';
 import { TASKS_INDEX } from '../../../shared/meili/tasks.js';
 import {
+  documentsDriftBacklog,
   documentsDriftPage,
+  messagesDriftBacklog,
+  taskItemsDriftBacklog,
   taskItemsDriftPage,
   stampIndexed,
 } from '../../../shared/searchQueries.js';
 import { syncMessagesToMeili } from '../../../shared/meiliSync.js';
+import { setSpanAttributes } from '../../../shared/tracing.js';
 import { retryWithFreshClient } from '../../../shared/transient-db.js';
-import { captureHandledException } from './sentry.js';
+import { positiveSetting } from './inboundHealth.js';
+import { captureHandledException, captureSearchHealthIssue } from './sentry.js';
 
 // One tick's worth of repair. The corpus is small (~1.6k messages), so this
 // is headroom rather than a throttle: it exists so a pathological backlog —
@@ -17,6 +22,37 @@ import { captureHandledException } from './sentry.js';
 export const SWEEP_LIMIT = 200;
 export const WORKSPACE_SWEEP_LIMIT = 25;
 export const WORKSPACE_SWEEP_CRON = '7,22,37,52 * * * *';
+// The interval between workspace ticks, which is also how far back each tick
+// looks for indexing tasks Meilisearch failed.
+export const WORKSPACE_SWEEP_INTERVAL_MS = 15 * 60_000;
+
+// The sweeps log what they repaired, but an index can rot while every tick
+// reports success: a writer that marks rows faster than 200 a quarter hour
+// can be drained, or a document Meilisearch keeps rejecting, leaves rows
+// unstamped tick after tick. So each tick also measures what it left behind
+// and raises a fixed-fingerprint issue past these thresholds.
+
+// Default for SEARCH_BACKLOG_MAX_ROWS. The message sweep drains 200 rows a
+// tick, 800 an hour, so more than this many unstamped messages after a tick
+// means the index is over an hour behind even if every push succeeds. A
+// healthy tick leaves none. Messages have no change time (see
+// messagesDriftBacklog), so their backlog is measured by count alone.
+export const DEFAULT_SEARCH_BACKLOG_MAX_ROWS = 1000;
+
+// Default for SEARCH_STALE_MAX_MINUTES. Documents and tasks drift oldest-first
+// at 25 a tick, so an edit still unindexed after an hour has been passed over
+// by four ticks: the pushes are failing, or the edit rate is beyond the bound.
+export const DEFAULT_SEARCH_STALE_MAX_MINUTES = 60;
+
+/**
+ * @param {Date | string | null | undefined} oldest
+ * @param {number} now
+ */
+function ageSeconds(oldest, now) {
+  if (!oldest) return 0;
+  const at = new Date(oldest).getTime();
+  return Number.isFinite(at) ? Math.max(0, Math.floor((now - at) / 1000)) : 0;
+}
 
 /**
  * A bounded repair pass on its own cron invocation: Meili task polling must
@@ -24,15 +60,19 @@ export const WORKSPACE_SWEEP_CRON = '7,22,37,52 * * * *';
  * Successful indexing alone does not stamp a row that changed during upload.
  *
  * @param {any} env
- * @param {{createSql?: (url: string) => any, add?: typeof addDocuments}} [deps]
+ * @param {{createSql?: (url: string) => any, add?: typeof addDocuments, failedTasks?: typeof failedTasksSince, now?: () => number}} [deps]
  */
 export async function sweepWorkspaceSearchDrift(env, deps = {}) {
   if (!meiliAvailable(env) || !deps.createSql) return;
   const makeSql = deps.createSql;
   const add = deps.add ?? addDocuments;
-  for (const { descriptor, select } of [
-    { descriptor: DOCUMENTS_INDEX, select: documentsDriftPage },
-    { descriptor: TASKS_INDEX, select: taskItemsDriftPage },
+  const staleMaxMinutes = positiveSetting(
+    env.SEARCH_STALE_MAX_MINUTES,
+    DEFAULT_SEARCH_STALE_MAX_MINUTES,
+  );
+  for (const { descriptor, select, backlog } of [
+    { descriptor: DOCUMENTS_INDEX, select: documentsDriftPage, backlog: documentsDriftBacklog },
+    { descriptor: TASKS_INDEX, select: taskItemsDriftPage, backlog: taskItemsDriftBacklog },
   ]) {
     let selected = 0;
     let selectedIds = [];
@@ -52,14 +92,17 @@ export async function sweepWorkspaceSearchDrift(env, deps = {}) {
             rows.map((row) => row.row_version),
             rows.map((row) => row.child_versions ?? ''),
           );
+          // What this tick left behind. Only rows the stamp did not take
+          // (changed during upload, or more than one tick's worth) remain.
+          const [remaining] = await backlog(sql);
+          const now = Date.now();
           return {
             selected,
             indexed: selected,
             failed: 0,
-            oldest_age_seconds: Math.max(
-              0,
-              Math.floor((Date.now() - new Date(rows[0].updated_at).getTime()) / 1000),
-            ),
+            oldest_age_seconds: ageSeconds(rows[0].updated_at, now),
+            backlog: Number(remaining?.backlog ?? 0),
+            backlog_age_seconds: ageSeconds(remaining?.oldest, now),
           };
         },
       );
@@ -71,6 +114,22 @@ export async function sweepWorkspaceSearchDrift(env, deps = {}) {
             ...result,
           }),
         );
+        setSpanAttributes({
+          [`cookie.search.${descriptor.name}.backlog`]: result.backlog,
+          [`cookie.search.${descriptor.name}.backlog_age_seconds`]: result.backlog_age_seconds,
+        });
+        if (result.backlog_age_seconds > staleMaxMinutes * 60) {
+          captureSearchHealthIssue(
+            `${descriptor.name}-stale`,
+            'Search index repair is falling behind',
+            {
+              target: descriptor.name,
+              backlog: result.backlog,
+              backlog_age_seconds: result.backlog_age_seconds,
+              threshold_minutes: staleMaxMinutes,
+            },
+          );
+        }
       }
     } catch (error) {
       console.log(
@@ -89,6 +148,42 @@ export async function sweepWorkspaceSearchDrift(env, deps = {}) {
         { target: descriptor.name, selected, document_ids: selectedIds },
       );
     }
+  }
+  await reportFailedMeiliTasks(env, deps);
+}
+
+/**
+ * Indexing tasks Meilisearch accepted and then failed over the last tick's
+ * interval — a document it cannot index, or an embedder call OpenAI refused.
+ * Writers that do not wait for their task (mail ingest's first push) never
+ * learn of these, and a sweep only sees the row stay unstamped; this is the
+ * one place the failure itself is reported. Runs on the workspace tick, which
+ * has its own subrequest budget, so the lookup never competes with inbound
+ * enrichment. A failing lookup is reported and never fails the cron.
+ *
+ * @param {any} env
+ * @param {{failedTasks?: typeof failedTasksSince, now?: () => number}} [deps]
+ */
+export async function reportFailedMeiliTasks(env, deps = {}) {
+  if (!meiliAvailable(env)) return;
+  const failedTasks = deps.failedTasks ?? failedTasksSince;
+  const now = deps.now ?? Date.now;
+  try {
+    const { total, sample } = await failedTasks(env, new Date(now() - WORKSPACE_SWEEP_INTERVAL_MS));
+    setSpanAttributes({ 'cookie.search.failed_tasks': total });
+    if (!total) return;
+    const detail = {
+      total,
+      index: sample?.indexUid,
+      type: sample?.type,
+      error_code: sample?.errorCode,
+      task_uid: sample?.uid,
+    };
+    console.log(JSON.stringify({ event: 'meili_tasks_failed', ...detail }));
+    captureSearchHealthIssue('meili-task-failures', 'Meilisearch failed indexing tasks', detail);
+  } catch (error) {
+    console.log(JSON.stringify({ event: 'meili_tasks_check_failed' }));
+    captureHandledException('meili_tasks_check', error, [env.MEILISEARCH_API_KEY]);
   }
 }
 
@@ -151,13 +246,38 @@ export async function sweepSearchDrift(env, deps = {}) {
           env,
           rows.map((row) => String(row.id)),
         );
-        return { selected: rows.length, indexed, failed, error };
+        // What this tick left behind: the rows the sync could not index,
+        // plus everything beyond the 200 it selected.
+        const [remaining] = await messagesDriftBacklog(sql);
+        return {
+          selected: rows.length,
+          indexed,
+          failed,
+          error,
+          backlog: Number(remaining?.backlog ?? 0),
+        };
       },
     );
     if (!swept) return;
 
-    const { selected, indexed, failed, error } = swept;
-    console.log(JSON.stringify({ event: 'search_drift_swept', selected, indexed, failed, error }));
+    const { selected, indexed, failed, error, backlog } = swept;
+    console.log(
+      JSON.stringify({ event: 'search_drift_swept', selected, indexed, failed, error, backlog }),
+    );
+    setSpanAttributes({ 'cookie.search.messages.backlog': backlog });
+    const backlogMaxRows = positiveSetting(
+      env.SEARCH_BACKLOG_MAX_ROWS,
+      DEFAULT_SEARCH_BACKLOG_MAX_ROWS,
+    );
+    if (backlog > backlogMaxRows) {
+      captureSearchHealthIssue('messages-backlog', 'Search index repair is falling behind', {
+        target: 'messages',
+        backlog,
+        threshold_rows: backlogMaxRows,
+        indexed,
+        failed,
+      });
+    }
     if (failed > 0) {
       // The sweep is the last line of defence for rows nothing else can
       // repair. A silent partial failure here is how an index rots unnoticed.

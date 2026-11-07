@@ -2,19 +2,28 @@ import { labelRequestSpan } from './tracing.js';
 
 // Only fixed operation names, status codes and durations. Never record URLs,
 // tokens, mailbox IDs, message content or SQL parameters.
+// A stage run more than once (verified search pagination queries Meilisearch
+// and hydrates from Postgres per batch) is reported once, with its durations
+// summed, so Server-Timing stays one entry per stage.
 export function createTimings() {
-  const stages = [];
+  /** @type {Map<string, number>} */
+  const stages = new Map();
   return {
     async run(name, operation) {
       const start = performance.now();
       try {
         return await operation();
       } finally {
-        stages.push(`${name};dur=${(performance.now() - start).toFixed(2)}`);
+        stages.set(name, (stages.get(name) ?? 0) + (performance.now() - start));
       }
     },
     response(response) {
-      if (stages.length) response.headers.set('Server-Timing', stages.join(', '));
+      if (stages.size) {
+        response.headers.set(
+          'Server-Timing',
+          [...stages].map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(', '),
+        );
+      }
       return response;
     },
   };

@@ -14,6 +14,10 @@ import {
 } from '../../../shared/meili.js';
 import { DOCUMENTS_INDEX } from '../../../shared/meili/documents.js';
 import { TASKS_INDEX } from '../../../shared/meili/tasks.js';
+import { isTransientMeiliError } from '../../../shared/meiliErrors.js';
+import { createTimings } from '../../../shared/performance.js';
+import { setSpanAttributes } from '../../../shared/tracing.js';
+import { captureHandledException } from './sentry.js';
 
 const MAX_QUERY_CHARS = 500;
 const RESULTS = 20;
@@ -36,6 +40,50 @@ const SCOPES = new Set(['all', 'mail', 'documents', 'tasks']);
 
 /** @type {SearchDeps} */
 const DEFAULT_DEPS = { hybridSearch: realHybridSearch, federatedSearch: realFederatedSearch };
+
+// What a trace may say about a search: its shape and its outcome, never its
+// text. Scope, mode, legs and outcome come from fixed vocabularies; the
+// counts (hits, hydrated rows, estimated total, verified batches) are what
+// make a slow or empty search explainable in Honeycomb — hits that did not
+// hydrate are stale index entries, and hits of zero on a hybrid query is a
+// relevance question rather than an availability one.
+
+/** @param {string} message */
+function invalidRequest(message) {
+  setSpanAttributes({ 'cookie.search.outcome': 'invalid' });
+  return Response.json({ error: message }, { status: 400 });
+}
+
+// Meilisearch is the only retrieval engine, so a failure here is a 503 for
+// the user and worth a Sentry issue on its first occurrence rather than a
+// log line that reaches Workers Logs one request in five. A gateway blip
+// (502-504 or 520-530 from the tunnel, or the SDK's disguised parse error)
+// and a rejection by Meilisearch itself (a filter on an attribute the index
+// does not declare filterable, say) need different fixes, so they are
+// reported under different operation names and stay separate issues.
+/**
+ * @param {unknown} error
+ * @param {any} env
+ * @param {{event: string, scope: string, mode: string}} context
+ */
+function searchUnavailable(error, env, context) {
+  const transient = isTransientMeiliError(error);
+  console.log(
+    JSON.stringify({
+      event: context.event,
+      transient,
+      message: /** @type {Error} */ (error).message,
+    }),
+  );
+  setSpanAttributes({ 'cookie.search.outcome': transient ? 'meili_transient' : 'meili_rejected' });
+  captureHandledException(
+    transient ? 'meili_search_transient' : 'meili_search_rejected',
+    error,
+    env,
+    { scope: context.scope, mode: context.mode },
+  );
+  return Response.json({ error: 'Search is unavailable' }, { status: 503 });
+}
 
 // Fetches the fused result ids in one list-shaped query. Only summary presence
 // is exposed here; the generated text remains on the owned-message endpoint.
@@ -134,15 +182,20 @@ export function fetchSearchTasks(sql, userId, ids) {
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {string[]} ids
+ * @param {ReturnType<typeof createTimings>} timing
  */
-async function respondWithEmails(sql, userId, ids) {
-  if (ids.length === 0) return Response.json({ emails: [] });
+async function respondWithEmails(sql, userId, ids, timing) {
+  if (ids.length === 0) {
+    setSpanAttributes({ 'cookie.search.hydrated': 0, 'cookie.search.outcome': 'ok' });
+    return timing.response(Response.json({ emails: [] }));
+  }
 
-  const rows = await fetchSearchEmails(sql, userId, ids);
+  const rows = await timing.run('hydrate', () => fetchSearchEmails(sql, userId, ids));
   const byId = new Map(rows.map((/** @type {any} */ row) => [row.id, row]));
   const emails = ids.map((id) => byId.get(id)).filter(Boolean);
 
-  return Response.json({ emails });
+  setSpanAttributes({ 'cookie.search.hydrated': emails.length, 'cookie.search.outcome': 'ok' });
+  return timing.response(Response.json({ emails }));
 }
 
 // Message search. hits carry only ids (attributesToRetrieve inside
@@ -159,34 +212,39 @@ async function respondWithEmails(sql, userId, ids) {
  * @param {SearchDeps} deps
  */
 async function searchViaMeili(sql, userId, spec, env, semantic, deps) {
+  const timing = createTimings();
+  setSpanAttributes({ 'cookie.search.legs': MESSAGES_INDEX.name });
   let hits;
   try {
-    hits = await deps.hybridSearch(env, MESSAGES_INDEX, {
-      userId,
-      text: spec.text ?? '',
-      filter: meiliMessageFilter(spec.filters),
-      limit: RESULTS,
-      // mode=keyword maps to semanticRatio 0 — Meilisearch's keyword-only
-      // setting, matching the old Postgres keyword leg. Omitting the key
-      // entirely (rather than sending semanticRatio: undefined) lets
-      // hybridSearch fall back to the index descriptor's default ratio.
-      ...(semantic ? {} : { semanticRatio: 0 }),
-      // No free text means no relevance signal, so fall back to newest-first
-      // — what the recency leg did.
-      ...(spec.text ? {} : { sort: ['sent_at:desc'] }),
-    });
-  } catch (error) {
-    console.log(
-      JSON.stringify({
-        event: 'message_search_meili_failed',
-        message: /** @type {Error} */ (error).message,
+    hits = await timing.run('meili', () =>
+      deps.hybridSearch(env, MESSAGES_INDEX, {
+        userId,
+        text: spec.text ?? '',
+        filter: meiliMessageFilter(spec.filters),
+        limit: RESULTS,
+        // mode=keyword maps to semanticRatio 0 — Meilisearch's keyword-only
+        // setting, matching the old Postgres keyword leg. Omitting the key
+        // entirely (rather than sending semanticRatio: undefined) lets
+        // hybridSearch fall back to the index descriptor's default ratio.
+        ...(semantic ? {} : { semanticRatio: 0 }),
+        // No free text means no relevance signal, so fall back to newest-first
+        // — what the recency leg did.
+        ...(spec.text ? {} : { sort: ['sent_at:desc'] }),
       }),
     );
-    return Response.json({ error: 'Search is unavailable' }, { status: 503 });
+  } catch (error) {
+    return timing.response(
+      searchUnavailable(error, env, {
+        event: 'message_search_meili_failed',
+        scope: 'mail',
+        mode: semantic ? 'hybrid' : 'keyword',
+      }),
+    );
   }
 
+  setSpanAttributes({ 'cookie.search.hits': hits.length });
   const ids = hits.map((hit) => hit.id);
-  return await respondWithEmails(sql, userId, ids);
+  return await respondWithEmails(sql, userId, ids, timing);
 }
 
 /**
@@ -211,8 +269,13 @@ export async function handleSearch(sql, userId, url, env, deps = DEFAULT_DEPS) {
 
   const q = (url.searchParams.get('q') || '').trim();
   const semantic = url.searchParams.get('mode') !== 'keyword';
+  setSpanAttributes({
+    'cookie.search.scope': 'mail',
+    'cookie.search.federated': false,
+    'cookie.search.mode': semantic ? 'hybrid' : 'keyword',
+  });
   if (!q || q.length > MAX_QUERY_CHARS) {
-    return Response.json({ error: 'q is required (max 500 chars)' }, { status: 400 });
+    return invalidRequest('q is required (max 500 chars)');
   }
 
   // Split the raw query into free text, a prefix tsquery, and structured
@@ -221,7 +284,12 @@ export async function handleSearch(sql, userId, url, env, deps = DEFAULT_DEPS) {
   // not spend AI quota.
   const spec = parseSearchQuery(q);
   const hasFilters = Object.keys(spec.filters).length > 0;
+  setSpanAttributes({
+    'cookie.search.has_text': Boolean(spec.text),
+    'cookie.search.filters': Object.keys(spec.filters).length,
+  });
   if (!spec.text && !hasFilters) {
+    setSpanAttributes({ 'cookie.search.outcome': 'empty_query' });
     return Response.json({ emails: [] });
   }
 
@@ -336,31 +404,38 @@ export function mergeFederatedResults(hits, emailRows, documentRows, taskRows = 
  * @param {SearchDeps} deps
  */
 async function handleVerifiedMailPage(sql, userId, env, unit, query, limit, offset, deps) {
+  const timing = createTimings();
   /** @type {{type: string, [key: string]: any}[]} */
   const results = [];
   let scanOffset = offset;
   let estimatedTotalHits = 0;
   let nextOffset = null;
   let exhausted = false;
+  let batches = 0;
+  let scanned = 0;
 
   while (scanOffset < VERIFIED_MAIL_SCAN_CAP) {
     const batchLimit = Math.min(MAX_SCOPED_LIMIT, VERIFIED_MAIL_SCAN_CAP - scanOffset);
     let page;
     try {
-      page = await deps.federatedSearch(env, [unit], {
-        userId,
-        limit: batchLimit,
-        offset: scanOffset,
-      });
-    } catch (error) {
-      console.log(
-        JSON.stringify({
-          event: 'federated_search_meili_failed',
-          message: /** @type {Error} */ (error).message,
+      page = await timing.run('meili', () =>
+        deps.federatedSearch(env, [unit], {
+          userId,
+          limit: batchLimit,
+          offset: scanOffset,
         }),
       );
-      return Response.json({ error: 'Search is unavailable' }, { status: 503 });
+    } catch (error) {
+      return timing.response(
+        searchUnavailable(error, env, {
+          event: 'federated_search_meili_failed',
+          scope: 'mail',
+          mode: 'keyword',
+        }),
+      );
     }
+    batches += 1;
+    scanned += page.hits.length;
     if (scanOffset === offset) estimatedTotalHits = page.estimatedTotalHits;
     if (!page.hits.length) {
       exhausted = true;
@@ -370,7 +445,9 @@ async function handleVerifiedMailPage(sql, userId, env, unit, query, limit, offs
     const mailIds = page.hits
       .filter((hit) => hit._federation?.indexUid === MESSAGES_INDEX.name)
       .map((hit) => hit.id);
-    const rows = mailIds.length ? await fetchSearchEmails(sql, userId, mailIds) : [];
+    const rows = mailIds.length
+      ? await timing.run('hydrate', () => fetchSearchEmails(sql, userId, mailIds))
+      : [];
     const byId = new Map();
     for (const row of rows) byId.set(row.id, row);
     for (const [index, hit] of page.hits.entries()) {
@@ -390,15 +467,24 @@ async function handleVerifiedMailPage(sql, userId, env, unit, query, limit, offs
     }
   }
 
-  return Response.json({
-    query,
-    results,
-    estimatedTotalHits,
-    limit,
-    offset,
-    nextOffset,
-    scanLimitReached: nextOffset === null && !exhausted && scanOffset >= VERIFIED_MAIL_SCAN_CAP,
+  setSpanAttributes({
+    'cookie.search.verified_batches': batches,
+    'cookie.search.hits': scanned,
+    'cookie.search.hydrated': results.length,
+    'cookie.search.estimated_total': estimatedTotalHits,
+    'cookie.search.outcome': 'ok',
   });
+  return timing.response(
+    Response.json({
+      query,
+      results,
+      estimatedTotalHits,
+      limit,
+      offset,
+      nextOffset,
+      scanLimitReached: nextOffset === null && !exhausted && scanOffset >= VERIFIED_MAIL_SCAN_CAP,
+    }),
+  );
 }
 
 // GET /search?q=…&scope=all|mail|documents|tasks — federated mail + documents
@@ -420,26 +506,22 @@ async function handleVerifiedMailPage(sql, userId, env, unit, query, limit, offs
  */
 async function handleScopedSearch(sql, userId, url, env, scope, deps) {
   if (!SCOPES.has(scope)) {
-    return Response.json(
-      { error: 'scope must be one of: all, mail, documents, tasks' },
-      { status: 400 },
-    );
+    return invalidRequest('scope must be one of: all, mail, documents, tasks');
   }
+  setSpanAttributes({ 'cookie.search.scope': scope, 'cookie.search.federated': true });
 
   const q = (url.searchParams.get('q') || '').trim();
   if (!q || q.length > MAX_QUERY_CHARS) {
-    return Response.json({ error: 'q is required (max 500 chars)' }, { status: 400 });
+    return invalidRequest('q is required (max 500 chars)');
   }
 
   const limit = parseScopedLimit(url);
   const offset = parseScopedOffset(url);
   const verifiedPagination = url.searchParams.get('pagination') === 'verified';
+  setSpanAttributes({ 'cookie.search.verified': verifiedPagination });
   if (verifiedPagination) {
     if (scope !== 'mail' || url.searchParams.get('mode') !== 'keyword') {
-      return Response.json(
-        { error: 'Verified pagination requires mail scope and keyword mode' },
-        { status: 400 },
-      );
+      return invalidRequest('Verified pagination requires mail scope and keyword mode');
     }
     const rawOffset = url.searchParams.get('offset') ?? '0';
     if (
@@ -447,13 +529,18 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
       !Number.isSafeInteger(Number(rawOffset)) ||
       Number(rawOffset) >= VERIFIED_MAIL_SCAN_CAP
     ) {
-      return Response.json({ error: 'Verified search offset is out of range' }, { status: 400 });
+      return invalidRequest('Verified search offset is out of range');
     }
   }
 
   const spec = parseFederatedSearchQuery(q);
   const hasFilters = Object.keys(spec.filters).length > 0;
+  setSpanAttributes({
+    'cookie.search.has_text': Boolean(spec.text),
+    'cookie.search.filters': Object.keys(spec.filters).length,
+  });
   if (!spec.text && !hasFilters) {
+    setSpanAttributes({ 'cookie.search.outcome': 'empty_query' });
     return Response.json({ query: q, results: [], estimatedTotalHits: 0, limit, offset });
   }
 
@@ -462,6 +549,7 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
   // this must not run and return every document as if the operator weren't
   // there (the same failure mode scope=all's leg-dropping avoids).
   if (scope === 'documents' && hasMailOnlyFilters(spec.filters)) {
+    setSpanAttributes({ 'cookie.search.outcome': 'skipped' });
     return Response.json({ query: q, results: [], estimatedTotalHits: 0, limit, offset });
   }
 
@@ -469,12 +557,14 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
   // (a task has no tags or star). Same rule as above: any operator under
   // scope=tasks must not run and return every task as if it weren't there.
   if (scope === 'tasks' && hasFilters) {
+    setSpanAttributes({ 'cookie.search.outcome': 'skipped' });
     return Response.json({ query: q, results: [], estimatedTotalHits: 0, limit, offset });
   }
 
   // Filter-only queries (no free text) have no relevance signal, so — like
   // the unscoped mail path — they must not spend an embedding call.
   const semantic = url.searchParams.get('mode') !== 'keyword' && Boolean(spec.text);
+  setSpanAttributes({ 'cookie.search.mode': semantic ? 'hybrid' : 'keyword' });
 
   const units = [];
   if (scope === 'mail' || scope === 'all') {
@@ -519,22 +609,33 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
     unit.sort = unit.descriptor === MESSAGES_INDEX ? ['sent_at:desc'] : ['updated_at:desc'];
   }
 
+  setSpanAttributes({
+    'cookie.search.legs': units.map((unit) => unit.descriptor.name).join(','),
+  });
+
   if (verifiedPagination) {
     return handleVerifiedMailPage(sql, userId, env, units[0], q, limit, offset, deps);
   }
 
+  const timing = createTimings();
   let federated;
   try {
-    federated = await deps.federatedSearch(env, units, { userId, limit, offset });
+    federated = await timing.run('meili', () =>
+      deps.federatedSearch(env, units, { userId, limit, offset }),
+    );
   } catch (error) {
-    console.log(
-      JSON.stringify({
+    return timing.response(
+      searchUnavailable(error, env, {
         event: 'federated_search_meili_failed',
-        message: /** @type {Error} */ (error).message,
+        scope,
+        mode: semantic ? 'hybrid' : 'keyword',
       }),
     );
-    return Response.json({ error: 'Search is unavailable' }, { status: 503 });
   }
+  setSpanAttributes({
+    'cookie.search.hits': federated.hits.length,
+    'cookie.search.estimated_total': federated.estimatedTotalHits,
+  });
 
   const mailIds = federated.hits
     .filter((hit) => hit._federation?.indexUid === MESSAGES_INDEX.name)
@@ -546,19 +647,24 @@ async function handleScopedSearch(sql, userId, url, env, scope, deps) {
     .filter((hit) => hit._federation?.indexUid === TASKS_INDEX.name)
     .map((hit) => hit.id);
 
-  const [emailRows, documentRows, taskRows] = await Promise.all([
-    mailIds.length ? fetchSearchEmails(sql, userId, mailIds) : Promise.resolve([]),
-    documentIds.length ? fetchSearchDocuments(sql, userId, documentIds) : Promise.resolve([]),
-    taskIds.length ? fetchSearchTasks(sql, userId, taskIds) : Promise.resolve([]),
-  ]);
+  const [emailRows, documentRows, taskRows] = await timing.run('hydrate', () =>
+    Promise.all([
+      mailIds.length ? fetchSearchEmails(sql, userId, mailIds) : Promise.resolve([]),
+      documentIds.length ? fetchSearchDocuments(sql, userId, documentIds) : Promise.resolve([]),
+      taskIds.length ? fetchSearchTasks(sql, userId, taskIds) : Promise.resolve([]),
+    ]),
+  );
 
   const results = mergeFederatedResults(federated.hits, emailRows, documentRows, taskRows);
+  setSpanAttributes({ 'cookie.search.hydrated': results.length, 'cookie.search.outcome': 'ok' });
 
-  return Response.json({
-    query: q,
-    results,
-    estimatedTotalHits: federated.estimatedTotalHits,
-    limit,
-    offset,
-  });
+  return timing.response(
+    Response.json({
+      query: q,
+      results,
+      estimatedTotalHits: federated.estimatedTotalHits,
+      limit,
+      offset,
+    }),
+  );
 }

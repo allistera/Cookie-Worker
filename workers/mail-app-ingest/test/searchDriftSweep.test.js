@@ -1,17 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { captureHandledException } = vi.hoisted(() => ({ captureHandledException: vi.fn() }));
+const { captureHandledException, captureSearchHealthIssue } = vi.hoisted(() => ({
+  captureHandledException: vi.fn(),
+  captureSearchHealthIssue: vi.fn(),
+}));
 vi.mock('../src/sentry.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
-  return { ...actual, captureHandledException };
+  return { ...actual, captureHandledException, captureSearchHealthIssue };
 });
 
 import {
+  DEFAULT_SEARCH_BACKLOG_MAX_ROWS,
   SWEEP_LIMIT,
+  WORKSPACE_SWEEP_INTERVAL_MS,
   WORKSPACE_SWEEP_LIMIT,
+  reportFailedMeiliTasks,
   sweepSearchDrift,
   sweepWorkspaceSearchDrift,
 } from '../src/searchDriftSweep.js';
+
+// The workspace tick also asks Meilisearch for failed tasks; these tests are
+// about the repair, so nothing failed.
+const noFailedTasks = async () => ({ total: 0 });
 
 const ENV = {
   HYPERDRIVE: { connectionString: 'postgres://user:pass@example/db' },
@@ -41,7 +51,7 @@ describe('bounded workspace search repair', () => {
       expect(client.calls).toHaveLength(1);
       return { taskUid: 1, status: 'succeeded' };
     });
-    await sweepWorkspaceSearchDrift(ENV, { createSql, add });
+    await sweepWorkspaceSearchDrift(ENV, { createSql, add, failedTasks: noFailedTasks });
     expect(add.mock.calls.map((call) => call[1].name)).toEqual(['documents', 'task_items']);
     expect(docsSql.mock.calls[0].slice(1)).toEqual([WORKSPACE_SWEEP_LIMIT]);
     expect(tasksSql.mock.calls[0].slice(1)).toEqual([WORKSPACE_SWEEP_LIMIT]);
@@ -63,10 +73,132 @@ describe('bounded workspace search repair', () => {
       .fn()
       .mockRejectedValueOnce(new Error('Index task failed'))
       .mockResolvedValueOnce(undefined);
-    await sweepWorkspaceSearchDrift(ENV, { createSql, add });
+    await sweepWorkspaceSearchDrift(ENV, { createSql, add, failedTasks: noFailedTasks });
     expect(docsSql.calls).toHaveLength(1);
-    expect(tasksSql.calls).toHaveLength(2);
+    expect(tasksSql.calls).toHaveLength(3);
     expect(add).toHaveBeenCalledTimes(2);
+  });
+
+  // Every tick can report success while an edit Meilisearch keeps rejecting,
+  // or more edits than a tick drains, sits unindexed. The tick measures what it
+  // left behind and raises one issue per target once the oldest is over an hour.
+  it('measures what remains after repair and alerts when the oldest change is stale', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000);
+    const docsSql = createMockSql([
+      [{ id: ID_1, row_version: '1', updated_at: new Date(0) }],
+      [],
+      [{ backlog: 3, oldest: twoHoursAgo }],
+    ]);
+    const tasksSql = createMockSql([
+      [{ id: ID_2, row_version: '2', updated_at: new Date(0), child_versions: '' }],
+      [],
+      [{ backlog: 0, oldest: null }],
+    ]);
+    const createSql = vi.fn().mockReturnValueOnce(docsSql).mockReturnValueOnce(tasksSql);
+
+    await sweepWorkspaceSearchDrift(ENV, {
+      createSql,
+      add: vi.fn().mockResolvedValue(undefined),
+      failedTasks: noFailedTasks,
+    });
+
+    expect(docsSql.calls[2].text).toContain('count(*)');
+    const swept = log.mock.calls
+      .map((call) => JSON.parse(call[0]))
+      .filter((record) => record.event === 'workspace_search_drift_swept');
+    expect(swept.map((record) => [record.target, record.backlog])).toEqual([
+      ['documents', 3],
+      ['task_items', 0],
+    ]);
+    expect(swept[0].backlog_age_seconds).toBeGreaterThanOrEqual(7200);
+    expect(swept[1].backlog_age_seconds).toBe(0);
+    expect(captureSearchHealthIssue).toHaveBeenCalledExactlyOnceWith(
+      'documents-stale',
+      'Search index repair is falling behind',
+      expect.objectContaining({ target: 'documents', backlog: 3, threshold_minutes: 60 }),
+    );
+  });
+
+  it('respects a configured staleness threshold', async () => {
+    const docsSql = createMockSql([
+      [{ id: ID_1, row_version: '1', updated_at: new Date(0) }],
+      [],
+      [{ backlog: 1, oldest: new Date(Date.now() - 2 * 3_600_000) }],
+    ]);
+    const tasksSql = createMockSql([[]]);
+    const createSql = vi.fn().mockReturnValueOnce(docsSql).mockReturnValueOnce(tasksSql);
+
+    await sweepWorkspaceSearchDrift(
+      { ...ENV, SEARCH_STALE_MAX_MINUTES: '180' },
+      { createSql, add: vi.fn().mockResolvedValue(undefined), failedTasks: noFailedTasks },
+    );
+
+    expect(captureSearchHealthIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe('reportFailedMeiliTasks', () => {
+  const sample = {
+    uid: 9,
+    indexUid: 'messages',
+    type: 'documentAdditionOrUpdate',
+    errorCode: 'vector_embedding_error',
+  };
+
+  it('looks back one tick and raises one issue with the count and a sample', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const failedTasks = vi.fn(async () => ({ total: 2, sample }));
+
+    await reportFailedMeiliTasks(ENV, { failedTasks, now: () => 1_000_000_000_000 });
+
+    expect(failedTasks).toHaveBeenCalledExactlyOnceWith(
+      ENV,
+      new Date(1_000_000_000_000 - WORKSPACE_SWEEP_INTERVAL_MS),
+    );
+    expect(JSON.parse(log.mock.calls[0][0])).toEqual({
+      event: 'meili_tasks_failed',
+      total: 2,
+      index: 'messages',
+      type: 'documentAdditionOrUpdate',
+      error_code: 'vector_embedding_error',
+      task_uid: 9,
+    });
+    expect(captureSearchHealthIssue).toHaveBeenCalledExactlyOnceWith(
+      'meili-task-failures',
+      'Meilisearch failed indexing tasks',
+      {
+        total: 2,
+        index: 'messages',
+        type: 'documentAdditionOrUpdate',
+        error_code: 'vector_embedding_error',
+        task_uid: 9,
+      },
+    );
+  });
+
+  it('stays quiet when nothing failed', async () => {
+    await reportFailedMeiliTasks(ENV, { failedTasks: async () => ({ total: 0 }) });
+    expect(captureSearchHealthIssue).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed lookup without failing the cron', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const failedTasks = vi.fn().mockRejectedValue(new Error('Request failed with status 530'));
+
+    await expect(reportFailedMeiliTasks(ENV, { failedTasks })).resolves.toBeUndefined();
+
+    expect(captureHandledException).toHaveBeenCalledExactlyOnceWith(
+      'meili_tasks_check',
+      expect.any(Error),
+      [ENV.MEILISEARCH_API_KEY],
+    );
+  });
+
+  it('does nothing when Meilisearch is not configured', async () => {
+    const failedTasks = vi.fn();
+    await reportFailedMeiliTasks({ HYPERDRIVE: ENV.HYPERDRIVE }, { failedTasks });
+    expect(failedTasks).not.toHaveBeenCalled();
   });
 });
 
@@ -214,5 +346,58 @@ describe('sweepSearchDrift', () => {
 
     await expect(sweepSearchDrift(ENV, { createSql: () => sql, sync })).resolves.toBeUndefined();
     expect(sql.end).toHaveBeenCalled();
+  });
+
+  // Messages carry no change time, so what a tick leaves behind is a count.
+  // A healthy tick leaves none; more than an hour's worth means the index is
+  // behind even when every push succeeds.
+  it('logs the backlog it left behind and alerts when it exceeds an hour of repair', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sql = createMockSql([[{ id: ID_1 }], [{ backlog: DEFAULT_SEARCH_BACKLOG_MAX_ROWS + 1 }]]);
+
+    await sweepSearchDrift(ENV, {
+      createSql: () => sql,
+      sync: vi.fn().mockResolvedValue({ indexed: 1, failed: 0 }),
+    });
+
+    expect(sql.calls[1].text).toContain('count(*)');
+    expect(sql.calls[1].text).toContain('search_indexed_at IS NULL');
+    const swept = log.mock.calls
+      .map((call) => JSON.parse(call[0]))
+      .find((record) => record.event === 'search_drift_swept');
+    expect(swept.backlog).toBe(DEFAULT_SEARCH_BACKLOG_MAX_ROWS + 1);
+    expect(captureSearchHealthIssue).toHaveBeenCalledExactlyOnceWith(
+      'messages-backlog',
+      'Search index repair is falling behind',
+      expect.objectContaining({
+        target: 'messages',
+        backlog: DEFAULT_SEARCH_BACKLOG_MAX_ROWS + 1,
+        threshold_rows: DEFAULT_SEARCH_BACKLOG_MAX_ROWS,
+      }),
+    );
+  });
+
+  it('does not alert for a backlog one more tick will drain', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sql = createMockSql([[{ id: ID_1 }], [{ backlog: 150 }]]);
+
+    await sweepSearchDrift(ENV, {
+      createSql: () => sql,
+      sync: vi.fn().mockResolvedValue({ indexed: 1, failed: 0 }),
+    });
+
+    expect(captureSearchHealthIssue).not.toHaveBeenCalled();
+  });
+
+  it('respects a configured backlog threshold', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sql = createMockSql([[{ id: ID_1 }], [{ backlog: 150 }]]);
+
+    await sweepSearchDrift(
+      { ...ENV, SEARCH_BACKLOG_MAX_ROWS: '100' },
+      { createSql: () => sql, sync: vi.fn().mockResolvedValue({ indexed: 1, failed: 0 }) },
+    );
+
+    expect(captureSearchHealthIssue).toHaveBeenCalledOnce();
   });
 });

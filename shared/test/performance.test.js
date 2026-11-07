@@ -79,6 +79,17 @@ describe('request performance metrics', () => {
     }
   });
 
+  // Verified search pagination queries Meilisearch and hydrates from Postgres
+  // once per batch; the header still names each stage once.
+  it('reports a stage run more than once as one entry with the durations summed', async () => {
+    const timer = createTimings();
+    await timer.run('meili', async () => undefined);
+    await timer.run('hydrate', async () => undefined);
+    await timer.run('meili', async () => undefined);
+    const header = timer.response(new Response(null)).headers.get('Server-Timing') ?? '';
+    expect(header).toMatch(/^meili;dur=[\d.]+, hydrate;dur=[\d.]+$/);
+  });
+
   it('keeps headers the handler already exposed', async () => {
     const expose = async (value) => {
       const worker = withRequestMetrics(
