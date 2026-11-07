@@ -23,13 +23,14 @@ const SERVICE = 'cookie-web-search';
 /**
  * The Hyperdrive connection string carries the database password and
  * OPENAI_API_KEY is a real secret — both get scrubbed from anything that
- * reaches Sentry.
+ * reaches Sentry. Partial, because handlers (handleAsk) only declare the
+ * bindings they read, and a failure on their path still has to be reported.
  *
- * @param {SearchEnv} env
+ * @param {Partial<SearchEnv>} env
  * @returns {(string | undefined)[]}
  */
 function secrets(env) {
-  return [env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY, env.MEILISEARCH_API_KEY];
+  return [env.HYPERDRIVE?.connectionString, env.OPENAI_API_KEY, env.MEILISEARCH_API_KEY];
 }
 
 /**
@@ -46,7 +47,7 @@ export function createSentryOptions(env) {
  *
  * @param {string} operation
  * @param {unknown} err
- * @param {SearchEnv} env
+ * @param {Partial<SearchEnv>} env
  * @param {Record<string, unknown>} [extra]
  */
 export function captureHandledException(operation, err, env, extra = {}) {

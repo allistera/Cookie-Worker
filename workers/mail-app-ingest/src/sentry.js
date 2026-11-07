@@ -73,3 +73,19 @@ export function captureInboundHealthIssue(condition, message, extra = {}) {
     extra,
   });
 }
+
+/**
+ * Report a standing search-index condition: a repair backlog the sweeps are
+ * not draining, or indexing tasks Meilisearch itself rejected. Same shape as
+ * the inbound-health issues, under its own operation so the two stay apart.
+ *
+ * @param {string} condition Stable name of the condition; it becomes the fingerprint.
+ * @param {string} message Fixed text; variable detail belongs in `extra`.
+ * @param {Record<string, unknown>} [extra]
+ */
+export function captureSearchHealthIssue(condition, message, extra = {}) {
+  captureSharedMessage(SERVICE, 'search_health', message, {
+    fingerprint: [SERVICE, 'search_health', condition],
+    extra,
+  });
+}

@@ -287,7 +287,7 @@ async function route(url, request, sql, userId, env) {
 
   if (segments[0] === 'documents') {
     if (segments.length > 1) return Response.json({ error: 'Not Found' }, { status: 404 });
-    const deps = { env, hybridSearch };
+    const deps = { env, hybridSearch, captureHandledException };
     if (request.method === 'GET') return getDocuments(sql, userId, url, deps);
     if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {
       return Response.json(

@@ -20,6 +20,8 @@ import { removeDocumentFromMeili, syncDocumentToMeili } from './documentMeiliSyn
 import { flattenBlocksToText } from './documentText.js';
 import { parseDocumentSearchQuery } from './queryParse.js';
 import { validId } from '../../../shared/pagination.js';
+import { isTransientMeiliError } from '../../../shared/meiliErrors.js';
+import { setSpanAttributes } from '../../../shared/tracing.js';
 
 export const MAX_TITLE_LENGTH = 300;
 export const MAX_EMOJI_LENGTH = 16;
@@ -36,9 +38,14 @@ const MAX_SEARCH_QUERY_CHARS = 500;
 const SEARCH_RESULTS = 20;
 
 /**
+ * `captureHandledException` is the Worker's own (src/sentry.js), injected like
+ * the search itself: this module is also reached from the repository-wide
+ * typecheck, where the Worker's `Env` binding types are not in scope.
+ *
  * @typedef {{
  *   env: any,
  *   hybridSearch: (env: any, descriptor: any, query: {userId: string, text?: string, filter?: string, limit: number, semanticRatio?: number, sort?: string[]}, client?: any) => Promise<{id: string}[]>,
+ *   captureHandledException?: (operation: string, err: unknown, env: any, extra?: Record<string, unknown>) => void,
  * }} DocumentsDeps
  */
 
@@ -244,12 +251,16 @@ async function searchDocuments(sql, userId, url, rawQuery, deps) {
  * @param {string[]} ids
  */
 async function respondWithDocuments(sql, userId, ids) {
-  if (ids.length === 0) return Response.json({ documents: [] });
+  if (ids.length === 0) {
+    setSpanAttributes({ 'cookie.search.hydrated': 0, 'cookie.search.outcome': 'ok' });
+    return Response.json({ documents: [] });
+  }
 
   const rows = await fetchSearchDocuments(sql, userId, ids);
   const byId = new Map(rows.map((/** @type {any} */ row) => [row.id, row]));
   const documents = ids.map((id) => byId.get(id)).filter(Boolean);
 
+  setSpanAttributes({ 'cookie.search.hydrated': documents.length, 'cookie.search.outcome': 'ok' });
   return Response.json({ documents });
 }
 
@@ -278,6 +289,16 @@ function meiliFilter(filters) {
  * @param {DocumentsDeps} deps
  */
 async function searchViaMeili(sql, userId, spec, semantic, deps) {
+  // The same trace vocabulary as cookie-web-search (see its search.js), so
+  // one Honeycomb query over cookie.search.* covers every search surface.
+  setSpanAttributes({
+    'cookie.search.scope': 'documents',
+    'cookie.search.federated': false,
+    'cookie.search.mode': semantic ? 'hybrid' : 'keyword',
+    'cookie.search.legs': DOCUMENTS_INDEX.name,
+    'cookie.search.has_text': Boolean(spec.text),
+    'cookie.search.filters': Object.keys(spec.filters).length,
+  });
   let hits;
   try {
     hits = await deps.hybridSearch(deps.env, DOCUMENTS_INDEX, {
@@ -296,15 +317,30 @@ async function searchViaMeili(sql, userId, spec, semantic, deps) {
       ...(spec.text ? {} : { sort: ['updated_at:desc'] }),
     });
   } catch (error) {
+    // Same split as cookie-web-search's searchUnavailable: a gateway blip
+    // and a rejection by Meilisearch are different issues in Sentry, and
+    // either is worth one on its first occurrence rather than a sampled log.
+    const transient = isTransientMeiliError(error);
     console.log(
       JSON.stringify({
         event: 'document_search_meili_failed',
+        transient,
         message: /** @type {Error} */ (error).message,
       }),
+    );
+    setSpanAttributes({
+      'cookie.search.outcome': transient ? 'meili_transient' : 'meili_rejected',
+    });
+    deps.captureHandledException?.(
+      transient ? 'meili_search_transient' : 'meili_search_rejected',
+      error,
+      deps.env,
+      { scope: 'documents', mode: semantic ? 'hybrid' : 'keyword' },
     );
     return Response.json({ error: 'Search is unavailable' }, { status: 503 });
   }
 
+  setSpanAttributes({ 'cookie.search.hits': hits.length });
   const ids = hits.map((hit) => hit.id);
   return await respondWithDocuments(sql, userId, ids);
 }

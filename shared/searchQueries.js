@@ -175,6 +175,60 @@ export function taskItemsDriftPage(sql, { limit }) {
   `;
 }
 
+/**
+ * What the sweeps leave behind: how many rows still drift after a repair pass,
+ * and the oldest change among them. Each predicate is the matching drift
+ * page's, so the documents and messages counts use the same partial indexes.
+ *
+ * Messages carry no change time (see messagesDriftPage), so only their count
+ * is meaningful: a row's created_at says when it arrived, not when a label or
+ * flag change marked it for reindexing.
+ *
+ * @param {import('postgres').Sql} sql
+ * @returns {Promise<{backlog: number}[]>}
+ */
+export function messagesDriftBacklog(sql) {
+  return sql`
+    SELECT count(*)::int AS backlog
+    FROM messages
+    WHERE search_indexed_at IS NULL
+  `;
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @returns {Promise<{backlog: number, oldest: Date | null}[]>}
+ */
+export function documentsDriftBacklog(sql) {
+  return sql`
+    SELECT count(*)::int AS backlog, min(updated_at) AS oldest
+    FROM documents
+    WHERE search_indexed_at IS NULL OR search_indexed_at < updated_at
+  `;
+}
+
+/**
+ * The oldest change is the newer of the task's own edit and its latest
+ * sub-task edit: a sub-task write drifts its parent (see taskItemsDriftPage),
+ * and the parent's own updated_at could be months older than that write.
+ *
+ * @param {import('postgres').Sql} sql
+ * @returns {Promise<{backlog: number, oldest: Date | null}[]>}
+ */
+export function taskItemsDriftBacklog(sql) {
+  return sql`
+    SELECT count(*)::int AS backlog,
+           min(GREATEST(t.updated_at,
+                        (SELECT max(s.updated_at) FROM task_items s WHERE s.parent_id = t.id))) AS oldest
+    FROM task_items t
+    WHERE t.parent_id IS NULL AND t.kind = 'task'
+      AND (t.search_indexed_at IS NULL
+           OR t.search_indexed_at < t.updated_at
+           OR EXISTS (SELECT 1 FROM task_items s
+                      WHERE s.parent_id = t.id AND s.updated_at > t.search_indexed_at))
+  `;
+}
+
 export const PAGE_QUERIES = {
   documents: documentsPage,
   messages: messagesPage,

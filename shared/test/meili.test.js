@@ -6,6 +6,7 @@ import {
   addDocuments,
   configureIndex,
   deleteDocuments,
+  failedTasksSince,
   federatedSearch,
   hybridSearch,
   meiliMessageFilter,
@@ -697,5 +698,53 @@ describe('index acknowledgement', () => {
     );
     // 500ms, 1s, then every 2s: far fewer requests than a fixed 250ms poll.
     expect(getTask).toHaveBeenCalledTimes(11);
+  });
+});
+
+describe('failedTasksSince', () => {
+  const since = new Date('2026-11-07T10:00:00Z');
+
+  /** @param {any} response */
+  function createMockTasks(response) {
+    const getTasks = vi.fn(async () => response);
+    return { client: { tasks: { getTasks } }, getTasks };
+  }
+
+  it('asks for failed tasks enqueued after the given time and keeps only the count and a safe sample', async () => {
+    const { client, getTasks } = createMockTasks({
+      total: 4,
+      results: [
+        {
+          uid: 9,
+          indexUid: 'messages',
+          type: 'documentAdditionOrUpdate',
+          error: { code: 'vector_embedding_error', message: 'details about document 7f3a' },
+          details: { receivedDocuments: 3 },
+        },
+      ],
+    });
+
+    const result = await failedTasksSince(ENV, since, client);
+
+    expect(getTasks).toHaveBeenCalledExactlyOnceWith({
+      statuses: ['failed'],
+      afterEnqueuedAt: '2026-11-07T10:00:00.000Z',
+      limit: 1,
+    });
+    expect(result).toEqual({
+      total: 4,
+      sample: {
+        uid: 9,
+        indexUid: 'messages',
+        type: 'documentAdditionOrUpdate',
+        errorCode: 'vector_embedding_error',
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('7f3a');
+  });
+
+  it('returns only the total when nothing failed', async () => {
+    const { client } = createMockTasks({ total: 0, results: [] });
+    expect(await failedTasksSince(ENV, since, client)).toEqual({ total: 0 });
   });
 });

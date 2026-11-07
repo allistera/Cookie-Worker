@@ -223,20 +223,25 @@ describe('document search engine', () => {
   });
 
   // Meilisearch is required: a failure is an error, not a silent empty list.
-  it('returns 503 when Meilisearch fails', async () => {
+  it('returns 503 when Meilisearch fails, and reports it', async () => {
     const search = vi.fn(async () => {
       throw new Error('meili down');
     });
     const sql = createMockSql();
+    const captureHandledException = vi.fn();
+    const searchDeps = deps({ hybridSearch: search, captureHandledException });
 
-    const response = await getDocuments(
-      sql,
-      USER_ID,
-      url('?q=roof'),
-      deps({ hybridSearch: search }),
-    );
+    const response = await getDocuments(sql, USER_ID, url('?q=roof'), searchDeps);
 
     expect(response.status).toBe(503);
+    // Same split as cookie-web-search: a rejection by Meilisearch itself is
+    // not a transient gateway blip, and the query text goes nowhere.
+    expect(captureHandledException).toHaveBeenCalledExactlyOnceWith(
+      'meili_search_rejected',
+      expect.any(Error),
+      searchDeps.env,
+      { scope: 'documents', mode: 'hybrid' },
+    );
   });
 });
 

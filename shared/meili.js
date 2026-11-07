@@ -255,6 +255,41 @@ export async function deleteDocuments(env, descriptor, ids, client) {
 }
 
 /**
+ * Indexing tasks Meilisearch accepted and then failed since `since` — a
+ * document it could not index, or an embedder call OpenAI refused. Nothing
+ * else notices these: addDocuments callers that do not wait for the task, and
+ * the drift sweeps, only see that the row stays unstamped. Only the total and
+ * one sample's uid, index, type and error code come back; a task's `details`
+ * can name document ids and settings and never needs to leave this function.
+ *
+ * @param {any} env
+ * @param {Date} since
+ * @param {any} [client] injected by tests
+ * @returns {Promise<{total: number, sample?: {uid: number, indexUid?: string, type: string, errorCode?: string}}>}
+ */
+export async function failedTasksSince(env, since, client) {
+  const result = await clientFor(env, client).tasks.getTasks({
+    statuses: ['failed'],
+    afterEnqueuedAt: since.toISOString(),
+    limit: 1,
+  });
+  const [task] = result.results;
+  return {
+    total: result.total,
+    ...(task
+      ? {
+          sample: {
+            uid: task.uid,
+            indexUid: task.indexUid ?? undefined,
+            type: task.type,
+            errorCode: task.error?.code,
+          },
+        }
+      : {}),
+  };
+}
+
+/**
  * One hybrid query against an index descriptor. user_id is always filtered:
  * Postgres did that with a WHERE clause, and leaving it off here would
  * return another user's rows — it is the only thing separating users once

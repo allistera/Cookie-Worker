@@ -127,11 +127,17 @@ describe('GET /search', () => {
     expect(mockQuery).toHaveBeenCalled(); // hydration by id
   });
 
-  test('answers 503 when Meilisearch fails', async () => {
+  test('answers 503 when Meilisearch fails, and reports it to Sentry', async () => {
     hybridSearch.mockRejectedValue(new Error('meili down'));
     const response = await worker.fetch(request('/search?q=invoice'), env, ctx);
     expect(response.status).toBe(503);
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(captureHandledException).toHaveBeenCalledExactlyOnceWith(
+      'meili_search_rejected',
+      expect.any(Error),
+      env,
+      { scope: 'mail', mode: 'hybrid' },
+    );
   });
 
   test('a POST to /search returns 405', async () => {
@@ -266,7 +272,7 @@ describe('POST /ask', () => {
 
   // Meilisearch is required for retrieval: a failure is an error, not a
   // silently smaller (or empty) set of sources.
-  test('answers 503 when Meilisearch retrieval fails', async () => {
+  test('answers 503 when Meilisearch retrieval fails, and reports it to Sentry', async () => {
     hybridSearch.mockRejectedValue(new Error('meili down'));
     const response = await worker.fetch(
       request('/ask', { method: 'POST', body: JSON.stringify({ question: 'anything new?' }) }),
@@ -275,6 +281,12 @@ describe('POST /ask', () => {
     );
     expect(response.status).toBe(503);
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(captureHandledException).toHaveBeenCalledExactlyOnceWith(
+      'meili_search_rejected',
+      expect.any(Error),
+      env,
+      { scope: 'ask', mode: 'hybrid' },
+    );
   });
 
   test('a GET to /ask returns 405', async () => {
