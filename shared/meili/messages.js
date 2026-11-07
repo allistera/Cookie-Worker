@@ -70,7 +70,12 @@ export const MESSAGES_INDEX = {
       '(sent_at {{doc.sent_at}}), ' +
       'labels {{ doc.labels | join: ", " }}:\n{{ doc.body | strip | split: "\n\n" | join: "\n" }}',
     documentTemplateMaxBytes: 1500,
-    searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
+    // The same floor as the search page: a text query's weak tail is noise.
+    searchParameters: {
+      hybrid: { embedder: 'default', semanticRatio: 0.5 },
+      limit: 5,
+      rankingScoreThreshold: 0.5,
+    },
   },
   // recipients is a jsonb object shaped {to, cc, bcc}, each an array of
   // strings or {name, address} objects, and to_name/to_address are

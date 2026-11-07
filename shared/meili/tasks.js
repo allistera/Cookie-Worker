@@ -38,7 +38,13 @@ export const TASKS_INDEX = {
       '{% if doc.updated_date %}, last changed {{doc.updated_date}}{% endif %}): ' +
       '{{ doc.description | strip }}\nSub-tasks: {{ doc.subtasks | join: "; " }}',
     documentTemplateMaxBytes: 800,
-    searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
+    // See DOCUMENTS_INDEX.chat: unrelated tasks scored 0.26 to 0.5 for a mail
+    // subject, a loosely related one 0.5 and a related one 0.64.
+    searchParameters: {
+      hybrid: { embedder: 'default', semanticRatio: 0.5 },
+      limit: 5,
+      rankingScoreThreshold: 0.3,
+    },
   },
   toDocument: (row) => ({
     id: row.id,

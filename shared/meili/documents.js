@@ -28,7 +28,14 @@ export const DOCUMENTS_INDEX = {
       '{% if doc.updated_date %}, last edited {{doc.updated_date}}{% endif %}):\n' +
       '{{ doc.content_text | strip }}',
     documentTemplateMaxBytes: 1500,
-    searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
+    // A text query always returns its five closest documents; below this
+    // floor they are unrelated (measured at 0.0 to 0.02 for a mail subject
+    // asked against documents). Filter-only searches score 1 and keep all.
+    searchParameters: {
+      hybrid: { embedder: 'default', semanticRatio: 0.5 },
+      limit: 5,
+      rankingScoreThreshold: 0.3,
+    },
   },
   toDocument: (row) => ({
     id: row.id,
