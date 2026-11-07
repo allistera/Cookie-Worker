@@ -1,4 +1,4 @@
-import { EMBEDDER } from './embedder.js';
+import { EMBEDDER, readableTime } from './embedder.js';
 
 /**
  * The task-items index — one document per top-level task. A sub-task is not
@@ -34,10 +34,17 @@ export const TASKS_INDEX = {
       "The user's to-do tasks: the task text, its description, sub-task titles and " +
       'whether it is completed. Search here for what the user has to do or has done.',
     documentTemplate:
-      'Task "{{doc.content}}" ({% if doc.completed %}completed{% else %}open{% endif %}): ' +
-      '{{doc.description}}\nSub-tasks: {{ doc.subtasks | join: "; " }}',
+      'Task "{{doc.content}}" ({% if doc.completed %}completed{% else %}open{% endif %}' +
+      '{% if doc.updated_date %}, last changed {{doc.updated_date}}{% endif %}): ' +
+      '{{ doc.description | strip }}\nSub-tasks: {{ doc.subtasks | join: "; " }}',
     documentTemplateMaxBytes: 800,
-    searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
+    // See DOCUMENTS_INDEX.chat: unrelated tasks scored 0.26 to 0.5 for a mail
+    // subject, a loosely related one 0.5 and a related one 0.64.
+    searchParameters: {
+      hybrid: { embedder: 'default', semanticRatio: 0.5 },
+      limit: 5,
+      rankingScoreThreshold: 0.3,
+    },
   },
   toDocument: (row) => ({
     id: row.id,
@@ -48,5 +55,7 @@ export const TASKS_INDEX = {
     completed: Boolean(row.completed_at),
     // Numeric so Meilisearch can sort and filter on it.
     updated_at: row.updated_at ? new Date(row.updated_at).getTime() : 0,
+    // Display-only twin of updated_at for the chat model (see readableTime).
+    updated_date: readableTime(row.updated_at),
   }),
 };

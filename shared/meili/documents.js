@@ -1,4 +1,4 @@
-import { EMBEDDER } from './embedder.js';
+import { EMBEDDER, readableTime } from './embedder.js';
 
 /**
  * The documents index — id, user_id, title, tags, starred, updated_at, plus
@@ -24,9 +24,18 @@ export const DOCUMENTS_INDEX = {
       "The user's own notes and documents: title, tags, starred flag and full text. " +
       'Search here for notes, plans, lists, drafts and anything the user wrote down.',
     documentTemplate:
-      'Document "{{doc.title}}" (tags: {{ doc.tags | join: ", " }}):\n{{doc.content_text}}',
+      'Document "{{doc.title}}" (tags: {{ doc.tags | join: ", " }}' +
+      '{% if doc.updated_date %}, last edited {{doc.updated_date}}{% endif %}):\n' +
+      '{{ doc.content_text | strip }}',
     documentTemplateMaxBytes: 1500,
-    searchParameters: { hybrid: { embedder: 'default', semanticRatio: 0.5 }, limit: 5 },
+    // A text query always returns its five closest documents; below this
+    // floor they are unrelated (measured at 0.0 to 0.02 for a mail subject
+    // asked against documents). Filter-only searches score 1 and keep all.
+    searchParameters: {
+      hybrid: { embedder: 'default', semanticRatio: 0.5 },
+      limit: 5,
+      rankingScoreThreshold: 0.3,
+    },
   },
   toDocument: (row) => ({
     id: row.id,
@@ -37,5 +46,7 @@ export const DOCUMENTS_INDEX = {
     starred: Boolean(row.starred),
     // Numeric so Meilisearch can sort and filter on it.
     updated_at: row.updated_at ? new Date(row.updated_at).getTime() : 0,
+    // Display-only twin of updated_at for the chat model (see readableTime).
+    updated_date: readableTime(row.updated_at),
   }),
 };
