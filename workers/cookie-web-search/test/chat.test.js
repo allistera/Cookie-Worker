@@ -319,13 +319,13 @@ describe('handleChat', () => {
     expect(first.headers.get('Content-Type')).toBe('text/event-stream; charset=utf-8');
     expect(await events(first)).toEqual([{ type: 'token', text: 'Hi' }, { type: 'done' }]);
 
-    const [settingsUrl, settingsInit] = fetchMock.mock.calls[0];
+    const [settingsUrl, settingsInit] = /** @type {[string, any]} */ (fetchMock.mock.calls[0]);
     expect(settingsUrl).toBe('https://meili.example/chats/cookie/settings');
     expect(settingsInit.method).toBe('PATCH');
     expect(settingsInit.headers.Authorization).toBe('Bearer chat-key-secret');
     expect(JSON.parse(String(settingsInit.body))).toEqual(workspaceSettings(env));
 
-    const [chatUrl, chatInit] = fetchMock.mock.calls[1];
+    const [chatUrl, chatInit] = /** @type {[string, any]} */ (fetchMock.mock.calls[1]);
     expect(chatUrl).toBe('https://meili.example/chats/cookie/chat/completions');
     const token = String(chatInit.headers.Authorization).replace('Bearer ', '');
     const { payload } = await jwtVerify(token, new TextEncoder().encode('chat-key-secret'));
@@ -357,7 +357,8 @@ describe('handleChat', () => {
       { messages: QUESTION },
       { ...env, OPENAI_CHAT_MODEL: 'gpt-5-mini' },
     );
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body)).model).toBe('gpt-5-mini');
+    const chatInit = /** @type {any} */ (fetchMock.mock.calls[1][1]);
+    expect(JSON.parse(String(chatInit.body)).model).toBe('gpt-5-mini');
   });
 
   test('answers 503 and retries the settings push later when it fails', async () => {
