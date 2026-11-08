@@ -2,8 +2,6 @@ import { claimInboundAiRequest, InboundAiQuotaExceeded } from './inboundAiQuota.
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { parseOutputJson, responsesUrl } from '../../../shared/openai.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
-import { AUTO_ARCHIVE_THRESHOLD, autoArchiveRules } from '../../../shared/autoArchive.js';
-import { applyAutoArchive } from './autoArchive.js';
 import { ensureSpamLabel } from '../../../shared/spamLabel.js';
 
 export const AI_FETCH_TIMEOUT_MS = 60_000;
@@ -149,7 +147,7 @@ function enrichmentSchema(categories) {
 export const MATCH_THRESHOLD = 0.7;
 
 /**
- * @typedef {{id: string, prompt: string, action: string, label_id: string | null, autoArchiveCategory?: string}} AiRule
+ * @typedef {{id: string, prompt: string, action: string, label_id: string | null}} AiRule
  */
 
 /**
@@ -272,10 +270,8 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       ORDER BY r.created_at
     `,
     sql`
-      SELECT ai.status, ai.spam_verdict, ai.provider, m.user_id, m.created_at,
-             u.prefs -> 'autoArchive' AS auto_archive
+      SELECT ai.status, ai.spam_verdict, ai.provider, m.user_id
       FROM messages m
-      JOIN users u ON u.id = m.user_id
       LEFT JOIN message_ai ai ON ai.message_id = m.id
       WHERE m.id = ${messageUuid}
     `,
@@ -317,7 +313,6 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       label_id: rule.label_id ? String(rule.label_id) : null,
     }));
   const state = stateRows[0] ?? {};
-  aiRules.push(...autoArchiveRules(state.auto_archive, state.created_at));
   let verdict = state.spam_verdict || 'inbox';
   let selectedLabels = 0;
   let matchedRules = 0;
@@ -350,15 +345,13 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       : null;
     const rulesById = new Map(aiRules.map((rule) => [rule.id, rule]));
     const matched = classification.rules
-      .filter((match) => {
-        const rule = rulesById.get(match.id);
-        return (
-          rule &&
+      .filter(
+        (match) =>
+          rulesById.has(match.id) &&
           Number.isFinite(match.confidence) &&
           match.confidence <= 1 &&
-          match.confidence >= (rule.autoArchiveCategory ? AUTO_ARCHIVE_THRESHOLD : MATCH_THRESHOLD)
-        );
-      })
+          match.confidence >= MATCH_THRESHOLD,
+      )
       .map((match) => ({
         .../** @type {AiRule} */ (rulesById.get(match.id)),
         confidence: match.confidence,
@@ -420,12 +413,6 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       // except their labels are source = 'ai' (they came from the model and
       // are rebuilt with the other AI labels) and carry the rule as provenance.
       for (const rule of matched) {
-        if (rule.autoArchiveCategory) {
-          if (verdict === 'inbox' && classification.priority === 'low') {
-            await applyAutoArchive(tx, state.user_id, messageUuid, rule.autoArchiveCategory);
-          }
-          continue;
-        }
         if (rule.action === 'mark_done') {
           await tx`
             UPDATE messages
