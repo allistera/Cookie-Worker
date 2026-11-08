@@ -255,4 +255,24 @@ describe('sender decisions', () => {
       OWNER,
     );
   });
+
+  test('searches the list by substring with literal wildcards and keeps the cursor', async () => {
+    const calls = [];
+    const sql = /** @type {any} */ (
+      (parts, ...values) => {
+        const query = parts.join('?');
+        calls.push({ query, values });
+        return query.includes('FROM users') ? [{ enabled: true }] : [];
+      }
+    );
+    const url = new URL('https://example.com/emails/senders?q=%20Shop%25_%5C&after=a%40b.example');
+    const response = await getSenders(sql, OWNER, url);
+    expect(await response.json()).toEqual({ enabled: true, decisions: [], nextCursor: null });
+    const list = calls.find((row) => row.query.includes('FROM sender_decisions'));
+    expect(list.query).toContain('address LIKE ?');
+    expect(list.values).toEqual([OWNER, 'a@b.example', '%shop\\%\\_\\\\%']);
+    // Without q every address matches, so paging is unchanged.
+    await getSenders(sql, OWNER, new URL('https://example.com/emails/senders'));
+    expect(calls.at(-1).values).toEqual([OWNER, '', '%%']);
+  });
 });
