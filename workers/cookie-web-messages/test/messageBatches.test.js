@@ -57,6 +57,16 @@ describe('bulk message changes', () => {
     expect(hooks.onMessagesChanged).toHaveBeenCalledWith([id]);
   });
 
+  // COOKIE-WEB-1G: the parameter is cast to timestamptz, so postgres.js
+  // serializes it through Date even when the CASE keeps the old value.
+  test('sends null for scheduled_for when the change leaves it alone', async () => {
+    const sql = createMockSql([[{ id }]]);
+    const response = await patchMessage(sql, 'owner', { ids: [id], is_archived: true }, deps());
+    expect(response.status).toBe(200);
+    expect(sql.calls[0].values).not.toContain('');
+    expect(sql.calls[0].values).toContain(null);
+  });
+
   test.each([null, label])(
     'changes category %s without requesting a search reindex',
     async (category) => {

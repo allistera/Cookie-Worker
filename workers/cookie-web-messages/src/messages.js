@@ -1001,7 +1001,12 @@ export async function patchMessage(sql, userId, body, deps = {}) {
     const { is_unread, is_starred, is_archived, is_deleted } = body;
     const hasCategoryChange = Object.hasOwn(body, 'category_id');
     const hasScheduledChange = Object.hasOwn(body, 'scheduled_for');
-    const scheduledFor = body.scheduled_for === null ? null : String(body.scheduled_for ?? '');
+    // null when unchanged, as on the single-message path below: the statement
+    // casts this parameter to timestamptz, so postgres.js serializes it
+    // through Date, and the '' that an absent field used to become threw
+    // "Invalid time value" before the CASE could ignore it (COOKIE-WEB-1G).
+    const scheduledFor =
+      hasScheduledChange && body.scheduled_for !== null ? String(body.scheduled_for) : null;
     const scheduledForValid =
       !hasScheduledChange || scheduledFor === null || Number.isFinite(Date.parse(scheduledFor));
     const hasSearchChange =
