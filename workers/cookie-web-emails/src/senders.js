@@ -87,6 +87,13 @@ export async function getSenders(sql, userId, url) {
     ? exactAddress(url.searchParams.get('address'))
     : null;
   const after = url.searchParams.get('after') || '';
+  // `q` narrows the list to keys containing the text. Keys are stored
+  // lower-case, so the text is lowered too; LIKE wildcards in it are literal.
+  const query = String(url.searchParams.get('q') || '')
+    .trim()
+    .toLowerCase()
+    .slice(0, 320);
+  const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
   if (url.searchParams.has('address') && !address)
     return reply({ error: 'Use one exact email address.' }, 400);
   const [owner] =
@@ -97,7 +104,7 @@ export async function getSenders(sql, userId, url) {
   const rows = address
     ? await sql`SELECT address, decision FROM effective_sender_decision(${userId}, ${address})`
     : await sql`SELECT address, decision FROM sender_decisions
-        WHERE user_id = ${userId} AND address > ${after}
+        WHERE user_id = ${userId} AND address > ${after} AND address LIKE ${pattern}
         ORDER BY address LIMIT 51`;
   return reply({
     enabled: owner.enabled === true,
