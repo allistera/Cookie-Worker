@@ -7,7 +7,6 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { withUserSql } from '../../../shared/db.js';
 import { handleList, handleState } from './emails.js';
 import { getSpamRetention, putSpamRetention } from './spamRetention.js';
-import { getAutoArchive, putAutoArchive } from './autoArchive.js';
 import { getComposePreferences, putComposePreferences } from './composePreferences.js';
 import { getOutOfOffice, putOutOfOffice } from './outOfOffice.js';
 import { getSenders, putSenders } from './senders.js';
@@ -28,7 +27,6 @@ async function route(url, request, sql, userId) {
   const sub = segments.length === 2 ? segments[1] : null;
   const isState = sub === 'state';
   const isSpamRetention = sub === 'spam-retention';
-  const isAutoArchive = sub === 'auto-archive';
   const isComposePreferences = sub === 'compose-preferences';
   const isOutOfOffice = sub === 'out-of-office';
   const isSenders = sub === 'senders';
@@ -37,24 +35,21 @@ async function route(url, request, sql, userId) {
     (segments.length > 1 &&
       !isState &&
       !isSpamRetention &&
-      !isAutoArchive &&
       !isComposePreferences &&
       !isOutOfOffice &&
       !isSenders)
   ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
-  if (isSpamRetention || isAutoArchive || isComposePreferences || isOutOfOffice || isSenders) {
+  if (isSpamRetention || isComposePreferences || isOutOfOffice || isSenders) {
     if (request.method === 'GET')
       return isSenders
         ? getSenders(sql, userId, url)
         : isOutOfOffice
           ? getOutOfOffice(sql, userId)
-          : isAutoArchive
-            ? getAutoArchive(sql, userId)
-            : isComposePreferences
-              ? getComposePreferences(sql, userId)
-              : getSpamRetention(sql, userId);
+          : isComposePreferences
+            ? getComposePreferences(sql, userId)
+            : getSpamRetention(sql, userId);
     if (request.method !== 'PUT') {
       return Response.json(
         { error: 'Method not allowed' },
@@ -76,11 +71,9 @@ async function route(url, request, sql, userId) {
       ? putSenders(sql, userId, body)
       : isOutOfOffice
         ? putOutOfOffice(sql, userId, body)
-        : isAutoArchive
-          ? putAutoArchive(sql, userId, body)
-          : isComposePreferences
-            ? putComposePreferences(sql, userId, body)
-            : putSpamRetention(sql, userId, body);
+        : isComposePreferences
+          ? putComposePreferences(sql, userId, body)
+          : putSpamRetention(sql, userId, body);
   }
   if (request.method !== 'GET') {
     return Response.json(
