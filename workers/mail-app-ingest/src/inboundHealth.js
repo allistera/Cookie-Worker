@@ -261,6 +261,13 @@ async function checkRouting(env, { fetchImpl, report, reportFailure }) {
       );
     }
   } catch (err) {
+    // A probe that timed out twice says nothing about the rule (Sentry
+    // COOKIE-WEB-1W). The next tick reads it again, and mail that really
+    // stopped arriving is caught by the stale-inbound check regardless.
+    if (err instanceof Error && err.name === 'AbortError') {
+      console.log(JSON.stringify({ event: 'email_routing_check_timed_out' }));
+      return;
+    }
     reportFailure('inbound_health', err, [env.HYPERDRIVE?.connectionString, token], {
       check: 'email_routing',
     });

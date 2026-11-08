@@ -5,6 +5,7 @@ vi.mock('../src/inboundAiQuota.js', async (importOriginal) => ({
 }));
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  AI_ATTEMPTS,
   AI_FETCH_TIMEOUT_MS,
   AI_MODEL,
   classifyEmail,
@@ -640,34 +641,65 @@ describe('AI enrichment', () => {
   });
 
   // COOKIE-WEB-1C: a bare 403 could be a revoked key or a blocked region;
-  // the code in OpenAI's error body is what tells them apart.
-  test("names OpenAI's error code without the rest of the body", async () => {
+  // the code in OpenAI's error body is what tells them apart. A blocked
+  // egress address changes between requests, so that one is retried.
+  test("retries a blocked-region 403 and names OpenAI's error code without the rest of the body", async () => {
+    vi.useFakeTimers();
+    try {
+      const sql = createMockSql();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: false,
+          status: 403,
+          json: async () => ({
+            error: {
+              code: 'unsupported_country_region_territory',
+              message: 'Country, region, or territory not supported',
+            },
+          }),
+        })),
+      );
+
+      const failure = enrichMessage(
+        sql,
+        { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+        'message-1',
+        'key',
+      ).catch((error) => error);
+      await vi.runAllTimersAsync();
+      const error = await failure;
+
+      expect(error.message).toBe(
+        'OpenAI Responses API responded 403 (unsupported_country_region_territory)',
+      );
+      expect(error.message).not.toContain('not supported');
+      expect(mockedFetch()).toHaveBeenCalledTimes(AI_ATTEMPTS);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('does not retry a 403 for any other reason', async () => {
     const sql = createMockSql();
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
         ok: false,
         status: 403,
-        json: async () => ({
-          error: {
-            code: 'unsupported_country_region_territory',
-            message: 'Country, region, or territory not supported',
-          },
-        }),
+        json: async () => ({ error: { code: 'invalid_api_key', message: 'Incorrect API key' } }),
       })),
     );
 
-    const failure = enrichMessage(
-      sql,
-      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
-      'message-1',
-      'key',
-    );
-
-    await expect(failure).rejects.toThrow(
-      'OpenAI Responses API responded 403 (unsupported_country_region_territory)',
-    );
-    await expect(failure).rejects.not.toThrow('not supported');
+    await expect(
+      enrichMessage(
+        sql,
+        { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+        'message-1',
+        'key',
+      ),
+    ).rejects.toThrow('OpenAI Responses API responded 403 (invalid_api_key)');
+    expect(mockedFetch()).toHaveBeenCalledTimes(1);
   });
 
   test('skips classification for a message already completed', async () => {

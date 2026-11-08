@@ -86,7 +86,21 @@ const worker = {
     try {
       record = await parseEmail(message);
       sql = createSql(env.HYPERDRIVE.connectionString);
-      if (await emailAlreadyStored(sql, record.messageId, env.OWNER_EMAIL)) {
+      let alreadyStored;
+      try {
+        alreadyStored = await emailAlreadyStored(sql, record.messageId, env.OWNER_EMAIL);
+      } catch (err) {
+        // This first query opens the connection, and Hyperdrive sometimes
+        // fails to reach the origin on that first try (Sentry COOKIE-WEB-9).
+        // One more client delivers the message now instead of leaving it to
+        // the sender's retry minutes later.
+        if (!isTransientDbError(err)) throw err;
+        console.log(JSON.stringify({ event: 'store_connection_retried' }));
+        ctx.waitUntil(endSql(sql));
+        sql = createSql(env.HYPERDRIVE.connectionString);
+        alreadyStored = await emailAlreadyStored(sql, record.messageId, env.OWNER_EMAIL);
+      }
+      if (alreadyStored) {
         storeResult = { outcome: 'duplicate', messageUuid: null };
       } else {
         uploaded = await uploadAttachments(

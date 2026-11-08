@@ -368,6 +368,29 @@ describe('email handler', () => {
     });
   });
 
+  // COOKIE-WEB-9: Hyperdrive failed to open its connection to the origin on
+  // the first query; a fresh client got through.
+  test('retries the first query on a fresh client when Hyperdrive cannot reach the origin', async () => {
+    const failing = sqlReturning();
+    failing.mockRejectedValueOnce(
+      new Error(
+        'could not initialize upstream: Failed to connect to upstream using TLS: failed to establishing a TLS connection',
+      ),
+    );
+    const healthy = sqlReturning();
+    postgres.mockReturnValueOnce(failing).mockReturnValue(healthy);
+    const message = fakeMessage(simpleFixture);
+    const context = ctx();
+    await worker.email(message, env(), context);
+    expect(message.forward).toHaveBeenCalledOnce();
+    expect(messageFromLog('store_connection_retried')).toEqual({
+      event: 'store_connection_retried',
+    });
+    expect(messageFromLog('stored')).toMatchObject({ outcome: 'inserted' });
+    expect(failing.end).toHaveBeenCalled();
+    expect(sentry.captureException).not.toHaveBeenCalled();
+  });
+
   test('skips parse and store for oversized messages but still forwards', async () => {
     const message = fakeMessage('', { rawSize: MAX_PARSE_BYTES + 1 });
     await worker.email(message, env(), ctx());

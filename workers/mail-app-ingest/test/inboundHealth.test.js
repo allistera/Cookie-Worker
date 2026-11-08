@@ -391,6 +391,41 @@ describe('runInboundHealthChecks', () => {
     ]);
   });
 
+  // COOKIE-WEB-1W: a probe that times out is not a failed check; the next
+  // tick reads the rule again.
+  test('logs a routing probe that timed out instead of reporting it', async () => {
+    vi.useFakeTimers();
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const { reports, failures } = collectors();
+      /** @type {typeof fetch} */
+      const fetchImpl = async () => {
+        throw new DOMException('The operation was aborted', 'AbortError');
+      };
+      const run = runInboundHealthChecks(
+        { ...env, CLOUDFLARE_EMAIL_ROUTING_TOKEN: 'cf-token', EMAIL_ROUTING_ZONE_ID: 'zone-1' },
+        {
+          createSql: healthSql({ newest: NOW, pending: 0 }),
+          now: NOW,
+          fetchImpl,
+          report: (condition, message, extra) => reports.push({ condition, message, extra }),
+          reportFailure: (operation, /** @type {any} */ err, secrets, extra) =>
+            failures.push({ operation, message: err.message, secrets, extra }),
+        },
+      );
+      await vi.runAllTimersAsync();
+      await run;
+      expect(reports).toEqual([]);
+      expect(failures).toEqual([]);
+      expect(logged.mock.calls.map((call) => JSON.parse(call[0]))).toContainEqual({
+        event: 'email_routing_check_timed_out',
+      });
+    } finally {
+      logged.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   test('skips the routing check without a token and without calling the API', async () => {
     const { reports, failures } = collectors();
     await runInboundHealthChecks(env, {

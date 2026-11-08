@@ -52,17 +52,25 @@ export async function openAiErrorCode(response) {
   }
 }
 
+// OpenAI's code for a request from a country it does not serve. The Worker's
+// egress address varies between requests, and a later attempt from another one
+// is accepted (Sentry COOKIE-WEB-1C: every recovery retry got through).
+export const BLOCKED_REGION_CODE = 'unsupported_country_region_territory';
+
 /**
- * Rate limits and upstream outages clear on their own, so they are worth a
- * second and third attempt inside the same enrichment run; a rejected request
- * (bad key, bad payload) would only fail again.
+ * Rate limits, upstream outages and a blocked egress address clear on their
+ * own, so they are worth a second and third attempt inside the same
+ * enrichment run; a rejected request (bad key, bad payload) would only fail
+ * again.
  *
  * @param {unknown} error
  * @returns {boolean}
  */
 export function isTransientOpenAiError(error) {
-  const status = error instanceof ResponsesApiError ? error.status : null;
-  if (status !== null) return status === 408 || status === 429 || status >= 500;
+  if (error instanceof ResponsesApiError) {
+    if (error.status === 403) return error.code === BLOCKED_REGION_CODE;
+    return error.status === 408 || error.status === 429 || error.status >= 500;
+  }
   return error instanceof TypeError || (error instanceof Error && error.name === 'AbortError');
 }
 

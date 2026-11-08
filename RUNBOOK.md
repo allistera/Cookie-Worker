@@ -143,7 +143,7 @@ After the sweeps, the 15-minute run also checks inbound health. Each failing con
 - `Message enrichment has stayed pending` (`pending-enrichment`): a message's classification has been pending for longer than `PENDING_ENRICHMENT_MAX_MINUTES` (default 60). Check `OPENAI_API_KEY`, the shared AI budget, and recent `ai_recovery` reports.
 - `Catch-all email routing no longer delivers to mail-app-ingest` (`email-routing-drift`): the catch-all rule is disabled or has no worker action naming this Worker. The check needs both `CLOUDFLARE_EMAIL_ROUTING_TOKEN` (a secret) and `EMAIL_ROUTING_ZONE_ID` (a variable). Without them it is skipped, and one log line says so. The token needs zone-scoped read access to Email Routing rules; confirm the exact permission name in Cloudflare's token form.
 
-The routing API read retries a request timeout once after one second, with a fresh 10-second deadline. API rejections fail immediately; a second timeout is still reported as a failed check.
+The routing API read retries a request timeout once after one second, with a fresh 10-second deadline. API rejections fail immediately and are reported as a failed check. A second timeout is only logged, as `email_routing_check_timed_out`: the next tick reads the rule again, and mail that has really stopped arriving is caught by the stale-inbound check.
 
 A check that cannot run is reported as an `inbound_health` exception. The checks never throw, and a failing check does not stop the sweeps. The owner's address is never sent to Sentry.
 

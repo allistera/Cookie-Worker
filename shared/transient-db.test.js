@@ -14,6 +14,12 @@ describe('isTransientDbError', () => {
     ['a dropped connection', Object.assign(new Error('terminated'), { code: '08006' })],
     ['a postgres.js closed message', new Error('write CONNECTION_CLOSED db.example:5432')],
     [
+      'a Hyperdrive upstream that failed to connect',
+      new Error(
+        'could not initialize upstream: Failed to connect to upstream using TLS: failed to establishing a TLS connection',
+      ),
+    ],
+    [
       'a wrapped transient cause',
       new Error('Mailbox lookup failed', {
         cause: Object.assign(new Error('closed'), { code: 'CONNECTION_CLOSED' }),
