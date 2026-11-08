@@ -741,3 +741,18 @@ Dashboard ingestion requires authenticated Sentry access and is not verified by 
 When investigating missing metrics from older releases, clear the environment
 filter: those releases stripped the SDK environment/release labels. Successful
 envelope responses verify transport acceptance, not dashboard visibility.
+
+### Response times
+
+Every Worker binds the Workers Analytics Engine dataset `cookie_response_times`
+as `RESPONSE_METRICS` in its `wrangler.jsonc`. The 14 Workers with an HTTP
+handler wrap it in `withResponseMetrics`
+([`shared/responseMetrics.js`](shared/responseMetrics.js)), which writes one data
+point per response: the Worker name as `index1` and `blob1`, the elapsed
+milliseconds as `double1` and the HTTP status as `double2`. Nothing else is
+recorded, and a failed write never changes the response. `mail-app-ingest` only
+has `email` and `scheduled` triggers, so it binds the dataset but writes nothing.
+The dataset is created on the first write; query it with the Analytics Engine
+SQL API, for example
+`SELECT index1, quantileWeighted(0.95, double1, _sample_interval) FROM cookie_response_times WHERE timestamp > NOW() - INTERVAL '1' DAY GROUP BY index1`.
+Analytics Engine is included in the Workers free plan.

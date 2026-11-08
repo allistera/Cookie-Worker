@@ -23,6 +23,11 @@
   // run the isolate near the database rather than near the browser.
   "placement": { "mode": "smart" },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
+  // One Analytics Engine row per HTTP response (service, duration, status);
+  // see shared/responseMetrics.js.
+  "analytics_engine_datasets": [
+    { "binding": "RESPONSE_METRICS", "dataset": "cookie_response_times" },
+  ],
   "vars": {
     // Auth0 domain/audience are public identifiers, already shipped in
     // Cookie-Web's own client bundle (VITE_AUTH0_DOMAIN/VITE_AUTH0_AUDIENCE)

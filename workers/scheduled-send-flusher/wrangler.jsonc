@@ -27,6 +27,11 @@
   // must stay protected there (cookie-web-send syncs the same value as
   // SCHEDULED_SEND_FLUSH_TOKEN).
   "services": [{ "binding": "SEND", "service": "cookie-web-send" }],
+  // One Analytics Engine row per HTTP response (service, duration, status);
+  // see shared/responseMetrics.js.
+  "analytics_engine_datasets": [
+    { "binding": "RESPONSE_METRICS", "dataset": "cookie_response_times" },
+  ],
   "vars": {
     "SENTRY_ENVIRONMENT": "production",
   },
