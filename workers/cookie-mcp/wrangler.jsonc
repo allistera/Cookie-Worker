@@ -29,6 +29,11 @@
     { "binding": "CALENDAR", "service": "cookie-web-calendar", "entrypoint": "Internal" },
     { "binding": "TASKS", "service": "cookie-web-tasks", "entrypoint": "Internal" },
   ],
+  // One Analytics Engine row per HTTP response (service, duration, status);
+  // see shared/responseMetrics.js.
+  "analytics_engine_datasets": [
+    { "binding": "RESPONSE_METRICS", "dataset": "cookie_response_times" },
+  ],
   "vars": {
     // Public identifiers, not secrets. Only the custom domain issues tokens
     // for this new audience, so the tenant domain is not listed.

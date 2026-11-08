@@ -25,6 +25,11 @@
       "id": "a276ebeb4ec84d33b050614b6b5020e5",
     },
   ],
+  // One Analytics Engine row per HTTP response (service, duration, status);
+  // see shared/responseMetrics.js.
+  "analytics_engine_datasets": [
+    { "binding": "RESPONSE_METRICS", "dataset": "cookie_response_times" },
+  ],
   "vars": {
     "FORWARD_TO": "allisteraall@gmail.com",
     "OWNER_EMAIL": "allisteraall@gmail.com",
