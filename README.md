@@ -133,6 +133,14 @@ with an authenticated Sentry MCP connection.
 
 Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by the `Deploy` workflow) and `SENTRY_ENVIRONMENT` (variable, set in each `wrangler.jsonc`).
 
+### Workers Issues
+
+Fourteen of the fifteen Workers also turn on Cloudflare's Workers Issues (`observability.issues.enabled` in each `wrangler.jsonc`). It groups uncaught exceptions, failed invocations, `5xx` responses and error-level logs in the Cloudflare dashboard, with no SDK. Sentry stays the place for scrubbed error reports; Issues is the platform's own view of the same failures.
+
+- Every capsule states the key, because a Wrangler deploy without it turns Issues off. It needs Wrangler 4.134.0 or later.
+- `cookie-web-calendar` sets it to `false`. Its feed URLs carry bearer tokens, Issues keeps request details with each occurrence, and it has no redaction setting.
+- Occurrence details are kept for seven days. No automation forwards them anywhere; add one in the dashboard only after checking what its payload contains.
+
 ## Tracing
 
 Every Worker except `cookie-web-calendar` exports Cloudflare's automatic

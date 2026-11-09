@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { parse } from 'jsonc-parser';
 import path from 'node:path';
@@ -50,6 +50,24 @@ describe('worker repository interface', () => {
     // zone. They must not bypass that zone's public security settings.
     expect(config.compatibility_flags).toContain('global_fetch_strictly_public');
     expect(config.compatibility_flags).not.toContain('global_fetch_private_origin');
+  });
+
+  test('states the Workers Issues setting in every capsule, off only where URLs carry tokens', async () => {
+    const workersRoot = new URL('../../workers/', import.meta.url);
+    const names = (await readdir(workersRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    const settings = {};
+    for (const name of names) {
+      const config = parse(await readFile(new URL(`${name}/wrangler.jsonc`, workersRoot), 'utf8'));
+      settings[name] = config.observability?.issues?.enabled;
+    }
+    // A deploy whose config omits the key turns Issues off, so each capsule
+    // states it. Calendar feed URLs contain bearer tokens and Issues keeps
+    // request details, so that Worker stays out.
+    expect(settings).toEqual(
+      Object.fromEntries(names.map((name) => [name, name !== 'cookie-web-calendar'])),
+    );
   });
 
   test('discovers worker capsules in deterministic order', async () => {

@@ -14,6 +14,9 @@
     "enabled": true,
     "head_sampling_rate": 0.2,
     "traces": { "enabled": true, "destinations": ["honeycomb-traces"], "head_sampling_rate": 0.2 },
+    // Group uncaught exceptions, failed invocations, 5xx responses and error
+    // logs into Workers Issues. A deploy without this key turns Issues off.
+    "issues": { "enabled": true },
   },
   "placement": { "mode": "smart" },
   // Only for verifyAccessToken's users lookup; tools reach data through the
