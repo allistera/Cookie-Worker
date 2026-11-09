@@ -159,4 +159,44 @@ describe.skipIf(!databaseUrl)('sender blocking versus retention on PostgreSQL', 
       await blocker.end();
     }
   }, 15000);
+
+  it('purges blocked mail once its block is past retention, and leaves held mail alone', async () => {
+    const OLD_BLOCK = '55555555-5555-4555-8555-555555555555';
+    const NEW_BLOCK = '66666666-6666-4666-8666-666666666666';
+    const HELD = '77777777-7777-4777-8777-777777777777';
+    const SHORT_OWNER = '88888888-8888-4888-8888-888888888888';
+    const SHORT_THREAD = '99999999-9999-4999-8999-999999999999';
+    const SHORT_BLOCK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await observer`DELETE FROM message_ai`;
+    await observer`INSERT INTO users(id, prefs) VALUES (${SHORT_OWNER}, '{"spamRetentionDays": 7}')`;
+    await observer`INSERT INTO threads(id, user_id) VALUES (${SHORT_THREAD}, ${SHORT_OWNER})`;
+    await observer`INSERT INTO sender_decisions(user_id, address, decision, updated_at) VALUES
+      (${OWNER}, 'sender@example.com', 'blocked', now() - interval '90 days'),
+      (${OWNER}, '@late.example', 'blocked', now() - interval '2 days'),
+      (${SHORT_OWNER}, 'sender@example.com', 'blocked', now() - interval '90 days')`;
+    // BLOCKED arrived just now from a sender blocked long ago; OLD_BLOCK arrived
+    // 31 days ago from the same sender; NEW_BLOCK is old mail whose sender was
+    // blocked two days ago; HELD is old mail still awaiting a decision.
+    await observer`UPDATE messages SET screening_status = 'blocked' WHERE id = ${BLOCKED}`;
+    await observer`INSERT INTO messages(id, user_id, thread_id, from_address, screening_status, is_archived, created_at) VALUES
+      (${OLD_BLOCK}, ${OWNER}, ${THREAD}, 'Sender@Example.com', 'blocked', true, now() - interval '31 days'),
+      (${NEW_BLOCK}, ${OWNER}, ${THREAD}, 'news@mail.late.example', 'blocked', false, now() - interval '200 days'),
+      (${HELD}, ${OWNER}, ${THREAD}, 'unknown@example.org', 'held', false, now() - interval '200 days'),
+      (${SHORT_BLOCK}, ${SHORT_OWNER}, ${SHORT_THREAD}, 'sender@example.com', 'blocked', false, now() - interval '8 days')`;
+
+    await purgeExpiredSpam(
+      { HYPERDRIVE: { connectionString: databaseUrl } },
+      { createSql: () => connect('screening-retention-sweep') },
+    );
+
+    const messages = await observer`SELECT id, is_deleted FROM messages ORDER BY id`;
+    expect(messages).toEqual([
+      { id: BLOCKED, is_deleted: false },
+      { id: ALLOWED, is_deleted: false },
+      { id: OLD_BLOCK, is_deleted: true },
+      { id: NEW_BLOCK, is_deleted: false },
+      { id: HELD, is_deleted: false },
+      { id: SHORT_BLOCK, is_deleted: true },
+    ]);
+  });
 });

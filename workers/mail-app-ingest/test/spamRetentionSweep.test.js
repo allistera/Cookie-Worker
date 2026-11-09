@@ -10,6 +10,7 @@ import { PURGE_LIMIT, purgeExpiredSpam } from '../src/spamRetentionSweep.js';
 
 const ENV = { HYPERDRIVE: { connectionString: 'postgres://user:pass@example/db' } };
 const ID_1 = '11111111-1111-4111-8111-111111111111';
+const ID_2 = '22222222-2222-4222-8222-222222222222';
 
 /** @param {unknown[][]} results */
 function createMockSql(results = []) {
@@ -39,7 +40,7 @@ describe('purgeExpiredSpam', () => {
     captureHandledException.mockClear();
     const first = createMockSql();
     first.mockRejectedValueOnce(new Error('Network connection lost.'));
-    const second = createMockSql([[{ id: ID_1 }]]);
+    const second = createMockSql([[{ id: ID_1, screening_status: 'allowed' }]]);
     const createSql = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -51,36 +52,68 @@ describe('purgeExpiredSpam', () => {
     expect(first.end).toHaveBeenCalledOnce();
     expect(second.end).toHaveBeenCalledOnce();
     expect(captureHandledException).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith(JSON.stringify({ event: 'spam_purged', deleted: 1 }));
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'spam_purged', deleted: 1, blocked: 0 }),
+    );
     log.mockRestore();
   });
 
   it('soft-deletes spam past its owner’s retention, bounded per tick, and closes its client', async () => {
-    const sql = createMockSql([[{ id: ID_1 }]]);
+    const sql = createMockSql([[{ id: ID_1, screening_status: 'allowed' }]]);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await purgeExpiredSpam(ENV, { createSql: () => sql });
 
     const { text, values } = sql.calls[0];
-    expect(text).toContain("ai.spam_verdict = 'spam'");
+    const spam = text.slice(text.indexOf('FROM message_ai ai'), text.indexOf('UNION ALL'));
+    expect(spam).toContain("ai.spam_verdict = 'spam'");
     // Only what the Spam folder lists: spam moved to Done is kept.
-    expect(text).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
-    expect(text).toContain("m.screening_status = 'allowed'");
-    // Candidate selection is a snapshot; after waiting for a concurrent Block
-    // the UPDATE target must independently recheck the committed disposition.
-    expect(text.slice(text.indexOf('UPDATE messages m'))).toContain(
-      "WHERE m.id = expired.id AND m.screening_status = 'allowed'",
-    );
+    expect(spam).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
+    expect(spam).toContain("m.screening_status = 'allowed'");
     // The clock starts when the verdict landed, not when the mail arrived.
-    expect(text).toContain('COALESCE(ai.processed_at, m.created_at) < now() - make_interval');
+    expect(spam).toContain('COALESCE(ai.processed_at, m.created_at) < r.cutoff');
     // The stored preference is bounded in SQL too, and read only as a number.
     expect(text).toContain("jsonb_typeof(u.prefs -> 'spamRetentionDays') = 'number'");
     expect(text).toContain('LEAST(365, GREATEST(1,');
     // The same delete the reader uses, plus the search drift marker.
     expect(text).toContain('SET is_deleted = true, search_indexed_at = NULL');
     expect(values).toEqual([30, PURGE_LIMIT]);
-    expect(log).toHaveBeenCalledWith(JSON.stringify({ event: 'spam_purged', deleted: 1 }));
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'spam_purged', deleted: 1, blocked: 0 }),
+    );
     expect(sql.end).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it('soft-deletes blocked mail on the same retention, counted from the block', async () => {
+    const sql = createMockSql([
+      [
+        { id: ID_1, screening_status: 'blocked' },
+        { id: ID_2, screening_status: 'allowed' },
+      ],
+    ]);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await purgeExpiredSpam(ENV, { createSql: () => sql });
+
+    const { text } = sql.calls[0];
+    const blocked = text.slice(text.indexOf('UNION ALL'), text.indexOf('ORDER BY since'));
+    // What the Blocked folder lists, whatever its archive or spam state. Mail
+    // held in New senders is never a candidate.
+    expect(blocked).toContain("m.screening_status = 'blocked'");
+    expect(blocked).toContain('NOT m.is_deleted AND NOT m.is_sent');
+    expect(blocked).not.toContain('is_archived');
+    expect(text).not.toContain("'held'");
+    // Mail that moved into Blocked with the decision counts from the decision.
+    expect(blocked).toContain('GREATEST(m.created_at, sd.updated_at) < r.cutoff');
+    // Candidate selection is a snapshot; after waiting for a concurrent Block
+    // or Unblock the UPDATE target must recheck the committed disposition.
+    expect(text.slice(text.indexOf('UPDATE messages m'))).toContain(
+      'WHERE m.id = expired.id AND m.screening_status = expired.screening_status',
+    );
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'spam_purged', deleted: 2, blocked: 1 }),
+    );
     log.mockRestore();
   });
 
