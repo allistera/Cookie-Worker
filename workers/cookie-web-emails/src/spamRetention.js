@@ -1,6 +1,7 @@
-// How long spam is kept before the mail-app-ingest cron soft-deletes it
-// (workers/mail-app-ingest/src/spamRetentionSweep.js). Lives in users.prefs
-// like AI Today's interests: the sweep reads it with no browser running.
+// How long spam and blocked mail are kept before the mail-app-ingest cron
+// soft-deletes them (workers/mail-app-ingest/src/spamRetentionSweep.js). Lives
+// in users.prefs like AI Today's interests: the sweep reads it with no browser
+// running.
 export const DEFAULT_SPAM_RETENTION_DAYS = 30;
 export const MIN_SPAM_RETENTION_DAYS = 1;
 export const MAX_SPAM_RETENTION_DAYS = 365;
