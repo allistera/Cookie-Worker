@@ -18,6 +18,9 @@
     // record request URLs, so keep only the application's sanitized logs.
     "logs": { "enabled": true, "invocation_logs": false },
     "traces": { "enabled": false },
+    // Workers Issues keeps request details with each occurrence and has no
+    // redaction setting, so it stays off here for the same reason.
+    "issues": { "enabled": false },
   },
   // Every request opens a Hyperdrive connection before any route work, so
   // run the isolate near the database rather than near the browser.

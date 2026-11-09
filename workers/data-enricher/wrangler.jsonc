@@ -13,6 +13,9 @@
     // endpoint and API key live in the "honeycomb-traces" destination in the
     // Cloudflare dashboard, not in this repo.
     "traces": { "enabled": true, "destinations": ["honeycomb-traces"], "head_sampling_rate": 1 },
+    // Group uncaught exceptions, failed invocations, 5xx responses and error
+    // logs into Workers Issues. A deploy without this key turns Issues off.
+    "issues": { "enabled": true },
   },
   "triggers": {
     // Cron Triggers run on UTC.
