@@ -17,7 +17,7 @@ export function fakeMessage(raw, options = {}) {
 }
 
 /**
- * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], aiRuleRows?: unknown[], labelRows?: unknown[], categoryRows?: unknown[], enrichmentStateRows?: unknown[], lockedAiRows?: unknown[], importanceRows?: unknown[]}} [options]
+ * @param {{lookupRows?: unknown[], transactionRejects?: boolean, messageInsertReturns?: unknown[], ruleRows?: unknown[], aiRuleRows?: unknown[], labelRows?: unknown[], categoryRows?: unknown[], enrichmentStateRows?: unknown[], lockedAiRows?: unknown[], importanceRows?: unknown[], systemLabelRows?: unknown[]}} [options]
  * @returns {any}
  */
 export function createMockSql(options = {}) {
@@ -60,6 +60,10 @@ export function createMockSql(options = {}) {
       // Message insert uses RETURNING id to detect concurrent DO NOTHING races.
       if (query.text.includes('INSERT INTO messages') && query.text.includes('RETURNING')) {
         return Promise.resolve(options.messageInsertReturns ?? [{ id: 'message-1' }]);
+      }
+      // The system-label upserts (Spam, Paper Trail) return the label's id.
+      if (query.text.includes('INSERT INTO labels')) {
+        return Promise.resolve(options.systemLabelRows ?? []);
       }
       if (query.text.includes("l.kind = 'user'")) {
         return Promise.resolve(options.labelRows ?? []);

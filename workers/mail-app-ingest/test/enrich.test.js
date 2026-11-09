@@ -60,6 +60,9 @@ describe('AI enrichment', () => {
     expect(request.input[0].content).toContain('Choose exactly one supplied category id');
     expect(request.text.format.schema.properties.category_id).toEqual({ type: 'null' });
     expect(request.text.format.schema.required).toContain('category_id');
+    expect(request.input[0].content).toContain('Set paper_trail to true only when');
+    expect(request.text.format.schema.properties.paper_trail).toEqual({ type: 'boolean' });
+    expect(request.text.format.schema.required).toContain('paper_trail');
     // Summaries are user-requested through Cookie-Web's reader; enrichment
     // must not ask the model for one.
     expect(request.text.format.schema.properties).not.toHaveProperty('summary');
@@ -384,6 +387,93 @@ describe('AI enrichment', () => {
     const statements = sql.transactions[0].map((query) => query.text).join('\n');
     expect(statements).not.toContain("SELECT m.user_id, 'Spam'");
     expect(statements).toContain('INSERT INTO message_ai');
+  });
+
+  test('files a receipt in Paper Trail with the system label and leaves it in the inbox', async () => {
+    const sql = createMockSql({ systemLabelRows: [{ id: 'paper-trail-label' }] });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ output_text: JSON.stringify(responseResult({ paper_trail: true })) }),
+      })),
+    );
+
+    const result = await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'shop@example.com', subject: 'Receipt', bodyText: 'Paid' },
+      'message-1',
+      'key',
+    );
+
+    expect(result.verdict).toBe('inbox');
+    const ensure = sql.transactions[0].find((query) => query.text.includes('INSERT INTO labels'));
+    expect(ensure.values).toEqual(['Paper Trail', 'message-1']);
+    const attach = sql.transactions[0].find(
+      (query) =>
+        query.text.includes('INSERT INTO message_labels') &&
+        query.values.includes('paper-trail-label'),
+    );
+    expect(attach.text).toContain("'ai'");
+    expect(attach.values).toEqual(['message-1', 'paper-trail-label', AI_MODEL, PROMPT_VERSION]);
+    // Paper Trail is a second place to find the message, not a move.
+    const statements = sql.transactions[0].map((query) => query.text).join('\n');
+    expect(statements).not.toContain('is_archived = true');
+  });
+
+  test('leaves mail the model did not call a record out of Paper Trail', async () => {
+    const sql = createMockSql({ systemLabelRows: [{ id: 'paper-trail-label' }] });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ output_text: JSON.stringify(responseResult()) }),
+      })),
+    );
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sender@example.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    expect(sql.transactions[0].some((query) => query.text.includes('INSERT INTO labels'))).toBe(
+      false,
+    );
+  });
+
+  test('never files confirmed spam in Paper Trail', async () => {
+    const sql = createMockSql({ systemLabelRows: [{ id: 'system-label' }] });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(
+            responseResult({
+              paper_trail: true,
+              spam_verdict: 'spam',
+              spam_score: SPAM_THRESHOLD,
+            }),
+          ),
+        }),
+      })),
+    );
+
+    const result = await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'shop@example.com', subject: 'Receipt', bodyText: 'Paid' },
+      'message-1',
+      'key',
+    );
+
+    expect(result.verdict).toBe('spam');
+    const ensures = sql.transactions[0].filter((query) =>
+      query.text.includes('INSERT INTO labels'),
+    );
+    expect(ensures).toHaveLength(1);
+    expect(ensures[0].text).toContain("'Spam'");
   });
 
   // A user can report or clear spam from the reader while classification is

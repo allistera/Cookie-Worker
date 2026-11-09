@@ -1,12 +1,13 @@
 import { claimInboundAiRequest, InboundAiQuotaExceeded } from './inboundAiQuota.js';
 import { fetchWithTimeout } from '../../../shared/fetch.js';
 import { parseOutputJson, responsesUrl } from '../../../shared/openai.js';
+import { ensurePaperTrailLabel } from '../../../shared/paperTrailLabel.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { ensureSpamLabel } from '../../../shared/spamLabel.js';
 
 export const AI_FETCH_TIMEOUT_MS = 60_000;
 export const AI_MODEL = 'gpt-5.6-luna';
-export const PROMPT_VERSION = 'email-enrichment-v5';
+export const PROMPT_VERSION = 'email-enrichment-v6';
 export const SPAM_THRESHOLD = 0.98;
 export const REVIEW_THRESHOLD = 0.8;
 export const CLASSIFICATION_INPUT_CAP = 12_000;
@@ -118,8 +119,19 @@ const ENRICHMENT_SCHEMA = {
     spam_score: { type: 'number', minimum: 0, maximum: 1 },
     spam_reason: { type: 'string' },
     priority: { type: 'string', enum: ['low', 'normal', 'high'] },
+    // Whether the email is a receipt, confirmation or other transactional
+    // record: these also appear in Cookie-Web's Paper Trail list.
+    paper_trail: { type: 'boolean' },
   },
-  required: ['labels', 'rules', 'spam_verdict', 'spam_score', 'spam_reason', 'priority'],
+  required: [
+    'labels',
+    'rules',
+    'spam_verdict',
+    'spam_score',
+    'spam_reason',
+    'priority',
+    'paper_trail',
+  ],
   additionalProperties: false,
 };
 
@@ -187,7 +199,8 @@ export async function classifyEmail(
               'The application may also supply rules: each is a plain-language description, written by the mailbox owner, of the mail it should catch. Return a rule id only when the email clearly matches that description. ' +
               'Mark spam only for unsolicited, deceptive, or abusive mail; legitimate newsletters and receipts are inbox mail. ' +
               'Set priority to high only when the owner should read or act on it soon: a person writing to them directly, a question or request awaiting their reply, a deadline, an appointment, money owed or due, or an account problem. ' +
-              'Newsletters, promotions, unsolicited commercial cold pitches, receipts, automated notifications and social updates are low. Personalisation in a sales pitch alone does not make it high priority. Everything else is normal. Return only the schema.',
+              'Newsletters, promotions, unsolicited commercial cold pitches, receipts, automated notifications and social updates are low. Personalisation in a sales pitch alone does not make it high priority. Everything else is normal. ' +
+              'Set paper_trail to true only when the email is a record worth keeping of something the owner bought, paid for, booked or signed up for: a receipt, an invoice, an order, purchase, booking or payment confirmation, a refund, a shipping or delivery update, or an account statement. Promotions, newsletters, one-time codes, security alerts and mail written by a person are false. Return only the schema.',
           },
           {
             role: 'user',
@@ -226,6 +239,7 @@ export async function classifyEmail(
         throw new Error('OpenAI Responses API returned invalid enrichment');
       }
       if (!Array.isArray(result.rules)) result.rules = [];
+      result.paper_trail = result.paper_trail === true;
       return result;
     },
     AI_FETCH_TIMEOUT_MS,
@@ -365,6 +379,8 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
             ? 'review'
             : 'inbox'
         : 'inbox';
+    // Spam is never filed as a record, whatever it claims to be.
+    const paperTrail = classification.paper_trail && verdict !== 'spam';
     selectedLabels = selected.length;
     matchedRules = matched.length;
 
@@ -428,6 +444,18 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
           ON CONFLICT (message_id, label_id) DO NOTHING
         `;
       }
+      if (paperTrail) {
+        // The system label is the whole of Paper Trail membership: Cookie-Web
+        // lists it as a label folder, and the message stays in the inbox.
+        const paperTrailLabelId = await ensurePaperTrailLabel(tx, messageUuid);
+        if (paperTrailLabelId) {
+          await tx`
+            INSERT INTO message_labels (message_id, label_id, source, model, prompt_version)
+            VALUES (${messageUuid}, ${paperTrailLabelId}, 'ai', ${model}, ${PROMPT_VERSION})
+            ON CONFLICT (message_id, label_id) DO NOTHING
+          `;
+        }
+      }
       if (verdict === 'spam') {
         const spamLabelId = await ensureSpamLabel(tx, messageUuid);
         if (spamLabelId) {
@@ -485,6 +513,7 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
         message_id: record.messageId,
         verdict,
         matched_rules: matchedRules,
+        paper_trail: paperTrail,
       }),
     );
 
