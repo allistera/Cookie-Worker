@@ -20,6 +20,9 @@ const MAX_DIVIDER_TEXT_LENGTH = 120;
 const MIN_PRIORITY = 1;
 const MAX_PRIORITY = 4;
 export const DEFAULT_PRIORITY = MAX_PRIORITY;
+// The estimate a new task gets when the request does not mention one. An
+// explicit null still creates the task with no estimate.
+export const DEFAULT_DURATION_MINUTES = 30;
 // A row is a task, or a divider: a rule dropped between tasks to group them
 // (migration 0064). A divider carries at most a short heading; it has no
 // date, parent or sub-tasks, and beyond its text it only takes its place in
@@ -219,7 +222,8 @@ async function getCalendarTaskItems(sql, userId, url) {
 
 /**
  * POST /task-items — { content, description?, projectId?, dueDate?, dueTime?,
- * timeZone?, durationMinutes?, labels?, priority?, parentId?, kind?, recurrence?, today? }. A sub-task lives in its parent's project: with parentId set,
+ * timeZone?, durationMinutes?, labels?, priority?, parentId?, kind?, recurrence?, today? }. durationMinutes
+ * defaults to 30 when absent; null creates the task with no estimate. A sub-task lives in its parent's project: with parentId set,
  * the project is read from the parent row and any projectId in the body is
  * ignored, so the two can never disagree.
  *
@@ -306,7 +310,9 @@ async function createTaskItemUnlocked(sql, userId, body, env) {
   let metadata;
   let durationMinutes;
   try {
-    durationMinutes = normalizeTaskDuration(body?.durationMinutes);
+    durationMinutes = Object.hasOwn(body ?? {}, 'durationMinutes')
+      ? normalizeTaskDuration(body.durationMinutes)
+      : DEFAULT_DURATION_MINUTES;
     metadata = normalizeTaskMetadata({ ...body, dueDate });
   } catch (error) {
     return Response.json({ error: /** @type {Error} */ (error).message }, { status: 400 });

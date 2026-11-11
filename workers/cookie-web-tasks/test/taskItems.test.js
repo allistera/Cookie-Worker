@@ -150,6 +150,18 @@ describe('POST /task-items', () => {
     expect(sql.calls.some((call) => call.text.includes('INSERT INTO task_labels'))).toBe(false);
   });
 
+  it('estimates a new task at 30 minutes unless the request says otherwise', async () => {
+    const durationOf = async (/** @type {any} */ body) => {
+      const sql = createMockSql([[{ id: ITEM_ID, projectId: null, content: 'Ship it' }]]);
+      await createTaskItem(sql, USER_ID, { content: 'Ship it', ...body });
+      return sql.calls.find((call) => call.text.includes('INSERT INTO task_items')).values.at(-1);
+    };
+
+    expect(await durationOf({})).toBe(30);
+    expect(await durationOf({ durationMinutes: 45 })).toBe(45);
+    expect(await durationOf({ durationMinutes: null })).toBeNull();
+  });
+
   it('rejects a due time without a date', async () => {
     const response = await createTaskItem(createMockSql([]), USER_ID, {
       content: 'Call plumber',
