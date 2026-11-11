@@ -35,10 +35,12 @@
     "bindings": [{ "name": "SCHEDULED_SEND_CLOCK", "class_name": "ScheduledSendClock" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScheduledSendClock"] }],
-  // One Analytics Engine row per HTTP response (service, duration, status);
-  // see shared/responseMetrics.js.
+  // Analytics Engine: one row per HTTP request (service, method, route,
+  // duration, status; shared/responseMetrics.js) and one per database query
+  // (shared/sqlMetrics.js).
   "analytics_engine_datasets": [
     { "binding": "RESPONSE_METRICS", "dataset": "cookie_response_times" },
+    { "binding": "SQL_METRICS", "dataset": "cookie_sql_queries" },
   ],
   "vars": {
     // Auth0 domain/audience are public identifiers, already shipped in

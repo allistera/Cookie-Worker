@@ -7,7 +7,7 @@ const ctx = /** @type {any} */ ({ waitUntil: () => undefined });
 afterEach(() => vi.useRealTimers());
 
 describe('withResponseMetrics', () => {
-  it('writes one data point per response with the service, duration and status', async () => {
+  it('writes one data point per response with the service, method, route, duration and status', async () => {
     vi.useFakeTimers();
     const writeDataPoint = vi.fn();
     const worker = {
@@ -29,9 +29,38 @@ describe('withResponseMetrics', () => {
     expect(writeDataPoint).toHaveBeenCalledTimes(1);
     expect(writeDataPoint).toHaveBeenCalledWith({
       indexes: ['cookie-web-messages'],
-      blobs: ['cookie-web-messages'],
+      blobs: ['cookie-web-messages', 'GET', '/messages'],
       doubles: [42, 201],
     });
+  });
+
+  it('records the route template, never an identifier or the query string', async () => {
+    const writeDataPoint = vi.fn();
+    const worker = { fetch: async () => new Response(null, { status: 204 }) };
+    const env = /** @type {any} */ ({ RESPONSE_METRICS: { writeDataPoint } });
+    const wrapped = withResponseMetrics(worker, 'svc');
+
+    await wrapped.fetch(
+      new Request(
+        'https://worker.example/messages/7f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f0a1b/labels?token=secret',
+        { method: 'PATCH' },
+      ),
+      env,
+      ctx,
+    );
+    await wrapped.fetch(new Request('https://worker.example/health'), env, ctx);
+    await wrapped.fetch(
+      new Request('https://worker.example/messages', { method: 'OPTIONS' }),
+      env,
+      ctx,
+    );
+
+    expect(writeDataPoint.mock.calls.map(([point]) => point.blobs)).toEqual([
+      ['svc', 'PATCH', '/messages/{id}/labels'],
+      ['svc', 'GET', '/health'],
+      ['svc', 'OPTIONS', '/messages'],
+    ]);
+    expect(JSON.stringify(writeDataPoint.mock.calls)).not.toContain('secret');
   });
 
   it('returns the response when the binding is missing or the write fails', async () => {
@@ -57,10 +86,12 @@ describe('withResponseMetrics', () => {
     await expect(wrapped.fetch(request, failing, ctx)).resolves.toHaveProperty('status', 204);
   });
 
-  it('lets a handler failure through without recording a point', async () => {
+  it('records a handler failure as the 500 the client receives, and lets it through', async () => {
+    vi.useFakeTimers();
     const writeDataPoint = vi.fn();
     const worker = {
       async fetch() {
+        vi.advanceTimersByTime(7);
         throw new Error('boom');
       },
     };
@@ -69,7 +100,11 @@ describe('withResponseMetrics', () => {
     await expect(withResponseMetrics(worker, 'svc').fetch(request, env, ctx)).rejects.toThrow(
       'boom',
     );
-    expect(writeDataPoint).not.toHaveBeenCalled();
+    expect(writeDataPoint).toHaveBeenCalledExactlyOnceWith({
+      indexes: ['svc'],
+      blobs: ['svc', 'GET', '/messages'],
+      doubles: [7, 500],
+    });
   });
 
   it('preserves other triggers and leaves a worker without fetch untouched', () => {

@@ -877,6 +877,28 @@ describe('scheduled monitoring', () => {
     );
   });
 
+  test('runs the database health checks on the sweep schedule only', async () => {
+    /** @param {any} sql */
+    const readActivity = (sql) =>
+      sql.mock.calls.some((/** @type {any[]} */ call) =>
+        call[0].join('?').includes('pg_stat_activity'),
+      );
+
+    const sweeps = sqlReturning();
+    postgres.mockReturnValue(sweeps);
+    await worker.scheduled(
+      /** @type {any} */ ({ cron: '*/15 * * * *' }),
+      env({ OPENAI_API_KEY: 'key' }),
+      ctx(),
+    );
+    expect(readActivity(sweeps)).toBe(true);
+
+    const workspace = sqlReturning();
+    postgres.mockReturnValue(workspace);
+    await worker.scheduled(/** @type {any} */ ({ cron: '7,22,37,52 * * * *' }), env(), ctx());
+    expect(readActivity(workspace)).toBe(false);
+  });
+
   // A health check that throws must not stop the ingest sweeps. The failing query
   // here is the stale-inbound check; the recovery sweep must still run.
   test('still runs the ingest sweeps when a health check throws', async () => {

@@ -19,8 +19,14 @@ vi.mock('cloudflare:workers', () => ({
 
 /** @type {any} */
 const sentry = await import('@sentry/cloudflare');
-const { captureHandledException, captureHandledMessage, createSentryOptions, redact, tagTrigger } =
-  await import('./sentry.js');
+const {
+  captureHandledException,
+  captureHandledMessage,
+  createSentryOptions,
+  databaseErrorCode,
+  redact,
+  tagTrigger,
+} = await import('./sentry.js');
 
 const DSN = 'https://public@example.ingest.sentry.io/1';
 
@@ -101,6 +107,31 @@ describe('createSentryOptions', () => {
     });
   });
 
+  test('tags an uncaught database failure with its code', () => {
+    const { beforeSend } = createSentryOptions({ service: 'a-worker', env: { SENTRY_DSN: DSN } });
+    /** @param {any} event @param {any} hint */
+    const tagsOf = (event, hint) => /** @type {any} */ (beforeSend?.(event, hint))?.tags;
+    const timeout = Object.assign(new Error('canceling statement due to statement timeout'), {
+      name: 'PostgresError',
+      severity: 'ERROR',
+      code: '57014',
+    });
+
+    expect(tagsOf(errorEvent(), { originalException: timeout })).toEqual({
+      'db.error_code': '57014',
+      service: 'a-worker',
+    });
+    expect(tagsOf(errorEvent(), { originalException: new Error('not the database') })).toEqual({
+      service: 'a-worker',
+    });
+    // The tag a handled capture set itself is the one that stays.
+    expect(
+      tagsOf(errorEvent({ tags: { 'db.error_code': '40P01' } }), {
+        originalException: new Error('sanitised copy'),
+      }),
+    ).toEqual({ 'db.error_code': '40P01', service: 'a-worker' });
+  });
+
   test('renames the transaction for a single-trigger Worker', () => {
     const { beforeSend } = createSentryOptions({
       service: 'a-worker',
@@ -153,6 +184,30 @@ describe('createSentryOptions', () => {
   });
 });
 
+describe('databaseErrorCode', () => {
+  test.each([
+    [{ name: 'PostgresError', code: '23505' }, '23505'],
+    [{ name: 'Error', severity: 'ERROR', code: '40P01' }, '40P01'],
+    [{ code: 'CONNECT_TIMEOUT' }, 'CONNECT_TIMEOUT'],
+    [{ code: 'CONNECTION_CLOSED' }, 'CONNECTION_CLOSED'],
+  ])('reads %j as %s', (error, expected) => {
+    expect(databaseErrorCode(error)).toBe(expected);
+  });
+
+  test.each([
+    [{ name: 'Error', code: 'EPIPE' }],
+    [{ name: 'Error', code: 'ECONNRESET' }],
+    [{ name: 'PostgresError', code: 'not a sqlstate' }],
+    [{ name: 'PostgresError', code: 23505 }],
+    [new Error('plain')],
+    ['a string'],
+    [null],
+    [undefined],
+  ])('leaves %j untagged', (error) => {
+    expect(databaseErrorCode(error)).toBeUndefined();
+  });
+});
+
 describe('captureHandledException', () => {
   test('tags the service and operation', () => {
     captureHandledException('a-worker', 'flush', new Error('boom'), [], { attempt: 2 });
@@ -162,6 +217,26 @@ describe('captureHandledException', () => {
     expect(sentry.captureException.mock.calls[0][1]).toEqual({
       tags: { service: 'a-worker', operation: 'flush' },
       extra: { attempt: 2 },
+    });
+  });
+
+  test('tags a database failure with its code and carries it to the trace span', () => {
+    recorder.current = createTracingRecorder();
+    const error = Object.assign(new Error('deadlock detected'), {
+      name: 'PostgresError',
+      severity: 'ERROR',
+      code: '40P01',
+    });
+
+    captureHandledException('a-worker', 'store', error);
+
+    expect(sentry.captureException.mock.calls[0][1]).toEqual({
+      tags: { service: 'a-worker', operation: 'store', 'db.error_code': '40P01' },
+      extra: {},
+    });
+    expect(recorder.current.root.attributes).toEqual({
+      'error.type': '40P01',
+      'cookie.error.operation': 'store',
     });
   });
 

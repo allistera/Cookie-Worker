@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScheduledSendClock } from '../src/scheduledSendClock.js';
+import { sqlMetricsScope } from '../../../shared/sqlMetrics.js';
 
 const ENV = { HYPERDRIVE: { connectionString: 'postgres://stub' } };
 
@@ -123,6 +124,34 @@ describe('ScheduledSendClock', () => {
     expect(createServices).toHaveBeenCalledWith(ENV, state);
     expect(state.current()).toBe(Date.parse('2026-09-23T14:00:00.000Z'));
     expect(sql.end).toHaveBeenCalled();
+  });
+
+  it('opens a query-metrics scope for the alarm when the dataset is bound', async () => {
+    /** @type {any[]} */
+    const scopes = [];
+    const dataset = { writeDataPoint: vi.fn() };
+    const clock = new ScheduledSendClock(
+      fakeState(),
+      { ...ENV, SQL_METRICS: dataset },
+      /** @type {any} */ ({
+        createSql: () => {
+          scopes.push(sqlMetricsScope());
+          return fakeSql([[{ next: null }]]);
+        },
+        flush: vi.fn(async () => {
+          scopes.push(sqlMetricsScope());
+          return {};
+        }),
+        createServices: () => ({}),
+      }),
+    );
+
+    await clock.alarm();
+
+    expect(scopes).toHaveLength(2);
+    for (const scope of scopes) {
+      expect(scope).toMatchObject({ dataset, service: 'cookie-web-send', entry: 'alarm' });
+    }
   });
 
   it('leaves no alarm when nothing further is pending', async () => {

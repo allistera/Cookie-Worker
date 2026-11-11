@@ -1,4 +1,5 @@
 import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
+import { withSqlMetrics } from '../../../shared/sqlMetrics.js';
 import { withResponseMetrics } from '../../../shared/responseMetrics.js';
 // Cookie-Web's "Send Later" feature (scheduled_sends table + scheduled_for
 // column) needs something to actually call the mail provider once a
@@ -155,7 +156,7 @@ const worker = {
 export default Sentry.withSentry(
   createSentryOptions,
   withApplicationMetrics(
-    withResponseMetrics(worker, 'scheduled-send-flusher'),
+    withSqlMetrics(withResponseMetrics(worker, 'scheduled-send-flusher'), 'scheduled-send-flusher'),
     'scheduled-send-flusher',
   ),
 );

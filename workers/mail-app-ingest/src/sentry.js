@@ -89,3 +89,20 @@ export function captureSearchHealthIssue(condition, message, extra = {}) {
     extra,
   });
 }
+
+/**
+ * Report a standing database condition: statements running slower than their
+ * baseline, queries or lock waits that do not end, or a connection pool close
+ * to its limit. Same shape as the inbound-health issues, under its own
+ * operation.
+ *
+ * @param {string} condition Stable name of the condition; it becomes the fingerprint.
+ * @param {string} message Fixed text; variable detail belongs in `extra`.
+ * @param {Record<string, unknown>} [extra]
+ */
+export function captureDbHealthIssue(condition, message, extra = {}) {
+  captureSharedMessage(SERVICE, 'db_health', message, {
+    fingerprint: [SERVICE, 'db_health', condition],
+    extra,
+  });
+}

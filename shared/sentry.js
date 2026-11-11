@@ -57,6 +57,9 @@ export function createSentryOptions({ service, env, trigger, beforeSend }) {
       if (isLocalDevEvent(event)) return null;
       const filtered = beforeSend ? beforeSend(event, hint) : event;
       if (!filtered) return null;
+      // A failure the wrapper caught itself still carries the driver's error;
+      // a handled one was tagged by captureHandledException already.
+      const dbCode = databaseErrorCode(hint?.originalException);
       return {
         ...filtered,
         ...(trigger ? { transaction: `${service}.${trigger}` } : {}),
@@ -64,6 +67,7 @@ export function createSentryOptions({ service, env, trigger, beforeSend }) {
         user: undefined,
         breadcrumbs: undefined,
         tags: {
+          ...(dbCode ? { [DB_ERROR_TAG]: dbCode } : {}),
           ...filtered.tags,
           service,
           ...(trigger ? { trigger } : {}),
@@ -71,6 +75,37 @@ export function createSentryOptions({ service, env, trigger, beforeSend }) {
       };
     },
   };
+}
+
+// Sentry tag carrying the SQLSTATE or driver code of a database failure, so
+// issues can be filtered and alerted on by class (08 connection, 53
+// resources, 57014 statement timeout, 40P01 deadlock) without opening them.
+export const DB_ERROR_TAG = 'db.error_code';
+
+// postgres.js raises these itself when the socket never came up or dropped.
+const DRIVER_ERROR_CODES = new Set([
+  'CONNECT_TIMEOUT',
+  'CONNECTION_CLOSED',
+  'CONNECTION_DESTROYED',
+  'CONNECTION_ENDED',
+]);
+
+/**
+ * The code of an error that came from the database or its driver: a SQLSTATE
+ * on a server error (which also carries a severity), or one of the driver's
+ * connection codes. Undefined for everything else, so an unrelated five-letter
+ * `code` such as EPIPE is not mistaken for a SQLSTATE.
+ *
+ * @param {unknown} err
+ * @returns {string | undefined}
+ */
+export function databaseErrorCode(err) {
+  const { code, severity, name } =
+    /** @type {{code?: unknown, severity?: unknown, name?: unknown}} */ (err ?? {});
+  if (typeof code !== 'string') return undefined;
+  if (DRIVER_ERROR_CODES.has(code)) return code;
+  const fromServer = name === 'PostgresError' || typeof severity === 'string';
+  return fromServer && /^[0-9A-Z]{5}$/u.test(code) ? code : undefined;
 }
 
 // Wrangler builds every `wrangler dev` bundle under .wrangler/tmp; a deployed
@@ -118,11 +153,16 @@ export function tagTrigger(trigger) {
  */
 export function captureHandledException(service, operation, err, secrets = [], extra = {}) {
   const safeError = sanitizeError(err, secrets);
+  const dbCode = databaseErrorCode(err);
+  // The sanitised copy drops everything but name, message and stack; the
+  // code is put back so the trace span's error.type is the SQLSTATE too.
+  if (dbCode) Object.assign(safeError, { code: dbCode });
   recordHandledError(safeError, operation);
   Sentry.captureException(safeError, {
     tags: {
       service,
       operation,
+      ...(dbCode ? { [DB_ERROR_TAG]: dbCode } : {}),
     },
     extra,
   });

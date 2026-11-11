@@ -1,4 +1,5 @@
 import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
+import { withSqlMetrics } from '../../../shared/sqlMetrics.js';
 import * as Sentry from '@sentry/cloudflare';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
 import { AI_MODEL, enrichMessage, MAX_ENRICHMENT_ATTEMPTS } from './enrich.js';
@@ -12,6 +13,7 @@ import {
 import { purgeExpiredSpam } from './spamRetentionSweep.js';
 import { purgeExpiredNotificationEvents } from './notificationEventsSweep.js';
 import { runInboundHealthChecks } from './inboundHealth.js';
+import { runDbHealthChecks } from './dbHealth.js';
 import { createSql, endSql } from '../../../shared/db.js';
 import { retryWithBackoff } from '../../../shared/retry.js';
 import { setSpanAttributes } from '../../../shared/tracing.js';
@@ -366,9 +368,10 @@ const worker = {
             captureHandledException('scheduled', result.reason, [env.HYPERDRIVE.connectionString]);
           }
         }
-        // Only after the ingest sweeps, and it never throws: a failing health
+        // Only after the ingest sweeps, and neither throws: a failing health
         // check cannot change the outcome of the sweeps or the cron.
         await runInboundHealthChecks(env, { createSql });
+        await runDbHealthChecks(env, { createSql });
       },
       monitorConfig(SWEEPS_MONITOR.schedule),
     );
@@ -526,7 +529,7 @@ export async function recoverPendingEnrichment(env) {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withApplicationMetrics(worker, 'mail-app-ingest'),
+  withApplicationMetrics(withSqlMetrics(worker, 'mail-app-ingest'), 'mail-app-ingest'),
 );
 
 // Cloudflare refuses to forward mail whose sender failed SPF, DKIM, or DMARC.

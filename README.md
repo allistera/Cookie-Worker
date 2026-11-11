@@ -113,6 +113,7 @@ The **Deploy to AWS** workflow (`deploy-aws.yml`) builds the package, creates a 
 Every Worker reports uncaught failures to the same Sentry project through `Sentry.withSentry`, and the failures it catches on purpose through explicit captures. The shared policy lives in [`shared/sentry.js`](shared/sentry.js); each Worker adds a thin `src/sentry.js` naming itself and listing the secrets it holds.
 
 - Events carry a `service` tag (the Worker name) and an `operation` tag on captured failures, so one project stays readable.
+- A failure that came from Postgres or its driver also carries `db.error_code`: the SQLSTATE (`57014` for a statement timeout, `40P01` for a deadlock) or the driver's connection code (`CONNECT_TIMEOUT`, `CONNECTION_CLOSED`). Filter or alert on it by class without opening the issue.
 - Workers answering more than one trigger tag each invocation `scheduled` or `http`.
 - Request bodies, headers, cookies, query parameters, user identity, AI inputs and outputs, and stack-frame variables are all switched off.
 - Connection strings and API tokens are stripped from messages and stack traces before capture, and from the structured log lines beside them.
@@ -160,7 +161,9 @@ invocation is not sampled or tracing is off:
   operation (`SELECT`, `INSERT`, `COMMIT`) with `db.system.name`,
   `db.namespace`, `db.operation.name`, `server.address`, the row count and, on
   failure, `error.type` (the SQLSTATE or driver code). Query text and
-  parameters are never recorded ([`shared/db-tracing.js`](shared/db-tracing.js)).
+  parameters are never recorded ([`shared/db-tracing.js`](shared/db-tracing.js));
+  `cookie.db.query.fingerprint` identifies the statement instead, with the same
+  value its [query timing](#query-timings) rows carry.
 - A failure a Worker caught and reported through `captureHandledException` is
   attached to the invocation span as an exception with `error.type` and
   `cookie.error.operation`, without marking the span failed.
@@ -340,6 +343,7 @@ Transient forwarding errors are re-thrown so the sending server can retry. Perma
 - Indexes the message into Meilisearch, which generates its own vector.
 - Retries stale pending or failed AI work every 15 minutes in batches of three.
 - Soft-deletes spam that has been in the Spam folder, and blocked mail that has been in Blocked, longer than its owner's retention (`users.prefs.spamRetentionDays`, default 30 days; set from Cookie-Web's Settings → Spam) on the same 15-minute cron, at most 500 rows per tick, and marks them for the search drift sweep. Spam counts from its verdict; blocked mail counts from the later of its arrival and the sender decision that covers it. Mail held in New senders is never deleted automatically.
+- Checks the database's own statistics on the same 15-minute cron and reports statements running slower than their baseline, queries or lock waits that do not end, and a connection pool close to its limit (see `RUNBOOK.md`, "Database health").
 - Reports sanitised failures to Sentry without email or model content.
 
 The shared schema and migrations live in the [Cookie-Web repository](https://github.com/allistera/Cookie-Web/tree/main/migrations).
@@ -406,6 +410,8 @@ Wrangler logs local forwarding instead of delivering. Posting the fixture again 
 | `CLOUDFLARE_EMAIL_ROUTING_TOKEN` | Secret   | Optional. Zone-scoped token that can read Email Routing rules. With `EMAIL_ROUTING_ZONE_ID` it enables the catch-all routing drift check; unset, the check is skipped.                                                                                                                             |
 | `EMAIL_ROUTING_ZONE_ID`          | Variable | Optional. Zone holding the catch-all Email Routing rule, for the drift check.                                                                                                                                                                                                                      |
 | `INBOUND_STALE_HOURS`            | Variable | Optional. Hours without new inbound mail before the stale alert fires. Defaults to 12.                                                                                                                                                                                                             |
+| `DB_REGRESSION_MIN_MS`           | Variable | Optional. Mean milliseconds a statement must reach over the last tick before the database health check calls it slower than its baseline. Defaults to 200.                                                                                                                                         |
+| `DB_LONG_QUERY_SECONDS`          | Variable | Optional. Seconds a query may stay active before the database health check reports it. Defaults to 30.                                                                                                                                                                                             |
 | `PENDING_ENRICHMENT_MAX_MINUTES` | Variable | Optional. Minutes a classification may stay pending before its alert fires. Defaults to 60.                                                                                                                                                                                                        |
 | `SENTRY_ENVIRONMENT`             | Variable | Sentry environment name.                                                                                                                                                                                                                                                                           |
 
@@ -756,11 +762,87 @@ Every Worker binds the Workers Analytics Engine dataset `cookie_response_times`
 as `RESPONSE_METRICS` in its `wrangler.jsonc`. The 14 Workers with an HTTP
 handler wrap it in `withResponseMetrics`
 ([`shared/responseMetrics.js`](shared/responseMetrics.js)), which writes one data
-point per response: the Worker name as `index1` and `blob1`, the elapsed
-milliseconds as `double1` and the HTTP status as `double2`. Nothing else is
-recorded, and a failed write never changes the response. `mail-app-ingest` only
-has `email` and `scheduled` triggers, so it binds the dataset but writes nothing.
-The dataset is created on the first write; query it with the Analytics Engine
-SQL API, for example
-`SELECT index1, quantileWeighted(0.95, double1, _sample_interval) FROM cookie_response_times WHERE timestamp > NOW() - INTERVAL '1' DAY GROUP BY index1`.
+point per request:
+
+| Column    | Value                                                                    |
+| --------- | ------------------------------------------------------------------------ |
+| `index1`  | Worker name                                                              |
+| `blob1`   | Worker name                                                              |
+| `blob2`   | HTTP method                                                              |
+| `blob3`   | Route template, such as `/messages/{id}`; never an identifier or a query |
+| `double1` | Elapsed milliseconds until the handler returned                          |
+| `double2` | HTTP status; `500` when the handler threw, which is what the client gets |
+
+Nothing else is recorded, and a failed write never changes the response.
+`mail-app-ingest` only has `email` and `scheduled` triggers, so it binds the
+dataset but writes nothing. Rows written before the method and route were
+added have empty `blob2` and `blob3`.
+
+Health probes are a large share of every Worker's requests (a floor of about
+290 a day on each in November 2026), and a probe or a preflight does no I/O, so
+it records 0 ms. Leave both out of any latency or availability figure, or it
+mostly measures the probe:
+
+```sql
+SELECT index1 AS service,
+       COUNT(*) AS requests,
+       quantileWeighted(0.95, double1, sampleInterval) AS p95_ms
+FROM events.analyticsEngine.cookie_response_times
+WHERE accountTag = '<ACCOUNT_ID>'
+  AND timestamp >= NOW() - INTERVAL '1' DAY
+  AND blob3 != '/health' AND blob2 != 'OPTIONS'
+GROUP BY index1
+```
+
+Send it as the body of `POST https://api.cloudflare.com/client/v4/analytics/sql`.
 Analytics Engine is included in the Workers free plan.
+
+### Query timings
+
+Every Worker also binds the dataset `cookie_sql_queries` as `SQL_METRICS`.
+`withSqlMetrics` ([`shared/sqlMetrics.js`](shared/sqlMetrics.js)) opens a scope
+for each `fetch`, `scheduled`, `email` and `queue` invocation, and the client
+`createSql` returns writes one data point per query inside it
+([`shared/db-tracing.js`](shared/db-tracing.js)). Unlike the query spans, this
+does not depend on trace sampling: every query of every invocation is timed.
+
+| Column    | Value                                                                                    |
+| --------- | ---------------------------------------------------------------------------------------- |
+| `index1`  | Worker name                                                                              |
+| `blob1`   | Worker name                                                                              |
+| `blob2`   | What ran it: `GET /messages/{id}`, `scheduled */15 * * * *`, `email`, `queue` or `alarm` |
+| `blob3`   | Operation: `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `WITH`, or `postgresql` when unknown  |
+| `blob4`   | Statement fingerprint, eight hex digits                                                  |
+| `blob5`   | `ok`, or the SQLSTATE or driver code the query failed with                               |
+| `double1` | Milliseconds the caller waited: Hyperdrive, the network and the database together        |
+| `double2` | Rows returned or affected; `0` on failure                                                |
+
+The fingerprint is a hash of the statement's static text with whitespace
+collapsed, so the same statement has the same fingerprint for every set of
+parameters and every length of value list, and nothing of the statement can be
+read back from it. Query text, parameters and table names are never recorded.
+To find the statement behind a fingerprint, start from its `blob2` (the route or
+schedule that ran it) and `blob3`; in a sampled trace the query span carries
+the same value as `cookie.db.query.fingerprint`. `BEGIN` and `COMMIT` issued by
+`sql.begin` are the driver's own and are not recorded.
+
+Analytics Engine accepts 250 data points per invocation, so recording stops
+after 200 queries in one invocation; a long sweep is described by its first 200. `ScheduledSendClock` opens the scope itself for its alarm, which starts
+outside the wrapped handlers. Under Vitest and in the AWS server the dataset is
+not bound and the database client is left untouched.
+
+The slowest statements of the last day, and how often each failed:
+
+```sql
+SELECT blob1 AS service, blob2 AS entry, blob3 AS operation, blob4 AS fingerprint,
+       COUNT(*) AS queries,
+       quantileWeighted(0.95, double1, sampleInterval) AS p95_ms
+FROM events.analyticsEngine.cookie_sql_queries
+WHERE accountTag = '<ACCOUNT_ID>'
+  AND timestamp >= NOW() - INTERVAL '1' DAY
+GROUP BY blob1, blob2, blob3, blob4
+ORDER BY p95_ms DESC
+LIMIT 20
+```
+
+Add `AND blob5 != 'ok'` and group by `blob5` for failures by SQLSTATE.
