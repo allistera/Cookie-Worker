@@ -158,7 +158,7 @@ export async function checkEmailRoutingDrift({
  * @param {(sql: import('postgres').Sql) => Promise<T>} run
  * @returns {Promise<T>}
  */
-async function withSql(createSql, connection, run) {
+export async function withSql(createSql, connection, run) {
   const sql = createSql(/** @type {string} */ (connection));
   try {
     return await run(sql);

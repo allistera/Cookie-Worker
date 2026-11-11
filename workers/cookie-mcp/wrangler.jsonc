@@ -32,10 +32,12 @@
     { "binding": "CALENDAR", "service": "cookie-web-calendar", "entrypoint": "Internal" },
     { "binding": "TASKS", "service": "cookie-web-tasks", "entrypoint": "Internal" },
   ],
-  // One Analytics Engine row per HTTP response (service, duration, status);
-  // see shared/responseMetrics.js.
+  // Analytics Engine: one row per HTTP request (service, method, route,
+  // duration, status; shared/responseMetrics.js) and one per database query
+  // (shared/sqlMetrics.js).
   "analytics_engine_datasets": [
     { "binding": "RESPONSE_METRICS", "dataset": "cookie_response_times" },
+    { "binding": "SQL_METRICS", "dataset": "cookie_sql_queries" },
   ],
   "vars": {
     // Public identifiers, not secrets. Only the custom domain issues tokens

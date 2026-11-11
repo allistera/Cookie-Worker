@@ -26,10 +26,12 @@
   // run the isolate near the database rather than near the browser.
   "placement": { "mode": "smart" },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
-  // One Analytics Engine row per HTTP response (service, duration, status);
-  // see shared/responseMetrics.js.
+  // Analytics Engine: one row per HTTP request (service, method, route,
+  // duration, status; shared/responseMetrics.js) and one per database query
+  // (shared/sqlMetrics.js).
   "analytics_engine_datasets": [
     { "binding": "RESPONSE_METRICS", "dataset": "cookie_response_times" },
+    { "binding": "SQL_METRICS", "dataset": "cookie_sql_queries" },
   ],
   "vars": {
     // Auth0 domain/audience are public identifiers, already shipped in

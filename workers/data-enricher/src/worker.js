@@ -1,4 +1,5 @@
 import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
+import { withSqlMetrics } from '../../../shared/sqlMetrics.js';
 import { withResponseMetrics } from '../../../shared/responseMetrics.js';
 import * as Sentry from '@sentry/cloudflare';
 import { timingSafeEqualStrings } from '../../../shared/auth.js';
@@ -299,5 +300,8 @@ const worker = {
 
 export default Sentry.withSentry(
   createSentryOptions,
-  withApplicationMetrics(withResponseMetrics(worker, 'data-enricher'), 'data-enricher'),
+  withApplicationMetrics(
+    withSqlMetrics(withResponseMetrics(worker, 'data-enricher'), 'data-enricher'),
+    'data-enricher',
+  ),
 );

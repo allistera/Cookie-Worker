@@ -147,6 +147,28 @@ The routing API read retries a request timeout once after one second, with a fre
 
 A check that cannot run is reported as an `inbound_health` exception. The checks never throw, and a failing check does not stop the sweeps. The owner's address is never sent to Sentry.
 
+## Database health
+
+After the inbound checks, the 15-minute run reads Postgres's own statistics, which cover every client of the database and not only the Workers. Each failing condition is an error-level Sentry message under the `db_health` operation with a fixed fingerprint, so repeats on later ticks stay one issue. Every tick also logs one `db_health_checked` line with what it saw.
+
+- `Database statements are running slower than their baseline` (`query-regression`): a statement's mean execution time since the previous tick is at least three times its mean before it, and at least `DB_REGRESSION_MIN_MS` (default 200). It needs five calls in the interval and twenty before it. The issue carries query ids, call counts and timings, never the statement. Read the statement in Supabase's SQL editor:
+
+  ```sql
+  SELECT query, calls, mean_exec_time, max_exec_time, rows
+  FROM extensions.pg_stat_statements
+  WHERE queryid = <worst_queryid>;
+  ```
+
+  Then run it under `EXPLAIN (ANALYZE, BUFFERS)` with representative values, and look in the Postgres logs: a statement that takes a second or longer is logged with its plan. Supabase's Query Performance report shows the same statistics with index advice.
+
+- `Database queries have been running for a long time` (`long-running-query`): one of this role's queries has been active for longer than `DB_LONG_QUERY_SECONDS` (default 30) without waiting on a lock. Find it with `SELECT pid, now() - query_start AS running, state, wait_event_type, left(query, 120) FROM pg_stat_activity WHERE state = 'active' ORDER BY query_start;` and end it with `SELECT pg_cancel_backend(<pid>);` if it should not be running. The server's `statement_timeout` is two minutes.
+- `Database sessions are waiting on locks` (`lock-wait`): a session has waited on a lock for more than ten seconds. `SELECT pid, pg_blocking_pids(pid) AS blocked_by, left(query, 120) FROM pg_stat_activity WHERE wait_event_type = 'Lock';` names the blocker; a migration holding a table lock and a transaction left open are the usual causes. Postgres also logs each lock wait.
+- `Database connections are close to the limit` (`connection-saturation`): client sessions use at least 80% of `max_connections` (60 on the current instance; 19 were in use on 2026-11-11). Hyperdrive pools the Workers' connections, so look for a client that bypasses it: `SELECT usename, application_name, count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' GROUP BY 1, 2 ORDER BY 3 DESC;`.
+
+The comparison needs the `db_query_stats` table from Cookie-Web migration `0112_db_query_stats.sql`, which holds the previous tick's counters. Until it is applied the comparison is skipped with one `db_query_stats_unavailable` log line per isolate and nothing is reported; the session checks run regardless. After a statistics reset, or when Postgres evicts a statement from `pg_stat_statements`, that statement is not compared on the next tick and gets a fresh baseline. The check sees a condition that lasts across a tick; for a single slow query between ticks use the query timings in Analytics Engine (README, "Query timings").
+
+A check that cannot run is reported as a `db_health` exception with the check's name. The checks never throw, and a failing check does not change the cron's outcome.
+
 ## Local development
 
 Copy the Worker's secret template beside its Wrangler configuration, set the documented environment values, and run:

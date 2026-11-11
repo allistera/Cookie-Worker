@@ -1,4 +1,5 @@
 import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
+import { withSqlMetrics } from '../../../shared/sqlMetrics.js';
 import { withResponseMetrics } from '../../../shared/responseMetrics.js';
 import { withHealthCheck } from '../../../shared/health.js';
 import { withRequestMetrics } from '../../../shared/performance.js';
@@ -627,8 +628,11 @@ const worker = {
 export default Sentry.withSentry(
   createSentryOptions,
   withApplicationMetrics(
-    withResponseMetrics(
-      withRequestMetrics(withHealthCheck(worker), 'cookie-web-send'),
+    withSqlMetrics(
+      withResponseMetrics(
+        withRequestMetrics(withHealthCheck(worker), 'cookie-web-send'),
+        'cookie-web-send',
+      ),
       'cookie-web-send',
     ),
     'cookie-web-send',

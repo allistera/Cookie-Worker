@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createTracingRecorder } from '../test/fixtures/tracing-recorder.js';
 
 const recorder = vi.hoisted(() => ({ current: /** @type {any} */ (null) }));
@@ -11,7 +11,9 @@ vi.mock('cloudflare:workers', () => ({
   },
 }));
 
-const { connectionAttributes, instrumentSql, operationName } = await import('./db-tracing.js');
+const { connectionAttributes, instrumentSql, operationName, statementFingerprint } =
+  await import('./db-tracing.js');
+const { runWithSqlMetrics } = await import('./sqlMetrics.js');
 
 /**
  * The shape postgres.js gives a query: a Promise subclass that runs on the
@@ -24,8 +26,9 @@ class FakeQuery extends Promise {
   /**
    * @param {readonly string[]} strings
    * @param {() => Promise<unknown>} outcome
+   * @param {unknown[]} [args]
    */
-  constructor(strings, outcome) {
+  constructor(strings, outcome, args = []) {
     /** @type {(value: unknown) => void} */
     let resolve = () => undefined;
     /** @type {(reason: unknown) => void} */
@@ -35,6 +38,7 @@ class FakeQuery extends Promise {
       reject = b;
     });
     this.strings = strings;
+    this.args = args;
     this.executed = false;
     this.outcome = outcome;
     this.resolve = resolve;
@@ -75,7 +79,7 @@ function fakeClient(run) {
     /** @type {unknown[]} */ ...args
   ) =>
     Array.isArray(strings)
-      ? new FakeQuery(strings, () => run(strings))
+      ? new FakeQuery(strings, () => run(strings), args)
       : { fragment: strings, args };
   sql.unsafe = (/** @type {string} */ text) => new FakeQuery([text], () => run([text]));
   sql.begin = vi.fn(async (/** @type {(scoped: any) => Promise<unknown>} */ callback) =>
@@ -92,6 +96,8 @@ const tag = (strings, ..._values) => strings;
 beforeEach(() => {
   recorder.current = createTracingRecorder();
 });
+
+afterEach(() => vi.useRealTimers());
 
 describe('connectionAttributes', () => {
   test('reads host, port and database without the credentials', () => {
@@ -127,10 +133,50 @@ describe('operationName', () => {
   });
 });
 
+describe('statementFingerprint', () => {
+  /** @param {TemplateStringsArray} strings @param {unknown[]} args */
+  const fragment = (strings, ...args) => ({ strings, args });
+  /** @param {TemplateStringsArray} strings @param {unknown[]} args */
+  const fingerprint = (strings, ...args) => statementFingerprint(strings, args);
+
+  test('is eight hex digits that say nothing about the statement', () => {
+    expect(fingerprint`SELECT id FROM messages WHERE user_id = ${'u'}`).toMatch(/^[0-9a-f]{8}$/u);
+  });
+
+  test('ignores values, value-list lengths and layout', () => {
+    const one = fingerprint`SELECT id FROM messages WHERE user_id = ${'alice'} AND id IN ${[1]}`;
+    const other = fingerprint`
+      SELECT id
+      FROM messages
+      WHERE user_id = ${'bob'} AND id IN ${[1, 2, 3]}
+    `;
+    expect(other).toBe(one);
+  });
+
+  test('tells different statements apart, including by their interpolated fragments', () => {
+    const plain = fingerprint`SELECT id FROM messages WHERE true ${fragment``}`;
+    const filtered = fingerprint`SELECT id FROM messages WHERE true ${fragment`AND starred = ${true}`}`;
+    const several = fingerprint`SELECT id FROM messages WHERE true ${[
+      fragment`AND starred = ${true}`,
+      fragment`AND archived = ${false}`,
+    ]}`;
+    expect(new Set([plain, filtered, several]).size).toBe(3);
+    expect(fingerprint`SELECT id FROM messages`).not.toBe(fingerprint`SELECT id FROM drafts`);
+    expect(
+      fingerprint`SELECT id FROM messages WHERE true ${fragment`AND starred = ${false}`}`,
+    ).toBe(filtered);
+  });
+
+  test('copes with a statement that has no static text', () => {
+    expect(statementFingerprint([])).toMatch(/^[0-9a-f]{8}$/u);
+    expect(statementFingerprint(['', ''], [{ json: 1 }])).toMatch(/^[0-9a-f]{8}$/u);
+  });
+});
+
 describe('instrumentSql', () => {
   const attributes = { 'db.system.name': 'postgresql', 'db.namespace': 'cookie' };
 
-  test('returns the client itself when the invocation is not traced', () => {
+  test('returns the client itself when the invocation is neither traced nor measured', () => {
     recorder.current = null;
     const sql = fakeClient(async () => []);
     expect(instrumentSql(sql, attributes)).toBe(sql);
@@ -153,6 +199,9 @@ describe('instrumentSql', () => {
         'db.namespace': 'cookie',
         'db.operation.name': 'SELECT',
         'db.response.returned_rows': 2,
+        'cookie.db.query.fingerprint': statementFingerprint(
+          tag`SELECT id FROM messages WHERE user_id = ${'u'}`,
+        ),
       },
     });
     expect(JSON.stringify(span.attributes)).not.toContain('messages');
@@ -210,5 +259,136 @@ describe('instrumentSql', () => {
     await sql.end();
     expect(client.end).toHaveBeenCalledOnce();
     expect(recorder.current.spans).toHaveLength(1);
+  });
+
+  describe('query metrics', () => {
+    /** @returns {any} */
+    function metricsEnv() {
+      return { SQL_METRICS: { writeDataPoint: vi.fn() } };
+    }
+
+    /**
+     * @template T
+     * @param {any} env
+     * @param {() => T} callback
+     */
+    const inRequest = (env, callback) =>
+      runWithSqlMetrics(env, 'cookie-web-messages', 'GET /messages/{id}', callback);
+
+    test('writes one data point per awaited query without a trace', async () => {
+      recorder.current = null;
+      vi.useFakeTimers();
+      const env = metricsEnv();
+      const rows = Object.assign([{ id: 1 }, { id: 2 }], { count: 2 });
+
+      await inRequest(env, async () => {
+        const sql = instrumentSql(
+          fakeClient(async () => {
+            vi.advanceTimersByTime(25);
+            return rows;
+          }),
+          attributes,
+        );
+        await expect(sql(tag`SELECT id FROM messages WHERE user_id = ${'u'}`, 'u')).resolves.toBe(
+          rows,
+        );
+        sql(tag`SELECT never`);
+      });
+
+      expect(env.SQL_METRICS.writeDataPoint).toHaveBeenCalledExactlyOnceWith({
+        indexes: ['cookie-web-messages'],
+        blobs: [
+          'cookie-web-messages',
+          'GET /messages/{id}',
+          'SELECT',
+          statementFingerprint(tag`SELECT id FROM messages WHERE user_id = ${'u'}`, ['u']),
+          'ok',
+        ],
+        doubles: [25, 2],
+      });
+      expect(JSON.stringify(env.SQL_METRICS.writeDataPoint.mock.calls)).not.toContain('user_id');
+    });
+
+    test('records a failure by its SQLSTATE and still rejects', async () => {
+      recorder.current = null;
+      const env = metricsEnv();
+
+      await inRequest(env, async () => {
+        const sql = instrumentSql(
+          fakeClient(async () => {
+            throw Object.assign(new Error('canceling statement due to statement timeout'), {
+              code: '57014',
+            });
+          }),
+          attributes,
+        );
+        await expect(sql(tag`UPDATE t SET a = 1`)).rejects.toThrow('statement timeout');
+      });
+
+      const [[point]] = env.SQL_METRICS.writeDataPoint.mock.calls;
+      expect(point.blobs.slice(2)).toEqual([
+        'UPDATE',
+        statementFingerprint(tag`UPDATE t SET a = 1`),
+        '57014',
+      ]);
+      expect(point.doubles[1]).toBe(0);
+    });
+
+    test('measures transactions, unsafe statements and statements without a keyword', async () => {
+      recorder.current = null;
+      const env = metricsEnv();
+
+      await inRequest(env, async () => {
+        const sql = instrumentSql(
+          fakeClient(async () => []),
+          attributes,
+        );
+        await sql.unsafe('begin read write');
+        await sql.begin(async (/** @type {any} */ tx) => {
+          await tx(tag`INSERT INTO t VALUES (1)`);
+          await tx(tag`${tx.json({ a: 1 })}`, tx.json({ a: 1 }));
+        });
+      });
+
+      expect(
+        env.SQL_METRICS.writeDataPoint.mock.calls.map(
+          (/** @type {any[]} */ [point]) => point.blobs[2],
+        ),
+      ).toEqual(['BEGIN', 'INSERT', 'postgresql']);
+    });
+
+    test('keeps the span and the data point of one query in step', async () => {
+      const env = metricsEnv();
+
+      await inRequest(env, async () => {
+        const sql = instrumentSql(
+          fakeClient(async () => Object.assign([], { count: 4 })),
+          attributes,
+        );
+        await sql(tag`DELETE FROM t`);
+      });
+
+      const [, span] = recorder.current.spans;
+      const [[point]] = env.SQL_METRICS.writeDataPoint.mock.calls;
+      expect(span.attributes['cookie.db.query.fingerprint']).toBe(point.blobs[3]);
+      expect(span.attributes['db.response.returned_rows']).toBe(point.doubles[1]);
+      expect(span.ended).toBe(true);
+    });
+
+    test('records nothing for a query that runs outside any invocation', async () => {
+      recorder.current = null;
+      const env = metricsEnv();
+      const sql = inRequest(env, () =>
+        instrumentSql(
+          fakeClient(async () => []),
+          attributes,
+        ),
+      );
+
+      // Outside any invocation there is nothing to attribute the query to.
+      await sql(tag`SELECT 1`);
+
+      expect(env.SQL_METRICS.writeDataPoint).not.toHaveBeenCalled();
+    });
   });
 });

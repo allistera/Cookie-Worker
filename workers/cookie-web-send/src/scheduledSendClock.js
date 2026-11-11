@@ -7,6 +7,7 @@
 // that keeps failing can never make this alarm spin, and a lost alarm costs
 // at most one cron interval.
 
+import { runWithSqlMetrics } from '../../../shared/sqlMetrics.js';
 import { createSendServices, createSql } from './worker.js';
 import { flushDueScheduledSends } from './scheduled.js';
 
@@ -63,7 +64,13 @@ export class ScheduledSendClock {
     }
   }
 
-  async alarm() {
+  // An alarm starts outside the Worker's wrapped handlers, so it opens the
+  // query-metrics scope those handlers get from withSqlMetrics itself.
+  alarm() {
+    return runWithSqlMetrics(this.env, 'cookie-web-send', 'alarm', () => this.runAlarm());
+  }
+
+  async runAlarm() {
     const sql = this.deps.createSql(this.env.HYPERDRIVE.connectionString);
     try {
       try {
