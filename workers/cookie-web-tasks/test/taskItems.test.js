@@ -542,8 +542,11 @@ describe('dueDate is returned as a YYYY-MM-DD string, not a timestamp', () => {
 // rather than a project filter. The date is supplied by the caller: the
 // Worker has no idea what "today" is where the person is standing, and
 // guessing UTC would show the wrong day for most of the world.
-// The calendar shows every open task that is due inside the visible window,
+// The calendar shows every task that is due inside the visible window,
 // across every project, so it is a range read rather than a project list.
+// Open tasks always come back; completed ones only when asked for, so the
+// calendar can strike them through on their day while the Someday row
+// keeps to open tasks.
 describe('GET /task-items?view=calendar', () => {
   it('returns open tasks due inside the window across every project', async () => {
     const rows = [{ id: ITEM_ID, content: 'Renew insurance', dueDate: '2026-09-22' }];
@@ -557,11 +560,35 @@ describe('GET /task-items?view=calendar', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ items: rows });
-    expect(sql.calls[0].values).toEqual([USER_ID, '2026-09-21', '2026-10-04']);
+    expect(sql.calls[0].values).toEqual([USER_ID, false, '2026-09-21', '2026-10-04']);
     expect(sql.calls[0].text).toContain('t.due_date BETWEEN');
-    expect(sql.calls[0].text).toContain('t.completed_at IS NULL');
+    expect(sql.calls[0].text).toContain('::boolean OR t.completed_at IS NULL');
     expect(sql.calls[0].text).toContain("t.kind = 'task'");
     expect(sql.calls[0].text).toContain(`to_char(t.due_time, 'HH24:MI') AS "dueTime"`);
+  });
+
+  it('includes completed tasks, with when they were completed, when asked', async () => {
+    const rows = [
+      { id: ITEM_ID, content: 'Renew insurance', dueDate: '2026-09-22', completedAt: null },
+      {
+        id: PROJECT_ID,
+        content: 'Pay the bill',
+        dueDate: '2026-09-23',
+        completedAt: '2026-09-23T09:00:00.000Z',
+      },
+    ];
+    const sql = createMockSql([rows]);
+
+    const response = await getTaskItems(
+      sql,
+      USER_ID,
+      url('?view=calendar&from=2026-09-21&to=2026-10-04&completed=1'),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ items: rows });
+    expect(sql.calls[0].values).toEqual([USER_ID, true, '2026-09-21', '2026-10-04']);
+    expect(sql.calls[0].text).toContain('t.completed_at AS "completedAt"');
   });
 
   it('rejects a missing or malformed window', async () => {

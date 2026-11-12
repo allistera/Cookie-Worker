@@ -182,7 +182,10 @@ export const MAX_CALENDAR_WINDOW_DAYS = 100;
  * GET /task-items?view=calendar&from=YYYY-MM-DD&to=YYYY-MM-DD — every open
  * task, across every project, due inside the window. Cookie Calendar lays
  * these out on their due date next to the day's events. Dividers have no
- * date and completed tasks are done, so neither belongs on a calendar.
+ * date, so they never belong on a calendar. With completed=1 the window
+ * also returns the tasks completed on their day, which the calendar shows
+ * struck through; without it only open tasks come back, as the Someday row
+ * wants.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -205,15 +208,17 @@ async function getCalendarTaskItems(sql, userId, url) {
     );
   }
 
+  const includeCompleted = url.searchParams.get('completed') === '1';
+
   const items = await sql`
     SELECT t.id, t.project_id AS "projectId", t.parent_id AS "parentId", t.content,
            to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate",
            to_char(t.due_time, 'HH24:MI') AS "dueTime", t.duration_minutes AS "durationMinutes", t.time_zone AS "timeZone",
-           t.priority, t.recurrence
+           t.priority, t.recurrence, t.completed_at AS "completedAt"
     FROM task_items t
     WHERE t.user_id = ${userId}
       AND t.kind = 'task'
-      AND t.completed_at IS NULL
+      AND (${includeCompleted}::boolean OR t.completed_at IS NULL)
       AND t.due_date BETWEEN ${from}::date AND ${to}::date
     ORDER BY t.due_date ASC, t.due_time ASC NULLS LAST, t.position ASC, t.created_at ASC
   `;
