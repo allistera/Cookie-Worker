@@ -8,14 +8,11 @@ export function isTransientMeiliError(err) {
   const error = /** @type {any} */ (err);
   if (error?.name === 'MeilisearchRequestError') return true;
   const status = error?.response?.status;
-  if (typeof status === 'number') {
-    return (status >= 502 && status <= 504) || (status >= 520 && status <= 530);
-  }
-  // meilisearch 0.62 parses the body before checking response.ok. Cloudflare's
-  // plain-text gateway response therefore loses its HTTP status (COOKIE-WEB-1Q).
-  // Recognize only that specific response, never arbitrary JSON syntax errors.
+  // Cloudflare's plain-text gateway responses arrive this way too: since
+  // meilisearch 0.63 a body that is not JSON still becomes an API error that
+  // carries the HTTP status (0.62 threw a SyntaxError and lost it, COOKIE-WEB-1Q).
   return (
-    error instanceof SyntaxError &&
-    /["']error code: (?:50[234]|52\d|530)(?:\s|\\n|["'])/u.test(error.message)
+    typeof status === 'number' &&
+    ((status >= 502 && status <= 504) || (status >= 520 && status <= 530))
   );
 }

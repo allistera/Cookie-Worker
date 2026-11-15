@@ -668,7 +668,7 @@ describe('index acknowledgement', () => {
   it('keeps polling the accepted task after a plain-text gateway failure', async () => {
     const { client, calls } = createMockMeili();
     client.tasks.getTask.mockRejectedValueOnce(
-      new SyntaxError('Unexpected token \'e\', "error code: 502\n" is not valid JSON'),
+      Object.assign(new Error('502: '), { response: { status: 502 } }),
     );
     await expect(settle(addDocuments(ENV, MESSAGES_INDEX, [], client))).resolves.toEqual({
       taskUid: 2,
