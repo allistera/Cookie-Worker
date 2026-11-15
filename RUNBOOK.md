@@ -129,6 +129,11 @@ Cloudflare `permanent error (5xx)` forwarding refusal is logged as
 `forward_failed_permanent` and reported to Sentry, but the inbound delivery is
 accepted. Replaying the same message cannot repair a permanent Gmail rejection.
 The copy remains available in Cookie; this does not mean Gmail received it.
+Two refusals are the sender's doing and are logged without a Sentry report: a
+sender that failed authentication (`non-authenticated emails cannot be
+forwarded`), and Gmail refusing the copy as spam (`550 5.7.1 ... likely
+unsolicited mail`). To see how often Gmail refuses mail, filter the Worker
+logs for `forward_failed_permanent`.
 Transient SMTP failures and unknown failures still propagate for MTA retry. If
 no stored copy exists, even a permanent forwarding refusal propagates so the
 Worker does not silently accept mail it has neither stored nor forwarded.

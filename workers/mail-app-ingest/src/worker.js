@@ -316,9 +316,10 @@ const worker = {
           message_id: record?.messageId,
         }),
       );
-      // A sender that failed authentication is not something Cookie can
-      // fix, and the message is already stored and classified above.
-      if (!isUnauthenticatedSenderError(err)) {
+      // A sender that failed authentication, or whose mail Gmail refused as
+      // spam, is not something Cookie can fix, and the message is already
+      // stored and classified above.
+      if (!isSenderCausedForwardError(err)) {
         captureHandledException('forward', err, [env.HYPERDRIVE.connectionString], {
           message_id: record?.messageId,
           permanent: true,
@@ -535,6 +536,12 @@ export default Sentry.withSentry(
 // Cloudflare refuses to forward mail whose sender failed SPF, DKIM, or DMARC.
 const UNAUTHENTICATED_SENDER_ERROR = /non-authenticated emails cannot be forwarded/iu;
 
+// Gmail refuses the forwarded copy of mail it judges to be spam with
+// "550 5.7.1 ... this message is likely unsolicited mail". Its other 5.7.1
+// refusals (a low-reputation sending domain or address) do not match: those
+// point at Cookie's own forwarding path and stay reported.
+const UNSOLICITED_MAIL_ERROR = /likely unsolicited mail/iu;
+
 const PERMANENT_FORWARD_ERRORS = [
   // Cloudflare includes the upstream SMTP result in this fixed wrapper.
   // A permanent 5xx refusal cannot be repaired by redelivering the same mail.
@@ -545,13 +552,14 @@ const PERMANENT_FORWARD_ERRORS = [
 
 /**
  * A permanent forward failure that is the sender's doing rather than a fault
- * in Cookie's configuration: logged, never reported (Sentry COOKIE-WEB-9).
+ * in Cookie's configuration: logged, never reported (Sentry COOKIE-WEB-9 for
+ * unauthenticated senders, COOKIE-WEB-1T for mail Gmail refused as spam).
  *
  * @param {unknown} err
  */
-export function isUnauthenticatedSenderError(err) {
+export function isSenderCausedForwardError(err) {
   const text = err instanceof Error ? err.message : String(err);
-  return UNAUTHENTICATED_SENDER_ERROR.test(text);
+  return UNAUTHENTICATED_SENDER_ERROR.test(text) || UNSOLICITED_MAIL_ERROR.test(text);
 }
 
 /**

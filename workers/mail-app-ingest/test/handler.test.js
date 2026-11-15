@@ -612,6 +612,33 @@ describe('email handler', () => {
     expect(sentry.captureException).not.toHaveBeenCalled();
   });
 
+  // Gmail refuses the forwarded copy of spam at SMTP. The message is stored
+  // (and usually already blocked in Cookie), so the refusal is logged but not
+  // reported (Sentry COOKIE-WEB-1T).
+  test.each(['inserted', 'duplicate'])(
+    'logs but does not report a forward Gmail refused as spam after storage is %s',
+    async (outcome) => {
+      postgres.mockReturnValue(
+        sqlReturning({
+          outcome: outcome === 'inserted' ? 'inserted' : 'duplicate',
+          messageUuid: outcome === 'inserted' ? 'm1' : null,
+        }),
+      );
+      const message = fakeMessage(simpleFixture);
+      message.forward.mockRejectedValueOnce(
+        new Error(
+          'could not send email: Permanent Unknown error: permanent error (550): 5.7.1 [104.30.8.134      12] Gmail has detected that this message is likely unsolicited mail. To reduce the amount of spam sent to Gmail, this message has been blocked. For more information, go to https://support.google.com/mail/?p=UnsolicitedMessageError - gsmtp',
+        ),
+      );
+      await worker.email(message, env(), ctx());
+      expect(message.forward).toHaveBeenCalledOnce();
+      expect(messageFromLog('forward_failed_permanent')).toMatchObject({
+        event: 'forward_failed_permanent',
+      });
+      expect(sentry.captureException).not.toHaveBeenCalled();
+    },
+  );
+
   test('swallows and reports other permanent forward errors for duplicates', async () => {
     postgres.mockReturnValue(sqlReturning({ outcome: 'duplicate', messageUuid: null }));
     const message = fakeMessage(simpleFixture);
@@ -639,7 +666,7 @@ describe('email handler', () => {
       );
       const message = fakeMessage(simpleFixture);
       const error = new Error(
-        'could not send email: Permanent Unknown error: permanent error (550): 5.7.1 Gmail has detected unsolicited mail',
+        'could not send email: Permanent Unknown error: permanent error (550): 5.7.1 [104.30.8.134      12] Gmail has detected that this message is likely suspicious due to the very low reputation of the sending domain',
       );
       message.forward.mockRejectedValueOnce(error);
       await worker.email(message, env(), ctx());
