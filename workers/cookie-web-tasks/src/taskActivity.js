@@ -48,6 +48,23 @@ export async function getTaskActivity(sql, userId, url) {
 }
 
 /**
+ * An IANA zone name, checked here rather than against pg_timezone_names, which
+ * reads every zone file on each query. The leading letter keeps it to names:
+ * Intl also takes bare offsets ("+05:00"), which that view never listed.
+ *
+ * @param {string} timeZone
+ */
+function knownTimeZone(timeZone) {
+  if (timeZone.length > 100 || !/^[A-Za-z]/.test(timeZone)) return false;
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Calendar boundaries are evaluated by Postgres in the caller's IANA zone,
  * including DST. Counts are completion events, including recurring occurrences.
  * @param {import('postgres').Sql} sql
@@ -56,19 +73,26 @@ export async function getTaskActivity(sql, userId, url) {
  */
 export async function getTaskProgress(sql, userId, url) {
   const timeZone = url.searchParams.get('timeZone') || 'UTC';
-  if (timeZone.length > 100) return Response.json({ error: 'Invalid time zone' }, { status: 400 });
-  const [zone] = await sql`SELECT name FROM pg_timezone_names WHERE name = ${timeZone}`;
-  if (!zone) return Response.json({ error: 'Invalid time zone' }, { status: 400 });
-  const [summary] = await sql`
-    WITH bounds AS (
-      SELECT date_trunc('day', now() AT TIME ZONE ${timeZone}) AS day,
-        date_trunc('week', now() AT TIME ZONE ${timeZone}) AS week
-    )
-    SELECT count(*) FILTER (WHERE a.occurred_at >= (b.day AT TIME ZONE ${timeZone}))::integer AS daily,
-      count(a.id)::integer AS weekly
-    FROM bounds b LEFT JOIN task_activity a ON a.user_id = ${userId} AND a.action = 'completed'
-      AND a.occurred_at >= (b.week AT TIME ZONE ${timeZone}) AND a.occurred_at <= now()
-  `;
+  if (!knownTimeZone(timeZone))
+    return Response.json({ error: 'Invalid time zone' }, { status: 400 });
+  let summary;
+  try {
+    [summary] = await sql`
+      WITH bounds AS (
+        SELECT date_trunc('day', now() AT TIME ZONE ${timeZone}) AS day,
+          date_trunc('week', now() AT TIME ZONE ${timeZone}) AS week
+      )
+      SELECT count(*) FILTER (WHERE a.occurred_at >= (b.day AT TIME ZONE ${timeZone}))::integer AS daily,
+        count(a.id)::integer AS weekly
+      FROM bounds b LEFT JOIN task_activity a ON a.user_id = ${userId} AND a.action = 'completed'
+        AND a.occurred_at >= (b.week AT TIME ZONE ${timeZone}) AND a.occurred_at <= now()
+    `;
+  } catch (error) {
+    // A zone this runtime knows and Postgres does not (their time zone data
+    // can differ): "time zone not recognized" is the caller's 400, not a 500.
+    if (/** @type {{code?: string}} */ (error)?.code !== '22023') throw error;
+    return Response.json({ error: 'Invalid time zone' }, { status: 400 });
+  }
   const [goals] =
     await sql`SELECT daily, weekly FROM task_completion_goals WHERE user_id = ${userId}`;
   return Response.json({ summary, goals: goals ?? { daily: 0, weekly: 0 }, timeZone });

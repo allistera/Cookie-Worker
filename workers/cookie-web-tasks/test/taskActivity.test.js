@@ -67,7 +67,7 @@ describe('task activity', () => {
 
 describe('progress and goals', () => {
   it('uses local calendar boundaries and defaults goals to disabled', async () => {
-    const sql = createMockSql([[{ name: 'Europe/London' }], [{ daily: 2, weekly: 8 }], []]);
+    const sql = createMockSql([[{ daily: 2, weekly: 8 }], []]);
     const result = await (
       await getTaskProgress(sql, USER, new URL('https://x/task-progress?timeZone=Europe/London'))
     ).json();
@@ -76,17 +76,41 @@ describe('progress and goals', () => {
       goals: { daily: 0, weekly: 0 },
       timeZone: 'Europe/London',
     });
-    expect(sql.calls[1].values).toContain('Europe/London');
-    expect(sql.calls[1].values).toContain(USER);
-    expect(sql.calls[1].text).toContain("date_trunc('week'");
-    expect(sql.calls[1].text).toContain('a.occurred_at <= now()');
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[0].values).toContain('Europe/London');
+    expect(sql.calls[0].values).toContain(USER);
+    expect(sql.calls[0].text).toContain("date_trunc('week'");
+    expect(sql.calls[0].text).toContain('a.occurred_at <= now()');
   });
-  it('rejects unknown zones', async () => {
-    const sql = createMockSql([[]]);
-    expect(
-      (await getTaskProgress(sql, USER, new URL('https://x/task-progress?timeZone=bad'))).status,
-    ).toBe(400);
-    expect(sql.calls).toHaveLength(1);
+  // Validated without a query: pg_timezone_names reads every zone file.
+  it.each(['bad', '+05:00', 'Europe/London; SELECT 1', 'x'.repeat(101)])(
+    'rejects the unknown zone %j before any query',
+    async (timeZone) => {
+      const sql = createMockSql([]);
+      const url = new URL(`https://x/task-progress?${new URLSearchParams({ timeZone })}`);
+      expect((await getTaskProgress(sql, USER, url)).status).toBe(400);
+      expect(sql.calls).toHaveLength(0);
+    },
+  );
+  it('rejects a zone Postgres does not recognise', async () => {
+    const sql = createMockSql([]);
+    sql.mockRejectedValueOnce(
+      Object.assign(new Error('time zone "Europe/Kyiv" not recognized'), { code: '22023' }),
+    );
+    const response = await getTaskProgress(
+      sql,
+      USER,
+      new URL('https://x/task-progress?timeZone=Europe/Kyiv'),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'Invalid time zone' });
+  });
+  it('leaves any other database failure to the caller', async () => {
+    const sql = createMockSql([]);
+    sql.mockRejectedValueOnce(Object.assign(new Error('boom'), { code: '57014' }));
+    await expect(
+      getTaskProgress(sql, USER, new URL('https://x/task-progress?timeZone=UTC')),
+    ).rejects.toThrow('boom');
   });
   it.each([
     null,
