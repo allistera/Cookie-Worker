@@ -110,7 +110,7 @@ export const SUMMARY_REASONING_MAX_OUTPUT_TOKENS = 1_500;
 
 /** @param {string} model */
 export function summaryMaxOutputTokens(model) {
-  return supportsReasoning(model) || /^(?:gpt-5|o\d)/.test(model)
+  return supportsReasoning(model) || /^(?:gpt-[5-9]|o\d)/.test(model)
     ? SUMMARY_REASONING_MAX_OUTPUT_TOKENS
     : SUMMARY_MAX_OUTPUT_TOKENS;
 }

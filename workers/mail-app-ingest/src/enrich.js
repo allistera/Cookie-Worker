@@ -6,7 +6,7 @@ import { retryWithBackoff } from '../../../shared/retry.js';
 import { ensureSpamLabel } from '../../../shared/spamLabel.js';
 
 export const AI_FETCH_TIMEOUT_MS = 60_000;
-export const AI_MODEL = 'gpt-5.6-luna';
+export const AI_MODEL = 'gpt-6-luna';
 export const PROMPT_VERSION = 'email-enrichment-v6';
 export const SPAM_THRESHOLD = 0.98;
 export const REVIEW_THRESHOLD = 0.8;

@@ -105,7 +105,7 @@ describe('AI unsubscribe transport', () => {
     const model = vi.fn(complete);
     transport(() => new Response('Already unsubscribed'), model);
     await expect(attemptAiUnsubscribe(target, {})).resolves.toEqual({ ok: true });
-    expect(model).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-luna' }));
+    expect(model).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6-luna' }));
   });
 
   test('handles a redirect without a Location header as an empty page', async () => {

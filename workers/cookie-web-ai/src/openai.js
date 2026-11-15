@@ -2,7 +2,7 @@
 // on Vercel — one Worker means one copy.
 
 export { responsesUrl } from '../../../shared/openai.js';
-export const DEFAULT_MODEL = 'gpt-5.6-luna';
+export const DEFAULT_MODEL = 'gpt-6-luna';
 export const RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
 /** @param {unknown} value @param {number} max */

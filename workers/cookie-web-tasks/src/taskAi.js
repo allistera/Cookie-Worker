@@ -71,7 +71,7 @@ export async function generateTaskDraft(input, apiKey, fetchImpl = fetch) {
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(input.expand ? 45_000 : 15_000),
     body: JSON.stringify({
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       store: false,
       max_output_tokens: input.expand ? 2500 : 700,
       input: [

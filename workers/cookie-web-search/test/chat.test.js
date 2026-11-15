@@ -363,10 +363,10 @@ describe('handleChat', () => {
       createMockSql([[{ allowed: true }]]),
       USER,
       { messages: QUESTION },
-      { ...env, OPENAI_CHAT_MODEL: 'gpt-5-mini' },
+      { ...env, OPENAI_CHAT_MODEL: 'gpt-5.4-mini' },
     );
     const chatInit = /** @type {any} */ (fetchMock.mock.calls[1][1]);
-    expect(JSON.parse(String(chatInit.body)).model).toBe('gpt-5-mini');
+    expect(JSON.parse(String(chatInit.body)).model).toBe('gpt-5.4-mini');
   });
 
   test('answers 503 and retries the settings push later when it fails', async () => {

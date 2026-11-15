@@ -157,7 +157,7 @@ describe('document AI handler', () => {
     expect((await response.json()).model).toBe(DOCUMENT_CHAT_MODEL);
     const payload = JSON.parse(/** @type {string} */ (fetchMock.mock.calls[0]?.[1]?.body));
     expect(payload.store).toBe(false);
-    expect(payload.model).toBe('gpt-5.6-sol');
+    expect(payload.model).toBe('gpt-6.1-sol');
     const input = JSON.parse(payload.input[1].content);
     expect(input.document.blocks[1].data).toEqual(document.blocks[1].data);
     expect(input.instruction).toBe('Make this clearer');

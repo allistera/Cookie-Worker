@@ -17,7 +17,7 @@ import { openAiUrl } from '../../../shared/openai.js';
 import { isTransientMeiliError } from '../../../shared/meiliErrors.js';
 import { setSpanAttributes } from '../../../shared/tracing.js';
 import { captureHandledException } from './sentry.js';
-const DEFAULT_CHAT_MODEL = 'gpt-4o-mini';
+const DEFAULT_CHAT_MODEL = 'gpt-6-luna';
 const MAX_QUESTION_CHARS = 500;
 const CONTEXT_MESSAGES = 6;
 const CONTEXT_BODY_CHARS = 1500;
@@ -70,7 +70,10 @@ async function chatCompletion(question, rows, apiKey, model, stream = false) {
     body: JSON.stringify({
       model,
       stream,
-      max_tokens: MAX_ANSWER_TOKENS,
+      // The answer is read off the retrieved emails, so no reasoning pass:
+      // it would add latency and spend the token budget before the answer.
+      reasoning_effort: 'none',
+      max_completion_tokens: MAX_ANSWER_TOKENS,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {

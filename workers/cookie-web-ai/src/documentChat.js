@@ -4,7 +4,7 @@ import { OpenAIOutputError, parseOutputJson } from '../../../shared/openai.js';
 import { markdownToBlocks } from './document.js';
 import { validId } from '../../../shared/pagination.js';
 
-export const DOCUMENT_CHAT_MODEL = 'gpt-5.6-sol';
+export const DOCUMENT_CHAT_MODEL = 'gpt-6.1-sol';
 export const MAX_CHAT_BODY_BYTES = 1024 * 1024;
 const MAX_CONTEXT_CHARS = 250_000;
 // Each request already carries up to 250k characters of draft; 12 turns of

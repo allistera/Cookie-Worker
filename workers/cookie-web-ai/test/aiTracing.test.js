@@ -15,7 +15,7 @@ afterEach(() => {
 describe('model tracing', () => {
   test('returns the original payload and records token totals without content', async () => {
     const payload = {
-      model: 'gpt-5.6-sol',
+      model: 'gpt-6.1-sol',
       output_text: 'private output',
       usage: {
         input_tokens: 100,
@@ -25,7 +25,7 @@ describe('model tracing', () => {
       },
     };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(payload)));
-    await expect(requestAiJson('gpt-5.6-sol', { body: 'private prompt' })).resolves.toEqual(
+    await expect(requestAiJson('gpt-6.1-sol', { body: 'private prompt' })).resolves.toEqual(
       payload,
     );
     expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 100);

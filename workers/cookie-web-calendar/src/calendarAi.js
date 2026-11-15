@@ -4,7 +4,7 @@ import { validDate, validTime } from './availabilityTime.js';
 // only the model configuration comes from the Worker env instead of
 // process.env (passed by the caller).
 
-const DEFAULT_MODEL = 'gpt-5.6-luna';
+const DEFAULT_MODEL = 'gpt-6-luna';
 const REPEAT_FREQUENCIES = new Set(['none', 'daily', 'weekly', 'monthly', 'yearly']);
 const WEEKDAY_CODES = new Set(['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']);
 

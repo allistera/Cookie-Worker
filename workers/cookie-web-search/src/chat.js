@@ -28,6 +28,12 @@ import {
   SYSTEM_PROMPT,
 } from './chatPrompts.js';
 
+// Held on gpt-4o-mini, which OpenAI removes on 2027-01-14. The GPT-5.6 and
+// GPT-6 models accept function tools on Chat Completions only with
+// reasoning_effort 'none', and Meilisearch (through 1.56.2) rejects that value
+// before the request leaves it, so every one of them fails here. Move to
+// gpt-6-luna once Meilisearch can forward 'none'; until then gpt-5.4-mini is
+// the newer model that works. Checked against the live stack on 2026-11-15.
 const DEFAULT_CHAT_MODEL = 'gpt-4o-mini';
 // Shares the 'ai' scope with /ask and cookie-web-ai, so the drawer cannot
 // multiply a person's AI spend just by being a different route.

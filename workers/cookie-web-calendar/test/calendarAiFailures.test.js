@@ -71,7 +71,7 @@ describe('calendar AI request failures', () => {
       });
       expect(response.status).toBe(200);
       const request = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(request.model).toBe(composeModel || 'gpt-5.6-luna');
+      expect(request.model).toBe(composeModel || 'gpt-6-luna');
       expect(JSON.parse(request.input[1].content)).toEqual({
         request: 'Review tomorrow',
         current_datetime: '2026-10-20T12:00:00.000Z',

@@ -20,7 +20,7 @@ vi.mock('../src/news.js', () => ({ buildNews: vi.fn() }));
 vi.mock('../src/store.js', () => ({
   lookupUserId: vi.fn(async () => 'user-1'),
   fetchEnrichmentSettings: vi.fn(async () => ({
-    model: 'gpt-5-nano',
+    model: 'gpt-6-luna',
     schedule: {
       enabled: true,
       days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],

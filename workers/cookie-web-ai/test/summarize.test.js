@@ -243,9 +243,12 @@ describe('thread summarization', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await generateThreadSummary(messages(), 'test-key', 'gpt-5.6-luna');
+    await generateThreadSummary(messages(), 'test-key', 'gpt-6-luna');
+    // An override outside the settings list is still recognised by its family.
+    await generateThreadSummary(messages(), 'test-key', 'gpt-6.1-sol');
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).max_output_tokens).toBe(1_500);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).max_output_tokens).toBe(1_500);
   });
 
   test('reports an incomplete response instead of an opaque JSON error', async () => {
