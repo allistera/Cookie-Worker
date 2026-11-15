@@ -24,11 +24,11 @@ import { configureOpenAi } from '../../../shared/openai.js';
 
 /**
  * Runs idempotent database work on a fresh client, with another go on a new
- * one if the socket drops. Anything after the first phase follows minutes of
- * OpenAI calls, long enough for the run's own connection to have gone stale
- * (Sentry COOKIE-WEB-1D). Stores replace the previous row inside one
- * transaction and reads have no side effects, so a retry cannot duplicate
- * anything.
+ * one if the socket drops. A store follows minutes of OpenAI calls, long
+ * enough for the run's own connection to have gone stale (Sentry
+ * COOKIE-WEB-1D), and the news phase runs beside triage, which is using
+ * that connection. Stores replace the previous row inside one transaction
+ * and reads have no side effects, so a retry cannot duplicate anything.
  *
  * @template T
  * @param {{HYPERDRIVE: {connectionString: string}}} env
@@ -82,7 +82,7 @@ async function buildDailyTriage(sql, env, userId) {
  * Scheduled runs build it once per UK day; a manual refresh always rebuilds.
  * An empty round-up is never stored, so a bad hour keeps the previous card.
  *
- * @param {import('postgres').Sql} _sql the run's client, unused: by now it may be stale
+ * @param {import('postgres').Sql} _sql the run's client, unused: triage reads through it meanwhile
  * @param {Env & {OPENAI_API_KEY?: string, GITHUB_API_TOKEN?: string, PRODUCT_HUNT_TOKEN?: string}} env
  * @param {string} userId
  * @param {RunOptions} [options]
@@ -162,20 +162,24 @@ async function runPhases(env, phases, options = {}) {
       return { status: 'skipped' };
     }
     const runtimeEnv = { ...env, AI_MODEL: settings.model };
-    // The phases are independent; one failing must not starve the others.
-    for (const phase of phases) {
-      try {
-        await phase(sql, runtimeEnv, userId, options);
-      } catch (error) {
-        failures.push(/** @type {Error} */ (error));
-        console.log(
-          JSON.stringify({ event: 'phase_failed', phase: phase.name, error: redact(error, env) }),
-        );
-        // Reported per phase rather than only through the AggregateError
-        // below: one failing phase is the actionable signal, and the manual
-        // HTTP trigger swallows the aggregate to keep its response generic.
-        captureHandledException(phase.name, error, env);
-      }
+    // The phases are independent, so they run side by side: a refresh waits
+    // for the slower one rather than for both in turn, and one failing
+    // cannot starve the other. Only triage reads through the run's client.
+    const outcomes = await Promise.allSettled(
+      phases.map((phase) => phase(sql, runtimeEnv, userId, options)),
+    );
+    for (const [index, outcome] of outcomes.entries()) {
+      if (outcome.status === 'fulfilled') continue;
+      const phase = phases[index];
+      const error = outcome.reason;
+      failures.push(/** @type {Error} */ (error));
+      console.log(
+        JSON.stringify({ event: 'phase_failed', phase: phase.name, error: redact(error, env) }),
+      );
+      // Reported per phase rather than only through the AggregateError
+      // below: one failing phase is the actionable signal, and the manual
+      // HTTP trigger swallows the aggregate to keep its response generic.
+      captureHandledException(phase.name, error, env);
     }
   } finally {
     await sql.end({ timeout: 5 });

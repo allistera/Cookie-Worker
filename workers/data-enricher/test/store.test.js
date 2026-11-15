@@ -47,7 +47,7 @@ describe('storeDigest', () => {
 
   test('inserts the new digest before pruning superseded ones', async () => {
     const sql = mockSql([{ id: 'digest-2' }]);
-    await expect(storeDigest(sql, 'user-1', digest, 'gpt-5.6-luna')).resolves.toBe('digest-2');
+    await expect(storeDigest(sql, 'user-1', digest, 'gpt-6-luna')).resolves.toBe('digest-2');
 
     // Insert first: a failure here must leave yesterday's digest readable.
     expect(sql.calls[0].text).toContain('pg_advisory_xact_lock');
@@ -57,7 +57,7 @@ describe('storeDigest', () => {
         'user-1',
         'daily_digest',
         'One reply and two lower-priority messages.',
-        'gpt-5.6-luna',
+        'gpt-6-luna',
       ]),
     );
     expect(sql.calls[1].values).toContainEqual({
@@ -118,7 +118,7 @@ describe('storeNews', () => {
     const sql = mockSql([{ id: 'news-2' }]);
     const news = { sections: [{ emoji: '💻', title: 'GitHub', items: [] }] };
 
-    await expect(storeNews(sql, 'user-1', news, 'gpt-5.6-luna')).resolves.toBe('news-2');
+    await expect(storeNews(sql, 'user-1', news, 'gpt-6-luna')).resolves.toBe('news-2');
 
     expect(sql.calls[0].text).toContain('pg_advisory_xact_lock');
     expect(sql.calls[1].text).toContain('INSERT INTO summaries');

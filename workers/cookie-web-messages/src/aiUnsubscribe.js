@@ -32,7 +32,7 @@ export const AI_UNSUBSCRIBE_TIMEOUT_MS = 180_000;
 // Same OpenAI Responses API surface cookie-web-ai uses (its src/openai.js is
 // another Worker's tree, so the few lines are duplicated here rather than
 // imported across workers).
-const DEFAULT_MODEL = 'gpt-5.6-luna';
+const DEFAULT_MODEL = 'gpt-6-luna';
 
 const FETCH_TIMEOUT_MS = 20_000;
 const MODEL_TIMEOUT_MS = 60_000;

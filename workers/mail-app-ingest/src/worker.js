@@ -88,9 +88,11 @@ const worker = {
     try {
       record = await parseEmail(message);
       sql = createSql(env.HYPERDRIVE.connectionString);
-      let alreadyStored;
+      // One read resolves the owner and checks for a duplicate; the store
+      // below reuses the owner id rather than looking it up again.
+      let owner;
       try {
-        alreadyStored = await emailAlreadyStored(sql, record.messageId, env.OWNER_EMAIL);
+        owner = await emailAlreadyStored(sql, record.messageId, env.OWNER_EMAIL);
       } catch (err) {
         // This first query opens the connection, and Hyperdrive sometimes
         // fails to reach the origin on that first try (Sentry COOKIE-WEB-9).
@@ -100,9 +102,9 @@ const worker = {
         console.log(JSON.stringify({ event: 'store_connection_retried' }));
         ctx.waitUntil(endSql(sql));
         sql = createSql(env.HYPERDRIVE.connectionString);
-        alreadyStored = await emailAlreadyStored(sql, record.messageId, env.OWNER_EMAIL);
+        owner = await emailAlreadyStored(sql, record.messageId, env.OWNER_EMAIL);
       }
-      if (alreadyStored) {
+      if (owner.alreadyStored) {
         storeResult = { outcome: 'duplicate', messageUuid: null };
       } else {
         uploaded = await uploadAttachments(
@@ -125,7 +127,7 @@ const worker = {
             attachment_index: failure.index,
           });
         }
-        storePromise = storeEmail(sql, record, env.OWNER_EMAIL);
+        storePromise = storeEmail(sql, record, owner.userId);
         storeResult = await withTimeout(storePromise, STORE_BUDGET_MS);
         if (storeResult.outcome === 'duplicate') {
           await discardUploadedAttachments(uploaded.attachments, env, record.messageId);

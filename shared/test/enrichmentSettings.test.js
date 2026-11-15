@@ -14,7 +14,7 @@ describe('enrichment settings', () => {
   });
 
   test.each([null, 'schedule', []])('rejects non-object schedules: %j', (schedule) => {
-    expect(validateEnrichmentSettings({ model: 'gpt-5-nano', schedule })).toEqual({
+    expect(validateEnrichmentSettings({ model: 'gpt-6-luna', schedule })).toEqual({
       error: 'schedule must be an object',
     });
   });
@@ -61,14 +61,23 @@ describe('enrichment settings', () => {
   test('repairs invalid persisted fields using the configured fallback model', () => {
     const normalized = normalizeEnrichmentSettings(
       { model: 'unknown', schedule: { days: ['invalid'], startHour: -1, endHour: 24 } },
-      'gpt-4.1-nano',
+      'gpt-6.1-terra',
     );
-    expect(normalized).toEqual({ ...DEFAULT_ENRICHMENT_SETTINGS, model: 'gpt-4.1-nano' });
+    expect(normalized).toEqual({ ...DEFAULT_ENRICHMENT_SETTINGS, model: 'gpt-6.1-terra' });
     normalized.schedule.days.pop();
     expect(DEFAULT_ENRICHMENT_SETTINGS.schedule.days).toHaveLength(7);
   });
 
-  test('defaults to GPT-5 nano every hour from 09:00 through 19:00 UK time', () => {
+  test.each(['gpt-5-nano', 'gpt-5.6-luna', 'gpt-4.1-nano'])(
+    'reads settings saved with the retired %s back as the default model',
+    (model) => {
+      const saved = { ...normalizeEnrichmentSettings(), model };
+      expect(normalizeEnrichmentSettings(saved).model).toBe('gpt-6-luna');
+      expect(validateEnrichmentSettings(saved)).toEqual({ error: 'model is not supported' });
+    },
+  );
+
+  test('defaults to GPT-6 Luna every hour from 09:00 through 19:00 UK time', () => {
     expect(normalizeEnrichmentSettings()).toEqual(DEFAULT_ENRICHMENT_SETTINGS);
     expect(isEnrichmentDue(undefined, new Date('2026-07-06T08:00:00Z'))).toBe(true);
     expect(isEnrichmentDue(undefined, new Date('2026-07-06T18:00:00Z'))).toBe(true);
@@ -78,7 +87,7 @@ describe('enrichment settings', () => {
 
   test('uses selected days, inclusive hours, and interval relative to the start hour', () => {
     const settings = {
-      model: 'gpt-4.1-nano',
+      model: 'gpt-6.1-terra',
       schedule: {
         enabled: true,
         days: ['mon'],
@@ -96,7 +105,7 @@ describe('enrichment settings', () => {
 
   test('skips a disabled schedule and the repeated UK clock-change hour', () => {
     const oneAm = {
-      model: 'gpt-5-nano',
+      model: 'gpt-6-luna',
       schedule: {
         enabled: true,
         days: ['sun'],

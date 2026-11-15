@@ -180,6 +180,20 @@ describe('email handler', () => {
     expect(sql.end).toHaveBeenCalled();
   });
 
+  test('looks the mailbox owner up once per delivery', async () => {
+    const sql = sqlReturning();
+    postgres.mockReturnValue(sql);
+    await worker.email(fakeMessage(simpleFixture), env(), ctx());
+    const statements = sql.mock.calls.map(([strings, ...values]) => ({
+      text: strings.join('?'),
+      values,
+    }));
+    expect(statements.filter(({ text }) => text.includes('FROM users'))).toHaveLength(1);
+    // The store serialises on, and writes under, the id that one read returned.
+    const lock = statements.find(({ text }) => text.includes('pg_advisory_xact_lock'));
+    expect(lock?.values).toEqual(['u']);
+  });
+
   test('records the ingest outcome on the trace without any identifier', async () => {
     recorder.current = createTracingRecorder();
     try {

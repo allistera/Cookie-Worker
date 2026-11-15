@@ -17,6 +17,8 @@ import { internalCaller } from './internal-identity.js';
 // test harness that might otherwise grow this unboundedly.
 const MAX_CACHED_JWKS = 4;
 const jwksByIssuer = new Map();
+// jose refetches after 10 minutes by default; an unknown `kid` still forces a reload.
+const JWKS_CACHE_MAX_AGE_MS = 60 * 60 * 1000;
 
 // Verified subject -> provisioned mailbox, per isolate. The users row is one
 // row that changes only when a mailbox is provisioned or removed, yet every
@@ -115,7 +117,9 @@ export async function verifyAccessToken(request, env, sql, overrides = {}) {
   if (!keySet) {
     keySet = jwksByIssuer.get(issuer);
     if (!keySet) {
-      keySet = createRemoteJWKSet(new URL(`${issuer}.well-known/jwks.json`));
+      keySet = createRemoteJWKSet(new URL(`${issuer}.well-known/jwks.json`), {
+        cacheMaxAge: JWKS_CACHE_MAX_AGE_MS,
+      });
       if (jwksByIssuer.size >= MAX_CACHED_JWKS) {
         const oldest = jwksByIssuer.keys().next().value;
         jwksByIssuer.delete(oldest);

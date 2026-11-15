@@ -15,7 +15,7 @@ describe('AI Today enrichment settings handlers', () => {
 
   test('validates and stores a supported configuration', async () => {
     const enrichmentSettings = {
-      model: 'gpt-4.1-nano',
+      model: 'gpt-6.1-terra',
       schedule: {
         enabled: true,
         days: ['mon', 'fri'],

@@ -134,7 +134,12 @@ describe('assistant response transport', () => {
     ]);
     const fetchMock = vi.fn(async (_url, init) => {
       const request = JSON.parse(init.body);
-      expect(request).toMatchObject({ model: 'custom-model', stream: false, max_tokens: 400 });
+      expect(request).toMatchObject({
+        model: 'custom-model',
+        stream: false,
+        reasoning_effort: 'none',
+        max_completion_tokens: 400,
+      });
       const context = JSON.parse(request.messages[1].content);
       expect(context.question).toBe('When?');
       expect(context.retrieved_emails.map((email) => email.from)).toEqual([

@@ -141,7 +141,7 @@ describe('per-source pick limits', () => {
       ['Rust'],
       'repos',
       'key',
-      'gpt-5.6-luna',
+      'gpt-6-luna',
       GITHUB_PICKS,
     );
     expect(picked).toHaveLength(GITHUB_PICKS);
@@ -158,7 +158,7 @@ describe('rankForInterests', () => {
   test('sends the interests and candidates and returns the picks', async () => {
     const mock = stubRanking([{ url: CANDIDATES[0].url, note: 'Rust, like you asked for' }]);
 
-    const picked = await rankForInterests(CANDIDATES, ['Rust'], 'repos', 'key', 'gpt-5.6-luna');
+    const picked = await rankForInterests(CANDIDATES, ['Rust'], 'repos', 'key', 'gpt-6-luna');
 
     expect(picked).toHaveLength(1);
     expect(picked[0].note).toBe('Rust, like you asked for');
@@ -175,7 +175,7 @@ describe('rankForInterests', () => {
     const mock = vi.fn();
     vi.stubGlobal('fetch', mock);
 
-    const picked = await rankForInterests(CANDIDATES, [], 'repos', 'key', 'gpt-5.6-luna');
+    const picked = await rankForInterests(CANDIDATES, [], 'repos', 'key', 'gpt-6-luna');
 
     expect(picked.map((p) => p.title)).toEqual(['acme/rocket', 'acme/slow']);
     expect(mock).not.toHaveBeenCalled();
@@ -194,7 +194,7 @@ describe('buildNews', () => {
     personaliseGithub: true,
     interests: [],
     apiKey: 'key',
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     githubToken: 'gh',
     productHuntToken: 'ph',
   };

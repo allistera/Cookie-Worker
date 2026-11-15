@@ -77,12 +77,33 @@ describe('GET calendar management', () => {
     });
   });
 
-  it('reports the saved default calendar while it is still writable', async () => {
-    sqlQueue = [[{ id: CALENDAR_ID, name: 'Work', color: '#4f7c6b' }], [{ id: CALENDAR_ID }]];
+  it('reads the calendars and the saved default in one statement', async () => {
+    const work = { id: CALENDAR_ID, name: 'Work', color: '#4f7c6b' };
+    sqlQueue = [[{ ...work, defaultCalendarId: CALENDAR_ID }]];
+    const response = await listCalendars(makeSql(), USER_ID);
+
+    // The saved id rides on each row and is not part of a calendar.
+    expect(await response.json()).toEqual({ calendars: [work], defaultCalendarId: CALENDAR_ID });
+    expect(queriesRun).toHaveLength(1);
+    expect(queriesRun[0].text).toContain("u.prefs ->> 'defaultCalendarId'");
+    expect(queriesRun[0].text).toContain('LEFT JOIN calendars c ON c.user_id = u.id');
+    expect(queriesRun[0].values).toEqual([USER_ID]);
+  });
+
+  it('reads the saved default on its own before the subscription columns exist', async () => {
+    const missingColumn = () =>
+      Promise.reject(Object.assign(new Error('missing column'), { code: '42703' }));
+    sqlQueue = [
+      missingColumn(), // the one-statement read
+      missingColumn(), // fetchCalendars with the subscription columns
+      [{ id: CALENDAR_ID, name: 'Work', color: '#4f7c6b' }],
+      [{ id: CALENDAR_ID }],
+    ];
     const response = await listCalendars(makeSql(), USER_ID);
 
     expect((await response.json()).defaultCalendarId).toBe(CALENDAR_ID);
-    expect(queriesRun[1].text).toContain("prefs ->> 'defaultCalendarId'");
+    expect(queriesRun).toHaveLength(4);
+    expect(queriesRun[3].text).toContain("prefs ->> 'defaultCalendarId'");
   });
 
   it('drops a default that no longer names a writable calendar', async () => {
@@ -92,7 +113,7 @@ describe('GET calendar management', () => {
       color: '#d15c4e',
       subscriptionUrl: 'https://example.com/holidays.ics',
     };
-    sqlQueue = [[subscribed], [{ id: CALENDAR_ID }]];
+    sqlQueue = [[{ ...subscribed, defaultCalendarId: CALENDAR_ID }]];
     const response = await listCalendars(makeSql(), USER_ID);
 
     expect((await response.json()).defaultCalendarId).toBeNull();
@@ -107,7 +128,8 @@ describe('GET calendar management', () => {
       { id: 'id-5', name: 'Holidays', color: '#d15c4e' },
     ];
     sqlQueue = [
-      [], // fetchCalendars: empty
+      // The user's row with no calendar joined to it.
+      [{ id: null, name: null, color: null, defaultCalendarId: null }],
       [], // one atomic INSERT
       defaults, // canonical refetch
     ];
@@ -138,6 +160,10 @@ describe('GET calendar management', () => {
       'birthdays',
       'holidays',
     ]);
+    // The saved default is still looked up, by the read of its own.
+    expect(queriesRun).toHaveLength(2);
+    expect(queriesRun[1].text).toContain("prefs ->> 'defaultCalendarId'");
+    expect(body.defaultCalendarId).toBeNull();
   });
 });
 

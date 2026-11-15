@@ -35,7 +35,7 @@
     { "binding": "SQL_METRICS", "dataset": "cookie_sql_queries" },
   ],
   "vars": {
-    "AI_MODEL": "gpt-5-nano",
+    "AI_MODEL": "gpt-6-luna",
     "OWNER_EMAIL": "allisteraall@gmail.com",
     "SENTRY_ENVIRONMENT": "production",
     // OpenAI calls go through Cloudflare AI Gateway once AI_GATEWAY_ID names

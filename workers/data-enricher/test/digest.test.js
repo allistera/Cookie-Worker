@@ -76,7 +76,7 @@ describe('buildDigest email triage', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(buildDigest(MESSAGES, 'key', 'gpt-5.6-luna')).resolves.toEqual({
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-6-luna')).resolves.toEqual({
       overview: TRIAGE.overview,
       topics: [
         {
@@ -111,7 +111,7 @@ describe('buildDigest email triage', () => {
     expect(url).toBe('https://api.openai.com/v1/responses');
     expect(init.headers.Authorization).toBe('Bearer key');
     const body = JSON.parse(init.body);
-    expect(body.model).toBe('gpt-5.6-luna');
+    expect(body.model).toBe('gpt-6-luna');
     expect(body.max_output_tokens).toBe(DIGEST_MAX_OUTPUT_TOKENS);
     expect(body.reasoning).toEqual({ effort: DIGEST_REASONING_EFFORT });
     expect(body.text.format).toMatchObject({ type: 'json_schema', name: 'email_triage' });
@@ -128,7 +128,7 @@ describe('buildDigest email triage', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(buildDigest(MESSAGES, 'key', 'gpt-4.1-nano')).resolves.toMatchObject({
+    await expect(buildDigest(MESSAGES, 'key', 'custom-model')).resolves.toMatchObject({
       overview: TRIAGE.overview,
     });
 
@@ -145,7 +145,7 @@ describe('buildDigest email triage', () => {
       'fetch',
       vi.fn(async () => ({ ok: false, status: 429 })),
     );
-    await expect(buildDigest(MESSAGES, 'key', 'gpt-5.6-luna')).rejects.toThrow(
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-6-luna')).rejects.toThrow(
       'OpenAI request failed (429)',
     );
   });
@@ -167,7 +167,7 @@ describe('buildDigest email triage', () => {
       });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(buildDigest(MESSAGES, 'key', 'gpt-5.6-luna')).resolves.toEqual({
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-6-luna')).resolves.toEqual({
       overview: TRIAGE.overview,
       topics: [
         {
@@ -214,7 +214,7 @@ describe('buildDigest email triage', () => {
       });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(buildDigest(MESSAGES, 'key', 'gpt-5-nano')).resolves.toMatchObject({
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-6-luna')).resolves.toMatchObject({
       overview: TRIAGE.overview,
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -232,7 +232,7 @@ describe('buildDigest email triage', () => {
       });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(buildDigest(MESSAGES, 'key', 'gpt-5-nano')).resolves.toMatchObject({
+    await expect(buildDigest(MESSAGES, 'key', 'gpt-6-luna')).resolves.toMatchObject({
       overview: TRIAGE.overview,
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -249,7 +249,7 @@ describe('buildDigest email triage', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await buildDigest(MESSAGES, 'key', 'gpt-5.6-luna');
+    const result = await buildDigest(MESSAGES, 'key', 'gpt-6-luna');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result.topics.flatMap((topic) => topic.items).map((item) => item.message_id)).toEqual([
       'msg-1',

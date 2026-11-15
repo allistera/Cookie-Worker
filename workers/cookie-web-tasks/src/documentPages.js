@@ -2,6 +2,15 @@ import { decodeCursor, encodeCursor, validId, validTimestamp } from '../../../sh
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {URL} url */
 export async function getDocumentMetadata(sql, userId, url) {
+  // A client revalidating what it already holds usually finds nothing has
+  // changed, and one read answers that without opening a transaction.
+  const held = url.searchParams.get('version');
+  if (held !== null) {
+    const [revision] =
+      await sql`SELECT revision::text FROM document_workspace_revisions WHERE user_id = ${userId}`;
+    const version = revision?.revision ?? '0';
+    if (held === version) return Response.json({ unchanged: true, version });
+  }
   // Folders and global tag counts are navigation metadata, never inferred
   // from the currently loaded page of documents.
   return sql.begin(async (tx) => {

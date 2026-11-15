@@ -363,10 +363,7 @@ describe('transient Meilisearch failures', () => {
     expect(isTransientMeiliError(new Error('Meilisearch task 7 failed'))).toBe(false);
   });
 
-  it.each([
-    apiError(530),
-    new SyntaxError('Unexpected token \'e\', "error code: 502\\n" is not valid JSON'),
-  ])(
+  it.each([apiError(530), apiError(502)])(
     'retries a chunk once after a tunnel error and stamps it when the retry lands: %s',
     async (error) => {
       vi.useFakeTimers();

@@ -349,12 +349,12 @@ describe('routing — /tasks/enrichment-settings', () => {
       .mockResolvedValueOnce([{ enrichment_settings: null }]);
     const response = await worker.fetch(request('/tasks/enrichment-settings'), env, ctx);
     expect(response.status).toBe(200);
-    expect((await response.json()).enrichmentSettings.model).toBe('gpt-5-nano');
+    expect((await response.json()).enrichmentSettings.model).toBe('gpt-6-luna');
   });
 
   test('PUT saves validated owner settings', async () => {
     const enrichmentSettings = {
-      model: 'gpt-5-nano',
+      model: 'gpt-6-luna',
       schedule: {
         enabled: true,
         days: ['mon'],

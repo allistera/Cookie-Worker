@@ -4,7 +4,7 @@ import {
   buildNews,
   deleteOwnedTask,
   digestMessageIds,
-  fetchLatestSummary,
+  fetchLatestSummaries,
   fetchMessageStates,
   fetchOwnedTask,
   fetchTasks,
@@ -87,11 +87,14 @@ describe('fetchTasks', () => {
   });
 });
 
-describe('fetchLatestSummary', () => {
-  it('reads the newest whole-mailbox row of the given kind', () => {
+describe('fetchLatestSummaries', () => {
+  it('reads the newest whole-mailbox row of each kind in one statement', () => {
     const sql = createMockSql();
-    fetchLatestSummary(sql, USER_ID, 'daily_digest');
+    fetchLatestSummaries(sql, USER_ID);
 
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).toContain('SELECT DISTINCT ON (s.kind) s.kind,');
+    expect(sql.calls[0].text).toContain("s.kind IN ('daily_digest', 'daily_news')");
     expect(sql.calls[0].text).toContain('FROM summaries s');
     expect(sql.calls[0].text).toContain('WHERE s.user_id =');
     expect(sql.calls[0].text).toContain('s.message_id IS NULL');
@@ -100,9 +103,10 @@ describe('fetchLatestSummary', () => {
     );
     expect(sql.calls[0].text).toContain("(s.raw -> 'source_message_ids') ? held.id::text");
     expect(sql.calls[0].text).toContain("held.sent_at > s.created_at - interval '1 day'");
-    expect(sql.calls[0].text).toContain('ORDER BY s.created_at DESC');
-    expect(sql.calls[0].text).toContain('LIMIT 1');
-    expect(sql.calls[0].values).toEqual([USER_ID, 'daily_digest']);
+    // The screening rule stays tied to the triage kind alone.
+    expect(sql.calls[0].text).toContain("s.kind <> 'daily_digest' OR NOT EXISTS");
+    expect(sql.calls[0].text).toContain('ORDER BY s.kind, s.created_at DESC');
+    expect(sql.calls[0].values).toEqual([USER_ID]);
   });
 });
 
@@ -423,11 +427,7 @@ function tasksUrl(query = '') {
 
 describe('getTasks', () => {
   it("returns the caller's gathered tasks with a null digest/news when unwritten", async () => {
-    const sql = createMockSql([
-      [{ id: TASK_ID, source: 'email', content: 'Reply to Ana' }],
-      [],
-      [],
-    ]);
+    const sql = createMockSql([[{ id: TASK_ID, source: 'email', content: 'Reply to Ana' }], []]);
     const response = await getTasks(sql, USER_ID, tasksUrl());
     const body = await response.json();
 
@@ -435,7 +435,31 @@ describe('getTasks', () => {
     expect(body.tasks).toHaveLength(1);
     expect(body.digest).toBeNull();
     expect(body.news).toBeNull();
-    expect(sql.calls).toHaveLength(3);
+    // The tasks, then both summaries in one read.
+    expect(sql.calls).toHaveLength(2);
+  });
+
+  it('tells the triage and news rows of the one summary read apart by kind', async () => {
+    const news = {
+      kind: 'daily_news',
+      created_at: '2026-08-04T05:00:00.000Z',
+      raw: { sections: [{ title: 'GitHub', items: [{ title: 'Repo', url: 'https://x.test/r' }] }] },
+    };
+    const digest = { kind: 'daily_digest', ...digestRow([]) };
+    // Whichever order the rows come back in.
+    for (const rows of [
+      [digest, news],
+      [news, digest],
+    ]) {
+      const body = await (await getTasks(createMockSql([[], rows]), USER_ID, tasksUrl())).json();
+      expect(body.digest.overview).toBe(digest.summary);
+      expect(body.news.sections[0].title).toBe('GitHub');
+    }
+    const onlyNews = await (
+      await getTasks(createMockSql([[], [news]]), USER_ID, tasksUrl())
+    ).json();
+    expect(onlyNews.digest).toBeNull();
+    expect(onlyNews.news.created_at).toBe(news.created_at);
   });
 
   it('composes the digest with live read-state alongside the tasks', async () => {
@@ -443,6 +467,7 @@ describe('getTasks', () => {
       [],
       [
         {
+          kind: 'daily_digest',
           summary: 'One reply needs you.',
           created_at: '2026-08-03T05:00:00.000Z',
           raw: {
@@ -457,15 +482,14 @@ describe('getTasks', () => {
           },
         },
       ],
-      [],
       [{ id: ID_A, is_unread: true }],
     ]);
     const response = await getTasks(sql, USER_ID, tasksUrl());
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(sql.calls[3].text).toContain('m.is_unread');
-    expect(sql.calls[3].text).toContain('m.archived_at');
+    expect(sql.calls[2].text).toContain('m.is_unread');
+    expect(sql.calls[2].text).toContain('m.archived_at');
     expect(body.digest.topics[0].items[0]).toEqual({
       message_id: ID_A,
       headline: 'Floor plan',

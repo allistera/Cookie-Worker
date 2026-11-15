@@ -21,17 +21,47 @@ describe('document navigation metadata', () => {
     for (const call of sql.calls.slice(1)) expect(call.values).toEqual([owner]);
   });
 
-  test('skips metadata queries when the client revision matches', async () => {
-    const sql = createMockSql([[], [{ revision: '7' }]]);
+  test('answers a matching client revision with one read and no transaction', async () => {
+    const sql = createMockSql([[{ revision: '7' }]]);
     const response = await getDocumentMetadata(sql, owner, url('?version=7'));
     expect(await response.json()).toEqual({ unchanged: true, version: '7' });
-    expect(sql).toHaveBeenCalledTimes(2);
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(sql.begin).not.toHaveBeenCalled();
+    expect(sql.calls[0].values).toEqual([owner]);
   });
 
   test('uses version zero when a workspace has no revision record', async () => {
-    const sql = createMockSql([[], []]);
+    const sql = createMockSql([[]]);
     const response = await getDocumentMetadata(sql, owner, url('?version=0'));
     expect(await response.json()).toEqual({ unchanged: true, version: '0' });
+    expect(sql.begin).not.toHaveBeenCalled();
+  });
+
+  test('reads the metadata in one snapshot when the client revision is stale', async () => {
+    const folders = [{ id, title: 'Work' }];
+    const tags = [{ name: 'work', count: 150 }];
+    const counts = { total: 200, starred: 12 };
+    const sql = createMockSql([
+      [{ revision: '8' }],
+      [],
+      [{ revision: '8' }],
+      folders,
+      tags,
+      [counts],
+    ]);
+    const response = await getDocumentMetadata(sql, owner, url('?version=7'));
+    expect(await response.json()).toEqual({ folders, tags, counts, version: '8' });
+    expect(sql.begin).toHaveBeenCalledOnce();
+    expect(sql.calls[1].text).toContain('REPEATABLE READ READ ONLY');
+  });
+
+  // The snapshot's revision is the one that counts: the first read is only a
+  // shortcut, taken outside it.
+  test('still answers unchanged from inside the snapshot', async () => {
+    const sql = createMockSql([[{ revision: '8' }], [], [{ revision: '7' }]]);
+    const response = await getDocumentMetadata(sql, owner, url('?version=7'));
+    expect(await response.json()).toEqual({ unchanged: true, version: '7' });
+    expect(sql).toHaveBeenCalledTimes(3);
   });
 });
 

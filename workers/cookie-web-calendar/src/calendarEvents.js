@@ -291,11 +291,17 @@ export async function listEvents(sql, userId, url, env = /** @type {any} */ ({})
   // only ever a bound parameter, so an unknown value just matches nothing.
   // A Google calendar id filters to that calendar alone.
   const calendar = url.searchParams.get('calendar') || null;
-  const [events, google] = await Promise.all([
-    isGoogleId(calendar) ? [] : fetchEvents(sql, userId, range, calendar),
+  // Started first on purpose. The client has one connection and runs
+  // statements in the order they are issued, so Google's connection lookup
+  // goes ahead of the events read, and the requests to Google it unblocks are
+  // in flight while that read runs rather than after it. It never throws.
+  const googleEvents =
     calendar && !isGoogleId(calendar)
       ? { events: [], error: null, truncated: false }
-      : listGoogleEvents(sql, userId, range, timeZone, env, { calendar }),
+      : listGoogleEvents(sql, userId, range, timeZone, env, { calendar });
+  const [events, google] = await Promise.all([
+    isGoogleId(calendar) ? [] : fetchEvents(sql, userId, range, calendar),
+    googleEvents,
   ]);
   const { events: expanded, truncated } = expandEventsPage(events, new Date(), range);
   const merged = google.events.length
@@ -382,9 +388,11 @@ export async function updateEvent(sql, userId, body, env = /** @type {any} */ ({
       { status: 400 },
     );
   }
-  // Independent lookups — the target calendar (from fields.calendar) and the
-  // event's current calendar (from id) — so they run concurrently instead of
-  // as two sequential round trips.
+  // Independent lookups: the target calendar (from fields.calendar) and the
+  // event's current calendar (from id). Issued together, they still run one
+  // after the other: the client has one connection (max: 1) and, without
+  // prepared statements (prepare: false), postgres.js finishes each
+  // parameterised statement before it sends the next.
   const [calendar, eventInSubscribedCalendar] = await Promise.all([
     resolveCalendarId(sql, userId, fields.calendar),
     isEventInSubscribedCalendar(sql, userId, /** @type {string} */ (id)),
