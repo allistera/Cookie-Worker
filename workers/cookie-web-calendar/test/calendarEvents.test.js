@@ -427,6 +427,30 @@ describe('listEvents', () => {
 
     expect(values).toEqual([USER_ID, '2026-08-01', '2026-08-31', null, null]);
   });
+
+  // The real client has one connection and runs statements in the order they
+  // are issued: with the lookup first, the requests to Google it unblocks
+  // overlap the events read instead of waiting behind it.
+  it('issues the Google connection lookup ahead of the stored events read', async () => {
+    const statements = [];
+    /** @type {any} */ const sql = (strings) => {
+      statements.push(strings.join('?'));
+      return Promise.resolve([]);
+    };
+    const url = new URL('/calendar-events?from=2026-08-01&to=2026-08-31', 'http://localhost');
+    const googleEnv = /** @type {any} */ ({
+      GOOGLE_CLIENT_ID: 'client-id',
+      GOOGLE_CLIENT_SECRET: 'client-secret',
+      GOOGLE_TOKEN_ENCRYPTION_KEY: btoa(String.fromCharCode(...new Uint8Array(32))),
+    });
+
+    const response = await listEvents(sql, USER_ID, url, googleEnv);
+
+    expect(await response.json()).toEqual({ events: [], truncated: false });
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toContain('FROM google_calendar_connections');
+    expect(statements[1]).toContain('FROM calendar_events ce');
+  });
 });
 
 describe('parseRangeParams', () => {

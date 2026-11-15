@@ -481,6 +481,15 @@ export async function listGoogleEvents(sql, userId, range, timeZone, env, overri
   if (connection.needsReauth) return { ...NO_GOOGLE_EVENTS, error: REAUTH_MESSAGE };
 
   const client = createClient(sql, connection, env, overrides);
+  // An expired token is refreshed here once. Left to the requests below, each
+  // calendar would find the same stale token and refresh it for itself.
+  try {
+    await getAccessToken(sql, connection, env, { fetchImpl: client.fetchImpl, now: client.now });
+  } catch (error) {
+    if (error instanceof GoogleReauthRequired)
+      return { ...NO_GOOGLE_EVENTS, error: REAUTH_MESSAGE };
+    // Any other failure is met again, and reported, by each calendar's request.
+  }
   const results = await Promise.allSettled(
     calendars.map((calendar) => fetchCalendarEvents(client, calendar, range, timeZone)),
   );

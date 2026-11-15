@@ -58,6 +58,34 @@ export async function fetchCalendars(sql, userId) {
   }
 }
 
+// fetchCalendars' rows together with the saved default calendar id
+// (users.prefs, see readDefaultCalendarId), which GET /calendars reports
+// beside them: one read instead of two. Anchored on the user so the id comes
+// back even when there are no calendars yet. `defaultId` is null when none is
+// saved.
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @returns {Promise<{calendars: any[], defaultId: string | null}>}
+ */
+async function fetchCalendarsAndDefault(sql, userId) {
+  const rows = await sql`
+    SELECT c.id, c.name, c.color, c.subscription_url AS "subscriptionUrl",
+           c.subscription_synced_at AS "subscriptionSyncedAt", c.subscription_error AS "subscriptionError",
+           u.prefs ->> 'defaultCalendarId' AS "defaultCalendarId"
+    FROM users u
+    LEFT JOIN calendars c ON c.user_id = u.id
+    WHERE u.id = ${userId}
+    ORDER BY c.created_at, c.id
+  `;
+  return {
+    calendars: rows
+      .filter((row) => row.id !== null)
+      .map(({ defaultCalendarId: _defaultCalendarId, ...calendar }) => calendar),
+    defaultId: rows[0]?.defaultCalendarId ?? null,
+  };
+}
+
 // New users have no calendars until this runs once; seed the same five
 // defaults the client used to hardcode so the sidebar isn't empty on first
 // load. A no-op for anyone who already has calendars, including users
@@ -65,9 +93,9 @@ export async function fetchCalendars(sql, userId) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
+ * @param {any[]} existing The calendars the caller has just read.
  */
-async function ensureDefaultCalendars(sql, userId) {
-  const existing = await fetchCalendars(sql, userId);
+async function ensureDefaultCalendars(sql, userId, existing) {
   if (existing.length > 0) return existing;
 
   // Seed in one statement, then read the canonical rows. This avoids leaving
@@ -100,8 +128,21 @@ async function ensureDefaultCalendars(sql, userId) {
  */
 export async function listCalendars(sql, userId, env = /** @type {any} */ ({})) {
   let calendars;
+  // Stays undefined when the one read below could not run, and the saved
+  // default is then read on its own, as it always used to be.
+  /** @type {string | null | undefined} */
+  let defaultId;
   try {
-    calendars = await ensureDefaultCalendars(sql, userId);
+    let existing;
+    try {
+      ({ calendars: existing, defaultId } = await fetchCalendarsAndDefault(sql, userId));
+    } catch (error) {
+      // Before migration 0026 the subscription columns are missing;
+      // fetchCalendars knows how to read without them.
+      if (/** @type {{code?: string}} */ (error)?.code !== '42703') throw error;
+      existing = await fetchCalendars(sql, userId);
+    }
+    calendars = await ensureDefaultCalendars(sql, userId, existing);
   } catch (error) {
     // The Workers and migration pipelines deploy independently. Keep the new
     // client usable if it arrives first; mutations become available as soon
@@ -115,26 +156,38 @@ export async function listCalendars(sql, userId, env = /** @type {any} */ ({})) 
       ...googleCalendarEntries(await loadConnectionIfAvailable(sql, userId)),
     ];
   }
+  if (defaultId === undefined) defaultId = await readDefaultCalendarId(sql, userId);
   return Response.json({
     calendars,
-    defaultCalendarId: await readDefaultCalendarId(sql, userId, calendars),
+    defaultCalendarId: writableDefaultCalendarId(defaultId, calendars),
   });
 }
 
 // The person's chosen destination for new events, kept in users.prefs like
-// the other per-user settings. Reported only while it still names one of the
-// calendars an event can be filed in; a deleted, unsubscribed-from or now
-// read-only calendar silently drops back to the client's own fallback.
+// the other per-user settings. GET /calendars normally reads it with the
+// calendars (fetchCalendarsAndDefault); this is the read on its own, for when
+// that one could not run.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{id: string, subscriptionUrl?: string | null, readOnly?: boolean}[]} calendars
+ * @returns {Promise<string | null>}
  */
-async function readDefaultCalendarId(sql, userId, calendars) {
+async function readDefaultCalendarId(sql, userId) {
   const [row] = await sql`
     SELECT prefs ->> 'defaultCalendarId' AS id FROM users WHERE id = ${userId}
   `;
-  const id = String(row?.id ?? '');
+  return row?.id ?? null;
+}
+
+// The saved default is reported only while it still names one of the
+// calendars an event can be filed in; a deleted, unsubscribed-from or now
+// read-only calendar silently drops back to the client's own fallback.
+/**
+ * @param {string | null} saved
+ * @param {{id: string, subscriptionUrl?: string | null, readOnly?: boolean}[]} calendars
+ */
+function writableDefaultCalendarId(saved, calendars) {
+  const id = String(saved ?? '');
   return id && calendars.some((calendar) => calendar.id === id && isWritable(calendar)) ? id : null;
 }
 

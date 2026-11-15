@@ -431,6 +431,56 @@ describe('listGoogleEvents', () => {
     expect(attempts).toBe(2);
     expect(sql.calls[1].text).toContain('SET access_token_encrypted =');
   });
+
+  const expiredRow = () =>
+    connectionRow({ accessTokenExpiresAt: new Date(Date.now() - 1000).toISOString() });
+
+  it('refreshes an expired token once for all the selected calendars', async () => {
+    let refreshes = 0;
+    const fetchImpl = vi.fn(async (/** @type {any} */ input, /** @type {any} */ init = {}) => {
+      if (new URL(input).hostname === 'oauth2.googleapis.com') {
+        refreshes += 1;
+        return jsonResponse({ access_token: 'access-2', expires_in: 3600 });
+      }
+      expect(init.headers.Authorization).toBe('Bearer access-2');
+      return jsonResponse({ items: [] });
+    });
+    const sql = createMockSql([[await expiredRow()], []]);
+    const result = await listGoogleEvents(sql, USER_ID, range, 'UTC', env, { fetchImpl });
+    expect(result).toEqual({ events: [], error: null, truncated: false });
+    expect(refreshes).toBe(1);
+    // The refresh, then one events request for each of the two calendars.
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[1].text).toContain('SET access_token_encrypted =');
+  });
+
+  it('reports a revoked grant after one refresh attempt, without asking for events', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: 'invalid_grant' }, 400));
+    const sql = createMockSql([[await expiredRow()], []]);
+    const result = await listGoogleEvents(sql, USER_ID, range, 'UTC', env, { fetchImpl });
+    expect(result.events).toEqual([]);
+    expect(result.error).toContain('reconnected');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sql.calls[1].text).toContain('needs_reauth = true');
+  });
+
+  it('leaves any other refresh failure for each calendar to report', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: 'server_error' }, 500));
+    const result = await listGoogleEvents(
+      createMockSql([[await expiredRow()]]),
+      USER_ID,
+      range,
+      'UTC',
+      env,
+      { fetchImpl },
+    );
+    expect(result).toEqual({
+      events: [],
+      error: 'Events from the Google calendar "Personal" could not be loaded.',
+      truncated: false,
+    });
+  });
 });
 
 describe('listGoogleEvents truncation', () => {
