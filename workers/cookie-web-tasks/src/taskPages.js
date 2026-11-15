@@ -126,9 +126,12 @@ export async function getTaskDetail(sql, userId, url) {
   } catch {
     return Response.json({ error: 'Invalid subtask cursor' }, { status: 400 });
   }
-  // Three independent reads, none inside a transaction: issued together so
-  // postgres.js pipelines them on its one connection instead of paying three
-  // round trips. A missing task makes the other two harmless empty reads.
+  // Three independent reads, none inside a transaction. Issuing them together
+  // does not make them concurrent: the client has one connection (max: 1) and,
+  // without prepared statements (prepare: false), postgres.js describes each
+  // parameterised statement before running it and sends the next only when
+  // that one is done. They run one after another, in this order. A missing
+  // task makes the other two harmless empty reads.
   const [[item], rows, [counts]] = await Promise.all([
     sql`SELECT ${columns(sql, true)} FROM task_items t WHERE t.user_id = ${userId} AND t.id = ${id}`,
     sql`SELECT ${columns(sql, true)} FROM task_items t

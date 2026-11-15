@@ -49,17 +49,18 @@ export function fetchTasks(sql, userId, date) {
   `;
 }
 
-// The newest whole-mailbox summary of a given kind, written by the
-// data-enricher Worker: the legacy 'daily_digest' kind now carries three-tier
-// inbox triage, while 'daily_news' carries the news round-up. These are the
-// rows carrying no message_id.
-/** @param {import('postgres').Sql} sql @param {string} userId @param {string} kind */
-export function fetchLatestSummary(sql, userId, kind) {
+// The newest whole-mailbox summary of each kind AI Today shows, written by
+// the data-enricher Worker: the legacy 'daily_digest' kind now carries
+// three-tier inbox triage, while 'daily_news' carries the news round-up. These
+// are the rows carrying no message_id. One statement returns at most one row
+// per kind, each with its kind, rather than a read for each.
+/** @param {import('postgres').Sql} sql @param {string} userId */
+export function fetchLatestSummaries(sql, userId) {
   return sql`
-    SELECT s.summary, s.raw, s.created_at
+    SELECT DISTINCT ON (s.kind) s.kind, s.summary, s.raw, s.created_at
     FROM summaries s
     WHERE s.user_id = ${userId}
-      AND s.kind = ${kind}
+      AND s.kind IN ('daily_digest', 'daily_news')
       AND s.message_id IS NULL
       -- A generated overview or topic title can mention a contributor that is
       -- no longer visible. Hide that whole snapshot, not just its linked items.
@@ -71,8 +72,7 @@ export function fetchLatestSummary(sql, userId, kind) {
             ELSE held.created_at <= s.created_at AND held.sent_at > s.created_at - interval '1 day'
           END
       ))
-    ORDER BY s.created_at DESC
-    LIMIT 1
+    ORDER BY s.kind, s.created_at DESC
   `;
 }
 
@@ -330,11 +330,12 @@ export async function postTasks(sql, userId, body, env) {
 export async function getTasks(sql, userId, url) {
   const rawDate = url.searchParams.get('date');
   const date = isCalendarDate(rawDate) ? rawDate : null;
-  const [tasks, [digestRow], [newsRow]] = await Promise.all([
+  const [tasks, summaries] = await Promise.all([
     fetchTasks(sql, userId, date),
-    fetchLatestSummary(sql, userId, 'daily_digest'),
-    fetchLatestSummary(sql, userId, 'daily_news'),
+    fetchLatestSummaries(sql, userId),
   ]);
+  const digestRow = summaries.find((row) => row.kind === 'daily_digest');
+  const newsRow = summaries.find((row) => row.kind === 'daily_news');
   const ids = digestMessageIds(digestRow);
   const states = ids.length ? await fetchMessageStates(sql, userId, ids) : [];
   return Response.json({
