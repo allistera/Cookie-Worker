@@ -253,11 +253,55 @@ describe('getDocumentImageUrl', () => {
     expect(response.status).toBe(503);
   });
 
+  // The token is requested while the ownership read runs, so it has been
+  // asked for by now; what matters is that it is never turned into a link.
   it('refuses a new signed link for an image pending deletion or already deleted', async () => {
     const s = signer({ sql: createMockSql([[]]) });
     const response = await getDocumentImageUrl(requestFor(own), USER, s);
     expect(response.status).toBe(404);
-    expect(s.issueSignedToken).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ error: 'Image not found' });
+    expect(s.presignUrl).not.toHaveBeenCalled();
     expect(s.sql.calls[0].text).toContain('deleting_at IS NULL AND deleted_at IS NULL');
+  });
+
+  it('asks for the token while the ownership read is still running', async () => {
+    let finishRead = (/** @type {unknown[]} */ _rows) => {};
+    const sql = vi.fn(() => new Promise((resolve) => (finishRead = resolve)));
+    const s = signer({ sql });
+    const pending = getDocumentImageUrl(requestFor(own), USER, s);
+    await vi.waitFor(() => expect(sql).toHaveBeenCalled());
+    expect(s.issueSignedToken).toHaveBeenCalledOnce();
+    // Nothing is signed into a link until the read says the image is the caller's.
+    expect(s.presignUrl).not.toHaveBeenCalled();
+    finishRead([{ pathname: `documents/${USER}/abc-XYZ.png` }]);
+    expect((await pending).status).toBe(200);
+    expect(s.presignUrl).toHaveBeenCalledOnce();
+  });
+
+  it('still answers 404 for a missing image when the token could not be issued', async () => {
+    const s = signer({
+      sql: createMockSql([[]]),
+      issueSignedToken: vi.fn().mockRejectedValue(new Error('storage api down')),
+    });
+    const response = await getDocumentImageUrl(requestFor(own), USER, s);
+    expect(response.status).toBe(404);
+    expect(s.presignUrl).not.toHaveBeenCalled();
+  });
+
+  it("raises a failure to issue the token for the caller's own image", async () => {
+    const s = signer({
+      issueSignedToken: vi.fn().mockRejectedValue(new Error('storage api down')),
+    });
+    await expect(getDocumentImageUrl(requestFor(own), USER, s)).rejects.toThrow('storage api down');
+    expect(s.presignUrl).not.toHaveBeenCalled();
+  });
+
+  it('raises a failed ownership read without leaving the token request unhandled', async () => {
+    const s = signer({
+      sql: vi.fn().mockRejectedValue(new Error('connection lost')),
+      issueSignedToken: vi.fn().mockRejectedValue(new Error('storage api down')),
+    });
+    await expect(getDocumentImageUrl(requestFor(own), USER, s)).rejects.toThrow('connection lost');
+    expect(s.presignUrl).not.toHaveBeenCalled();
   });
 });

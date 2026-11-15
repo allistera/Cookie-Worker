@@ -186,6 +186,19 @@ export async function getDocumentImageUrl(requestUrl, userId, signer) {
   if (!pathname.startsWith(`documents/${userId}/`) || pathname.includes('..')) {
     return Response.json({ error: 'Image not found' }, { status: 404, headers: noStore });
   }
+  const validUntil = (signer.now?.() ?? Date.now()) + SIGNED_URL_TTL_MS;
+  // Asked for while the ownership read below runs rather than after it: the
+  // pathname is already confined to the caller's own folder, and the round
+  // trip to the storage API is the slow part. The token stays in this
+  // function until that read has found a live image. Otherwise it is dropped
+  // unread, and so is a failure to issue it: the answer is still the 404.
+  const signing = signer.issueSignedToken({
+    pathname,
+    operations: ['get'],
+    validUntil,
+    token: signer.token,
+  });
+  signing.catch(() => undefined);
   const [image] = await signer.sql`
     SELECT pathname FROM document_images
     WHERE pathname = ${pathname} AND user_id = ${userId}
@@ -194,13 +207,7 @@ export async function getDocumentImageUrl(requestUrl, userId, signer) {
   if (!image) {
     return Response.json({ error: 'Image not found' }, { status: 404, headers: noStore });
   }
-  const validUntil = (signer.now?.() ?? Date.now()) + SIGNED_URL_TTL_MS;
-  const signedToken = await signer.issueSignedToken({
-    pathname,
-    operations: ['get'],
-    validUntil,
-    token: signer.token,
-  });
+  const signedToken = await signing;
   const { presignedUrl } = await signer.presignUrl(signedToken, {
     access: 'private',
     operation: 'get',
