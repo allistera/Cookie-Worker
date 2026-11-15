@@ -27,16 +27,35 @@ function record(overrides = {}) {
 
 describe('storeEmail', () => {
   test('detects duplicates before attachment work starts', async () => {
-    const sql = createMockSql({ lookupRows: [{ id: 'u', is_duplicate: true }] });
-    await expect(emailAlreadyStored(sql, '<id@example.com>', 'owner@example.com')).resolves.toBe(
-      true,
+    const sql = createMockSql({ lookupRows: [{ user_id: 'u', is_duplicate: true }] });
+    await expect(emailAlreadyStored(sql, '<id@example.com>', 'owner@example.com')).resolves.toEqual(
+      { userId: 'u', alreadyStored: true },
     );
     expect(sql.transactions).toHaveLength(0);
   });
 
+  test('resolves the owner for a message not seen before', async () => {
+    const sql = createMockSql();
+    await expect(emailAlreadyStored(sql, '<id@example.com>', 'owner@example.com')).resolves.toEqual(
+      { userId: 'user-1', alreadyStored: false },
+    );
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0].values).toEqual(['<id@example.com>', 'owner@example.com']);
+  });
+
+  // The caller already resolved the owner, so storing never reads users again.
+  test('stores under the owner id it is given without another lookup', async () => {
+    const sql = createMockSql();
+    await storeEmail(sql, record(), 'user-1');
+    expect(sql.queries).toHaveLength(0);
+    expect(sql.transactions[0][0].values).toEqual(['user-1']);
+    expect(sql.transactions[0][1].values).toContain('user-1');
+    expect(sql.transactions[0][3].values).toContain('user-1');
+  });
+
   test('inserts a new thread and message', async () => {
     const sql = createMockSql();
-    const result = await storeEmail(sql, record(), 'owner@example.com');
+    const result = await storeEmail(sql, record(), 'user-1');
     expect(result.outcome).toBe('inserted');
     expect(result.messageUuid).toEqual(expect.any(String));
     expect(sql.transactions[0]).toHaveLength(6);
@@ -70,7 +89,7 @@ describe('storeEmail', () => {
         },
       ],
     });
-    const result = await storeEmail(sql, record(), 'owner@example.com');
+    const result = await storeEmail(sql, record(), 'user-1');
 
     expect(result.outcome).toBe('inserted');
     const ruleInsert = sql.transactions[0].find((q) =>
@@ -83,7 +102,7 @@ describe('storeEmail', () => {
     const sql = createMockSql({
       lookupRows: [{ user_id: 'u', is_duplicate: true, thread_id: null }],
     });
-    await expect(storeEmail(sql, record(), 'owner@example.com')).resolves.toEqual({
+    await expect(storeEmail(sql, record(), 'user-1')).resolves.toEqual({
       outcome: 'duplicate',
       messageUuid: null,
     });
@@ -99,7 +118,7 @@ describe('storeEmail', () => {
     const sql = createMockSql({
       lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }],
     });
-    await storeEmail(sql, record({ references: ['<parent@example.com>'] }), 'owner@example.com');
+    await storeEmail(sql, record({ references: ['<parent@example.com>'] }), 'user-1');
     expect(sql.transactions[0]).toHaveLength(7);
     expect(sql.transactions[0][0].text).toContain('pg_advisory_xact_lock');
     expect(sql.transactions[0][1].text).toContain('AS is_duplicate');
@@ -121,7 +140,7 @@ describe('storeEmail', () => {
       lookupRows: [{ user_id: 'u', is_duplicate: false, thread_id: 'thread-1' }],
       messageInsertReturns: [],
     });
-    await expect(storeEmail(sql, record(), 'owner@example.com')).resolves.toEqual({
+    await expect(storeEmail(sql, record(), 'user-1')).resolves.toEqual({
       outcome: 'duplicate',
       messageUuid: null,
     });
@@ -132,7 +151,7 @@ describe('storeEmail', () => {
 
   test('deletes empty thread when concurrent insert wins on a new thread', async () => {
     const sql = createMockSql({ messageInsertReturns: [] });
-    await expect(storeEmail(sql, record(), 'owner@example.com')).resolves.toEqual({
+    await expect(storeEmail(sql, record(), 'user-1')).resolves.toEqual({
       outcome: 'duplicate',
       messageUuid: null,
     });
@@ -143,9 +162,9 @@ describe('storeEmail', () => {
 
   test('throws when no user matches', async () => {
     const sql = createMockSql({ lookupRows: [] });
-    await expect(storeEmail(sql, record(), 'missing@example.com')).rejects.toThrow(
-      'no users row matches',
-    );
+    await expect(
+      emailAlreadyStored(sql, '<id@example.com>', 'missing@example.com'),
+    ).rejects.toThrow('no users row matches');
   });
 
   test('persists an uploaded attachment blob URL', async () => {
@@ -162,7 +181,7 @@ describe('storeEmail', () => {
           },
         ],
       }),
-      'owner@example.com',
+      'user-1',
     );
     const attachmentStatement = sql.transactions[0].find((statement) =>
       statement.text.includes('INSERT INTO attachments'),
@@ -179,8 +198,6 @@ describe('storeEmail', () => {
 
   test('propagates transaction failures', async () => {
     const sql = createMockSql({ transactionRejects: true });
-    await expect(storeEmail(sql, record(), 'owner@example.com')).rejects.toThrow(
-      'transaction failed',
-    );
+    await expect(storeEmail(sql, record(), 'user-1')).rejects.toThrow('transaction failed');
   });
 });

@@ -7,17 +7,19 @@ import { PROMPT_VERSION } from './enrich.js';
 // rather than an object - see data-enricher/src/store.js for the same fix.
 
 /**
- * Fast duplicate check before attachment uploads. storeEmail repeats the
- * check and keeps its unique-index guard because another delivery can still
- * win the race after this read.
+ * Resolves the mailbox owner and runs a fast duplicate check before attachment
+ * uploads, in one read. storeEmail takes the owner's id from here, repeats
+ * the check and keeps its unique-index guard because another delivery can
+ * still win the race after this read.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} messageId
  * @param {string} ownerEmail
+ * @returns {Promise<{userId: string, alreadyStored: boolean}>}
  */
 export async function emailAlreadyStored(sql, messageId, ownerEmail) {
   const [row] = await sql`
-    SELECT users.id,
+    SELECT users.id AS user_id,
            EXISTS (
              SELECT 1 FROM messages
              WHERE messages.user_id = users.id
@@ -29,27 +31,18 @@ export async function emailAlreadyStored(sql, messageId, ownerEmail) {
     LIMIT 1
   `;
   if (!row) throw new Error('no users row matches OWNER_EMAIL; message not stored');
-  return Boolean(row.is_duplicate);
+  return { userId: row.user_id, alreadyStored: Boolean(row.is_duplicate) };
 }
 
 /**
  * @param {import('postgres').Sql} sql
  * @param {any} record
- * @param {string} ownerEmail
+ * @param {string} userId the mailbox owner, as emailAlreadyStored resolved it
  * @returns {Promise<{outcome: 'inserted' | 'duplicate', messageUuid: string | null}>}
  */
-export async function storeEmail(sql, record, ownerEmail) {
+export async function storeEmail(sql, record, userId) {
   const messageUuid = crypto.randomUUID();
   const threadUuid = crypto.randomUUID();
-  const [userRow] = await sql`
-    SELECT users.id AS user_id
-    FROM users
-    WHERE users.email = ${ownerEmail}
-    ORDER BY users.created_at
-    LIMIT 1
-  `;
-  if (!userRow) throw new Error('no users row matches OWNER_EMAIL; message not stored');
-  const userId = userRow.user_id;
   const sentAt = record.sentAt.toISOString();
 
   /** @type {boolean} */
