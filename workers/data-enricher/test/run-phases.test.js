@@ -28,7 +28,7 @@ vi.mock('../src/news.js', () => ({
 vi.mock('../src/store.js', () => ({
   lookupUserId: vi.fn(async () => 'user-1'),
   fetchEnrichmentSettings: vi.fn(async () => ({
-    model: 'gpt-5-nano',
+    model: 'gpt-6-luna',
     schedule: {
       enabled: true,
       days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
@@ -62,7 +62,7 @@ const env = /** @type {any} */ ({
   HYPERDRIVE: { connectionString: 'postgres://stub' },
   OWNER_EMAIL: 'owner@example.com',
   OPENAI_API_KEY: 'key',
-  AI_MODEL: 'gpt-5.6-luna',
+  AI_MODEL: 'gpt-6.1-terra',
 });
 // The default export is Sentry-wrapped and flushes through ctx.waitUntil.
 const ctx = /** @type {any} */ ({ waitUntil: () => undefined });
@@ -95,7 +95,7 @@ describe('POST /run phase routing', () => {
     expect(storeDigest).toHaveBeenCalled();
     expect(storeNews).toHaveBeenCalled();
     expect(buildNews).toHaveBeenCalled();
-    expect(buildDigest).toHaveBeenCalledWith(expect.anything(), 'key', 'gpt-5-nano');
+    expect(buildDigest).toHaveBeenCalledWith(expect.anything(), 'key', 'gpt-6-luna');
   });
 
   // The refresh button must not re-analyse ten emails.
@@ -193,6 +193,42 @@ describe('POST /run phase routing', () => {
     // The body must not leak the underlying error.
     await expect(response.json()).resolves.toEqual({ status: 'failed' });
   });
+
+  // A refresh waits for the slower phase, not for both in turn.
+  test('builds the news while triage is still running', async () => {
+    let finishTriage = () => {};
+    vi.mocked(buildDigest).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishTriage = () =>
+            resolve(
+              /** @type {any} */ ({
+                overview: '',
+                topics: [],
+                noise: { count: 0, categories: [] },
+              }),
+            );
+        }),
+    );
+
+    const pending = run('?phase=today');
+    await vi.waitFor(() => expect(storeNews).toHaveBeenCalled());
+    expect(storeDigest).not.toHaveBeenCalled();
+    finishTriage();
+
+    expect((await pending).status).toBe(200);
+    expect(storeDigest).toHaveBeenCalled();
+  });
+
+  test('a failed triage does not stop the news round-up', async () => {
+    vi.mocked(buildDigest).mockRejectedValueOnce(new Error('openai exploded'));
+
+    const response = await run('?phase=today');
+
+    expect(response.status).toBe(500);
+    expect(storeDigest).not.toHaveBeenCalled();
+    expect(storeNews).toHaveBeenCalled();
+  });
 });
 
 describe('scheduled enrichment', () => {
@@ -227,8 +263,8 @@ describe('scheduled enrichment', () => {
   });
 });
 
-// COOKIE-WEB-1D: the news phase runs after minutes of triage OpenAI calls, by
-// which time the run's own connection can have dropped.
+// COOKIE-WEB-1D: a run spends minutes on OpenAI calls, by which time its own
+// connection can have dropped.
 describe('stale connections and reporting', () => {
   test('retries the news reads on a fresh client when the socket has dropped', async () => {
     vi.mocked(fetchInterests).mockRejectedValueOnce(
@@ -242,7 +278,7 @@ describe('stale connections and reporting', () => {
     ).resolves.toBeUndefined();
 
     expect(fetchInterests).toHaveBeenCalledTimes(2);
-    expect(buildNews).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5-nano' }));
+    expect(buildNews).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6-luna' }));
     expect(storeNews).toHaveBeenCalled();
   });
 
