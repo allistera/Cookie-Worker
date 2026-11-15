@@ -104,6 +104,36 @@ describe('authentication responses and cache boundaries', () => {
     );
     expect(verifyJwt.mock.calls[6][1]).not.toBe(firstKeys);
   });
+
+  // jose's own default is 10 minutes, and the request that finds the keys
+  // stale waits for the refetch.
+  test('keeps fetched signing keys for an hour', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const fetchKeys = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => Response.json({ keys: [] }));
+    const verifyJwt = vi.fn(
+      /** @param {string} _token @param {any} _keySet */
+      async (_token, _keySet) => ({ payload: { sub: 'auth0|key-age' } }),
+    );
+    const overrides = fakeJoseOverrides(verifyJwt);
+    delete overrides.jwks;
+    await verifyAccessToken(
+      request,
+      { ...env, AUTH0_DOMAIN: 'key-age.example.com' },
+      fakeSql(async () => [{ id: 'mailbox', email: 'owner@example.com' }]),
+      overrides,
+    );
+    const keySet = verifyJwt.mock.calls[0][1];
+    await keySet.reload();
+    expect(String(fetchKeys.mock.calls[0][0])).toBe(
+      'https://key-age.example.com/.well-known/jwks.json',
+    );
+    clock.mockReturnValue(1_000_000 + 60 * 60 * 1000 - 1);
+    expect(keySet.fresh).toBe(true);
+    clock.mockReturnValue(1_000_000 + 60 * 60 * 1000);
+    expect(keySet.fresh).toBe(false);
+  });
 });
 
 /**
