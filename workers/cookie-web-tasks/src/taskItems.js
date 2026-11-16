@@ -873,6 +873,7 @@ export async function updateTaskItem(sql, userId, body, env) {
 }
 
 /** Save the generated parent and children together, then index the committed tree.
+ * draft.dueDate, when set, dates the parent; the children carry no date.
  * @param {import('postgres').Sql} sql @param {string} userId @param {any} draft @param {any} env
  */
 export async function createTaskTree(sql, userId, draft, env) {
@@ -883,7 +884,11 @@ export async function createTaskTree(sql, userId, draft, env) {
       if (!response.ok) throw new Error('Could not save generated task');
       return (await response.json()).item;
     };
-    const item = await create({ content: draft.content, description: draft.description });
+    const item = await create({
+      content: draft.content,
+      description: draft.description,
+      dueDate: draft.dueDate ?? null,
+    });
     const subtasks = [];
     for (const child of draft.subtasks) {
       subtasks.push(
