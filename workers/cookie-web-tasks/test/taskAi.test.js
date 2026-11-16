@@ -269,6 +269,26 @@ describe('AI task plans', () => {
     await expect(response.json()).resolves.toEqual({ item: parent, subtasks: [child] });
   });
 
+  it('dates the parent alone when the plan is given a due date', async () => {
+    const parent = { id: PROJECT_ID, kind: 'task', projectId: null, content: 'Plan trip' };
+    const child = { id: USER_ID, parentId: PROJECT_ID, content: 'Choose date' };
+    const sql = createMockSql([[parent], [parent], [child]]);
+    const response = await createTaskTree(
+      sql,
+      USER_ID,
+      {
+        content: 'Plan trip',
+        description: 'Arrange travel',
+        dueDate: '9999-12-31',
+        subtasks: [{ content: 'Choose date', description: '' }],
+      },
+      {},
+    );
+    expect(response.status).toBe(201);
+    expect(sql.calls[0].values).toContain('9999-12-31');
+    expect(sql.calls[2].values).not.toContain('9999-12-31');
+  });
+
   it('throws inside the transaction when a child cannot be saved', async () => {
     const sql = createMockSql([[{ id: PROJECT_ID }], []]);
     await expect(
@@ -300,6 +320,20 @@ describe('AI task plans', () => {
         )
       ).status,
     ).toBe(429);
+    expect(sql.begin).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed due date before spending any AI budget', async () => {
+    const sql = createMockSql([]);
+    const response = await createAiTask(
+      sql,
+      USER_ID,
+      { text: 'Plan trip', timeZone: 'UTC', dueDate: 'someday' },
+      { OPENAI_API_KEY: 'test-key' },
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: 'dueDate must be a YYYY-MM-DD date' });
+    expect(allowRequestMock).not.toHaveBeenCalled();
     expect(sql.begin).not.toHaveBeenCalled();
   });
 });

@@ -254,6 +254,13 @@ export function normalizeTaskPlan(value) {
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {any} body @param {any} env */
 export async function createAiTask(sql, userId, body, env) {
+  // The model never dates a plan. The caller may: an optional dueDate goes on
+  // the parent task alone, and is refused here before any AI budget is spent.
+  const given = body?.dueDate;
+  const dueDate = given === undefined || given === null || given === '' ? null : given;
+  if (dueDate !== null && !isCalendarDate(dueDate)) {
+    return Response.json({ error: 'dueDate must be a YYYY-MM-DD date' }, { status: 400 });
+  }
   // Reuse authentication-scoped quota and input validation, without interpreting
   // shortcuts: the dedicated AI composer always creates a plan in Inbox.
   const response = await interpretTask(sql, userId, body, env, {
@@ -262,5 +269,5 @@ export async function createAiTask(sql, userId, body, env) {
   });
   if (!response.ok) return response;
   const { draft } = await response.json();
-  return createTaskTree(sql, userId, draft, env);
+  return createTaskTree(sql, userId, { ...draft, dueDate }, env);
 }

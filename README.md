@@ -635,11 +635,15 @@ response for existing clients.
 
 ### AI Task plans
 
-`POST /task-items/generate` accepts `{ text, timeZone }` (up to 1000 characters).
-It uses the existing authenticated AI quota and `OPENAI_API_KEY` to generate a
-title, description, and zero to eight useful subtasks. The parent and children
-are saved together in one transaction in Inbox; the response is
-`{ item, subtasks }` with status 201. Search indexing follows the commit.
+`POST /task-items/generate` accepts `{ text, timeZone, dueDate? }` (text up to
+1000 characters). It uses the existing authenticated AI quota and
+`OPENAI_API_KEY` to generate a title, description, and zero to eight useful
+subtasks. The parent and children are saved together in one transaction in
+Inbox; the response is `{ item, subtasks }` with status 201. Search indexing
+follows the commit. The model never dates a plan; an optional `dueDate`
+(`YYYY-MM-DD`) from the caller is set on the parent only, and a malformed one is
+refused with a 400 before any AI request is made. Cookie Web sends
+`9999-12-31`, its Someday date, so a generated task starts out on Someday.
 Generation failures do not save tasks. The existing `/task-items/interpret`
 quick-add parser remains available for explicit scheduling and shortcuts.
 
