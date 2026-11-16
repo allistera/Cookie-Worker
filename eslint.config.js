@@ -3,7 +3,7 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: ['node_modules/**', 'coverage/**', '.wrangler/**', 'dist/**'],
+    ignores: ['node_modules/**', 'coverage/**', '.wrangler/**'],
   },
   {
     files: ['**/*.{js,mjs}'],
