@@ -68,7 +68,7 @@ const worker = {
     if (rawSize > MAX_PARSE_BYTES) {
       console.log(JSON.stringify({ event: 'store_skipped_oversize', raw_size: rawSize }));
       setSpanAttributes({ 'cookie.ingest.outcome': 'skipped_oversize' });
-      await message.forward(env.FORWARD_TO);
+      await forwardOriginal(message, env);
       return;
     }
 
@@ -165,7 +165,7 @@ const worker = {
           }),
         );
         setSpanAttributes({ 'cookie.ingest.outcome': 'skipped_mime_parts' });
-        await message.forward(env.FORWARD_TO);
+        await forwardOriginal(message, env);
         return;
       }
       console.log(
@@ -284,8 +284,9 @@ const worker = {
     }
 
     try {
-      await message.forward(env.FORWARD_TO);
-      setSpanAttributes({ 'cookie.forward.outcome': 'forwarded' });
+      setSpanAttributes({
+        'cookie.forward.outcome': await forwardOriginal(message, env, record?.messageId),
+      });
     } catch (err) {
       // Transient forward errors propagate so the sending MTA retries
       // (idempotent storage makes the retry safe). Permanent errors would
@@ -534,6 +535,47 @@ export default Sentry.withSentry(
   createSentryOptions,
   withApplicationMetrics(withSqlMetrics(worker, 'mail-app-ingest'), 'mail-app-ingest'),
 );
+
+/**
+ * Gmail's auto-forwarding rewrites the envelope sender to
+ * `<account>+caf_=<recipient local>=<recipient domain>@<account domain>`, so
+ * a delivery carrying that sender for `mailbox` came out of that mailbox.
+ *
+ * The envelope sender is unauthenticated, and that is acceptable here: a
+ * forged one only costs the mailbox its copy, never Cookie's stored one.
+ *
+ * @param {unknown} envelopeFrom
+ * @param {unknown} mailbox
+ */
+export function isAutoForwardedFrom(envelopeFrom, mailbox) {
+  const [local, domain] = String(mailbox ?? '')
+    .toLowerCase()
+    .split('@');
+  if (!local || !domain) return false;
+  const sender = String(envelopeFrom ?? '').toLowerCase();
+  return sender.startsWith(`${local}+caf_=`) && sender.endsWith(`@${domain}`);
+}
+
+/**
+ * Sends the original on to `FORWARD_TO`, except when that mailbox is where the
+ * message was auto-forwarded from. It keeps its own copy, so sending the
+ * message back adds nothing, and Gmail rate limits those copies (`421 4.7.28`)
+ * like any other mail, which made the handler throw and Gmail redeliver a
+ * message Cookie had already stored, for hours at a time.
+ *
+ * @param {ForwardableEmailMessage} message
+ * @param {{FORWARD_TO: string}} env
+ * @param {string} [messageId]
+ * @returns {Promise<'forwarded' | 'skipped_auto_forwarded'>}
+ */
+async function forwardOriginal(message, env, messageId) {
+  if (isAutoForwardedFrom(message.from, env.FORWARD_TO)) {
+    console.log(JSON.stringify({ event: 'forward_skipped_auto_forwarded', message_id: messageId }));
+    return 'skipped_auto_forwarded';
+  }
+  await message.forward(env.FORWARD_TO);
+  return 'forwarded';
+}
 
 // Cloudflare refuses to forward mail whose sender failed SPF, DKIM, or DMARC.
 const UNAUTHENTICATED_SENDER_ERROR = /non-authenticated emails cannot be forwarded/iu;

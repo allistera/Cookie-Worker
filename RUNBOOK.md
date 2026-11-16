@@ -138,6 +138,23 @@ Transient SMTP failures and unknown failures still propagate for MTA retry. If
 no stored copy exists, even a permanent forwarding refusal propagates so the
 Worker does not silently accept mail it has neither stored nor forwarded.
 
+Mail that the `FORWARD_TO` mailbox itself auto-forwarded (envelope sender
+`<account>+caf_=<recipient>@<domain>`) is never sent back to it: that mailbox
+keeps the original. The Worker logs `forward_skipped_auto_forwarded` and sets
+`cookie.forward.outcome` to `skipped_auto_forwarded`. This covers both mail that
+first arrived in Gmail and the copy Gmail returns after the Worker forwarded a
+directly addressed message. Before this, Gmail rate limited those returned
+copies (`421 4.7.28 ... unusual rate of unsolicited mail`), the handler threw,
+and Gmail redelivered an already stored message for up to four hours. A
+directly addressed message can still meet that rate limit; it is stored on the
+first attempt and its sender retries until Gmail accepts the copy.
+
+Cloudflare Email Routing rejects a message that fails DMARC before this Worker
+runs, so nothing here logs or stores it. Mail Gmail auto-forwards can fail that
+way when the original only passed DMARC through SPF; Gmail keeps the original
+and receives a bounce. The Email Routing activity log lists these as
+`DMARC checks failed`.
+
 ## Inbound health
 
 Two Sentry cron monitors watch the scheduled work: `mail-app-ingest-sweeps` (every 15 minutes) and `mail-app-ingest-workspace-search-drift` (at 7, 22, 37 and 52 past the hour). Sentry creates each monitor on its first check-in. A cron that stops running shows as a missed check-in.
