@@ -62,4 +62,3 @@ jobs:
           path: coverage/
           retention-days: 30
       - run: npm run dry-run -- --all
-      - run: npm run aws:build

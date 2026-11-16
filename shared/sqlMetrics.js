@@ -9,7 +9,7 @@
 // or identities. A statement is told apart by a hash of its static text.
 //
 // Every wrangler.jsonc binds the shared `cookie_sql_queries` dataset as
-// SQL_METRICS. Without the binding (Vitest, the AWS server) nothing is
+// SQL_METRICS. Without the binding (Vitest) nothing is
 // recorded and the database client is left untouched.
 
 /// <reference path="./async-hooks.d.ts" />
