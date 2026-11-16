@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import worker, {
   MAX_PARSE_BYTES,
   RECOVERY_BATCH_SIZE,
+  isAutoForwardedFrom,
   isPermanentForwardError,
   isStoreTimeout,
   isTransientDbError,
@@ -178,6 +179,44 @@ describe('email handler', () => {
       outcome: 'inserted',
     });
     expect(sql.end).toHaveBeenCalled();
+  });
+
+  // Gmail auto-forwards the owner's mail here, and FORWARD_TO is that same
+  // Gmail mailbox. Sending its own mail back adds nothing there and is what
+  // Gmail rate limited (421 4.7.28), so the handler threw and Gmail redelivered
+  // a message Cookie already had.
+  test('stores mail the forwarding mailbox auto-forwarded without sending it back', async () => {
+    recorder.current = createTracingRecorder();
+    try {
+      const sql = sqlReturning();
+      postgres.mockReturnValue(sql);
+      const message = fakeMessage(simpleFixture, {
+        from: 'Forward+caf_=inbox=example.org@example.com',
+      });
+      await worker.email(message, env(), ctx());
+      expect(message.forward).not.toHaveBeenCalled();
+      expect(messageFromLog('stored')).toMatchObject({ outcome: 'inserted' });
+      expect(messageFromLog('forward_skipped_auto_forwarded')).toEqual({
+        event: 'forward_skipped_auto_forwarded',
+        message_id: expect.any(String),
+      });
+      expect(recorder.current.root.attributes).toMatchObject({
+        'cookie.ingest.outcome': 'inserted',
+        'cookie.forward.outcome': 'skipped_auto_forwarded',
+      });
+      expect(sql.end).toHaveBeenCalled();
+    } finally {
+      recorder.current = null;
+    }
+  });
+
+  test('still forwards mail another mailbox auto-forwarded', async () => {
+    postgres.mockReturnValue(sqlReturning());
+    const message = fakeMessage(simpleFixture, {
+      from: 'someone+caf_=inbox=example.org@example.com',
+    });
+    await worker.email(message, env(), ctx());
+    expect(message.forward).toHaveBeenCalledExactlyOnceWith('forward@example.com');
   });
 
   test('looks the mailbox owner up once per delivery', async () => {
@@ -412,6 +451,21 @@ describe('email handler', () => {
     expect(message.forward).toHaveBeenCalledOnce();
     expect(JSON.parse(mockedConsoleLog().mock.calls[0][0])).toMatchObject({
       event: 'store_skipped_oversize',
+    });
+  });
+
+  // Cookie stores nothing for an oversized message, but the mailbox that
+  // auto-forwarded it still holds the original.
+  test('does not send an oversized message back to the mailbox that auto-forwarded it', async () => {
+    const message = fakeMessage('', {
+      rawSize: MAX_PARSE_BYTES + 1,
+      from: 'forward+caf_=inbox=example.org@example.com',
+    });
+    await worker.email(message, env(), ctx());
+    expect(postgres).not.toHaveBeenCalled();
+    expect(message.forward).not.toHaveBeenCalled();
+    expect(messageFromLog('forward_skipped_auto_forwarded')).toEqual({
+      event: 'forward_skipped_auto_forwarded',
     });
   });
 
@@ -997,6 +1051,23 @@ describe('helpers', () => {
     ).toBe(false);
     expect(isTransientDbError(new Error('Network connection lost.'))).toBe(true);
     expect(isTransientDbError(new Error('syntax error'))).toBe(false);
+  });
+
+  test.each([
+    ['owner+caf_=inbox=example.org@gmail.com', 'owner@gmail.com', true],
+    ['Owner+caf_=inbox=example.org@GMAIL.com', 'owner@gmail.com', true],
+    ['owner+caf_=inbox=example.org@gmail.com', 'OWNER@gmail.com', true],
+    // Another account's auto-forward, a plain plus address, and the mailbox
+    // writing directly are all ordinary senders.
+    ['other+caf_=inbox=example.org@gmail.com', 'owner@gmail.com', false],
+    ['owner+caf_=inbox=example.org@example.com', 'owner@gmail.com', false],
+    ['owner+news@gmail.com', 'owner@gmail.com', false],
+    ['owner@gmail.com', 'owner@gmail.com', false],
+    ['owner+caf_=inbox=example.org@gmail.com', '', false],
+    ['owner+caf_=inbox=example.org@gmail.com', undefined, false],
+    [undefined, 'owner@gmail.com', false],
+  ])('isAutoForwardedFrom(%s, %s) is %s', (envelopeFrom, mailbox, expected) => {
+    expect(isAutoForwardedFrom(envelopeFrom, mailbox)).toBe(expected);
   });
 
   test.each([

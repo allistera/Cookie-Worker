@@ -330,6 +330,8 @@ Cloudflare Email Routing
 
 Transient forwarding errors are re-thrown so the sending server can retry. Permanent forwarding errors are accepted only when the message was stored safely.
 
+Mail that the `FORWARD_TO` mailbox auto-forwarded to Cookie is not sent back to it. Gmail marks its auto-forwards with an envelope sender of the form `<account>+caf_=<recipient>@gmail.com`; when that account is `FORWARD_TO`, the mailbox already holds the original, so the Worker stores the message, logs `forward_skipped_auto_forwarded` and accepts it.
+
 ## Capabilities
 
 - Parses MIME bodies and uploads attachment bytes to private Vercel Blob storage.
