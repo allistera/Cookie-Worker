@@ -276,6 +276,44 @@ describe('retry payload stability', () => {
   });
 });
 
+describe('generated attachments', () => {
+  it('freezes a small generated part into the payload the provider is given', async () => {
+    const payloads = [];
+    const sql = /** @type {any} */ (async () => [{ existing_message_id: 'existing' }]);
+    const services = /** @type {any} */ ({
+      env: { EMAIL_FROM: 'Cookie <sender@example.com>' },
+      createResend: () => ({
+        emails: {
+          send: async (payload) => {
+            payloads.push(payload);
+            return { data: { id: 'provider-1' } };
+          },
+        },
+      }),
+    });
+    const part = {
+      filename: 'invite.ics',
+      content: 'QkVHSU46VkNBTEVOREFS',
+      contentType: 'text/calendar; charset=utf-8; method=REPLY',
+    };
+    await deliverMail(
+      sql,
+      'owner',
+      {
+        recipients: ['organiser@example.com'],
+        subject: 'Accepted: Review',
+        text: 'Accepted',
+        html: null,
+        replyToMessageId: null,
+        idempotencyKey: 'invitation-reply/one',
+        inlineAttachments: [part],
+      },
+      services,
+    );
+    expect(payloads[0].attachments).toEqual([part]);
+  });
+});
+
 it('requires a follow-up after the scheduled send, not just after now', () => {
   const sendAt = Date.now() + 3600000;
   expect(parseFollowUpAt(new Date(sendAt - 1000).toISOString(), sendAt)).toBeNull();

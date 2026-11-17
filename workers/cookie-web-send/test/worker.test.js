@@ -1127,6 +1127,36 @@ describe('routing, auth, and cleanup', () => {
     expect(response.status).toBe(404);
   });
 
+  test('routes /send/invitation-reply to the invitation handler', async () => {
+    const body = JSON.stringify({
+      invitationId: '22222222-2222-4222-8222-222222222222',
+      response: 'accepted',
+      timeZone: 'Europe/London',
+    });
+    responses = [[]];
+    const missing = await worker.fetch(request('/send/invitation-reply', { body }), env, ctx);
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'Invitation not found' });
+    expect(missing.headers.get('Access-Control-Allow-Origin')).toBe(PRODUCTION);
+
+    const wrongMethod = await worker.fetch(
+      request('/send/invitation-reply', { method: 'GET' }),
+      env,
+      ctx,
+    );
+    expect(wrongMethod.status).toBe(405);
+  });
+
+  test('an invitation cannot be answered while sending is not configured', async () => {
+    const response = await worker.fetch(
+      request('/send/invitation-reply', { body: '{}' }),
+      { ...env, RESEND_API_KEY: undefined },
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   test('closes the sql connection on a successful request', async () => {
     responses = [[]];
     await worker.fetch(request('/send/scheduled', { method: 'GET' }), env, ctx);

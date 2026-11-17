@@ -736,7 +736,10 @@ export async function replyThreadingHeaders(sql, userId, replyToMessageId) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[], followUpAt?: string | null, requestId?: string | null}} message
+ * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[], inlineAttachments?: {filename: string, content: string, contentType: string}[], followUpAt?: string | null, requestId?: string | null}} message
+ *   `attachments` are stored files, read when the mail is sent and kept on the
+ *   sent copy. `inlineAttachments` are small generated parts (a calendar
+ *   reply) carried Base64-encoded in the frozen provider payload itself.
  * @param {SendServices} services
  */
 export async function deliverMail(
@@ -751,6 +754,7 @@ export async function deliverMail(
     idempotencyKey,
     readReceiptToken,
     attachments = [],
+    inlineAttachments = [],
     followUpAt,
     requestId = null,
   },
@@ -771,6 +775,7 @@ export async function deliverMail(
     text,
   };
   if (trackedHtml) payload.html = trackedHtml;
+  if (inlineAttachments.length) payload.attachments = inlineAttachments;
   if (replyToMessageId) {
     try {
       const headers = await replyThreadingHeaders(sql, userId, replyToMessageId);
@@ -824,7 +829,10 @@ export async function resumeDelivery(sql, delivery, services) {
         ? await withAttachmentPayloadSlot(async () =>
             send({
               ...row.provider_payload,
-              attachments: await loadProviderAttachments(attachments, services.readBlob),
+              attachments: [
+                ...(row.provider_payload.attachments ?? []),
+                ...(await loadProviderAttachments(attachments, services.readBlob)),
+              ],
             }),
           )
         : await send(row.provider_payload);

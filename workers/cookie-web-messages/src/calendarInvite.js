@@ -1,10 +1,13 @@
 import ical from 'node-ical';
 
+import { isValidEmailAddress } from '../../../shared/email-validation.js';
+
 export const MAX_CALENDAR_ATTACHMENT_BYTES = 256 * 1024;
 const MAX_TITLE = 200;
 const MAX_DESCRIPTION = 2000;
 const MAX_LOCATION = 200;
 const DEFAULT_DURATION_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @typedef {{
@@ -14,6 +17,33 @@ const DEFAULT_DURATION_MS = 60 * 60 * 1000;
  *   start_at: string,
  *   end_at: string,
  * }} CalendarInvite
+ */
+
+/**
+ * What an iTIP message says about one event: enough to recognise a later
+ * revision or cancellation of it and to answer its organiser.
+ *
+ * `recurrenceId` is '' for an event, or for a whole series, and otherwise the
+ * original start of the one occurrence the message is about, as a UTC
+ * `YYYYMMDDTHHMMSSZ` (or `YYYYMMDD` for an all-day occurrence).
+ *
+ * @typedef {{
+ *   method: 'request' | 'cancel',
+ *   uid: string,
+ *   recurrenceId: string,
+ *   sequence: number,
+ *   dtstamp: string | null,
+ *   organizer: {address: string, name: string | null},
+ *   attendees: {address: string, name: string | null}[],
+ *   title: string,
+ *   description: string | null,
+ *   location: string | null,
+ *   startAt: string,
+ *   endAt: string,
+ *   allDay: boolean,
+ *   recurrenceRule: string | null,
+ *   timeZone: string | null,
+ * }} ParsedInvitation
  */
 
 /**
@@ -267,6 +297,143 @@ function parseCalendarText(ics) {
   return earliest;
 }
 
+const MAX_UID = 500;
+const MAX_NAME = 200;
+const MAX_RRULE = 500;
+const MAX_ATTENDEES = 500;
+
+/**
+ * The bare, lower-cased address of an ORGANIZER or ATTENDEE value
+ * (`mailto:someone@example.com`), or null when it is not one mail address.
+ * @param {unknown} value
+ */
+function calendarAddress(value) {
+  const text = String(propertyValue(value) ?? '').trim();
+  const address = text.replace(/^mailto:/i, '').toLowerCase();
+  return isValidEmailAddress(address) ? address : null;
+}
+
+/**
+ * @param {unknown} value An ORGANIZER or ATTENDEE as node-ical returns it.
+ * @returns {{address: string, name: string | null} | null}
+ */
+function calendarParticipant(value) {
+  const address = calendarAddress(value);
+  if (!address) return null;
+  const params = /** @type {any} */ (value)?.params;
+  const name = boundedText(params?.CN, MAX_NAME);
+  // Google writes the address itself as CN when the guest has no name.
+  return { address, name: name && name.toLowerCase() !== address ? name : null };
+}
+
+/** @param {number} value */
+const pad2 = (value) => String(value).padStart(2, '0');
+
+/**
+ * node-ical builds a VALUE=DATE value from the date's components in the
+ * runtime's own zone, so the day is read back the same way.
+ * @param {Date} date
+ */
+const localDay = (date) =>
+  `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}`;
+
+/** @param {Date} date */
+const utcBasic = (date) =>
+  `${date.toISOString().slice(0, 19).replaceAll('-', '').replaceAll(':', '')}Z`;
+
+/** @param {string} day A `YYYYMMDD` day. */
+const utcMidnight = (day) =>
+  new Date(Date.UTC(Number(day.slice(0, 4)), Number(day.slice(4, 6)) - 1, Number(day.slice(6))));
+
+/**
+ * @param {any} event
+ * @returns {string | null}
+ */
+function recurrenceRuleText(event) {
+  if (!event.rrule || !(event.rrule.toString instanceof Function)) return null;
+  const line = String(event.rrule.toString())
+    .split(/\r?\n/)
+    .find((entry) => /^RRULE:/i.test(entry));
+  const rule = line ? line.slice('RRULE:'.length).trim() : '';
+  return rule && rule.length <= MAX_RRULE ? rule : null;
+}
+
+/**
+ * The event an iTIP REQUEST or CANCEL is about. Other methods (a guest's
+ * REPLY, a COUNTER) and plain calendar files with no METHOD are not
+ * invitations to this mailbox and return null.
+ *
+ * A message about a series can carry the series and changed occurrences of it
+ * together; the series is the one tracked, since it is what the guest answers.
+ *
+ * @param {string} ics
+ * @returns {ParsedInvitation | null}
+ */
+export function parseCalendarInvitation(ics) {
+  /** @type {any} */
+  let chosen = null;
+  for (const value of parseCalendarValues(ics)) {
+    const event = /** @type {any} */ (value);
+    if (!event || typeof event !== 'object' || event.type !== 'VEVENT') continue;
+    if (!chosen || (chosen.recurrenceid && !event.recurrenceid)) chosen = event;
+    if (!chosen.recurrenceid) break;
+  }
+  if (!chosen) return null;
+
+  const method = String(chosen.method ?? '').toUpperCase();
+  if (method !== 'REQUEST' && method !== 'CANCEL') return null;
+  const uid = String(propertyValue(chosen.uid) ?? '').trim();
+  const organizer = calendarParticipant(chosen.organizer);
+  const start = validDate(chosen.start);
+  if (!uid || uid.length > MAX_UID || !organizer || !start) return null;
+
+  const allDay = chosen.datetype === 'date';
+  const parsedEnd = validDate(chosen.end);
+  let startAt = start;
+  let endAt;
+  if (allDay) {
+    startAt = utcMidnight(localDay(start));
+    endAt = parsedEnd ? utcMidnight(localDay(parsedEnd)) : startAt;
+    if (endAt.getTime() <= startAt.getTime()) endAt = new Date(startAt.getTime() + DAY_MS);
+  } else {
+    endAt =
+      parsedEnd && parsedEnd.getTime() > start.getTime()
+        ? parsedEnd
+        : new Date(start.getTime() + DEFAULT_DURATION_MS);
+  }
+
+  const recurrence = validDate(chosen.recurrenceid);
+  const sequence = Number(chosen.sequence);
+  const attendees = (Array.isArray(chosen.attendee) ? chosen.attendee : [chosen.attendee])
+    .slice(0, MAX_ATTENDEES)
+    .map(calendarParticipant)
+    .filter((participant) => participant !== null);
+  const zone = String(/** @type {any} */ (chosen.start).tz ?? '');
+
+  return {
+    // A CANCEL names the event it withdraws; STATUS:CANCELLED on a REQUEST
+    // says the same thing about the event it carries.
+    method:
+      method === 'CANCEL' || String(chosen.status ?? '').toUpperCase() === 'CANCELLED'
+        ? 'cancel'
+        : 'request',
+    uid,
+    recurrenceId: recurrence ? (allDay ? localDay(recurrence) : utcBasic(recurrence)) : '',
+    sequence: Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : 0,
+    dtstamp: validDate(chosen.dtstamp)?.toISOString() ?? null,
+    organizer,
+    attendees,
+    title: boundedText(chosen.summary, MAX_TITLE) || 'Untitled event',
+    description: boundedText(chosen.description, MAX_DESCRIPTION),
+    location: boundedText(chosen.location, MAX_LOCATION),
+    startAt: startAt.toISOString(),
+    endAt: endAt.toISOString(),
+    allDay,
+    recurrenceRule: recurrenceRuleText(chosen),
+    timeZone: zone && zone.length <= 100 ? zone : null,
+  };
+}
+
 /** @param {CalendarAttachment} attachment */
 export function isCalendarAttachment(attachment) {
   const filename = String(attachment?.filename ?? '').toLowerCase();
@@ -285,15 +452,21 @@ export function isCalendarAttachment(attachment) {
 }
 
 /**
+ * Reads a message's calendar attachments once and returns both views of
+ * them: `invite`, the earliest upcoming timed event (what "Add to calendar"
+ * offers), and `invitation`, the first attachment's iTIP invitation, if any.
+ *
  * @param {CalendarAttachment[]} attachments
  * @param {(url: string) => Promise<BlobReadResult | null>} [readBlob]
- * @returns {Promise<CalendarInvite | null>}
+ * @returns {Promise<{invite: CalendarInvite | null, invitation: ParsedInvitation | null}>}
  */
-export async function extractCalendarInvite(attachments, readBlob) {
-  if (typeof readBlob !== 'function') return null;
-
+export async function extractCalendarDetails(attachments, readBlob) {
   /** @type {CalendarInvite | null} */
   let earliest = null;
+  /** @type {ParsedInvitation | null} */
+  let invitation = null;
+  if (typeof readBlob !== 'function') return { invite: earliest, invitation };
+
   let earliestStart = Infinity;
   for (const attachment of attachments ?? []) {
     if (!isCalendarAttachment(attachment)) continue;
@@ -303,6 +476,7 @@ export async function extractCalendarInvite(attachments, readBlob) {
       if (!blob?.stream) continue;
       const text = await readCalendarStream(blob.stream);
       if (text === null) continue;
+      invitation ??= parseCalendarInvitation(text);
       const candidate = parseCalendarText(text);
       if (!candidate) continue;
       const startTime = Date.parse(candidate.start_at);
@@ -314,5 +488,14 @@ export async function extractCalendarInvite(attachments, readBlob) {
       // Attachment parsing is best effort; opening a message must still work.
     }
   }
-  return earliest;
+  return { invite: earliest, invitation };
+}
+
+/**
+ * @param {CalendarAttachment[]} attachments
+ * @param {(url: string) => Promise<BlobReadResult | null>} [readBlob]
+ * @returns {Promise<CalendarInvite | null>}
+ */
+export async function extractCalendarInvite(attachments, readBlob) {
+  return (await extractCalendarDetails(attachments, readBlob)).invite;
 }

@@ -1262,7 +1262,7 @@ describe('deferred calendar enrichment', () => {
     const sql = createMockSql([[{ id: MESSAGE_ID }], []]);
     const readBlob = vi.fn();
     const response = await getCalendarInvite(sql, USER_ID, MESSAGE_ID, { readBlob });
-    expect(await response.json()).toEqual({ calendar_invite: null });
+    expect(await response.json()).toEqual({ calendar_invite: null, calendar_invitation: null });
     expect(response.headers.get('Server-Timing')).toContain('attachments');
     expect(readBlob).not.toHaveBeenCalled();
   });
@@ -1322,6 +1322,119 @@ describe('deferred calendar enrichment', () => {
     expect(body.calendar_invite_pending).toBe(true);
     expect(readBlob).not.toHaveBeenCalled();
     expect(JSON.stringify(body)).not.toContain('private.invalid');
+  });
+
+  describe('for an invitation to this mailbox', () => {
+    const REQUEST =
+      'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:review@calendar.example\r\nDTSTAMP:20261017T090000Z\r\nDTSTART:20261021T120000Z\r\nDTEND:20261021T130000Z\r\nSEQUENCE:1\r\nORGANIZER;CN=Olive:mailto:olive@example.com\r\nATTENDEE:mailto:me@cookie.test\r\nSUMMARY:Review\r\nEND:VEVENT\r\nEND:VCALENDAR';
+    const attachments = [
+      {
+        id: ATTACHMENT_ID,
+        filename: 'invite.ics',
+        content_type: 'text/calendar',
+        size_bytes: 400,
+        downloadable: true,
+        blob_url: 'https://store.private.blob.vercel-storage.com/invite.ics',
+      },
+    ];
+    const owned = [
+      { id: MESSAGE_ID, envelope_to: 'me@cookie.test', owner_email: 'alex@personal.example' },
+    ];
+    const readBlob = async () => ({ stream: new Response(REQUEST).body });
+
+    test('records the invitation and reports where it stands', async () => {
+      const created = {
+        id: 'invitation-1',
+        status: 'active',
+        message_id: MESSAGE_ID,
+        title: 'Review',
+        location: null,
+        start_at: new Date('2026-10-21T12:00:00.000Z'),
+        end_at: new Date('2026-10-21T13:00:00.000Z'),
+        all_day: false,
+        recurrence_rule: null,
+        recurrence_id: '',
+        organizer_name: 'Olive',
+        organizer_address: 'olive@example.com',
+        attendee_address: 'me@cookie.test',
+        response: null,
+        responded_at: null,
+      };
+      const sql = createMockSql([owned, attachments, [created]]);
+      const response = await getCalendarInvite(sql, USER_ID, MESSAGE_ID, {
+        readBlob,
+        sender: 'me@cookie.test',
+      });
+      const body = await response.json();
+
+      expect(body.calendar_invite).toMatchObject({ title: 'Review' });
+      expect(body.calendar_invitation).toEqual({
+        id: 'invitation-1',
+        status: 'active',
+        current: true,
+        latest_message_id: MESSAGE_ID,
+        title: 'Review',
+        location: null,
+        start_at: '2026-10-21T12:00:00.000Z',
+        end_at: '2026-10-21T13:00:00.000Z',
+        all_day: false,
+        recurring: false,
+        occurrence: false,
+        organizer: { name: 'Olive', address: 'olive@example.com' },
+        attendee: 'me@cookie.test',
+        sender: 'me@cookie.test',
+        can_reply: true,
+        reply_blocked: null,
+        response: null,
+        responded_at: null,
+        event: null,
+      });
+      expect(sql.calls[2].text).toContain('INSERT INTO calendar_invitations');
+      expect(sql.calls[2].values).toEqual(
+        expect.arrayContaining([
+          USER_ID,
+          'review@calendar.example',
+          1,
+          'me@cookie.test',
+          MESSAGE_ID,
+        ]),
+      );
+      expect(response.headers.get('Server-Timing')).toContain('invitation');
+    });
+
+    test('still offers the event when the invitation cannot be recorded', async () => {
+      const sql = createMockSql([owned, attachments]);
+      const missingTable = Object.assign(new Error('relation does not exist'), { code: '42P01' });
+      sql
+        .mockImplementationOnce(async () => owned)
+        .mockImplementationOnce(async () => attachments)
+        .mockImplementationOnce(async () => {
+          throw missingTable;
+        });
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const response = await getCalendarInvite(sql, USER_ID, MESSAGE_ID, { readBlob });
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.calendar_invite).toMatchObject({ title: 'Review' });
+      expect(body.calendar_invitation).toBeNull();
+      expect(log).toHaveBeenCalledWith(
+        JSON.stringify({ event: 'calendar_invitation_sync_failed', code: '42P01' }),
+      );
+    });
+
+    test('lets a dropped connection through for the worker to retry', async () => {
+      const sql = createMockSql();
+      sql
+        .mockImplementationOnce(async () => owned)
+        .mockImplementationOnce(async () => attachments)
+        .mockImplementationOnce(async () => {
+          throw new Error('Network connection lost.');
+        });
+      await expect(getCalendarInvite(sql, USER_ID, MESSAGE_ID, { readBlob })).rejects.toThrow(
+        'Network connection lost',
+      );
+    });
   });
 
   test('checks ownership before touching invitation attachments', async () => {
