@@ -8,6 +8,7 @@ import { get, getDownloadUrl, issueSignedToken, presignUrl } from '@vercel/blob'
 import { createSql, withUserSql } from '../../../shared/db.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
+import { invitationSender } from '../../../shared/calendarInvitation.js';
 import { getContacts } from './contacts.js';
 import { getContactInsights, patchContactInsights } from './contactInsights.js';
 import {
@@ -146,6 +147,7 @@ async function route(url, request, sql, userId, env, ctx) {
       );
     return getCalendarInvite(sql, userId, url.searchParams.get('id'), {
       readBlob: (blobUrl) => get(blobUrl, { access: 'private', token: env.BLOB_READ_WRITE_TOKEN }),
+      sender: invitationSender(env),
     });
   }
 

@@ -38,6 +38,7 @@ import {
 } from './scheduled.js';
 import { handleAttachments } from './attachments.js';
 import { handleFollowUp } from './followUp.js';
+import { handleInvitationReply } from './invitationReply.js';
 import { flushWithOutOfOffice, runOutOfOfficeInBackground } from './outOfOffice.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 import { sendAutoReply, USER_SEND_PROVIDER_TIMEOUT_MS } from './autoReplyProvider.js';
@@ -485,7 +486,8 @@ const worker = {
   },
   /**
    * Routes POST /send, GET/DELETE /send/scheduled (was ?resource=scheduled),
-   * and POST /send/flush (was ?resource=flush). The flush job authenticates
+   * POST /send/invitation-reply (invitationReply.js) and POST /send/flush
+   * (was ?resource=flush). The flush job authenticates
    * with its own bearer secret, not a user Auth0 token, so it is dispatched
    * before verifyAccessToken runs.
    *
@@ -533,7 +535,9 @@ const worker = {
     try {
       if (
         !resource ||
-        !['send', 'scheduled', 'flush', 'follow-up', 'attachments'].includes(resource)
+        !['send', 'scheduled', 'flush', 'follow-up', 'attachments', 'invitation-reply'].includes(
+          resource,
+        )
       ) {
         return Response.json({ error: 'Not Found' }, { status: 404 });
       }
@@ -585,6 +589,10 @@ const worker = {
       try {
         if (resource === 'follow-up') {
           response = await handleFollowUp(sql, userId, request);
+        } else if (resource === 'invitation-reply') {
+          response = sendingConfigured(env)
+            ? await handleInvitationReply(sql, userId, request, services)
+            : Response.json({ error: 'Email sending is not configured' }, { status: 503 });
         } else if (resource === 'attachments') {
           response = await handleAttachments(request, url, segments[2], sql, userId, services);
         } else if (resource === 'scheduled') {

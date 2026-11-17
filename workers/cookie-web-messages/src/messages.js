@@ -7,7 +7,12 @@ import { createTimings } from '../../../shared/performance.js';
 // stays a plain, testable function.
 
 import { allowRequest } from '../../../shared/rate-limit.js';
-import { extractCalendarInvite, isCalendarAttachment } from './calendarInvite.js';
+import {
+  extractCalendarDetails,
+  extractCalendarInvite,
+  isCalendarAttachment,
+} from './calendarInvite.js';
+import { invitationView, syncInvitation } from './invitations.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import { privateBlobPathname } from '../../../shared/private-blob.js';
@@ -264,23 +269,60 @@ export async function getMessage(sql, userId, id, deps = {}) {
 /**
  * Invitation metadata is optional reader enrichment. Check ownership before
  * touching attachments; this endpoint never loads the message's large body.
+ *
+ * `calendar_invite` is the event "Add to calendar" offers. When the
+ * attachment is an invitation to the person (an iTIP REQUEST or CANCEL),
+ * `calendar_invitation` also reports where that invitation stands: reading
+ * the message is what records its revision (invitations.js).
+ *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {string | null} id
- * @param {CalendarInviteDeps} [deps]
+ * @param {CalendarInviteDeps & {sender?: string | null}} [deps] `sender` is
+ *   the address Cookie sends as, the only guest it can answer for.
  */
 export async function getCalendarInvite(sql, userId, id, deps = {}) {
   if (!id || !validId(id))
     return Response.json({ error: 'A valid message id is required' }, { status: 400 });
-  const [owned] =
-    await sql`SELECT id FROM messages WHERE id = ${id} AND user_id = ${userId} AND NOT is_deleted`;
+  const [owned] = await sql`
+    SELECT m.id, m.envelope_to, u.email AS owner_email
+    FROM messages m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.id = ${id} AND m.user_id = ${userId} AND NOT m.is_deleted
+  `;
   if (!owned) return Response.json({ error: 'Message not found' }, { status: 404 });
   const timing = createTimings();
   const attachments = await timing.run('attachments', () => fetchMessageAttachments(sql, id));
-  const calendar_invite = await timing.run('invite', () =>
-    extractCalendarInvite(attachments, deps.readBlob),
+  const { invite, invitation } = await timing.run('invite', () =>
+    extractCalendarDetails(attachments, deps.readBlob),
   );
-  return timing.response(Response.json({ calendar_invite }));
+  /** @type {ReturnType<typeof invitationView> | null} */
+  let calendar_invitation = null;
+  if (invitation) {
+    const sender = deps.sender ?? null;
+    try {
+      const synced = await timing.run('invitation', () =>
+        syncInvitation(
+          sql,
+          { id, userId, ownerEmail: owned.owner_email, envelopeTo: owned.envelope_to },
+          invitation,
+          sender,
+        ),
+      );
+      if (synced) calendar_invitation = invitationView(synced, sender);
+    } catch (error) {
+      // A dropped connection is the worker's to retry. Anything else (the
+      // table not migrated yet, say) leaves the reader its plain event offer.
+      if (isTransientDbError(error)) throw error;
+      console.log(
+        JSON.stringify({
+          event: 'calendar_invitation_sync_failed',
+          code: /** @type {{code?: string}} */ (error)?.code ?? null,
+        }),
+      );
+    }
+  }
+  return timing.response(Response.json({ calendar_invite: invite, calendar_invitation }));
 }
 
 /**
