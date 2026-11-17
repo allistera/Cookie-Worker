@@ -197,6 +197,16 @@ The eight Workers that `cookie-mcp` binds also expose a service-binding-only `In
 
 Each is on its own custom domain (`ai-api` / `calendar-api` / `emails-api` / `send-api` / `labels-api` / `messages-api` / `search-api` / `tasks-api` / `notifications-api` / `receipts-api` `.infinitywave.online`, see each `wrangler.jsonc`), matching Cookie-Web's `src/lib/apiWorkers.js`. The `workers.dev` URLs stay enabled alongside for debugging.
 
+### Worker placement
+
+The API Workers and `cookie-mcp` set `"placement": { "region": "aws:us-east-1" }`, the region of the Supabase database, so their `fetch` handlers run next to it instead of in the caller's data centre. Every request opens a Hyperdrive connection, and the driver spends two round trips on each parameterised statement (describe, then execute, with `prepare: false` in [`shared/db.js`](shared/db.js)). Run from Europe, a statement the database answers in a few milliseconds cost about 170 ms, and a lock taken inside a transaction was held that much longer per statement, which is how a handful of quick task deletes queued for two seconds on the owner's task lock (Sentry COOKIE-WEB-1X).
+
+The region is named rather than left to Smart Placement (`"mode": "smart"`), which needs consistent traffic from several locations to decide. With one mailbox's traffic it reported `SUCCESS` while most requests still ran locally, and the same Worker swung between 30 ms and 300 ms for its first query from one day to the next.
+
+- Placement applies to `fetch` handlers only. Cron and email handlers are not placed, and a named entrypoint runs where its caller runs, which is why `cookie-mcp` is pinned as well.
+- The `cf-placement` response header shows where a request ran: `local-AMS` is the caller's data centre, `remote-` a placed one. `curl -sI https://tasks-api.infinitywave.online/health` is enough to read it.
+- If the database moves to another region, change the value in every `wrangler.jsonc` that sets it.
+
 ## Cookie MCP server
 
 `cookie-mcp` is a remote MCP server (streamable HTTP, protocol 2026-07-28 with stateless fallback) at `https://mcp.infinitywave.online/mcp`. Any MCP client that supports remote servers with OAuth can use it; setup for Claude Desktop, Claude Code, Codex and Hermes is under [Connect a client](#connect-a-client).

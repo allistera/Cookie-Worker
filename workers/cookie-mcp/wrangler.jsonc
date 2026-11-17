@@ -18,7 +18,10 @@
     // logs into Workers Issues. A deploy without this key turns Issues off.
     "issues": { "enabled": true },
   },
-  "placement": { "mode": "smart" },
+  // Run near the database (Supabase, AWS us-east-1). The Internal
+  // entrypoints called below are not placed on their own: they run where
+  // this Worker runs (README, "Worker placement").
+  "placement": { "region": "aws:us-east-1" },
   // Only for verifyAccessToken's users lookup; tools reach data through the
   // API Workers below.
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a276ebeb4ec84d33b050614b6b5020e5" }],
