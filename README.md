@@ -19,6 +19,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | [`cookie-web-receipts`](workers/cookie-web-receipts)           | HTTP (browser, email clients) | Read receipts — `GET /read-receipts`. Serves the unauthenticated 1×1 tracking pixel embedded in sent mail (`?token=`, per-IP flood-guarded, response identical for any token so mailbox state never leaks) and the SPA's authenticated receipt-status read (`?messageIds=`). Replaces Cookie-Web's `api/read-receipts.js`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | [`cookie-mcp`](workers/cookie-mcp)                             | HTTP (MCP clients)            | Remote MCP server for Claude, Codex, Hermes and other MCP clients at `https://mcp.infinitywave.online/mcp`: 33 `cookie_` tools over mail, labels, drafts and sending, calendar, tasks and documents. See [Cookie MCP server](#cookie-mcp-server).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | [`mail-app-ingest`](workers/mail-app-ingest)                   | Email, scheduled              | Parse and store inbound mail, forward the original, and enrich the stored copy.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| [`blog-email-publish`](workers/blog-email-publish)             | Email                         | Turns an email from the blog's owner into a Markdown article committed to the blog repository. See [Blog email publishing](#blog-email-publishing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | [`data-enricher`](workers/data-enricher)                       | Scheduled (hourly), manual    | Stores three-tier inbox triage only, over the last 24 hours of Inbox mail excluding Done emails. News generation and per-email task extraction do not run. The hourly trigger runs only in the owner-configured Europe/London slots (default every day, 09:00–19:00 inclusive) and defaults to `gpt-6-luna`. Feeds Cookie-Web's AI Today page.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | [`scheduled-send-flusher`](workers/scheduled-send-flusher)     | Scheduled (every 15 minutes)  | Safety net behind cookie-web-send's `ScheduledSendClock` alarm: calls `POST /send/flush` so retries, expired leases and a lost alarm still go out, and runs the housekeeping sweeps; owns no mail-sending logic itself.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
@@ -115,7 +116,7 @@ Both variables are the same everywhere: `SENTRY_DSN` (secret, synchronized by th
 
 ### Workers Issues
 
-Fourteen of the fifteen Workers also turn on Cloudflare's Workers Issues (`observability.issues.enabled` in each `wrangler.jsonc`). It groups uncaught exceptions, failed invocations, `5xx` responses and error-level logs in the Cloudflare dashboard, with no SDK. Sentry stays the place for scrubbed error reports; Issues is the platform's own view of the same failures.
+Fifteen of the sixteen Workers also turn on Cloudflare's Workers Issues (`observability.issues.enabled` in each `wrangler.jsonc`). It groups uncaught exceptions, failed invocations, `5xx` responses and error-level logs in the Cloudflare dashboard, with no SDK. Sentry stays the place for scrubbed error reports; Issues is the platform's own view of the same failures.
 
 - Every capsule states the key, because a Wrangler deploy without it turns Issues off. It needs Wrangler 4.134.0 or later.
 - `cookie-web-calendar` sets it to `false`. Its feed URLs carry bearer tokens, Issues keeps request details with each occurrence, and it has no redaction setting.
@@ -299,6 +300,42 @@ hermes mcp login cookie
 ```
 
 Run `/reload-mcp` in an open Hermes session to pick up the change. Tokens are stored in `~/.hermes/mcp-tokens/cookie.json`. Hermes exposes the tools as `mcp__cookie__<tool>`, for example `mcp__cookie__cookie_list_labels`.
+
+## Blog email publishing
+
+`blog-email-publish` turns an email into an article on the blog at [allisterantosik.com](https://allisterantosik.com). Mail from `me@allisterantosik.com` to `blog@allisterantosik.com` is committed to the default branch of [`allistera/allister-antosik`](https://github.com/allistera/allister-antosik) as `src/content/blog/<slug>.md`, and the blog's Vercel project deploys the commit.
+
+| Article field | Source                                                                                         |
+| ------------- | ---------------------------------------------------------------------------------------------- |
+| File name     | The subject as a slug: lower case, accents removed, anything but letters and digits to a dash. |
+| `title`       | The subject.                                                                                   |
+| `description` | The opening paragraph, cut at a word to 160 characters. The title when there is no paragraph.  |
+| `pubDate`     | The time the email arrived.                                                                    |
+| `tags`        | Always empty. Add tags by editing the file.                                                    |
+| Content       | The HTML body converted to Markdown. A text-only email is used as written.                     |
+
+**What is converted.** Headings, bold, italics, links, lists, quotes, rules, tables and preformatted text become their Markdown forms. Text that Markdown would read as formatting is escaped. Images linked by URL are kept. Attachments, images embedded in the email and tracking pixels (including Cookie's read receipt) are left out. Everything else in the body is published, a signature included.
+
+**Who can publish.** Only `ALLOWED_SENDER`, and only when Cloudflare's `Authentication-Results` header records a DMARC pass for that address's domain. The From header alone proves nothing, so a message without that pass is refused however it is addressed. The domain publishes `p=reject`, and mail sent from Cookie is signed for it through Resend. Mail from that address through a service that does not sign for the domain fails DMARC and never reaches the Worker.
+
+**Outcomes.**
+
+- Mail from anyone else is rejected at delivery, so the sender gets a bounce.
+- An email with no subject, no content or a title that is already an article is accepted and not published. An existing article is never overwritten.
+- A message over 10 MiB is accepted and not read.
+- A refusal from GitHub (a bad token, a missing repository) is accepted and not published.
+- A GitHub outage or timeout fails the delivery, and the sending server delivers the message again.
+
+Mail from the allowed sender is never bounced: Resend suppresses an address that bounces, and every later article would then be dropped before it was sent. Each unpublished email is reported to Sentry instead, under `service:blog-email-publish`, with the reason in the event's `operation` tag (`read_email`, `build_article` or `commit_article`).
+
+**Setup.** Each step is done once.
+
+1. Create a fine-grained GitHub personal access token limited to the blog repository, with the repository permission **Contents: Read and write**.
+2. Deploy the Worker with the `Deploy` workflow (target `blog-email-publish`).
+3. Store the token: `npx wrangler secret put BLOG_GITHUB_TOKEN --config workers/blog-email-publish/wrangler.jsonc`.
+4. In Cloudflare Email Routing for `allisterantosik.com`, add a custom address `blog@allisterantosik.com` with the action **Send to a Worker** and this Worker. A custom address takes precedence over the catch-all rule, so this mail stops reaching `mail-app-ingest` and is no longer stored in Cookie.
+
+`ALLOWED_SENDER` and `BLOG_REPOSITORY` are variables in the Worker's `wrangler.jsonc`. The token expires on the date chosen when it was created; replace it with the command in step 3.
 
 ## Mail app ingest
 
@@ -637,7 +674,7 @@ News generation is enabled in `data-enricher`. `GITHUB_API_TOKEN` is optional an
 
 - `COOKIE_WEB_FLUSH_TOKEN` — bearer secret `scheduled-send-flusher` sends to Cookie-Web; must match Cookie-Web's `SCHEDULED_SEND_FLUSH_TOKEN` env var.
 
-After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`.
+After the first deployment, configure the domain's Cloudflare Email Routing catch-all rule to invoke `mail-app-ingest`. `blog-email-publish` has its own address rule and token; see [Blog email publishing](#blog-email-publishing).
 
 See [RUNBOOK.md](RUNBOOK.md) for deployment checks, AI recovery, secret rotation, and rollback.
 
@@ -770,7 +807,7 @@ boolean `isFavorite`; `PATCH /projects` accepts it to add or remove a favorite.
 
 ### Application metrics
 
-All 15 Workers emit `worker.invocations` (counter) and `worker.duration`
+All 16 Workers emit `worker.invocations` (counter) and `worker.duration`
 (distribution, milliseconds) through the existing `SENTRY_DSN`. The wrapper runs
 inside `withSentry`, so the SDK flushes metrics with the invocation. Metrics are
 available by default in the installed Sentry v11 SDK; no dependency upgrade or
@@ -797,8 +834,8 @@ envelope responses verify transport acceptance, not dashboard visibility.
 
 ### Response times
 
-Every Worker binds the Workers Analytics Engine dataset `cookie_response_times`
-as `RESPONSE_METRICS` in its `wrangler.jsonc`. The 14 Workers with an HTTP
+Every Worker except `blog-email-publish` binds the Workers Analytics Engine
+dataset `cookie_response_times` as `RESPONSE_METRICS` in its `wrangler.jsonc`. The 14 Workers with an HTTP
 handler wrap it in `withResponseMetrics`
 ([`shared/responseMetrics.js`](shared/responseMetrics.js)), which writes one data
 point per request:
@@ -838,7 +875,9 @@ Analytics Engine is included in the Workers free plan.
 
 ### Query timings
 
-Every Worker also binds the dataset `cookie_sql_queries` as `SQL_METRICS`.
+Every Worker with a response-time binding also binds the dataset
+`cookie_sql_queries` as `SQL_METRICS`; `blog-email-publish` has no HTTP handler
+and no database, so it binds neither.
 `withSqlMetrics` ([`shared/sqlMetrics.js`](shared/sqlMetrics.js)) opens a scope
 for each `fetch`, `scheduled`, `email` and `queue` invocation, and the client
 `createSql` returns writes one data point per query inside it

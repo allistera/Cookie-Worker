@@ -1,0 +1,29 @@
+{
+  "name": "blog-email-publish",
+  "main": "src/index.js",
+  // Email Routing is the only trigger; nothing answers over HTTP.
+  "workers_dev": false,
+  "compatibility_date": "2026-11-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    // Export Cloudflare automatic traces over OTLP to Honeycomb (EU). The
+    // endpoint and API key live in the "honeycomb-traces" destination in the
+    // Cloudflare dashboard, not in this repo.
+    "traces": { "enabled": true, "destinations": ["honeycomb-traces"], "head_sampling_rate": 1 },
+    // Group uncaught exceptions, failed invocations and error logs into
+    // Workers Issues. A deploy without this key turns Issues off.
+    "issues": { "enabled": true },
+  },
+  "vars": {
+    "SENTRY_ENVIRONMENT": "production",
+    // The only address whose mail becomes an article. It must also pass DMARC
+    // (see src/sender.js), so the header alone is not enough to publish.
+    "ALLOWED_SENDER": "me@allisterantosik.com",
+    // Repository receiving the article, on its default branch. The token that
+    // writes to it is the BLOG_GITHUB_TOKEN secret (`wrangler secret put`).
+    "BLOG_REPOSITORY": "allistera/allister-antosik",
+  },
+}

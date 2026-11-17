@@ -155,6 +155,14 @@ way when the original only passed DMARC through SPF; Gmail keeps the original
 and receives a bounce. The Email Routing activity log lists these as
 `DMARC checks failed`.
 
+### Articles published by email
+
+`blog@allisterantosik.com` has its own Email Routing rule, which sends that address to `blog-email-publish` instead of the catch-all (README, "Blog email publishing"). When an emailed article does not appear on the blog:
+
+1. Look in Sentry for `service:blog-email-publish`. An email the Worker accepted without publishing is reported there with the reason: no subject, no content, a title already taken, or GitHub refusing the commit. `GitHub lookup responded 401` means `BLOG_GITHUB_TOKEN` is missing, wrong or expired.
+2. With no Sentry event, read the Email Routing activity log. `DMARC checks failed` means the mail was not signed for the domain, and the Worker never ran. A rejected delivery with `This address only accepts mail from its owner` means the From address was not `ALLOWED_SENDER`.
+3. A commit on the blog repository's default branch with no new page is a failed Vercel build; the previous version of the site stays live.
+
 ## Inbound health
 
 Two Sentry cron monitors watch the scheduled work: `mail-app-ingest-sweeps` (every 15 minutes) and `mail-app-ingest-workspace-search-drift` (at 7, 22, 37 and 52 past the hour). Sentry creates each monitor on its first check-in. A cron that stops running shows as a missed check-in.
@@ -210,6 +218,8 @@ Update GitHub environment secrets first, then rerun the `Deploy` workflow. Confi
 `cookie-web-calendar`'s Google secrets are not in GitHub: rotate `GOOGLE_CLIENT_SECRET` with `wrangler secret put` after creating the new secret in the Google Cloud console. Rotating `GOOGLE_TOKEN_ENCRYPTION_KEY` makes every stored Google connection undecryptable — users see Google Calendar as needing a reconnect in Settings and sign in again; truncate `google_calendar_connections` first if the old ciphertext should not linger.
 
 `cookie-web-tasks`'s `TODOIST_TOKEN_ENCRYPTION_KEY` is likewise not in GitHub. Rotating it makes every stored Todoist token undecryptable — the next sync records "The saved token could not be read" on each connection and Settings asks for the token again; truncate `todoist_connections` first if the old ciphertext should not linger. Mirrored tasks and projects keep their `todoist_id` and are picked up in place once a token is saved again.
+
+`blog-email-publish`'s `BLOG_GITHUB_TOKEN` is not in GitHub either. Create a new fine-grained token for the blog repository (Contents: Read and write), store it with `wrangler secret put`, and delete the old one. Emails sent in between are accepted and not published; send them again.
 
 When rotating the database password, update the Cloudflare Hyperdrive origin and the local connection string separately.
 
