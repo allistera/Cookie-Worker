@@ -1,0 +1,6 @@
+# Fine-grained GitHub personal access token limited to the blog repository,
+# with "Contents: Read and write". Without it nothing is published.
+BLOG_GITHUB_TOKEN=""
+
+# Optional locally; required in production to send sanitized errors to Sentry.
+SENTRY_DSN=""
