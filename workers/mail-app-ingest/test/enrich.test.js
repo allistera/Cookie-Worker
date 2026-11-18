@@ -8,6 +8,7 @@ import {
   AI_ATTEMPTS,
   AI_FETCH_TIMEOUT_MS,
   AI_MODEL,
+  CLASSIFICATION_MAX_OUTPUT_TOKENS,
   classifyEmail,
   enrichMessage,
   PROMPT_VERSION,
@@ -53,6 +54,10 @@ describe('AI enrichment', () => {
     );
     const request = JSON.parse(mockedFetch().mock.calls[0][1].body);
     expect(request.model).toBe(AI_MODEL);
+    // Room for the model's reasoning as well as the JSON: at 600 a run could
+    // end `incomplete` before any output (Sentry COOKIE-WEB-1Y).
+    expect(request.max_output_tokens).toBe(CLASSIFICATION_MAX_OUTPUT_TOKENS);
+    expect(CLASSIFICATION_MAX_OUTPUT_TOKENS).toBeGreaterThanOrEqual(1_500);
     expect(request.text.format).toMatchObject({ type: 'json_schema', strict: true });
     expect(request.input[0].content).toContain('untrusted data');
     expect(request.input[0].content).toContain('Set priority to high only when');
