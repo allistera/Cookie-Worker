@@ -921,8 +921,43 @@ export async function handleGoogleCallback(sql, url, env) {
 }
 
 /**
+ * A connection with nothing chosen (a first connection, or one to a different
+ * Google account, which clears the selection) starts with every calendar on
+ * the account showing, so none has to be ticked one by one; Settings unticks
+ * the unwanted ones. Reconnecting an account keeps what was chosen for it.
+ * Best effort: the account is connected either way and Settings still offers
+ * the list, so a failure here is logged rather than returned.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {GoogleCalendarEnv} env
+ * @param {Overrides} overrides
+ * @returns {Promise<boolean>} Whether every calendar on the account now shows
+ *   because of this default.
+ */
+async function selectEveryCalendarByDefault(sql, userId, env, overrides) {
+  try {
+    const connection = await loadConnectionIfAvailable(sql, userId);
+    if (!connection || connection.selectedCalendars.length) return false;
+    const available = await fetchCalendarList(createClient(sql, connection, env, overrides));
+    const selected = available.slice(0, MAX_SELECTED_CALENDARS);
+    if (!selected.length) return false;
+    await saveSelectedCalendars(sql, userId, selected);
+    return selected.length === available.length;
+  } catch (error) {
+    console.error(
+      'Google default calendar selection failed:',
+      /** @type {Error} */ (error).message,
+    );
+    return false;
+  }
+}
+
+/**
  * Authenticated POST /google-calendar action=complete. No token exchange can
- * happen until both the Cookie account and browser transaction match.
+ * happen until both the Cookie account and browser transaction match. The
+ * answer's `selectedAll` says the account's calendars were all switched on
+ * (selectEveryCalendarByDefault), for Settings to say so.
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {any} body
@@ -951,13 +986,14 @@ export async function finishGoogleAuthorization(sql, userId, body, env, override
       env,
       overrides.fetchImpl,
     );
-    return Response.json({ connected: true }, { headers });
   } catch {
     return Response.json(
       { error: 'Google Calendar could not be connected. Start sign-in again.' },
       { status: 502, headers },
     );
   }
+  const selectedAll = await selectEveryCalendarByDefault(sql, userId, env, overrides);
+  return Response.json({ connected: true, selectedAll }, { headers });
 }
 
 /**

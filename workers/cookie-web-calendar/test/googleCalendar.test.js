@@ -1072,6 +1072,73 @@ describe('finishGoogleAuthorization', () => {
     expect(sql.calls[1].values[0]).toBe(USER_ID);
     expect(new URLSearchParams(fetchImpl.mock.calls[0][1].body).get('code')).toBe('claimed-code');
   });
+
+  const claimed = async () => [
+    {
+      redirectUri: 'https://calendar-api.infinitywave.online/google-calendar/callback',
+      codeEncrypted: await encryptToken('claimed-code', KEY),
+    },
+  ];
+  /** @param {Response | (() => Response)} calendarList */
+  const exchangeThenList = (calendarList) =>
+    vi.fn(async (/** @type {any} */ input, /** @type {any} */ _init) =>
+      String(input).startsWith(GOOGLE_API_URL)
+        ? calendarList instanceof Response
+          ? calendarList
+          : calendarList()
+        : jsonResponse({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }),
+    );
+  const listOf = (/** @type {object[]} */ calendars) =>
+    jsonResponse({
+      items: calendars.map((/** @type {any} */ calendar) => ({
+        id: calendar.id,
+        summary: calendar.name,
+        backgroundColor: calendar.color,
+        primary: calendar.primary,
+        accessRole: calendar.readOnly ? 'reader' : 'owner',
+      })),
+    });
+
+  it('shows every calendar on a connection that has none chosen, primary first', async () => {
+    const sql = createMockSql([
+      await claimed(),
+      [],
+      [await connectionRow({ selectedCalendars: [] })],
+      [],
+    ]);
+    const fetchImpl = exchangeThenList(listOf([WORK, SHARED, PRIMARY]));
+    const response = await finishGoogleAuthorization(sql, USER_ID, body, env, { fetchImpl });
+    expect(await response.json()).toEqual({ connected: true, selectedAll: true });
+    expect(sql.calls[3].text).toContain('selected_calendars');
+    expect(sql.calls[3].values[0]).toEqual([PRIMARY, WORK, SHARED]);
+    expect(sql.calls[3].values[1]).toBe(USER_ID);
+  });
+
+  it('keeps the selection of an account that is reconnected', async () => {
+    const sql = createMockSql([await claimed(), [], [await connectionRow()]]);
+    const fetchImpl = exchangeThenList(() => {
+      throw new Error('the calendar list is not read');
+    });
+    const response = await finishGoogleAuthorization(sql, USER_ID, body, env, { fetchImpl });
+    expect(await response.json()).toEqual({ connected: true, selectedAll: false });
+    expect(sql.calls).toHaveLength(3);
+  });
+
+  it('still connects when the calendar list cannot be read', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = createMockSql([
+      await claimed(),
+      [],
+      [await connectionRow({ selectedCalendars: [] })],
+    ]);
+    const fetchImpl = exchangeThenList(jsonResponse({ error: { message: 'backend' } }, 500));
+    const response = await finishGoogleAuthorization(sql, USER_ID, body, env, { fetchImpl });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ connected: true, selectedAll: false });
+    expect(sql.calls).toHaveLength(3);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
 });
 
 describe('updateGoogleSelection', () => {
