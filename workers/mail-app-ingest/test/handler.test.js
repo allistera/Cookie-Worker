@@ -138,6 +138,20 @@ function mockedFetch() {
   return fetch;
 }
 
+/** OpenAI's answer to a request it places in a region it does not serve. */
+function blockedRegionResponse() {
+  return {
+    ok: false,
+    status: 403,
+    json: async () => ({
+      error: {
+        code: 'unsupported_country_region_territory',
+        message: 'Country, region, or territory not supported',
+      },
+    }),
+  };
+}
+
 /**
  * @returns {any}
  */
@@ -856,6 +870,28 @@ describe('email handler', () => {
       tags: { service: 'mail-app-ingest', operation: 'ai_enrichment' },
     });
   });
+
+  // COOKIE-WEB-1C: OpenAI refuses calls made while handling mail from a
+  // server in a region it does not serve. The row is left for the recovery
+  // cron, so the email handler logs the deferral instead of reporting it.
+  test('logs but does not report a classification OpenAI refuses for a blocked region', async () => {
+    mockedFetch().mockResolvedValueOnce(blockedRegionResponse());
+    postgres.mockReturnValue(sqlReturning());
+    const pending = [];
+    await worker.email(
+      fakeMessage(simpleFixture),
+      env({ OPENAI_API_KEY: 'key' }),
+      /** @type {any} */ ({ waitUntil: (promise) => pending.push(promise) }),
+    );
+    await Promise.all(pending);
+
+    expect(messageFromLog('ai_enrichment_deferred')).toMatchObject({
+      reason: 'blocked_region',
+      message_id: '<simple@example.com>',
+    });
+    expect(mockedFetch()).toHaveBeenCalledOnce();
+    expect(sentry.captureException).not.toHaveBeenCalled();
+  });
 });
 
 describe('scheduled recovery', () => {
@@ -863,6 +899,36 @@ describe('scheduled recovery', () => {
     postgres.mockReset();
     sentry.captureException.mockReset();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  // No sender triggers the cron, so the refusal the email handler defers is
+  // unexpected here and is reported like any other enrichment failure.
+  test('reports a blocked-region refusal met by the recovery sweep', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => blockedRegionResponse()),
+    );
+    const sql = sqlReturning();
+    sql.begin = vi.fn(async () => [
+      {
+        id: 'message-1',
+        message_id: '<stuck@example.com>',
+        from_address: 'a@b.com',
+        subject: 'Hi',
+        body_text: 'Body',
+      },
+    ]);
+    postgres.mockReturnValue(sql);
+
+    await recoverPendingEnrichment(env({ OPENAI_API_KEY: 'key' }));
+
+    expect(messageFromLog('ai_enrichment_failed')).toMatchObject({
+      message_id: '<stuck@example.com>',
+    });
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { service: 'mail-app-ingest', operation: 'ai_enrichment' },
+    });
   });
 
   test('schedules a sweep for durable pending enrichment rows', async () => {

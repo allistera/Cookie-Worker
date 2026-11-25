@@ -2,7 +2,12 @@ import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import { withSqlMetrics } from '../../../shared/sqlMetrics.js';
 import * as Sentry from '@sentry/cloudflare';
 import { deleteUploadedAttachments, uploadAttachments } from './attachments.js';
-import { AI_MODEL, enrichMessage, MAX_ENRICHMENT_ATTEMPTS } from './enrich.js';
+import {
+  AI_MODEL,
+  enrichMessage,
+  isBlockedRegionError,
+  MAX_ENRICHMENT_ATTEMPTS,
+} from './enrich.js';
 import { syncMessageToMeili } from '../../../shared/meiliSync.js';
 import { MimePartLimitError, parseEmail } from './parse.js';
 import {
@@ -217,7 +222,7 @@ const worker = {
                   waitForTask: false,
                 });
                 if (apiKey) {
-                  await runAiEnrichment(env, lateRecord, lateResult.messageUuid, true);
+                  await runAiEnrichment(env, lateRecord, lateResult.messageUuid, 'email_late');
                 }
               }
             })
@@ -279,7 +284,7 @@ const worker = {
       ctx.waitUntil(
         syncMessageToMeili(ingestSql, env, messageUuid, { waitForTask: false })
           .then(() => endSql(ingestSql))
-          .then(() => runAiEnrichment(env, enrichRecord, messageUuid, false)),
+          .then(() => runAiEnrichment(env, enrichRecord, messageUuid, 'email')),
       );
     }
 
@@ -385,12 +390,19 @@ const worker = {
 /**
  * AI is strictly best-effort and receives a fresh Hyperdrive client after the
  * ingest connection is closed. Failures never affect forwarding.
+ *
+ * `trigger` says which invocation is running the enrichment. OpenAI refuses
+ * a call made while handling mail from a server in a region it does not
+ * serve, whatever the Worker does about it; the failed row is left for the
+ * recovery cron, so on an email that refusal is a deferral to log, not an
+ * error to report. The cron has no sender, so the same refusal there is
+ * unexpected and is reported like any other failure.
  * @param {Env & {OPENAI_API_KEY?: string, AI_MODEL?: string, MEILISEARCH_URL?: string, MEILISEARCH_API_KEY?: string}} env
  * @param {any} record
  * @param {string} messageUuid
- * @param {boolean} late
+ * @param {'email' | 'email_late' | 'recovery'} trigger
  */
-async function runAiEnrichment(env, record, messageUuid, late) {
+async function runAiEnrichment(env, record, messageUuid, trigger) {
   if (!env.OPENAI_API_KEY) return;
   const sql = createSql(env.HYPERDRIVE.connectionString);
   try {
@@ -405,6 +417,16 @@ async function runAiEnrichment(env, record, messageUuid, late) {
     // deferral), so the document the ingest sync pushed is still current.
     if (changed) await syncMessageToMeili(sql, env, messageUuid);
   } catch (err) {
+    if (trigger !== 'recovery' && isBlockedRegionError(err)) {
+      console.log(
+        JSON.stringify({
+          event: 'ai_enrichment_deferred',
+          reason: 'blocked_region',
+          message_id: record.messageId,
+        }),
+      );
+      return;
+    }
     console.log(
       JSON.stringify({
         event: 'ai_enrichment_failed',
@@ -416,7 +438,7 @@ async function runAiEnrichment(env, record, messageUuid, late) {
       'ai_enrichment',
       err,
       [env.HYPERDRIVE.connectionString, env.OPENAI_API_KEY],
-      { message_id: record.messageId, late },
+      { message_id: record.messageId, late: trigger === 'email_late' },
     );
   } finally {
     await endSql(sql);
@@ -524,7 +546,7 @@ export async function recoverPendingEnrichment(env) {
           bodyText: row.body_text,
         },
         row.id,
-        false,
+        'recovery',
       ),
     ),
   );

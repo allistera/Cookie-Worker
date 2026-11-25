@@ -5,12 +5,12 @@ vi.mock('../src/inboundAiQuota.js', async (importOriginal) => ({
 }));
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
-  AI_ATTEMPTS,
   AI_FETCH_TIMEOUT_MS,
   AI_MODEL,
   CLASSIFICATION_MAX_OUTPUT_TOKENS,
   classifyEmail,
   enrichMessage,
+  isBlockedRegionError,
   PROMPT_VERSION,
   SPAM_THRESHOLD,
 } from '../src/enrich.js';
@@ -662,43 +662,42 @@ describe('AI enrichment', () => {
   });
 
   // COOKIE-WEB-1C: a bare 403 could be a revoked key or a blocked region;
-  // the code in OpenAI's error body is what tells them apart. A blocked
-  // egress address changes between requests, so that one is retried.
-  test("retries a blocked-region 403 and names OpenAI's error code without the rest of the body", async () => {
-    vi.useFakeTimers();
-    try {
-      const sql = createMockSql();
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async () => ({
-          ok: false,
-          status: 403,
-          json: async () => ({
-            error: {
-              code: 'unsupported_country_region_territory',
-              message: 'Country, region, or territory not supported',
-            },
-          }),
-        })),
-      );
+  // the code in OpenAI's error body is what tells them apart. The refusal
+  // follows the sender of the email being handled, so a second attempt in
+  // the same run would be refused too: the run fails once and leaves the
+  // row for the recovery cron.
+  test("does not retry a blocked-region 403 and names OpenAI's error code without the rest of the body", async () => {
+    const sql = createMockSql();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 403,
+        json: async () => ({
+          error: {
+            code: 'unsupported_country_region_territory',
+            message: 'Country, region, or territory not supported',
+          },
+        }),
+      })),
+    );
 
-      const failure = enrichMessage(
-        sql,
-        { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
-        'message-1',
-        'key',
-      ).catch((error) => error);
-      await vi.runAllTimersAsync();
-      const error = await failure;
+    const error = await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'a@b.com', subject: 'Hi', bodyText: 'Body' },
+      'message-1',
+      'key',
+    ).catch((failure) => failure);
 
-      expect(error.message).toBe(
-        'OpenAI Responses API responded 403 (unsupported_country_region_territory)',
-      );
-      expect(error.message).not.toContain('not supported');
-      expect(mockedFetch()).toHaveBeenCalledTimes(AI_ATTEMPTS);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(error.message).toBe(
+      'OpenAI Responses API responded 403 (unsupported_country_region_territory)',
+    );
+    expect(error.message).not.toContain('not supported');
+    expect(isBlockedRegionError(error)).toBe(true);
+    expect(mockedFetch()).toHaveBeenCalledTimes(1);
+    // The failure is counted, which is what lets the recovery cron pick the
+    // row up and stop after MAX_ENRICHMENT_ATTEMPTS.
+    expect(sql.queries.some((query) => query.text.includes('enrichment_failed'))).toBe(true);
   });
 
   test('does not retry a 403 for any other reason', async () => {
