@@ -72,32 +72,34 @@ describe('authenticate', () => {
     );
   });
 
-  test('a token with neither Cookie scope is refused with insufficient_scope', async () => {
-    verifyAccessToken.mockResolvedValue({
-      userId: 'u-1',
-      email: 'a@example.com',
-      scope: 'openid profile',
-    });
-    const response = /** @type {Response} */ (
-      await authenticate(
-        new Request('https://mcp.example/mcp', { headers: { Authorization: 'Bearer t' } }),
-        env,
-        ctx,
-      )
-    );
-    expect(response.status).toBe(403);
-    expect(response.headers.get('WWW-Authenticate')).toBe(
-      `Bearer error="insufficient_scope", scope="cookie:read cookie:write", ${METADATA}`,
-    );
-  });
+  test.each([{ scope: undefined }, { scope: 'openid profile' }, { scope: ['cookie:write'] }])(
+    'a token with scope $scope and only account permissions gets insufficient_scope',
+    async ({ scope }) => {
+      verifyAccessToken.mockResolvedValue({
+        userId: 'u-1',
+        email: 'a@example.com',
+        scope,
+        permissions: ['cookie:read', 'cookie:write'],
+      });
+      const response = /** @type {Response} */ (
+        await authenticate(
+          new Request('https://mcp.example/mcp', { headers: { Authorization: 'Bearer t' } }),
+          env,
+          ctx,
+        )
+      );
+      expect(response.status).toBe(403);
+      expect(response.headers.get('WWW-Authenticate')).toBe(
+        `Bearer error="insufficient_scope", scope="cookie:read cookie:write", ${METADATA}`,
+      );
+    },
+  );
 
   test.each([
     ['cookie:read', undefined, false],
     ['openid cookie:read cookie:write', undefined, true],
     ['cookie:write', undefined, true],
-    // Auth0 RBAC puts granted permissions in their own claim.
-    [undefined, ['cookie:read'], false],
-    ['openid', ['cookie:read', 'cookie:write'], true],
+    ['cookie:read', ['cookie:read', 'cookie:write'], false],
   ])('scope %j with permissions %j gives canWrite %s', async (scope, permissions, canWrite) => {
     verifyAccessToken.mockResolvedValue({
       userId: 'u-1',

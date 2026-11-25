@@ -274,9 +274,8 @@ async function loadSubscription(sql, userId) {
 
 /**
  * Stores the server, topic and (optionally) access token Settings sent, and
- * turns delivery on. `accessToken` left out keeps the stored token, `null`
- * removes it, a string replaces it. A token can only be kept when the Worker
- * holds the encryption key; the route reports that as not configured.
+ * turns delivery on. An omitted token is retained only for the same normalized
+ * server URL. A string replaces the token and null clears it.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -328,6 +327,10 @@ export async function saveNtfySubscription(sql, userId, input, options) {
             server_url = EXCLUDED.server_url,
             topic = EXCLUDED.topic,
             enabled = true,
+            access_token_encrypted = CASE WHEN ntfy_subscriptions.server_url = EXCLUDED.server_url
+              THEN ntfy_subscriptions.access_token_encrypted ELSE NULL END,
+            token_hint = CASE WHEN ntfy_subscriptions.server_url = EXCLUDED.server_url
+              THEN ntfy_subscriptions.token_hint ELSE '' END,
             updated_at = now()
           RETURNING server_url, topic, enabled, token_hint, access_token_encrypted
         `;

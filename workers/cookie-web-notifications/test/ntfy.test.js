@@ -613,7 +613,7 @@ describe('ntfy settings', () => {
     },
   );
 
-  test('saves the server and topic without touching a stored token when none is sent', async () => {
+  test('returns the saved settings and token hint without exposing the ciphertext', async () => {
     const sql = /** @type {any} */ (
       vi.fn().mockResolvedValueOnce([
         {
@@ -635,7 +635,6 @@ describe('ntfy settings', () => {
 
     const query = sql.mock.calls[0][0].join(' ');
     expect(query).toContain('INSERT INTO ntfy_subscriptions (user_id, server_url, topic, enabled)');
-    expect(query).not.toContain('access_token_encrypted = EXCLUDED');
     expect(sql.mock.calls[0].slice(1)).toEqual(['user-1', 'https://ntfy.sh', 'my-topic']);
     expect(result).toEqual({
       enabled: true,
