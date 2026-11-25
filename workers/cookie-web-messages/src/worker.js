@@ -11,6 +11,7 @@ import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { invitationSender } from '../../../shared/calendarInvitation.js';
 import { getContacts } from './contacts.js';
 import { getContactInsights, patchContactInsights } from './contactInsights.js';
+import { getSubscriptions } from './subscriptions.js';
 import {
   getAttachment,
   getCalendarInvite,
@@ -82,7 +83,9 @@ function reindexMessages(env, ctx, messageIds) {
  * Hobby's 12-function cap. This Worker has no such limit, so each is its own
  * clean path. (The former /messages/thread-body text-only route went away
  * with the reader's threaded view, which expands conversation messages
- * through GET /messages?id= like any other message.)
+ * through GET /messages?id= like any other message.) GET
+ * /messages/subscriptions, the senders the mailbox is subscribed to, was
+ * added here later (subscriptions.js).
  *
  * @param {URL} url
  * @param {Request} request
@@ -97,7 +100,12 @@ async function route(url, request, sql, userId, env, ctx) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
   const sub = segments[1];
-  if (sub && !['attachment', 'contacts', 'contact-insights', 'calendar-invite'].includes(sub)) {
+  if (
+    sub &&
+    !['attachment', 'contacts', 'contact-insights', 'calendar-invite', 'subscriptions'].includes(
+      sub,
+    )
+  ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
 
@@ -108,6 +116,15 @@ async function route(url, request, sql, userId, env, ctx) {
         { status: 405, headers: { Allow: 'GET' } },
       );
     return getContacts(sql, userId);
+  }
+
+  if (sub === 'subscriptions') {
+    if (request.method !== 'GET')
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET' } },
+      );
+    return getSubscriptions(sql, userId);
   }
 
   if (sub === 'contact-insights' && !['GET', 'PATCH'].includes(request.method)) {

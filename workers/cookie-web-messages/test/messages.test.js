@@ -383,6 +383,82 @@ describe('postMessage — unsubscribe action', () => {
     );
   });
 
+  test('remembers a confirmed unsubscribe against the sender', async () => {
+    const sql = createMockSql([
+      [
+        {
+          sender: 'news@list-manage.com',
+          headers: [
+            { key: 'List-Unsubscribe', value: '<https://news.list-manage.com/unsubscribe?id=123>' },
+            { key: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+          ],
+        },
+      ],
+    ]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({ requestPublicHttps: vi.fn().mockResolvedValue({ status: 200 }) }),
+    );
+
+    expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'one-click' });
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[1].text).toContain('INSERT INTO sender_unsubscribes');
+    expect(sql.calls[1].values).toEqual([USER_ID, 'news@list-manage.com', 'one-click']);
+  });
+
+  test('still reports the unsubscribe when remembering it fails', async () => {
+    const sql = createMockSql([
+      [
+        {
+          sender: 'news@list-manage.com',
+          headers: [{ key: 'List-Unsubscribe', value: '<mailto:unsub@example.com>' }],
+        },
+      ],
+    ]);
+    sql
+      .mockImplementationOnce(sql.getMockImplementation())
+      .mockImplementationOnce(() =>
+        Promise.reject(new Error('relation "sender_unsubscribes" does not exist')),
+      );
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps({
+        resendApiKey: 'key',
+        emailFrom: 'Cookie <mail@example.com>',
+        sendEmail: vi.fn().mockResolvedValue(undefined),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'unsubscribed', method: 'mailto' });
+  });
+
+  test('remembers nothing when the unsubscribe was left to the person', async () => {
+    const sql = createMockSql([
+      [
+        {
+          sender: 'news@list-manage.com',
+          headers: [
+            { key: 'List-Unsubscribe', value: '<https://news.list-manage.com/unsubscribe?id=123>' },
+          ],
+        },
+      ],
+    ]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'unsubscribe' },
+      unsubscribeDeps(),
+    );
+
+    expect((await response.json()).status).toBe('manual');
+    expect(sql.calls).toHaveLength(1);
+  });
+
   test('falls back to a manual link when the one-click POST fails', async () => {
     const sql = createMockSql([
       [

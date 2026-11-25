@@ -132,6 +132,22 @@ describe('routing', () => {
     expect(await response.json()).toEqual({ error: 'Not Found' });
   });
 
+  test('GET /messages/subscriptions dispatches to getSubscriptions', async () => {
+    const response = await worker.fetch(request('/messages/subscriptions'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ subscriptions: [] });
+  });
+
+  test('POST on /messages/subscriptions returns 405', async () => {
+    const response = await worker.fetch(
+      request('/messages/subscriptions', { method: 'POST' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('GET');
+  });
+
   test('GET /messages/contacts dispatches to getContacts', async () => {
     const response = await worker.fetch(request('/messages/contacts'), env, ctx);
     expect(response.status).toBe(200);
