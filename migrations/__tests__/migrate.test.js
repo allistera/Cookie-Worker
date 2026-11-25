@@ -50,14 +50,14 @@ describe('migrations/migrate.sh', () => {
 
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  function run() {
+  function run(databaseUrl = 'postgres://fake') {
     const log = join(dir, 'psql.log');
     writeFileSync(log, '');
     const out = execFileSync('bash', [join(dir, 'migrate.sh')], {
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
-        DATABASE_URL: 'postgres://fake',
+        DATABASE_URL: databaseUrl,
         APPLIED: '0001_done.sql',
         PSQL_LOG: log,
       },
@@ -102,6 +102,25 @@ describe('migrations/migrate.sh', () => {
     expect(body).not.toMatch(/^COMMIT;$/m);
     expect(body).toMatch(/^BEGIN$/m);
     expect(body).toMatch(/^END;$/m);
+  });
+
+  // psql rejects a URI parameter it does not know, and Supabase's dashboard
+  // puts `supa=base-pooler.x` on its pooler strings.
+  it.each([
+    ['postgres://u:p@host:5432/db?supa=base-pooler.x', 'postgres://u:p@host:5432/db'],
+    [
+      'postgres://u:p@host:5432/db?supa=base-pooler.x&sslmode=require',
+      'postgres://u:p@host:5432/db?sslmode=require',
+    ],
+    [
+      'postgres://u:p@host:5432/db?sslmode=require&supa=base-pooler.x',
+      'postgres://u:p@host:5432/db?sslmode=require',
+    ],
+    ['postgres://u:p@host:5432/db?sslmode=require', 'postgres://u:p@host:5432/db?sslmode=require'],
+  ])('connects with %j as %j', (databaseUrl, expected) => {
+    const { log } = run(databaseUrl);
+
+    expect(log).toContain(`ARGS: ${expected} -v ON_ERROR_STOP=1`);
   });
 
   it.each(['begin;', 'COMMIT; -- done', 'BEGIN TRANSACTION;', 'COMMIT WORK;', 'ROLLBACK;'])(

@@ -32,7 +32,12 @@ set -euo pipefail
 
 MIGRATIONS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-PSQL=(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q)
+# Supabase's dashboard appends `?supa=base-pooler.x` to its pooler strings.
+# postgres.js ignores the parameter, but psql rejects any URI parameter it
+# does not know, so drop it before connecting.
+DB_URL="$(sed -E 's/([?&])supa=[^&]*&?/\1/; s/[?&]$//' <<<"$DATABASE_URL")"
+
+PSQL=(psql "$DB_URL" -v ON_ERROR_STOP=1 -q)
 
 # Arbitrary constant shared by every runner of this script.
 LOCK_KEY=727170101
