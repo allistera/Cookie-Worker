@@ -32,14 +32,12 @@ function metadataUrl(env) {
 }
 
 /**
- * Scopes granted to a verified token: the OAuth `scope` claim, plus Auth0's
- * `permissions` array when the API has RBAC switched on.
- * @param {{scope?: unknown, permissions?: unknown}} claims
+ * Only the OAuth scope is delegated to the client. Auth0's permissions
+ * claim can also contain account rights the client never requested.
+ * @param {{scope?: unknown}} claims
  */
 function grantedScopes(claims) {
-  const scope = typeof claims.scope === 'string' ? claims.scope.split(' ') : [];
-  const permissions = Array.isArray(claims.permissions) ? claims.permissions : [];
-  return new Set([...scope, ...permissions].filter((entry) => typeof entry === 'string' && entry));
+  return new Set(typeof claims.scope === 'string' ? claims.scope.split(' ') : []);
 }
 
 /**
