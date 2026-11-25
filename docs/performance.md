@@ -7,7 +7,7 @@ Implemented across Cookie-Web, Cookie-Worker and Cookie-iOS. Migrations 0074 and
 - Mailbox counts are fetched only for the first Inbox page; other folder pages skip those aggregates. Label/category counts can be omitted for web sidebar requests while MCP keeps its count fields by default.
 - Bulk message PATCH/POST accepts up to 100 owned IDs in one database update and schedules one batch Meilisearch sync for indexed fields. Web archive/delete/star/read/category/label selection actions use these paths.
 - Ask streams opt-in server-sent events to the web drawer while retaining JSON responses for existing callers.
-- Contacts now read from a maintained per-message projection instead of expanding recipient JSON across all messages. Apply Cookie-Web migration `0100_contact_directory_projection.sql` through the normal migration process before rollout.
+- Contacts now read from a maintained per-message projection instead of expanding recipient JSON across all messages. Apply migration `0100_contact_directory_projection.sql` through the normal migration process before rollout.
 
 - Web attachment uploads dynamically load the Blob client after validation. Production builds enforce budgets for the complete static entry/inbox/editor import graphs and emit `dist/bundle-budgets.json`.
 - Email bodies publish immediately. The loading indicator appears only after 150 ms; a fast response never waits for it. Invitation enrichment uses the owned `/messages/calendar-invite?id=…` endpoint after the body renders. Older clients retain the combined response. Existing ICS size limits, parsing rules and private attachment protection remain in place.
@@ -29,7 +29,7 @@ The entry dependency graph is about 425 kB, down from the earlier 529 kB baselin
 
 ## Deployment order
 
-1. Apply Cookie-Web migrations `0074_performance_indexes.sql` and `0075_document_workspace_revisions.sql` using the normal migration process. Index creation runs transactionally and takes normal PostgreSQL index-build locks; schedule it for the table sizes in production. The new metadata endpoint requires migration 0075.
+1. Apply migrations `0074_performance_indexes.sql` and `0075_document_workspace_revisions.sql` using the normal migration process. Index creation runs transactionally and takes normal PostgreSQL index-build locks; schedule it for the table sizes in production. The new metadata endpoint requires migration 0075.
 2. Deploy the changed Workers, including emails, messages and tasks and the shared request instrumentation.
 3. Deploy Cookie-Web; build/test Cookie-iOS with Xcode before distributing it. Legacy endpoint responses remain available during mixed-client rollout.
 4. Inspect `Server-Timing` and sampled logs on realistic accounts. Aggregate request durations by service/method/status for p50/p95; use the separate SQL/count stages to locate remaining delays. `PERFORMANCE_SAMPLE_RATE` defaults to 0.05; set it to 0 to disable structured timing logs. Browser measurements use fixed `cookie:` names and retain one entry per name; use a PerformanceObserver while profiling to collect a sequence.

@@ -62,7 +62,7 @@ describe.skipIf(!databaseUrl)('sender blocking versus retention on PostgreSQL', 
       CREATE TABLE message_ai (message_id uuid PRIMARY KEY REFERENCES messages(id), spam_verdict text, processed_at timestamptz);
       CREATE TABLE sender_decisions (user_id uuid REFERENCES users(id), address text, decision text,
         updated_at timestamptz DEFAULT now(), PRIMARY KEY(user_id, address));
-      -- Same body as Cookie-Web migration 0089, resolved through this schema.
+      -- Same body as migration 0089, resolved through this schema.
       CREATE FUNCTION effective_sender_decision(p_user_id uuid, p_from_address text)
       RETURNS TABLE (address text, decision text) LANGUAGE sql STABLE AS $$
         SELECT d.address, d.decision

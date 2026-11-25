@@ -84,7 +84,7 @@ describe.skipIf(!databaseUrl)('calendar invitations on PostgreSQL', () => {
       onnotice: () => {},
     });
     // The tables the two handlers touch. calendar_invitations and the
-    // calendar_events link follow Cookie-Web's migration 0113.
+    // calendar_events link follow migration 0113.
     await sql.unsafe(`
       DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE;
       CREATE SCHEMA ${SCHEMA};

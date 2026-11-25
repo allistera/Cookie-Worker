@@ -1,6 +1,6 @@
 # Delivery and search recovery
 
-Apply Cookie-Web migrations 0103 and 0104 before deploying the updated send
+Apply migrations 0103 and 0104 before deploying the updated send
 Worker. The send API requires its delivery ledger; it fails closed if the
 migration is missing. Vercel's `/api/send` delegates delivery to this Worker.
 

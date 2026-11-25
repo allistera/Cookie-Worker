@@ -4,7 +4,7 @@ This runbook covers deployment, verification, recovery, and rollback for the ema
 
 ## Preconditions
 
-Apply the Cookie Web migrations before deploying Worker changes that depend on them. AI enrichment requires migrations `0010` and `0011`.
+Apply pending migrations (`migrations/`, see the README's "Database migrations") before deploying Worker changes that depend on them. AI enrichment requires migrations `0010` and `0011`.
 
 Confirm the Cloudflare Worker has its email route, Hyperdrive binding, required variables, and the `OPENAI_API_KEY`, `SENTRY_DSN`, and `BLOB_READ_WRITE_TOKEN` secrets.
 
@@ -195,7 +195,7 @@ After the inbound checks, the 15-minute run reads Postgres's own statistics, whi
 - `Database sessions are waiting on locks` (`lock-wait`): a session has waited on a lock for more than ten seconds. `SELECT pid, pg_blocking_pids(pid) AS blocked_by, left(query, 120) FROM pg_stat_activity WHERE wait_event_type = 'Lock';` names the blocker; a migration holding a table lock and a transaction left open are the usual causes. Postgres also logs each lock wait.
 - `Database connections are close to the limit` (`connection-saturation`): client sessions use at least 80% of `max_connections` (60 on the current instance; 19 were in use on 2026-11-11). Hyperdrive pools the Workers' connections, so look for a client that bypasses it: `SELECT usename, application_name, count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' GROUP BY 1, 2 ORDER BY 3 DESC;`.
 
-The comparison needs the `db_query_stats` table from Cookie-Web migration `0112_db_query_stats.sql`, which holds the previous tick's counters. Until it is applied the comparison is skipped with one `db_query_stats_unavailable` log line per isolate and nothing is reported; the session checks run regardless. After a statistics reset, or when Postgres evicts a statement from `pg_stat_statements`, that statement is not compared on the next tick and gets a fresh baseline. The check sees a condition that lasts across a tick; for a single slow query between ticks use the query timings in Analytics Engine (README, "Query timings").
+The comparison needs the `db_query_stats` table from migration `0112_db_query_stats.sql`, which holds the previous tick's counters. Until it is applied the comparison is skipped with one `db_query_stats_unavailable` log line per isolate and nothing is reported; the session checks run regardless. After a statistics reset, or when Postgres evicts a statement from `pg_stat_statements`, that statement is not compared on the next tick and gets a fresh baseline. The check sees a condition that lasts across a tick; for a single slow query between ticks use the query timings in Analytics Engine (README, "Query timings").
 
 A check that cannot run is reported as a `db_health` exception with the check's name. The checks never throw, and a failing check does not change the cron's outcome.
 
@@ -237,4 +237,4 @@ Avoid rolling back database migrations during an incident. The AI schema changes
 
 ## Task subtree repair
 
-Coordinate `Cookie-Web/migrations/0065_task_subtree_projects.sql` with the updated tasks Worker. The migration repairs existing descendants into their root's project and adds an index on `parent_id`. The Worker serializes structural changes per owner and moves descendants in the same transaction as the parent. Older handlers can recreate the mismatch, so deploy the Worker promptly with the repair. No production migration is implied by a local test or deployment dry run.
+Coordinate `migrations/0065_task_subtree_projects.sql` with the updated tasks Worker. The migration repairs existing descendants into their root's project and adds an index on `parent_id`. The Worker serializes structural changes per owner and moves descendants in the same transaction as the parent. Older handlers can recreate the mismatch, so deploy the Worker promptly with the repair. No production migration is implied by a local test or deployment dry run.

@@ -1,6 +1,6 @@
 import { readFormBody, bodyErrorResponse } from '../../../shared/read-body.js';
 import { queueObjectCleanup } from './objectCleanup.js';
-// Discussion threads on tasks (Cookie-Web migration 0096): one task_comments
+// Discussion threads on tasks (migration 0096): one task_comments
 // row per entry, in time order, holding text, an attached file, or both.
 // An attachment's bytes go to the FILES R2 bucket under <user_id>/<uuid>,
 // exactly as files.js stores Documents uploads; the row keeps the name,

@@ -48,13 +48,13 @@ try {
   );
   await sql.unsafe(
     await fs.readFile(
-      new URL('../../Cookie-Web/migrations/0074_performance_indexes.sql', import.meta.url),
+      new URL('../migrations/0074_performance_indexes.sql', import.meta.url),
       'utf8',
     ),
   );
   await sql.unsafe(
     await fs.readFile(
-      new URL('../../Cookie-Web/migrations/0075_document_workspace_revisions.sql', import.meta.url),
+      new URL('../migrations/0075_document_workspace_revisions.sql', import.meta.url),
       'utf8',
     ),
   );
