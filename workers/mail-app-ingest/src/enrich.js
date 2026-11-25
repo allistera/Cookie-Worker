@@ -40,9 +40,8 @@ export class ResponsesApiError extends Error {
 
 /**
  * OpenAI's machine-readable error code, without any of the body's prose. A
- * bare 403 can mean a revoked key or a request from a region OpenAI does not
- * serve (Sentry COOKIE-WEB-1C, which later attempts got past), and only the
- * code says which.
+ * bare 403 can mean a revoked key or a request OpenAI places in a region it
+ * does not serve (Sentry COOKIE-WEB-1C), and only the code says which.
  *
  * @param {Response} response
  * @returns {Promise<string | null>}
@@ -57,23 +56,36 @@ export async function openAiErrorCode(response) {
   }
 }
 
-// OpenAI's code for a request from a country it does not serve. The Worker's
-// egress address varies between requests, and a later attempt from another one
-// is accepted (Sentry COOKIE-WEB-1C: every recovery retry got through).
+// OpenAI's code for a request from a country it does not serve. What it
+// judges is not where the Worker runs: every occurrence of COOKIE-WEB-1C was
+// an email handed over by a mail server in Hong Kong or mainland China, one
+// of them while the Worker ran in Amsterdam, where every other call that
+// month was accepted. The refusal therefore lasts as long as the email
+// invocation does, and the recovery cron, which no sender triggers, gets
+// through.
 export const BLOCKED_REGION_CODE = 'unsupported_country_region_territory';
 
 /**
- * Rate limits, upstream outages and a blocked egress address clear on their
- * own, so they are worth a second and third attempt inside the same
- * enrichment run; a rejected request (bad key, bad payload) would only fail
- * again.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isBlockedRegionError(error) {
+  return (
+    error instanceof ResponsesApiError && error.status === 403 && error.code === BLOCKED_REGION_CODE
+  );
+}
+
+/**
+ * Rate limits and upstream outages clear on their own, so they are worth a
+ * second and third attempt inside the same enrichment run. A rejected request
+ * (bad key, bad payload) would only fail again, and so would a blocked
+ * region: every attempt in the run is judged by the same sender.
  *
  * @param {unknown} error
  * @returns {boolean}
  */
 export function isTransientOpenAiError(error) {
   if (error instanceof ResponsesApiError) {
-    if (error.status === 403) return error.code === BLOCKED_REGION_CODE;
     return error.status === 408 || error.status === 429 || error.status >= 500;
   }
   return error instanceof TypeError || (error instanceof Error && error.name === 'AbortError');
