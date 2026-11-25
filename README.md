@@ -569,6 +569,37 @@ pointers; `cookie-web-tasks` re-exports it. No new binding, secret or migration
 is needed: the Worker already holds `BLOB_READ_WRITE_TOKEN` to read attachments
 at delivery.
 
+### Cc and Bcc recipients
+
+`POST /send` takes optional `cc` and `bcc` beside `to`, each a comma-separated
+list of addresses. A blank or absent line means nobody. A line that is present
+but unusable (an entry that is not an address, or a value that is not a
+string) rejects the request with `400` rather than sending without it. To, Cc
+and Bcc together are limited to 20 recipients (`MAX_OUTBOUND_RECIPIENTS`).
+
+Both lines go to Resend as `cc` and `bcc`, are kept in the delivery ledger with
+the rest of the frozen request, and are written to the sent copy's
+`messages.recipients`, Bcc included. They join the immediate-send idempotency
+key and the scheduled-send request hash only when someone is on them, so a
+request without copies keeps the key it had before these lines existed.
+
+- Send Later keeps the lines in `scheduled_sends.cc_addresses` and
+  `bcc_addresses` until the flush delivers them. `DELETE /send/scheduled`
+  returns them as `ccAddresses` and `bccAddresses`.
+- `cookie-web-drafts` accepts `cc` and `bcc` on `POST /drafts` and
+  `PATCH /drafts/:id` and returns them from `GET /drafts/:id`. A client that
+  sends neither field leaves the stored lines alone.
+
+The four columns come from Cookie-Web migration `0114_cc_bcc_recipients.sql`.
+Both Workers read them through `to_jsonb(row) ->> 'cc_addresses'`, which
+answers `NULL` for a column that does not exist yet, and write them with a
+statement of their own that runs only when a line is used or has changed. A
+Worker deployed before the migration behaves as it did; only a draft or a Send
+Later that has a Cc or Bcc line fails until the migration is applied. Deploy
+`cookie-web-send` and `cookie-web-drafts` before the Cookie-Web release that
+offers the two lines: a Worker that predates them ignores `cc` and `bcc`, and
+the mail would go out without the people copied on it.
+
 ### Calendar invitations
 
 Cookie answers a calendar invitation received by email and keeps the calendar in

@@ -203,6 +203,34 @@ describe('a scheduled send the provider accepted', () => {
     expect(insert.values).toContain('2099-01-01T09:00:00.000Z');
   });
 
+  test('goes out to the Cc and Bcc lines the row holds', async () => {
+    const sql = scriptedSql([
+      [{ exists: 1 }], // owner
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ thread_id: null, existing_message_id: null }], // sent-copy lookup
+      [], // insert thread
+      [{ id: 'stored' }], // insert message
+      [], // mark sent
+    ]);
+    const svc = deliveryServices();
+
+    const row = dueRow({ ccAddresses: 'cc@example.com, other@example.com', bccAddresses: '' });
+    const result = await deliverScheduledSend(sql, row, svc);
+
+    expect(result.status).toBe('sent');
+    const [payload] = svc.send.mock.calls[0];
+    expect(payload.to).toEqual(['recipient@example.com']);
+    expect(payload.cc).toEqual(['cc@example.com', 'other@example.com']);
+    expect(payload).not.toHaveProperty('bcc');
+  });
+
+  test('reads the copy lines in a way that survives their columns being absent', async () => {
+    const sql = createMockSql();
+    await handleFlush(sql, services());
+    expect(sql.calls[0].text).toContain("to_jsonb(s) ->> 'cc_addresses'");
+    expect(sql.calls[0].text).not.toMatch(/s\.cc_addresses|s\.bcc_addresses/);
+  });
+
   test('is recorded sent, not left leased, when the sent copy cannot be stored', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const sql = scriptedSql([

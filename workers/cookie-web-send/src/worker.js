@@ -208,6 +208,8 @@ async function handleSend(sql, userId, request, services) {
 
   const {
     to,
+    cc: rawCc,
+    bcc: rawBcc,
     subject,
     text,
     html,
@@ -221,11 +223,11 @@ async function handleSend(sql, userId, request, services) {
   // it can only widen the key space, never collide or smuggle content.
   const requestIdText = String(requestId ?? '');
   const clientRequestId = /^[A-Za-z0-9._:-]{1,128}$/.test(requestIdText) ? requestIdText : null;
-  const validated = validateOutboundMessage({ to, subject, text, html });
+  const validated = validateOutboundMessage({ to, cc: rawCc, bcc: rawBcc, subject, text, html });
   if (validated.error || !validated.recipients) {
     return Response.json({ error: validated.error }, { status: 400 });
   }
-  const { recipients, bodyHtml } = validated;
+  const { recipients, cc, bcc, bodyHtml } = validated;
   const attachmentIds = parseAttachmentIds(rawAttachmentIds);
   if (attachmentIds === null) {
     return Response.json(
@@ -243,6 +245,8 @@ async function handleSend(sql, userId, request, services) {
       if (clientRequestId) {
         const requestHash = await scheduledSendRequestHash({
           recipients,
+          cc,
+          bcc,
           subject,
           text,
           html: bodyHtml,
@@ -284,6 +288,8 @@ async function handleSend(sql, userId, request, services) {
       }
       const result = await createScheduledSend(sql, userId, {
         recipients,
+        cc,
+        bcc,
         subject,
         text,
         html: bodyHtml,
@@ -316,6 +322,8 @@ async function handleSend(sql, userId, request, services) {
   let attachments;
   const immediateKey = await immediateSendIdempotencyKey(userId, {
     recipients,
+    cc,
+    bcc,
     subject,
     text,
     html: bodyHtml,
@@ -387,6 +395,8 @@ async function handleSend(sql, userId, request, services) {
       userId,
       {
         recipients,
+        cc,
+        bcc,
         subject,
         text,
         html: bodyHtml,

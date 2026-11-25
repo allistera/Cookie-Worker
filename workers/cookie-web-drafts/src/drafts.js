@@ -9,7 +9,8 @@ import { validId } from '../../../shared/pagination.js';
 
 // Mirrors cookie-web-send's outbound ceilings exactly, so a draft can never
 // grow into something the send path would refuse to deliver. The recipient
-// bound is its MAX_RECIPIENTS_FIELD_CHARS (20 addresses x 512); the aggregate
+// bound is its MAX_RECIPIENTS_FIELD_CHARS (20 addresses x 512), applied to
+// each of the To, Cc and Bcc lines; the aggregate
 // is its MAX_OUTBOUND_TOTAL_BYTES, which the per-field caps alone do not
 // imply — 100KB of text plus 200KB of html clears both and still cannot send.
 const MAX_TO_BYTES = 10_240;
@@ -39,6 +40,10 @@ export function parseDraftBody(body) {
   if (!body || typeof body !== 'object') return null;
 
   const toAddresses = String(body.to ?? '');
+  // null when the client did not send the line at all: one that predates Cc
+  // and Bcc must not wipe them from a draft it saves over.
+  const ccAddresses = body.cc === undefined ? null : String(body.cc ?? '');
+  const bccAddresses = body.bcc === undefined ? null : String(body.bcc ?? '');
   const subject = String(body.subject ?? '');
   const text = String(body.text ?? '');
   const html = body.html === null || body.html === undefined ? null : String(body.html);
@@ -48,6 +53,8 @@ export function parseDraftBody(body) {
   const htmlBytes = html === null ? 0 : byteLength(html);
   if (
     byteLength(toAddresses) > MAX_TO_BYTES ||
+    byteLength(ccAddresses) > MAX_TO_BYTES ||
+    byteLength(bccAddresses) > MAX_TO_BYTES ||
     subjectBytes > MAX_SUBJECT_BYTES ||
     textBytes > MAX_TEXT_BYTES ||
     htmlBytes > MAX_HTML_BYTES ||
@@ -74,6 +81,8 @@ export function parseDraftBody(body) {
 
   return {
     toAddresses,
+    ccAddresses,
+    bccAddresses,
     subject,
     text,
     html,
@@ -88,6 +97,8 @@ export function parseDraftBody(body) {
 export function isEmptyDraft(draft) {
   return (
     !draft.toAddresses.trim() &&
+    !(draft.ccAddresses ?? '').trim() &&
+    !(draft.bccAddresses ?? '').trim() &&
     !draft.subject.trim() &&
     !draft.text.trim() &&
     draft.attachmentIds.length === 0
@@ -180,6 +191,22 @@ export function parseExpectedUpdatedAt(value) {
   return { expected: new Date(value).toISOString() };
 }
 
+// The Cc and Bcc lines came with migration 0114. They are read through
+// to_jsonb (a column the row does not have yet reads as NULL instead of
+// failing the query) and written by a statement of their own, so this release
+// keeps saving drafts while that migration is on its way.
+/**
+ * @param {import('postgres').Sql | import('postgres').TransactionSql} sql
+ * @param {string} draftId
+ * @param {string} cc
+ * @param {string} bcc
+ */
+async function writeDraftCopies(sql, draftId, cc, bcc) {
+  await sql`
+    UPDATE drafts SET cc_addresses = ${cc}, bcc_addresses = ${bcc} WHERE id = ${draftId}
+  `;
+}
+
 /**
  * The full draft as GET /drafts/:id returns it, or undefined.
  *
@@ -190,7 +217,10 @@ export function parseExpectedUpdatedAt(value) {
 async function fetchDraft(sql, userId, id) {
   const [draft] = await sql`
     SELECT
-      d.id, d.to_addresses AS "to", d.subject, d.body_text AS "text",
+      d.id, d.to_addresses AS "to",
+      COALESCE(to_jsonb(d) ->> 'cc_addresses', '') AS "cc",
+      COALESCE(to_jsonb(d) ->> 'bcc_addresses', '') AS "bcc",
+      d.subject, d.body_text AS "text",
       d.body_html AS "html", d.reply_to_message_id AS "replyToMessageId",
       d.follow_up_at AS "followUpAt", d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated",
       COALESCE((
@@ -303,6 +333,9 @@ export async function createDraft(sql, userId, body) {
     if (!row) {
       return Response.json({ error: 'Too many saved drafts' }, { status: 429 });
     }
+    const cc = parsed.ccAddresses ?? '';
+    const bcc = parsed.bccAddresses ?? '';
+    if (cc || bcc) await writeDraftCopies(tx, row.id, cc, bcc);
     await replaceDraftAttachments(tx, userId, row.id, parsed.attachmentIds, []);
     return Response.json({ draft: { id: row.id, updatedAt: row.updatedAt } }, { status: 201 });
   });
@@ -371,6 +404,8 @@ export async function updateDraft(sql, userId, id, body) {
         AND (${expected}::timestamptz IS NULL
              OR date_trunc('milliseconds', updated_at) = ${expected}::timestamptz)
       RETURNING id, updated_at AS "updatedAt",
+        COALESCE(to_jsonb(drafts) ->> 'cc_addresses', '') AS "cc",
+        COALESCE(to_jsonb(drafts) ->> 'bcc_addresses', '') AS "bcc",
         -- The attachment list as it stood before this save (the subquery
         -- reads the statement's snapshot), so an unchanged one is skipped.
         COALESCE((
@@ -380,6 +415,12 @@ export async function updateDraft(sql, userId, id, body) {
         ), '[]'::jsonb) AS "attachmentIds"
     `;
     if (!row) return missedWriteResponse(tx, userId, id);
+    // Autosave rarely changes these lines, so they are written only when the
+    // stored ones differ (the UPDATE above left them as they were).
+    const stored = { cc: row.cc ?? '', bcc: row.bcc ?? '' };
+    const cc = parsed.ccAddresses ?? stored.cc;
+    const bcc = parsed.bccAddresses ?? stored.bcc;
+    if (cc !== stored.cc || bcc !== stored.bcc) await writeDraftCopies(tx, row.id, cc, bcc);
     await replaceDraftAttachments(
       tx,
       userId,
