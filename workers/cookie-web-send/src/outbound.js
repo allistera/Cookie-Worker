@@ -112,6 +112,16 @@ export function parseRecipients(to) {
   return recipients;
 }
 
+// The Cc and Bcc lines are optional: [] when the field is absent or blank,
+// null when it holds something parseRecipients cannot use.
+/** @param {unknown} value */
+function parseCopyRecipients(value) {
+  if (value === undefined || value === null) return [];
+  const recipients = parseRecipients(value);
+  if (recipients.length) return recipients;
+  return String(value).trim() ? null : [];
+}
+
 /** @param {unknown} value */
 export function parseAttachmentIds(value) {
   if (value === undefined) return [];
@@ -123,21 +133,28 @@ export function parseAttachmentIds(value) {
 
 const byteLength = (/** @type {string} */ value) => new TextEncoder().encode(value).length;
 
-/** @param {{to: unknown, subject: unknown, text: unknown, html: unknown}} message */
-export function validateOutboundMessage({ to, subject, text, html }) {
+// MAX_OUTBOUND_RECIPIENTS bounds the To, Cc and Bcc lines together: every
+// address is one delivery, whichever line names it.
+/** @param {{to: unknown, cc?: unknown, bcc?: unknown, subject: unknown, text: unknown, html: unknown}} message */
+export function validateOutboundMessage({ to, cc, bcc, subject, text, html }) {
   const recipients = parseRecipients(to);
+  const ccRecipients = parseCopyRecipients(cc);
+  const bccRecipients = parseCopyRecipients(bcc);
   const htmlText = String(html ?? '');
   const bodyHtml = htmlText.trim() ? htmlText : null;
   const subjectText = String(subject ?? '');
   const bodyText = String(text ?? '');
   if (
     recipients.length === 0 ||
-    !recipients.every(isValidEmailAddress) ||
+    !ccRecipients ||
+    !bccRecipients ||
+    recipients.length + ccRecipients.length + bccRecipients.length > MAX_OUTBOUND_RECIPIENTS ||
+    ![...recipients, ...ccRecipients, ...bccRecipients].every(isValidEmailAddress) ||
     !subjectText.trim() ||
     hasControlChars(subjectText) ||
     !bodyText.trim()
   ) {
-    return { error: 'to, subject and text are required and must be valid' };
+    return { error: 'to, subject and text are required, and every address must be valid' };
   }
 
   const subjectBytes = byteLength(subjectText);
@@ -151,7 +168,7 @@ export function validateOutboundMessage({ to, subject, text, html }) {
   ) {
     return { error: 'The email exceeds the allowed content size' };
   }
-  return { recipients, bodyHtml };
+  return { recipients, cc: ccRecipients, bcc: bccRecipients, bodyHtml };
 }
 
 /**
@@ -214,24 +231,38 @@ export async function refundOutboundEmailQuota(sql, userId) {
 // (new requestId, new send). Async because Web Crypto's digest is.
 /**
  * @param {string} userId
- * @param {{recipients: string[], subject: unknown, text: unknown, html: unknown, replyToMessageId: string | null, attachmentIds?: string[], requestId: string | null}} message
+ * @param {{recipients: string[], cc?: string[], bcc?: string[], subject: unknown, text: unknown, html: unknown, replyToMessageId: string | null, attachmentIds?: string[], requestId: string | null}} message
  */
 export async function immediateSendIdempotencyKey(
   userId,
-  { recipients, subject, text, html, replyToMessageId, attachmentIds = [], requestId },
+  {
+    recipients,
+    cc = [],
+    bcc = [],
+    subject,
+    text,
+    html,
+    replyToMessageId,
+    attachmentIds = [],
+    requestId,
+  },
 ) {
-  const bytes = new TextEncoder().encode(
-    JSON.stringify({
-      userId,
-      recipients,
-      subject,
-      text,
-      html: html ?? null,
-      replyToMessageId: replyToMessageId ?? null,
-      attachmentIds,
-      requestId: requestId ?? null,
-    }),
-  );
+  /** @type {Record<string, unknown>} */
+  const fields = {
+    userId,
+    recipients,
+    subject,
+    text,
+    html: html ?? null,
+    replyToMessageId: replyToMessageId ?? null,
+    attachmentIds,
+    requestId: requestId ?? null,
+  };
+  // Named only when used, so mail without copies keeps the key it had before
+  // these lines existed and a retry across that release still deduplicates.
+  if (cc.length) fields.cc = cc;
+  if (bcc.length) fields.bcc = bcc;
+  const bytes = new TextEncoder().encode(JSON.stringify(fields));
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   const hex = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   return `immediate-send/${hex}`;
@@ -536,7 +567,7 @@ const LOST_SENT_COPY_RACE = new Error('lost sent-copy race');
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null, attachments?: any[], followUpAt?: string | null, sentAt?: string | null}} message
+ * @param {{recipients: string[], cc?: string[], bcc?: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, resendId: string, readReceiptToken: string | null, attachments?: any[], followUpAt?: string | null, sentAt?: string | null}} message
  * @param {SendServices} services
  */
 export async function storeSentMessage(
@@ -544,6 +575,8 @@ export async function storeSentMessage(
   userId,
   {
     recipients,
+    cc = [],
+    bcc = [],
     subject,
     text,
     html,
@@ -577,10 +610,14 @@ export async function storeSentMessage(
   let messageUuid = lookup.existing_message_id ?? crypto.randomUUID();
   const threadUuid = lookup.thread_id ?? crypto.randomUUID();
   const sentAt = acceptedAt ?? new Date().toISOString();
+  const named = (/** @type {string[]} */ addresses) =>
+    addresses.map((address) => ({ name: null, address }));
+  // The sent copy is the sender's own record, so it keeps the Bcc line the
+  // delivered mail never shows.
   const recipientsJson = JSON.stringify({
-    to: recipients.map((address) => ({ name: null, address })),
-    cc: [],
-    bcc: [],
+    to: named(recipients),
+    cc: named(cc),
+    bcc: named(bcc),
   });
   let inserted = false;
   if (!lookup.existing_message_id) {
@@ -736,7 +773,7 @@ export async function replyThreadingHeaders(sql, userId, replyToMessageId) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[], inlineAttachments?: {filename: string, content: string, contentType: string}[], followUpAt?: string | null, requestId?: string | null}} message
+ * @param {{recipients: string[], cc?: string[], bcc?: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, idempotencyKey?: string, readReceiptToken?: string, attachments?: any[], inlineAttachments?: {filename: string, content: string, contentType: string}[], followUpAt?: string | null, requestId?: string | null}} message
  *   `attachments` are stored files, read when the mail is sent and kept on the
  *   sent copy. `inlineAttachments` are small generated parts (a calendar
  *   reply) carried Base64-encoded in the frozen provider payload itself.
@@ -747,6 +784,8 @@ export async function deliverMail(
   userId,
   {
     recipients,
+    cc = [],
+    bcc = [],
     subject,
     text,
     html,
@@ -774,6 +813,8 @@ export async function deliverMail(
     subject,
     text,
   };
+  if (cc.length) payload.cc = cc;
+  if (bcc.length) payload.bcc = bcc;
   if (trackedHtml) payload.html = trackedHtml;
   if (inlineAttachments.length) payload.attachments = inlineAttachments;
   if (replyToMessageId) {
@@ -786,6 +827,7 @@ export async function deliverMail(
       console.error('failed to load reply threading headers:', /** @type {Error} */ (err).message);
     }
   }
+  /** @type {Record<string, unknown>} */
   const copy = {
     recipients,
     subject,
@@ -796,6 +838,8 @@ export async function deliverMail(
     attachments,
     followUpAt: followUpAt ?? null,
   };
+  if (cc.length) copy.cc = cc;
+  if (bcc.length) copy.bcc = bcc;
   const delivery = await createDelivery(sql, userId, key, payload, copy, requestId);
   return resumeDelivery(sql, delivery, services);
 }

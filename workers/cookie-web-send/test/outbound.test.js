@@ -97,6 +97,34 @@ describe('outbound email abuse bounds', () => {
     ).toBeTruthy();
   });
 
+  it('accepts Cc and Bcc lines, and treats a blank one as absent', () => {
+    const result = validateOutboundMessage({
+      ...base,
+      cc: 'c@d.com, e@f.com',
+      bcc: ' g@h.com ',
+    });
+    expect(result.cc).toEqual(['c@d.com', 'e@f.com']);
+    expect(result.bcc).toEqual(['g@h.com']);
+    const plain = validateOutboundMessage({ ...base, cc: '  ', bcc: null });
+    expect(plain.error).toBeUndefined();
+    expect(plain.cc).toEqual([]);
+    expect(plain.bcc).toEqual([]);
+  });
+
+  it('rejects a Cc or Bcc line it cannot use rather than sending without it', () => {
+    expect(validateOutboundMessage({ ...base, cc: 'not-an-address' }).error).toBeTruthy();
+    expect(validateOutboundMessage({ ...base, bcc: ['g@h.com'] }).error).toBeTruthy();
+    expect(validateOutboundMessage({ ...base, cc: 'c@d.com\r\nBcc: e@f.com' }).error).toBeTruthy();
+  });
+
+  it('counts To, Cc and Bcc against one recipient limit', () => {
+    const addresses = (/** @type {number} */ count, /** @type {string} */ prefix) =>
+      Array.from({ length: count }, (_, index) => `${prefix}${index}@b.com`).join(', ');
+    const full = { ...base, to: addresses(10, 'to'), cc: addresses(5, 'cc') };
+    expect(validateOutboundMessage({ ...full, bcc: addresses(5, 'bcc') }).error).toBeUndefined();
+    expect(validateOutboundMessage({ ...full, bcc: addresses(6, 'bcc') }).error).toBeTruthy();
+  });
+
   it('rejects header-injection shapes in recipients and subject', () => {
     expect(validateOutboundMessage({ ...base, to: 'a@b.com\r\nBcc: e@f.com' }).error).toBeTruthy();
     expect(validateOutboundMessage({ ...base, subject: 'Hi\r\nBcc: e@f.com' }).error).toBeTruthy();
@@ -182,6 +210,18 @@ describe('immediateSendIdempotencyKey', () => {
       requestId: 'retry-2',
     });
     expect(first).not.toBe(second);
+  });
+
+  it('keeps the key of mail without copies and changes it when a copy is added', async () => {
+    const plain = await immediateSendIdempotencyKey('user-1', message);
+    expect(await immediateSendIdempotencyKey('user-1', { ...message, cc: [], bcc: [] })).toBe(
+      plain,
+    );
+    const copied = await immediateSendIdempotencyKey('user-1', { ...message, cc: ['c@d.com'] });
+    expect(copied).not.toBe(plain);
+    expect(await immediateSendIdempotencyKey('user-1', { ...message, bcc: ['c@d.com'] })).not.toBe(
+      copied,
+    );
   });
 });
 
@@ -273,6 +313,74 @@ describe('retry payload stability', () => {
     await deliverMail(sql, 'owner', { ...body, idempotencyKey: 'logical-send-2' }, services);
     expect(payloads[0]).toEqual(payloads[1]);
     expect(payloads[2].html).not.toBe(payloads[1].html);
+  });
+});
+
+describe('Cc and Bcc', () => {
+  const body = {
+    recipients: ['to@example.com'],
+    subject: 'Hi',
+    text: 'Body',
+    html: null,
+    replyToMessageId: null,
+  };
+
+  /** @param {Record<string, unknown>} message */
+  async function deliver(message) {
+    /** @type {Record<string, any>[]} */
+    const payloads = [];
+    const sql = createMockSql([
+      [{ thread_id: null, existing_message_id: null }],
+      [], // insert thread
+      [{ id: 'sent-copy' }], // insert message
+    ]);
+    const services = /** @type {any} */ ({
+      env: { EMAIL_FROM: 'Cookie <sender@example.com>' },
+      createResend: () => ({
+        emails: {
+          send: async (/** @type {Record<string, any>} */ payload) => {
+            payloads.push(payload);
+            return { data: { id: 'provider-1' } };
+          },
+        },
+      }),
+    });
+    await deliverMail(sql, 'owner', /** @type {any} */ (message), services);
+    const insert = sql.calls.find((/** @type {{text: string}} */ call) =>
+      call.text.includes('INSERT INTO messages'),
+    );
+    const recipients = insert.values.find((/** @type {unknown} */ value) =>
+      String(value).startsWith('{"to"'),
+    );
+    return { payload: payloads[0], recipients: JSON.parse(recipients) };
+  }
+
+  it('hands both lines to the provider and keeps them on the sent copy', async () => {
+    const { payload, recipients } = await deliver({
+      ...body,
+      cc: ['cc@example.com'],
+      bcc: ['bcc@example.com'],
+      idempotencyKey: 'copies-1',
+    });
+    expect(payload.to).toEqual(['to@example.com']);
+    expect(payload.cc).toEqual(['cc@example.com']);
+    expect(payload.bcc).toEqual(['bcc@example.com']);
+    expect(recipients).toEqual({
+      to: [{ name: null, address: 'to@example.com' }],
+      cc: [{ name: null, address: 'cc@example.com' }],
+      bcc: [{ name: null, address: 'bcc@example.com' }],
+    });
+  });
+
+  it('sends mail without copies exactly as before', async () => {
+    const { payload, recipients } = await deliver({ ...body, idempotencyKey: 'copies-2' });
+    expect(payload).not.toHaveProperty('cc');
+    expect(payload).not.toHaveProperty('bcc');
+    expect(recipients).toEqual({
+      to: [{ name: null, address: 'to@example.com' }],
+      cc: [],
+      bcc: [],
+    });
   });
 });
 

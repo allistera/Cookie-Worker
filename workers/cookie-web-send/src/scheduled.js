@@ -84,10 +84,12 @@ function normalizedTimestamp(value) {
 /**
  * Match the original intent without revalidating resources or time relative to
  * now: a receipt must remain readable after its upload or reply is deleted.
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: unknown, attachmentIds?: string[], followUpAt?: unknown}} send
+ * @param {{recipients: string[], cc?: string[], bcc?: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: unknown, attachmentIds?: string[], followUpAt?: unknown}} send
  */
 export async function scheduledSendRequestHash({
   recipients,
+  cc = [],
+  bcc = [],
   subject,
   text,
   html,
@@ -96,27 +98,26 @@ export async function scheduledSendRequestHash({
   attachmentIds = [],
   followUpAt,
 }) {
+  /** @type {Record<string, unknown>} */
+  const fields = {
+    recipients,
+    subject,
+    text,
+    html: html ?? null,
+    replyToMessageId,
+    scheduledFor: normalizedTimestamp(scheduledFor),
+    // postgres returns UUIDs in lower case after attachment resolution.
+    attachmentIds: attachmentIds.map((id) => id.toLowerCase()),
+    followUpAt:
+      followUpAt === null || followUpAt === undefined ? null : normalizedTimestamp(followUpAt),
+  };
+  // Named only when used: a request stored before these lines existed keeps
+  // the hash its replay is checked against.
+  if (cc.length) fields.cc = cc;
+  if (bcc.length) fields.bcc = bcc;
   return [
     ...new Uint8Array(
-      await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(
-          JSON.stringify({
-            recipients,
-            subject,
-            text,
-            html: html ?? null,
-            replyToMessageId,
-            scheduledFor: normalizedTimestamp(scheduledFor),
-            // postgres returns UUIDs in lower case after attachment resolution.
-            attachmentIds: attachmentIds.map((id) => id.toLowerCase()),
-            followUpAt:
-              followUpAt === null || followUpAt === undefined
-                ? null
-                : normalizedTimestamp(followUpAt),
-          }),
-        ),
-      ),
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(fields))),
     ),
   ]
     .map((byte) => byte.toString(16).padStart(2, '0'))
@@ -152,13 +153,15 @@ export async function findScheduledSend(sql, userId, requestId, requestHash) {
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
- * @param {{recipients: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: string, attachments?: any[], followUpAt?: string | null, requestId?: string | null}} send
+ * @param {{recipients: string[], cc?: string[], bcc?: string[], subject: string, text: string, html: string | null, replyToMessageId: string | null, scheduledFor: string, attachments?: any[], followUpAt?: string | null, requestId?: string | null}} send
  */
 export async function createScheduledSend(
   sql,
   userId,
   {
     recipients,
+    cc = [],
+    bcc = [],
     subject,
     text,
     html,
@@ -172,6 +175,8 @@ export async function createScheduledSend(
   const requestHash = requestId
     ? await scheduledSendRequestHash({
         recipients,
+        cc,
+        bcc,
         subject,
         text,
         html,
@@ -204,6 +209,17 @@ export async function createScheduledSend(
                 follow_up_at AS "followUpAt", status, last_error AS "lastError"
     `;
     if (!row) return null;
+    if (cc.length || bcc.length) {
+      // A statement of its own, so mail without copies still schedules while
+      // migration 0114 (which adds these columns) is on its way. Mail with
+      // copies fails here until then and rolls back, rather than going out
+      // later to fewer people than it was addressed to.
+      await tx`
+        UPDATE scheduled_sends
+        SET cc_addresses = ${cc.join(', ')}, bcc_addresses = ${bcc.join(', ')}
+        WHERE id = ${row.id}
+      `;
+    }
     if (attachments.length) {
       // One statement for the whole list; ORDINALITY keeps the given order.
       await tx`
@@ -256,7 +272,9 @@ function isUndefinedScheduledAttachmentsTable(err) {
 async function cancelScheduledSendWithoutAttachments(sql, userId, id) {
   return sql.begin(async (tx) => {
     const [row] = await tx`
-      SELECT s.id, s.to_addresses AS "toAddresses", s.subject,
+      SELECT s.id, s.to_addresses AS "toAddresses",
+             COALESCE(to_jsonb(s) ->> 'cc_addresses', '') AS "ccAddresses",
+             COALESCE(to_jsonb(s) ->> 'bcc_addresses', '') AS "bccAddresses", s.subject,
              s.body_text AS "text", s.body_html AS "html",
              s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", '[]'::jsonb AS attachments
       FROM scheduled_sends s
@@ -273,6 +291,10 @@ async function cancelScheduledSendWithoutAttachments(sql, userId, id) {
   });
 }
 
+// The Cc and Bcc lines are read through to_jsonb here and in the flush claim:
+// a column the row does not have yet reads as NULL instead of failing the
+// query, so this release also runs before migration 0114 adds them.
+//
 // Only a still-pending row can be canceled — one already claimed by the
 // flush job (status 'sending') or already resolved ('sent'/'failed') is
 // left alone. Returns the full content so the client can reopen it in the
@@ -286,7 +308,9 @@ export async function cancelScheduledSend(sql, userId, id) {
   try {
     return await sql.begin(async (tx) => {
       const [row] = await tx`
-        SELECT s.id, s.to_addresses AS "toAddresses", s.subject,
+        SELECT s.id, s.to_addresses AS "toAddresses",
+               COALESCE(to_jsonb(s) ->> 'cc_addresses', '') AS "ccAddresses",
+               COALESCE(to_jsonb(s) ->> 'bcc_addresses', '') AS "bccAddresses", s.subject,
                s.body_text AS "text", s.body_html AS "html",
                s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId",
                COALESCE((
@@ -363,7 +387,9 @@ async function claimDueScheduledSends(sql, limit) {
       FROM costed due
       WHERE s.id = due.id
         AND (due.running_cost = due.cost OR due.running_cost <= ${FLUSH_DELIVERY_SUBREQUEST_BUDGET})
-      RETURNING s.id, s.user_id, due.reclaimed, s.to_addresses AS "toAddresses", s.subject,
+      RETURNING s.id, s.user_id, due.reclaimed, s.to_addresses AS "toAddresses",
+                COALESCE(to_jsonb(s) ->> 'cc_addresses', '') AS "ccAddresses",
+                COALESCE(to_jsonb(s) ->> 'bcc_addresses', '') AS "bccAddresses", s.subject,
                 s.body_text AS "text", s.body_html AS "html",
                 s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", s.attempts,
                 COALESCE((
@@ -397,7 +423,9 @@ async function claimDueScheduledSends(sql, limit) {
         FOR UPDATE SKIP LOCKED
       ) due
       WHERE s.id = due.id
-      RETURNING s.id, s.user_id, due.reclaimed, s.to_addresses AS "toAddresses", s.subject,
+      RETURNING s.id, s.user_id, due.reclaimed, s.to_addresses AS "toAddresses",
+                COALESCE(to_jsonb(s) ->> 'cc_addresses', '') AS "ccAddresses",
+                COALESCE(to_jsonb(s) ->> 'bcc_addresses', '') AS "bccAddresses", s.subject,
                 s.body_text AS "text", s.body_html AS "html",
                 s.follow_up_at AS "followUpAt", s.reply_to_message_id AS "replyToMessageId", s.attempts,
                 '[]'::jsonb AS attachments
@@ -509,6 +537,8 @@ export async function deliverScheduledSend(sql, row, services) {
   const recipients = parseRecipients(row.toAddresses);
   const message = {
     recipients,
+    cc: parseRecipients(row.ccAddresses),
+    bcc: parseRecipients(row.bccAddresses),
     subject: row.subject,
     text: row.text,
     html: row.html,

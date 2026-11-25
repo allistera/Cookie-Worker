@@ -39,6 +39,15 @@ describe('parseDraftBody', () => {
     });
   });
 
+  test('keeps the Cc and Bcc lines, and tells an absent line from an emptied one', () => {
+    expect(accepted(draft({ cc: 'c@d.com', bcc: '' }))).toMatchObject({
+      ccAddresses: 'c@d.com',
+      bccAddresses: '',
+    });
+    expect(accepted(draft())).toMatchObject({ ccAddresses: null, bccAddresses: null });
+    expect(parseDraftBody(draft({ cc: 'x'.repeat(10_241) }))).toBeNull();
+  });
+
   test('drops a reply target that is not a real id rather than failing the save', () => {
     // Fixture ids from e2e/dev mode are not UUIDs; losing the threading is
     // preferable to losing the text.
@@ -71,6 +80,13 @@ describe('recipient field bound', () => {
 describe('isEmptyDraft', () => {
   test('treats whitespace-only content as empty', () => {
     expect(isEmptyDraft(accepted({ to: ' ', subject: '', text: '  \n ' }))).toBe(true);
+  });
+
+  test('a Cc or Bcc address alone is enough to be worth keeping', () => {
+    const blank = { to: '', subject: '', text: '' };
+    expect(isEmptyDraft(accepted({ ...blank, cc: 'c@d.com' }))).toBe(false);
+    expect(isEmptyDraft(accepted({ ...blank, bcc: 'c@d.com' }))).toBe(false);
+    expect(isEmptyDraft(accepted({ ...blank, cc: ' ', bcc: '' }))).toBe(true);
   });
 
   test('an attachment alone is enough to be worth keeping', () => {
@@ -107,6 +123,17 @@ describe('createDraft', () => {
     const sql = createMockSql([[], [{ id: DRAFT_ID, updatedAt: 'now' }], []]);
     await createDraft(sql, USER_ID, draft());
     expect(sql.calls[0].text).toMatch(/pg_advisory_xact_lock/);
+  });
+
+  test('writes the Cc and Bcc lines only when the draft has them', async () => {
+    const sql = createMockSql([[], [{ id: DRAFT_ID, updatedAt: 'now' }], []]);
+    await createDraft(sql, USER_ID, draft({ cc: 'c@d.com', bcc: 'e@f.com' }));
+    const copies = sql.calls.find((call) => call.text.includes('SET cc_addresses'));
+    expect(copies.values).toEqual(['c@d.com', 'e@f.com', DRAFT_ID]);
+
+    const plain = createMockSql([[], [{ id: DRAFT_ID, updatedAt: 'now' }], []]);
+    await createDraft(plain, USER_ID, draft({ cc: '', bcc: '' }));
+    expect(plain.calls.some((call) => call.text.includes('cc_addresses'))).toBe(false);
   });
 
   test("resolves the reply target against the user's own messages so a purged id cannot fail the FK", async () => {
@@ -215,6 +242,46 @@ describe('updateDraft', () => {
     await updateDraft(sql, USER_ID, DRAFT_ID, draft({ attachmentIds: [] }));
     expect(sql.calls).toHaveLength(2);
     expect(sql.calls[1].text).toMatch(/DELETE FROM draft_attachments/);
+  });
+});
+
+describe('updateDraft Cc and Bcc', () => {
+  const stored = (/** @type {Record<string, unknown>} */ copies) => [
+    { id: DRAFT_ID, updatedAt: 'now', attachmentIds: [], ...copies },
+  ];
+  const copyWrites = (/** @type {any} */ sql) =>
+    sql.calls.filter((/** @type {{text: string}} */ call) =>
+      call.text.includes('SET cc_addresses'),
+    );
+
+  test('writes the lines when they changed, including when one is cleared', async () => {
+    const sql = createMockSql([stored({ cc: 'c@d.com', bcc: 'e@f.com' }), []]);
+    await updateDraft(sql, USER_ID, DRAFT_ID, draft({ cc: 'c@d.com', bcc: '' }));
+    expect(copyWrites(sql)).toHaveLength(1);
+    expect(copyWrites(sql)[0].values).toEqual(['c@d.com', '', DRAFT_ID]);
+  });
+
+  test('leaves unchanged lines alone on autosave', async () => {
+    const sql = createMockSql([stored({ cc: 'c@d.com', bcc: '' })]);
+    await updateDraft(sql, USER_ID, DRAFT_ID, draft({ cc: 'c@d.com', bcc: '' }));
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  test('a client that sends neither line does not wipe the stored ones', async () => {
+    const sql = createMockSql([stored({ cc: 'c@d.com', bcc: 'e@f.com' })]);
+    await updateDraft(sql, USER_ID, DRAFT_ID, draft());
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  test('saves a draft without copies before the columns exist', async () => {
+    // The main UPDATE names neither column and reads them through to_jsonb,
+    // which answers NULL (here: no value at all) until migration 0114 lands.
+    const sql = createMockSql([stored({})]);
+    const response = await updateDraft(sql, USER_ID, DRAFT_ID, draft({ cc: '', bcc: '' }));
+    expect(response.status).toBe(200);
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text).not.toMatch(/SET[^;]*cc_addresses = \?/);
+    expect(sql.calls[0].text).toContain("to_jsonb(drafts) ->> 'cc_addresses'");
   });
 });
 
