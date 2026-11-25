@@ -14,6 +14,7 @@ import {
 } from './calendarInvite.js';
 import { invitationView, syncInvitation } from './invitations.js';
 import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
+import { recordUnsubscribe } from './subscriptions.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import { privateBlobPathname } from '../../../shared/private-blob.js';
 import { validId } from '../../../shared/pagination.js';
@@ -674,7 +675,8 @@ export function recipientAddress(recipients) {
  * POST; sends a mailto unsubscribe via Resend; drives the sender's
  * unsubscribe page with AI (only when the client opted in via allow_ai —
  * older clients keep the manual contract below); or returns a safe target
- * for the client to open manually. No DB writes.
+ * for the client to open manually. A confirmed unsubscribe is remembered
+ * against the sender (subscriptions.js); nothing else is written.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -684,13 +686,17 @@ export function recipientAddress(recipients) {
  */
 async function unsubscribe(sql, userId, id, deps, allowAi = false) {
   const rows = await sql`
-    SELECT m.headers, m.recipients
+    SELECT m.headers, m.recipients, lower(btrim(m.from_address)) AS sender
     FROM messages m
     WHERE m.id = ${id} AND m.user_id = ${userId}
   `;
   if (rows.length === 0) {
     return Response.json({ error: 'Message not found' }, { status: 404 });
   }
+  const unsubscribed = async (/** @type {'one-click' | 'mailto' | 'ai'} */ method) => {
+    await recordUnsubscribe(sql, userId, rows[0].sender, method);
+    return Response.json({ status: 'unsubscribed', method });
+  };
 
   const parsed = parseListUnsubscribe(rows[0].headers);
   if (!parsed) {
@@ -714,7 +720,7 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
         timeoutMs: 10_000,
       });
       if (resp.status < 400) {
-        return Response.json({ status: 'unsubscribed', method: 'one-click' });
+        return unsubscribed('one-click');
       }
       console.log(
         JSON.stringify({ event: 'one_click_unsubscribe_failed', host, status: resp.status }),
@@ -741,7 +747,7 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
         subject: mailto.subject || 'unsubscribe',
         text: 'Please unsubscribe me from this mailing list.',
       });
-      return Response.json({ status: 'unsubscribed', method: 'mailto' });
+      return unsubscribed('mailto');
     } catch (error) {
       console.log(
         JSON.stringify({
@@ -768,7 +774,7 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
         recipientEmail: recipientAddress(rows[0].recipients),
       });
       if (outcome?.ok) {
-        return Response.json({ status: 'unsubscribed', method: 'ai' });
+        return unsubscribed('ai');
       }
       return Response.json({ status: 'ai_failed', method: 'ai', url });
     }
