@@ -35,7 +35,7 @@ header comment in `migrate.sh` has the steps.
 
 ## Connection guidance
 
-Use the Supavisor session pooler on port `5432` for GitHub-hosted migrations. GitHub runners cannot depend on an IPv6-only direct database host.
+Use the Supavisor session pooler on port `5432` for GitHub-hosted migrations. GitHub runners cannot depend on an IPv6-only direct database host. The runner drops the `supa` parameter that Supabase's dashboard adds to its pooler strings, because `psql` rejects it.
 
 Use a development project for local migration testing. Do not point routine local commands at production.
 
