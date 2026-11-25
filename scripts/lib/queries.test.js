@@ -94,7 +94,7 @@ describe('documentsDriftPage', () => {
 });
 
 describe('messagesDriftPage', () => {
-  // messages has no updated_at column (see Cookie-Web migration
+  // messages has no updated_at column (see migration
   // 0055_search_indexed_at.sql), so unlike documents this can only ask for
   // never-indexed rows — and must match messages_search_drift_idx's
   // predicate/ordering exactly (search_indexed_at IS NULL, keyed on

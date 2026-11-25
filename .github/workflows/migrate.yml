@@ -1,0 +1,31 @@
+name: Migrate Database
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'migrations/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-database
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # DATABASE_URL must be an IPv4-reachable Supabase string (the pooler,
+      # aws-0-<region>.pooler.supabase.com — GitHub runners have no IPv6
+      # route to the direct db.<ref> host).
+      - name: Run migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: ./migrations/migrate.sh

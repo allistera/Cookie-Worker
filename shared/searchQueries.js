@@ -78,8 +78,8 @@ export function documentsDriftPage(sql, { limit }) {
 
 /**
  * Drift page for messages. Unlike documentsDriftPage, this can only ask for
- * "never indexed" — messages has no updated_at column (Cookie-Web migration
- * 0001 gives messages only created_at; see Cookie-Web migration
+ * "never indexed" — messages has no updated_at column (migration
+ * 0001 gives messages only created_at; see migration
  * 0055_search_indexed_at.sql for the full explanation and
  * messages_search_drift_idx, the partial index this predicate must match
  * exactly to be used). Ordered by created_at, matching that index.

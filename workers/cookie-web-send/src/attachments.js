@@ -157,8 +157,8 @@ export async function uploadAttachment(request, sql, userId, services) {
  *     scheduled send and no unresolved delivery references it any more;
  *   - otherwise it is kept (409) until the last reference goes, for example
  *     when the composer's own draft autosaves without it.
- * Physical deletion is queued by the row's delete trigger (Cookie-Web
- * migration 0103), which the cleanup cron drains.
+ * Physical deletion is queued by the row's delete trigger (migration 0103),
+ * which the cleanup cron drains.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId

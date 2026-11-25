@@ -11,7 +11,7 @@ This repository hosts Cookie's independently deployable Cloudflare Workers. Each
 | [`cookie-web-drafts`](workers/cookie-web-drafts)               | HTTP (browser)                | Server-side composer drafts — `GET /drafts`, `GET/PATCH/DELETE /drafts/:id`, `POST /drafts`. Backs the SPA's Drafts view and the composer's autosave, which replaces the whole draft on every save rather than merging fields. Drafts are their own table (migration 0061), not `messages` rows: a draft is empty when created, has no sender, recipients, thread or sent time, and is rewritten every few seconds while someone types.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | [`cookie-web-emails`](workers/cookie-web-emails)               | HTTP (browser)                | The mailbox list itself — `GET /emails` (keyset-paginated folder listing: inbox, sent, spam, snoozed, done, starred, label), `GET /emails/state` (unread badge, Spam/Snoozed folder counts + Realtime channel identity bootstrap, previously `?resource=state`) and `GET/PUT /emails/spam-retention` (how many days spam and blocked mail are kept, 1–365, default 30, stored in `users.prefs`). Replaces Cookie-Web's `api/emails.js`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | [`cookie-web-labels`](workers/cookie-web-labels)               | HTTP (browser)                | Label and label-rule CRUD for Cookie-Web's SPA — `GET/POST/PATCH/DELETE /labels` and `/labels/rules`. Previously multiplexed behind `api/labels.js?resource=rules` in Cookie-Web's own Vercel deployment purely to stay under Vercel Hobby's 12-function cap; here each is its own clean route.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| [`cookie-web-messages`](workers/cookie-web-messages)           | HTTP (browser)                | Message read/label/flag/spam-report/unsubscribe and attachment download for Cookie-Web's SPA — `GET/POST/PATCH /messages` (`POST` with `action: update_labels` adds and removes several labels in one transaction; `PATCH` accepts `is_spam`, the user's own verdict, written to `message_ai.spam_verdict` with `provider = 'user'` so enrichment never overturns it), plus `/messages/attachment`, `/messages/contacts`, `/messages/calendar-invite` (the event a calendar attachment describes and, for an invitation, where it stands — see [Calendar invitations](#calendar-invitations)) and `GET /messages/subscriptions` (one row per sender whose mail carries a `List-Unsubscribe` header, with the newest message to unsubscribe through and when the person unsubscribed; a confirmed unsubscribe is recorded in `sender_unsubscribes`, Cookie-Web migration `0115`, which this Worker tolerates being absent). Previously multiplexed behind `api/messages.js?resource=...` for the same Vercel Hobby function-cap reason as `cookie-web-labels`.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| [`cookie-web-messages`](workers/cookie-web-messages)           | HTTP (browser)                | Message read/label/flag/spam-report/unsubscribe and attachment download for Cookie-Web's SPA — `GET/POST/PATCH /messages` (`POST` with `action: update_labels` adds and removes several labels in one transaction; `PATCH` accepts `is_spam`, the user's own verdict, written to `message_ai.spam_verdict` with `provider = 'user'` so enrichment never overturns it), plus `/messages/attachment`, `/messages/contacts`, `/messages/calendar-invite` (the event a calendar attachment describes and, for an invitation, where it stands — see [Calendar invitations](#calendar-invitations)) and `GET /messages/subscriptions` (one row per sender whose mail carries a `List-Unsubscribe` header, with the newest message to unsubscribe through and when the person unsubscribed; a confirmed unsubscribe is recorded in `sender_unsubscribes`, migration `0115`, which this Worker tolerates being absent). Previously multiplexed behind `api/messages.js?resource=...` for the same Vercel Hobby function-cap reason as `cookie-web-labels`.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | [`cookie-web-send`](workers/cookie-web-send)                   | HTTP (browser, flusher cron)  | Outbound mail — `POST /send` (immediate Resend delivery with per-minute quota, idempotency keys, stored sent copy, read-receipt pixel, and best-effort Meilisearch indexing, or a queued scheduled send given `sendAt`), `GET/DELETE /send/scheduled`, `POST /send/attachments` and `DELETE /send/attachments/:id` (composer uploads for clients without Vercel's Blob SDK — see [Composer attachment uploads](#composer-attachment-uploads)), `POST /send/invitation-reply` (answers a calendar invitation — see [Calendar invitations](#calendar-invitations)), and `POST /send/flush` (bearer-token protected; driven by scheduled-send-flusher over a service binding). Queuing a send arms the `ScheduledSendClock` Durable Object, whose alarm delivers it at its scheduled time; the flush route is the safety net. Replaces Cookie-Web's `api/send.js`, its last Vercel function.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | [`cookie-web-search`](workers/cookie-web-search)               | HTTP (browser)                | Hybrid mail search and the RAG assistant — `GET /search` (Meilisearch hybrid search over the `messages` index; `mode=keyword` pins `semanticRatio` to 0 for the quota-free type-ahead path) `POST /ask` (retrieve-then-answer over the owner's mail with sources) and `POST /chat` (the assistant drawer: Meilisearch conversational search over mail, documents and tasks, scoped to the owner by a per-request tenant token; see RUNBOOK). Shares the 'ai' rate-limit scope. Replaces Cookie-Web's `api/search.js` + `api/ask.js`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | [`cookie-web-tasks`](workers/cookie-web-tasks)                 | HTTP (browser), hourly cron   | AI Today, digest, and news (`GET/POST /tasks`), on-demand triage refresh (`/tasks/refresh`), owner-only model/schedule preferences (`/tasks/enrichment-settings`), news personalization and daily-note defaults (`/tasks/interests`, `/tasks/daily-note-seed`), document image uploads (`/tasks/image-upload`), the Tasks app's projects, tasks, labels, saved filters and per-task discussion threads (`/projects`, `/task-items`, `/task-labels`, `GET/PUT /task-filters`, `/task-comments` — see [Task comments and attachments](#task-comments-and-attachments)), its Todoist sync (`GET/PUT/DELETE /tasks/todoist`, `POST /tasks/todoist/sync`, and the hourly cron that mirrors each connected account between 07:00 and 20:00 local time — see [Todoist sync](#todoist-sync)), and the full Documents feature — folders, documents, templates, and Meilisearch hybrid search over the `documents` index (`GET/POST/PATCH/DELETE /documents`), plus uploaded files in the same folder tree (`GET/POST /files`, `GET/PATCH/DELETE /files/:id`, `GET /files/:id/content`; bytes in the private `cookie-files` R2 bucket, served only through the Worker). Previously multiplexed behind `api/tasks.js?resource=...` for the same Vercel Hobby function-cap reason as `cookie-web-labels`; this is the largest of the three multiplexing-removal Workers. Its image upload was also redesigned to use the Web-standard `Request.formData()` instead of Cookie-Web's original hand-rolled multipart parser. |
@@ -61,6 +61,9 @@ workers/
     jsconfig.json
     worker-configuration.d.ts
     .dev.vars.example
+migrations/
+  0001_initial_email_schema.sql
+  migrate.sh
 scripts/
   workers.mjs
 test/
@@ -374,10 +377,10 @@ Mail that the `FORWARD_TO` mailbox auto-forwarded to Cookie is not sent back to 
 - Checks the database's own statistics on the same 15-minute cron and reports statements running slower than their baseline, queries or lock waits that do not end, and a connection pool close to its limit (see `RUNBOOK.md`, "Database health").
 - Reports sanitised failures to Sentry without email or model content.
 
-The shared schema and migrations live in the [Cookie-Web repository](https://github.com/allistera/Cookie-Web/tree/main/migrations).
+The shared schema and its migrations live in [`migrations/`](migrations/); see [Database migrations](#database-migrations).
 
 Ingestion never drafts replies. AI reply drafts are generated only when the user
-presses the AI button in Cookie-Web's reply box. Cookie-Web migration
+presses the AI button in Cookie-Web's reply box. Migration
 `0069_priority_reply_drafts.sql` remains applied: `cookie-web-drafts` still exposes
 `isAiGenerated` on saved drafts, and the unused `message_ai.reply_draft_*` columns
 are kept rather than dropped.
@@ -387,7 +390,7 @@ are kept rather than dropped.
 - Node.js 22 or newer.
 - npm.
 - Cloudflare Workers, Email Routing, and Hyperdrive.
-- A compatible Supabase Postgres database with Cookie-Web migrations applied.
+- A compatible Supabase Postgres database with the migrations in `migrations/` applied.
 - A separate development database for local testing.
 
 ## Local setup
@@ -463,7 +466,7 @@ use an ETag derived from the complete response, including deletions and
 renames. Feeds exceeding 10,000 stored events return 503 rather than a partial
 calendar that clients could interpret as deleted events.
 
-Apply Cookie-Web migration `0101_calendar_feeds.sql` before deploying this
+Apply migration `0101_calendar_feeds.sql` before deploying this
 Worker; management returns 503 until it exists, without affecting other
 calendar routes. No new environment variables or secrets are required.
 Automatic invocation logs and traces are disabled for this Worker because
@@ -475,7 +478,7 @@ Logpush exports for this endpoint without redacting `token` first.
 
 `cookie-web-calendar` lets a Cookie user sign in with Google from Settings → Calendars, choose which Google calendars appear in Cookie, and view, create, edit and delete their events from the Calendar view. Nothing is mirrored: each `GET /calendar-events` window asks the Google Calendar API for the selected calendars' events (expanded instances, in the `timeZone` query parameter's zone) and merges them with the stored rows; a `google:<calendarId>:<eventId>` id on `POST/PATCH/DELETE /calendar-events` goes straight to Google. A Google outage returns the stored events with a `googleError` message rather than failing the request. A connection with no calendar chosen (a first connection, or one to a different Google account) starts with every calendar on the account selected, up to the 50 a selection holds; `action=complete` answers `selectedAll: true` when it did that, and reconnecting an account keeps the selection it had. Repeating events can be edited one occurrence at a time; changing how one repeats, and attendees, stay in Google Calendar.
 
-Refresh and access tokens are stored per user in `google_calendar_connections` (Cookie-Web migration `0091`), encrypted with AES-256-GCM under `GOOGLE_TOKEN_ENCRYPTION_KEY`; the browser never receives a Google token. Disconnecting revokes the grant with Google and deletes the row. A refresh refused with `invalid_grant` marks the row `needs_reauth` so Settings can offer "Reconnect" while keeping the calendar selection.
+Refresh and access tokens are stored per user in `google_calendar_connections` (migration `0091`), encrypted with AES-256-GCM under `GOOGLE_TOKEN_ENCRYPTION_KEY`; the browser never receives a Google token. Disconnecting revokes the grant with Google and deletes the row. A refresh refused with `invalid_grant` marks the row `needs_reauth` so Settings can offer "Reconnect" while keeping the calendar selection.
 
 Migration `0102_google_calendar_browser_binding.sql` adds the ten-minute linking transaction. `action=authorize` returns a verifier which the SPA saves in `sessionStorage`, separately from the Google consent URL. The callback stages the code encrypted and redirects with a new random completion handle in the fragment. Only an authenticated `action=complete` matching the original user, verifier, and completion handle can atomically consume the transaction and exchange the code. A forwarded consent URL, another tab without the verifier, replay, or an account switch cannot complete linking. Old in-flight transactions must be restarted after the migration. Deploy migration 0102, the calendar Worker, and the updated SPA together; previously loaded clients must reload before linking.
 
@@ -504,7 +507,7 @@ The sync is one-way, Todoist to Cookie (`src/todoistSync.js`). Each run reads ev
 - Tasks keep their parent, content, description, labels (normalised like Cookie's own: lowercase, spaces to underscores, no `@`/`#`), priority (Todoist's 4-is-urgent becomes Cookie's 1), due date and time (in the task's zone, or the account's) and a repeat rule when Cookie can phrase it (`every monday`, `every 3 days`, …). A task whose parent Cookie cannot see becomes top-level; a task in a project the run does not know (one Todoist no longer lists as live, or one Cookie holds no mirror of while projects are switched off) goes to the Inbox, after the Inbox's own rows, without its section.
 - A mirrored task Todoist no longer lists as open is marked completed when it appears in the completed list and deleted otherwise. A mirrored project that vanished is deleted when only mirrors depend on it and unlinked (kept as an ordinary project) when a Cookie-authored task or sub-project lives in it. Rows with a null `todoist_id` are never touched.
 
-Every mirror carries its Todoist id in `task_projects.todoist_id` / `task_items.todoist_id` (Cookie-Web migration `0093`), so a later run updates the same rows. Completing or editing a mirrored task in Cookie is overwritten by the next run; make those changes in Todoist. The search index is refreshed after each run (deferred on the request's queue for a manual run, inline for the cron); the weekly drift sweep covers any miss.
+Every mirror carries its Todoist id in `task_projects.todoist_id` / `task_items.todoist_id` (migration `0093`), so a later run updates the same rows. Completing or editing a mirrored task in Cookie is overwritten by the next run; make those changes in Todoist. The search index is refreshed after each run (deferred on the request's queue for a manual run, inline for the cron); the weekly drift sweep covers any miss.
 
 The last run's outcome (`last_synced_at`, `last_sync_status`, `last_sync_error`, `last_sync_summary`) is stored on the connection and shown in Settings. A token Todoist rejects (401/403) is recorded as failed with a reconnect message and is not reported to Sentry; any other failure is. Disconnecting deletes the token row and keeps the mirrored rows, still linked, so reconnecting the same account picks them up in place. Saving a token that belongs to a different Todoist account (judged on the Todoist user id, or the email when an id is missing) unlinks the previous account's mirrors first — they stay as ordinary Cookie rows — and resets the completion cursor, so the new account's first sync cannot complete or delete them.
 
@@ -520,7 +523,7 @@ Apply migrations `0093_todoist_sync.sql`, `0094_todoist_sync_options.sql` and `0
 
 `cookie-web-notifications` pushes a notification for each new email to the [ntfy](https://ntfy.sh) server and topic the person enters in Settings → Notifications → ntfy notifications: any `https://` ntfy server (ntfy.sh or self-hosted), a topic of up to 64 letters, digits, hyphens or underscores, and optionally an access token for a reserved topic or a server that requires authentication. `PUT /ntfy { serverUrl, topic, accessToken? }` saves them and turns delivery on. Omitting `accessToken` keeps the stored token for the same normalized server URL. Changing the server URL clears the previous token and its hint unless you supply a replacement. Sending `null` explicitly removes the token. `GET /ntfy` returns the subscription without the token (only its last four characters as `tokenHint`), plus `defaultServerUrl` (the `NTFY_BASE_URL` var, used to prefill the form) and `tokensSupported`. `DELETE /ntfy` pauses delivery and drops the queued alerts while keeping the settings; `POST /ntfy/test` publishes a test message at once. `POST /ntfy`, the older switch-only setup, still turns delivery on with a random topic on the default server for a web client that predates the form.
 
-The database trigger queues an event per allowed new email for users whose subscription is enabled (Cookie-Web migration `0077`); the cron drains the queue every minute, publishing the subject as the title and the plain-text body (truncated) to `<serverUrl>/<topic>` with `Authorization: Bearer <token>` when a token is stored. Two Cookie accounts cannot share a topic on one server (unique on `(server_url, topic)`, migration `0110`): the save answers `409 topic_taken`.
+The database trigger queues an event per allowed new email for users whose subscription is enabled (migration `0077`); the cron drains the queue every minute, publishing the subject as the title and the plain-text body (truncated) to `<serverUrl>/<topic>` with `Authorization: Bearer <token>` when a token is stored. Two Cookie accounts cannot share a topic on one server (unique on `(server_url, topic)`, migration `0110`): the save answers `409 topic_taken`.
 
 The token is encrypted at rest with AES-256-GCM under one secret, set once with `wrangler secret put` (deliberately not listed in the `Deploy` workflow, like the Google and Todoist keys, so a deployment without it still works — tokens are then refused with `501 tokens_not_configured` and Settings hides the field):
 
@@ -532,7 +535,7 @@ Apply migration `0110_ntfy_user_servers.sql` before deploying this Worker, then 
 
 ### Task comments and attachments
 
-`cookie-web-tasks` keeps a discussion thread on each task in `task_comments` (Cookie-Web migration `0096_task_comments.sql`, apply before deploying this Worker) and serves it under `/task-comments` (`src/taskComments.js`). An entry holds text, one attached file, or both; the file's bytes go to the private `cookie-files` R2 bucket (binding `FILES`) under `<user_id>/<uuid>`, exactly as Documents uploads do, with the same 25 MB cap, type sniffing and 60-per-minute rate limit. The row is the source of truth; the object key never reaches the browser, and bytes only leave through the attachment route after an ownership check.
+`cookie-web-tasks` keeps a discussion thread on each task in `task_comments` (migration `0096_task_comments.sql`, apply before deploying this Worker) and serves it under `/task-comments` (`src/taskComments.js`). An entry holds text, one attached file, or both; the file's bytes go to the private `cookie-files` R2 bucket (binding `FILES`) under `<user_id>/<uuid>`, exactly as Documents uploads do, with the same 25 MB cap, type sniffing and 60-per-minute rate limit. The row is the source of truth; the object key never reaches the browser, and bytes only leave through the attachment route after an ownership check.
 
 | Route                                             | Behaviour                                                                                                                                                                                                                       |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -590,7 +593,7 @@ request without copies keeps the key it had before these lines existed.
   `PATCH /drafts/:id` and returns them from `GET /drafts/:id`. A client that
   sends neither field leaves the stored lines alone.
 
-The four columns come from Cookie-Web migration `0114_cc_bcc_recipients.sql`.
+The four columns come from migration `0114_cc_bcc_recipients.sql`.
 Both Workers read them through `to_jsonb(row) ->> 'cc_addresses'`, which
 answers `NULL` for a column that does not exist yet, and write them with a
 statement of their own that runs only when a line is used or has changed. A
@@ -603,7 +606,7 @@ the mail would go out without the people copied on it.
 ### Calendar invitations
 
 Cookie answers a calendar invitation received by email and keeps the calendar in
-step with the organiser. It needs Cookie-Web migration
+step with the organiser. It needs migration
 `0113_calendar_invitations.sql`, which adds `calendar_invitations` and
 `calendar_events.invitation_id`. Apply it before deploying `cookie-web-messages`
 and `cookie-web-send`; until it is applied the messages Worker reports no
@@ -646,7 +649,7 @@ organises (`METHOD:REPLY`), counter-proposals and delegation are not handled.
 
 ### Private object cleanup
 
-Apply Cookie-Web migration `0103_durable_object_cleanup.sql` before deploying `cookie-web-tasks` and the updated outbound attachment handlers. Metadata deletion and replacement transactionally record a job for Blob mail attachments and uploads, R2 document files, and task attachments, including database cascades. New R2 uploads record a provisional job before writing bytes, so a failed metadata insert or interrupted request remains recoverable. Immediate R2 cleanup is still attempted for responsiveness; the durable job retries failures.
+Apply migration `0103_durable_object_cleanup.sql` before deploying `cookie-web-tasks` and the updated outbound attachment handlers. Metadata deletion and replacement transactionally record a job for Blob mail attachments and uploads, R2 document files, and task attachments, including database cascades. New R2 uploads record a provisional job before writing bytes, so a failed metadata insert or interrupted request remains recoverable. Immediate R2 cleanup is still attempted for responsiveness; the durable job retries failures.
 
 The existing hourly tasks cron processes up to 50 jobs, separately from Todoist sync. It rechecks live references, including unresolved outbound delivery snapshots (migration 0104), leases jobs for five minutes, retries failures with capped backoff, and records completion only after storage confirms deletion. Missing storage bindings retain jobs. Completed tombstones reject delayed registration of a deleted URL. `object_cleanup` logs contain processed, retained, failed, pending, and oldest-seconds counts without object paths; alert on failures or a growing due backlog. Inspect `object_cleanup_jobs WHERE deleted_at IS NULL AND available_at <= now()` to diagnose overdue work. Keep the database queue and the storage inventory in backup/restore planning.
 
@@ -663,6 +666,21 @@ listed. Cookie imports the package by name and normalizes attachment metadata,
 so no application migration is needed. CI uses Node.js 22; Cloudflare Workers
 provide the required web APIs. Existing ingest parser tests, type checks and
 Worker dry runs cover the upgrade; no schema or pipeline changes are required.
+
+## Database migrations
+
+The Supabase Postgres schema is shared by these Workers, Cookie-Web and Cookie-iOS. Its append-only SQL migrations live in [`migrations/`](migrations/) and are applied by [`migrations/migrate.sh`](migrations/migrate.sh):
+
+```sh
+export DATABASE_URL='postgres://...'
+./migrations/migrate.sh
+```
+
+The `Migrate Database` workflow runs the same script when migration files reach `main`, and can be started by hand. It reads the `DATABASE_URL` repository secret, which must be the IPv4-reachable Supabase session pooler and a role that may alter the schema; the search reindex and drift-repair workflows use the same secret. Applied filenames are recorded in `schema_migrations`, so a run only applies files that are not recorded yet.
+
+Merging a migration applies it; deploying a Worker stays a separate, manual step. Merge the migration, wait for `Migrate Database` to succeed, then run `Deploy` for the Workers that need it. See [migrations/README.md](migrations/README.md) for conventions and per-migration notes.
+
+The migrations lived in Cookie-Web until November 2026. Their earlier history is in that repository.
 
 ## Validation
 
@@ -711,7 +729,7 @@ See [RUNBOOK.md](RUNBOOK.md) for deployment checks, AI recovery, secret rotation
 
 ### Task recurrence
 
-Apply Cookie-Web migration `0066_task_items_recurrence.sql` before deploying
+Apply migration `0066_task_items_recurrence.sql` before deploying
 `cookie-web-tasks`. POST/PATCH `/task-items` accepts a nullable `recurrence`
 string: `every Monday`, `every 2nd Tuesday` (monthly), `every last Friday`,
 `every N days`, or `every N weeks` (N = 1–365), plus `daily`/`weekly` aliases.
@@ -728,7 +746,7 @@ are preserved and no separate occurrence history is recorded.
 
 ### Natural-language task quick add
 
-Apply Cookie-Web migration `0067_task_items_time_and_labels.sql` before
+Apply migration `0067_task_items_time_and_labels.sql` before
 deploying `cookie-web-tasks`. `POST /task-items/interpret` accepts `{ text,
 timeZone }` and returns a task draft. The Worker extracts `p1`–`p4`,
 `#Project`, and `@label` deterministically, matches only an existing project
@@ -744,7 +762,7 @@ returns a message directing the client to Advanced entry.
 
 ## Review-fix rollout
 
-Apply Cookie-Web migration `0070_scheduled_send_requests.sql` before deploying
+Apply migration `0070_scheduled_send_requests.sql` before deploying
 `cookie-web-send`. The optional `requestId` on a scheduled send now returns the
 original row for an identical retry and HTTP 409 for different content under the
 same id. Keep the restored `0066`–`0069` migration files in fresh-database setup;
@@ -783,7 +801,7 @@ The route accepts bodies up to 1 MiB; each full draft is limited to 250,000 char
 
 ## Task activity and progress
 
-Apply Cookie-Web migration `0097_task_activity.sql` before deploying
+Apply migration `0097_task_activity.sql` before deploying
 `cookie-web-tasks`, then deploy the web client. The database trigger records
 creation, edits, completion, reopening and deletion atomically, including writes
 from sync and cascades. The Worker stamps recurring completions while advancing
@@ -815,7 +833,7 @@ include the nullable estimate. Timed calendar tasks use this many minutes; the
 web client retains its 30-minute default when the estimate is absent. Dividers
 cannot store an estimate.
 
-Apply Cookie-Web migration `0098_task_duration.sql` before deploying
+Apply migration `0098_task_duration.sql` before deploying
 `cookie-web-tasks`, then deploy the web client.
 
 ### Project favorites
@@ -832,7 +850,7 @@ The same menu offers **Remove from favorites**. Favorites are saved per owned
 project and are available across devices, including nested projects whose parents
 are collapsed.
 
-Deploy Cookie-Web migration `0099_project_favorites.sql` before the task Worker,
+Apply migration `0099_project_favorites.sql` before the task Worker,
 then the web client. `GET /projects` and project write responses include the
 boolean `isFavorite`; `PATCH /projects` accepts it to add or remove a favorite.
 

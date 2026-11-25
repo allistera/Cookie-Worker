@@ -18,7 +18,7 @@ export const MAX_SUBSCRIPTIONS = 1000;
  * are held or blocked are left out.
  *
  * The header test is spelled exactly as the predicate of the partial index
- * messages_list_unsubscribe_idx (Cookie-Web migration 0115), so that only list
+ * messages_list_unsubscribe_idx (migration 0115), so that only list
  * mail is visited and only each sender's newest message has its headers read.
  * Without the index the query returns the same rows, more slowly.
  *
@@ -61,7 +61,7 @@ export function fetchSubscriptionSenders(sql, userId) {
 
 /**
  * When the person unsubscribed from each sender, keyed by sender address. An
- * empty map until Cookie-Web migration 0115 has created the table, so this
+ * empty map until migration 0115 has created the table, so this
  * Worker can be deployed before or after it.
  *
  * @param {import('postgres').Sql} sql
@@ -123,8 +123,8 @@ export async function getSubscriptions(sql, userId) {
 /**
  * Remembers a confirmed unsubscribe from a message's sender, so Subscriptions
  * can show it as done. Best effort: the unsubscribe itself has already
- * happened, so a failure here (the table is missing until Cookie-Web
- * migration 0115) is logged and must not turn the response into an error.
+ * happened, so a failure here (the table is missing until migration 0115)
+ * is logged and must not turn the response into an error.
  *
  * @param {import('postgres').Sql} sql
  * @param {string} userId

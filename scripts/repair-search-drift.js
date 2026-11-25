@@ -8,7 +8,7 @@
 // messages has no updated_at column, so scripts/lib/queries.js's
 // messagesDriftPage can only detect "never indexed", not "indexed but since
 // edited" — see that function's own comment for the resulting gap (a flag
-// change like is_archived won't be re-pushed) and Cookie-Web migration
+// change like is_archived won't be re-pushed) and migration
 // 0055_search_indexed_at.sql for why the two tables' partial indexes differ.
 //
 // Each Meilisearch push gets three attempts with exponential backoff,
