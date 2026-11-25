@@ -17,6 +17,7 @@ import {
   MAX_CHAT_BODY_BYTES,
 } from './documentChat.js';
 import { handleRuleDraft } from './ruleDraft.js';
+import { handleComposeSuggest, SUGGEST_RATE_LIMIT } from './suggest.js';
 import { handleSummarize } from './summarize.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
@@ -28,6 +29,9 @@ import { configureOpenAi } from '../../../shared/openai.js';
 // two routes on one Worker. Per-route wording matches the originals exactly.
 // Document chat sends far larger prompts (a whole draft plus history) to a
 // bigger model, so it has its own, lower quota instead of the 'ai' scope.
+// Writing suggestions are the opposite case: small, and asked for on every
+// typing pause, so they have a higher quota of their own that typing cannot
+// take from the 'ai' scope.
 const ROUTES = {
   'document-chat': {
     handler: handleDocumentChat,
@@ -52,6 +56,14 @@ const ROUTES = {
     notConfigured: 'AI compose is not configured',
     unavailable: 'AI compose is temporarily unavailable',
     tooMany: 'Too many compose requests, slow down',
+  },
+  'compose-suggest': {
+    handler: handleComposeSuggest,
+    scope: 'compose-suggest',
+    rateLimit: SUGGEST_RATE_LIMIT,
+    notConfigured: 'Writing suggestions are not configured',
+    unavailable: 'Writing suggestions are temporarily unavailable',
+    tooMany: 'Too many writing suggestions, slow down',
   },
   summarize: {
     handler: handleSummarize,

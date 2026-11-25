@@ -92,6 +92,7 @@ describe('auth and configuration', () => {
     ['/document', 'AI documents are not configured'],
     ['/document-chat', 'Document AI chat is not configured'],
     ['/rule-draft', 'AI rule generation is not configured'],
+    ['/compose-suggest', 'Writing suggestions are not configured'],
   ])('%s answers 503 with its own wording when no OpenAI key is set', async (path, error) => {
     const response = await worker.fetch(
       request(path, { body: '{}' }),
@@ -139,6 +140,7 @@ describe('rate limiting', () => {
     ['/document', { instruction: 'x' }, 'Too many document requests, slow down'],
     ['/rule-draft', { instruction: 'x' }, 'Too many rule generation requests, slow down'],
     ['/document-chat', { instruction: 'x' }, 'Too many document AI requests, slow down'],
+    ['/compose-suggest', { text: 'Thanks for' }, 'Too many writing suggestions, slow down'],
   ])(
     '%s answers 429 with its own wording when the quota is exhausted',
     async (path, body, error) => {
@@ -165,14 +167,35 @@ describe('rate limiting', () => {
     expect(await response.json()).toEqual({ error: 'AI summarization is temporarily unavailable' });
   });
 
-  test.each(['/compose', '/summarize', '/document', '/rule-draft', '/document-chat'])(
-    '%s does not spend quota on a request that fails validation',
-    async (path) => {
-      const response = await worker.fetch(request(path, { body: '{}' }), env, ctx);
-      expect(response.status).toBe(400);
-      expect(allowRequest).not.toHaveBeenCalled();
-    },
-  );
+  test.each([
+    '/compose',
+    '/summarize',
+    '/document',
+    '/rule-draft',
+    '/document-chat',
+    '/compose-suggest',
+  ])('%s does not spend quota on a request that fails validation', async (path) => {
+    const response = await worker.fetch(request(path, { body: '{}' }), env, ctx);
+    expect(response.status).toBe(400);
+    expect(allowRequest).not.toHaveBeenCalled();
+  });
+
+  test('writing suggestions claim a scope of their own, not the shared ai one', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      Response.json({ output_text: JSON.stringify({ completion: ' your email.' }) }),
+    );
+    const response = await worker.fetch(
+      request('/compose-suggest', { body: JSON.stringify({ text: 'Thanks for' }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ suggestion: ' your email.' });
+    expect(allowRequest).toHaveBeenCalledWith(expect.anything(), 'user-1', 'compose-suggest', {
+      limit: 30,
+      windowMs: 60_000,
+    });
+  });
 
   test('does not spend quota on an oversized body', async () => {
     const response = await worker.fetch(
