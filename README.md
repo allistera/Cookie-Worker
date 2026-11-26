@@ -517,14 +517,26 @@ Two further switches on the connection, **Sync projects** (`sync_projects`) and 
 
 Todoist reads retry a server error (`5xx`) once after one second, repeating only the failed page with a fresh 15-second request timeout. Authentication errors, other client errors (including rate limits), and malformed successful responses fail immediately. A second server failure still records a failed sync for the next scheduled or manual run.
 
-The sync is one-way, Todoist to Cookie (`src/todoistSync.js`). Each run reads every project, section, open task and the last month (or since the previous run) of completed tasks, then under the owner's task advisory lock:
+The sync mirrors Todoist into Cookie (`src/todoistSync.js`); the one thing that goes back is a mirrored task's completion, described below. Each run reads every project, section, open task and the last month (or since the previous run) of completed tasks, then under the owner's task advisory lock:
 
 - Projects become `task_projects` rows under their Todoist parent; the Todoist Inbox is Cookie's Inbox (`project_id IS NULL`) and gets no row. Archived and deleted projects are left out.
 - Sections become dividers (`kind = 'divider'`) headed with the section name, keyed `section:<id>`, followed by the tasks in them. Within a project the order is unsectioned tasks, then each section and its tasks, in Todoist's order, with positions counted from one so Cookie-authored rows (positioned at epoch seconds) follow the mirrors.
 - Tasks keep their parent, content, description, labels (normalised like Cookie's own: lowercase, spaces to underscores, no `@`/`#`), priority (Todoist's 4-is-urgent becomes Cookie's 1), due date and time (in the task's zone, or the account's) and a repeat rule when Cookie can phrase it (`every monday`, `every 3 days`, …). A task whose parent Cookie cannot see becomes top-level; a task in a project the run does not know (one Todoist no longer lists as live, or one Cookie holds no mirror of while projects are switched off) goes to the Inbox, after the Inbox's own rows, without its section.
 - A mirrored task Todoist no longer lists as open is marked completed when it appears in the completed list and deleted otherwise. A mirrored project that vanished is deleted when only mirrors depend on it and unlinked (kept as an ordinary project) when a Cookie-authored task or sub-project lives in it. Rows with a null `todoist_id` are never touched.
 
-Every mirror carries its Todoist id in `task_projects.todoist_id` / `task_items.todoist_id` (migration `0093`), so a later run updates the same rows. Completing or editing a mirrored task in Cookie is overwritten by the next run; make those changes in Todoist. The search index is refreshed after each run (deferred on the request's queue for a manual run, inline for the cron); the weekly drift sweep covers any miss.
+Every mirror carries its Todoist id in `task_projects.todoist_id` / `task_items.todoist_id` (migration `0093`), so a later run updates the same rows. Editing a mirrored task in Cookie (its title, date, labels, project) is overwritten by the next run; make those changes in Todoist.
+
+Completing a mirrored task in Cookie completes it in Todoist, and marking it not done again reopens it there (`src/todoistPush.js`, `POST /api/v1/tasks/{id}/close` and `/reopen`). Completing a repeating task closes it in Todoist too, which moves it to its next occurrence there as it does here. The `PATCH /task-items` that changes the completion records what Todoist has yet to be told in `task_items.todoist_pending` (`close` or `reopen`, migration `0116`) in the same statement, and the change is sent once the write has committed, on the request's deferred queue, so Todoist normally agrees within a second. The column is cleared when Todoist answers. Whatever is still set is sent by the next run before it reads Todoist, twenty changes a run at most, and counted in the run's summary as `pushed`:
+
+- A rate limit, a server error or a timeout leaves the change pending. In a run it also fails the run, so nothing is applied over a completion Todoist never received; the next run tries again.
+- A rejected token (401) fails the run with the reconnect message, as a rejected read does.
+- Any other refusal (the task was deleted in Todoist, or Todoist will not change it) drops the change, logged as `todoist_push_refused`; the run that follows then takes Todoist's word for the task.
+- A row still carrying a change when a run writes its plan (more were waiting than one run sends, or it changed while the run was reading) keeps its completion and due date as Cookie has them, and is neither completed nor removed, until a later run has sent it.
+- Nothing is sent while **Sync tasks** is off; the changes wait and go out with the first run after it is switched back on. Saving a token for a different Todoist account discards them with the links.
+
+A request is sent once and never retried in place, because closing a repeating task twice would skip an occurrence. The same can still happen when Todoist took a close but its answer was lost: the change stays pending and is sent again. Undoing the completion of a repeating task in Cookie is not sent to Todoist; the next run brings back Todoist's date.
+
+The search index is refreshed after each run (deferred on the request's queue for a manual run, inline for the cron); the weekly drift sweep covers any miss.
 
 The last run's outcome (`last_synced_at`, `last_sync_status`, `last_sync_error`, `last_sync_summary`) is stored on the connection and shown in Settings. A token Todoist rejects (401/403) is recorded as failed with a reconnect message and is not reported to Sentry; any other failure is. Disconnecting deletes the token row and keeps the mirrored rows, still linked, so reconnecting the same account picks them up in place. Saving a token that belongs to a different Todoist account (judged on the Todoist user id, or the email when an id is missing) unlinks the previous account's mirrors first — they stay as ordinary Cookie rows — and resets the completion cursor, so the new account's first sync cannot complete or delete them.
 
@@ -534,7 +546,7 @@ The Worker needs one secret, set once with `wrangler secret put` (deliberately n
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `TODOIST_TOKEN_ENCRYPTION_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`). Rotating it invalidates every stored connection; people enter their token again. |
 
-Apply migrations `0093_todoist_sync.sql`, `0094_todoist_sync_options.sql` and `0095_todoist_tasks_synced_at.sql` before deploying this Worker, then deploy Cookie-Web for the Settings UI.
+Apply migrations `0093_todoist_sync.sql`, `0094_todoist_sync_options.sql`, `0095_todoist_tasks_synced_at.sql` and `0116_todoist_pending_completion.sql` before deploying this Worker, then deploy Cookie-Web for the Settings UI. `PATCH /task-items` writes `todoist_pending` on every update, so a Worker deployed ahead of `0116` fails task edits.
 
 ### ntfy notifications
 

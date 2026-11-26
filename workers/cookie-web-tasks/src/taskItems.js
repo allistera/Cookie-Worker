@@ -5,6 +5,7 @@ import { getTaskPage, getTaskDetail } from './taskPages.js';
 
 import { normalizeTaskMetadata, normalizeTaskDuration } from './taskMetadata.js';
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
+import { pushTaskCompletion } from './todoistPush.js';
 import { isAncestorOf } from './ancestry.js';
 import { attachmentKeysOf, deleteVanishedAttachments } from './taskComments.js';
 import { removeTaskItemFromMeili, syncTaskItemToMeili } from './taskItemMeiliSync.js';
@@ -414,7 +415,8 @@ function fetchOwnedTaskItem(sql, userId, id) {
   // truncates them and would make reopening completed tasks fail spuriously.
   return sql`SELECT id, kind, project_id AS "projectId", parent_id AS "parentId", recurrence,
     to_char(due_date, 'YYYY-MM-DD') AS "dueDate", completed_at::text AS "completedAt",
-    to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", labels
+    to_char(due_time, 'HH24:MI') AS "dueTime", time_zone AS "timeZone", labels,
+    todoist_id AS "todoistId"
     FROM task_items WHERE id = ${id} AND user_id = ${userId}`;
 }
 
@@ -602,6 +604,18 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   } catch {
     return Response.json({ error: 'Schedule exceeds supported dates' }, { status: 400 });
   }
+  // A task mirrored from Todoist is completed or reopened there as well
+  // (todoistPush.js). Recorded on the row with the change itself and sent
+  // once it has committed, so a failed send is found again by the next sync.
+  const completes = advances || (body.completed === true && !existing.completedAt);
+  const reopens = body.completed === false && Boolean(existing.completedAt);
+  const todoistAction = !existing.todoistId
+    ? null
+    : completes
+      ? 'close'
+      : reopens
+        ? 'reopen'
+        : null;
   const changesDate = hasDueDate || setsSchedule || advances;
   const changesRecurrence = hasRecurrence || clearsDueDate;
   const guardsSchedule = changesDate || changesRecurrence || hasCompleted || hasTime;
@@ -656,6 +670,7 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
         WHEN ${hasCompleted}::boolean THEN (CASE WHEN ${Boolean(body.completed)}::boolean THEN now() ELSE NULL END)
         ELSE t.completed_at
       END,
+      todoist_pending = CASE WHEN ${todoistAction !== null}::boolean THEN ${todoistAction} ELSE t.todoist_pending END,
       updated_at   = now()
     WHERE t.id = ${id} AND t.user_id = ${userId}
       AND (NOT ${guardsSchedule}::boolean OR (
@@ -697,6 +712,16 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   if (hasParent && item.parentId !== existing.parentId) {
     if (existing.parentId === null) await removeTaskItemFromMeili(env, item.id);
     else await syncTaskItemToMeili(sql, env, existing.parentId);
+  }
+  // The request's deferred queue runs after this transaction has committed,
+  // on a connection of its own. Without one (a caller outside a request) the
+  // change waits for the next sync.
+  if (todoistAction && env?.deferSearchSync) {
+    env.deferSearchSync(
+      (/** @type {import('postgres').Sql} */ freshSql) =>
+        pushTaskCompletion(freshSql, env, userId, item.id),
+      `todoist-push:${item.id}`,
+    );
   }
   await syncTaskItemToMeili(sql, env, item.id);
   return Response.json({ item });

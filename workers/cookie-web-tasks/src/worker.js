@@ -445,12 +445,13 @@ async function route(url, request, sql, userId, env) {
 }
 
 /**
- * A request's deferred search jobs. Keyed, so a request that touches one task
- * or document several times (a task created with sub-tasks, say) queues one
- * job for it. The jobs read state committed before they start, so they run
- * together and their task polling overlaps instead of stacking; syncedRoots lets sibling sub-task
- * jobs share their root's push. Rejects with the first failure once all have
- * settled.
+ * A request's deferred search jobs — and the one other thing that waits for
+ * the response, a completion sent on to Todoist (todoistPush.js). Keyed, so
+ * a request that touches one task or document several times (a task created
+ * with sub-tasks, say) queues one job for it. The jobs read state committed
+ * before they start, so they run together and their task polling overlaps
+ * instead of stacking; syncedRoots lets sibling sub-task jobs share their
+ * root's push. Rejects with the first failure once all have settled.
  */
 export function createSearchSyncQueue() {
   /** @type {Map<unknown, (sql: import('postgres').Sql) => Promise<unknown>>} */
