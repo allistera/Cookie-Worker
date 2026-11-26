@@ -31,6 +31,15 @@ describe('pushPendingCompletions', () => {
     });
 
     expect(pushed).toBe(2);
+    // Read, send and clear run under the caller's push lock, so an
+    // overlapping push waits and then finds these changes already cleared.
+    expect(sql.begin).toHaveBeenCalledTimes(1);
+    expect(sql.controlCalls).toEqual([
+      {
+        text: expect.stringContaining('pg_advisory_xact_lock(hashtextextended('),
+        values: [USER_ID],
+      },
+    ]);
     expect(sql.calls[0].text).toContain('todoist_pending IS NOT NULL AND todoist_id IS NOT NULL');
     expect(sql.calls[0].text).toContain('ORDER BY updated_at');
     // Every pending row of the caller, capped per run.
@@ -89,6 +98,32 @@ describe('pushPendingCompletions', () => {
     // Sent once, never retried: a second close would skip an occurrence.
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(sql.calls).toHaveLength(1);
+  });
+
+  it('keeps the clear of a change Todoist took when a later one fails', async () => {
+    const sql = createMockSql([
+      [
+        { id: TASK_ID, todoistId: 'td-1', action: 'close' },
+        { id: OTHER_ID, todoistId: 'td-2', action: 'close' },
+      ],
+    ]);
+    const fetchImpl = vi.fn().mockResolvedValueOnce(answer(204)).mockResolvedValueOnce(answer(503));
+    // The transaction must commit rather than roll the first clear back, or
+    // that close is sent again and a repeating task skips an occurrence.
+    let committed = false;
+    sql.begin = vi.fn(async (/** @type {(tx: any) => unknown} */ callback) => {
+      const result = await callback(sql);
+      committed = true;
+      return result;
+    });
+
+    await expect(
+      pushPendingCompletions(sql, USER_ID, 'tok', { fetchImpl: /** @type {any} */ (fetchImpl) }),
+    ).rejects.toBeInstanceOf(TodoistApiError);
+
+    expect(committed).toBe(true);
+    expect(sql.calls).toHaveLength(2);
+    expect(sql.calls[1].values).toEqual([USER_ID, TASK_ID, 'close']);
   });
 });
 
