@@ -164,6 +164,11 @@ export function createSendServices(env, ctx) {
 /** @param {unknown} error */
 export function deliveryErrorResponse(error) {
   if (!(error instanceof DeliveryError)) return null;
+  // The provider refused this exact message: retrying it unchanged replays
+  // the refusal, so it is a client error with no retry hint.
+  if (error.code === 'DELIVERY_REJECTED') {
+    return Response.json({ error: error.message, code: error.code }, { status: 422 });
+  }
   const status = [
     'DELIVERY_UNCERTAIN',
     'DELIVERY_CONFLICT',

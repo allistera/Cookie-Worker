@@ -188,6 +188,21 @@ describe('POST /send security boundaries', () => {
       ),
     });
   });
+  test('answers 422 without a retry hint when the provider rejected the message', async () => {
+    const response = deliveryErrorResponse(new DeliveryError('DELIVERY_REJECTED'));
+    expect(response?.status).toBe(422);
+    expect(response?.headers.get('Retry-After')).toBeNull();
+    expect(await response?.json()).toEqual({
+      error: 'The email provider rejected this delivery',
+      code: 'DELIVERY_REJECTED',
+    });
+  });
+
+  test('keeps asking for a retry while delivery is still being confirmed', async () => {
+    const response = deliveryErrorResponse(new DeliveryError('DELIVERY_PENDING'));
+    expect(response?.status).toBe(503);
+    expect(response?.headers.get('Retry-After')).toBe('5');
+  });
   test('answers 503 when Resend or EMAIL_FROM is unconfigured', async () => {
     const response = await worker.fetch(
       request('/send', { body: sendBody() }),
@@ -355,7 +370,9 @@ describe('POST /send security boundaries', () => {
     resendSend.mockResolvedValue({ data: null, error: { message: 'bounced' } });
     const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
 
-    expect(response.status).toBe(503);
+    // A client error without a retry hint, so the client releases the draft.
+    expect(response.status).toBe(422);
+    expect(response.headers.get('Retry-After')).toBeNull();
     expect(await response.json()).toMatchObject({ code: 'DELIVERY_REJECTED' });
     const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
     expect(queries.some((query) => query.includes('GREATEST(send_count - 1, 0)'))).toBe(true);
