@@ -105,7 +105,16 @@ export function nativeBusyIntervals(rows, body, window) {
   }
   const page = expandEventsPage(rows, new Date(), range);
   if (page.truncated) throw new Error('Incomplete recurrence expansion');
-  return page.events.flatMap((event) => {
+  // Only occurrences whose wall-clock dates can reach the selected dates
+  // (with the same two-day zone margin) are converted, so a DST-ambiguous
+  // time well outside the window cannot fail every native calendar.
+  const earliestEnd = addDays(body.from, -2);
+  const reachable = page.events.filter(
+    (event) =>
+      event.date <= range.to &&
+      addDays(event.date, Math.ceil(event.duration / 1440) + 1) >= earliestEnd,
+  );
+  return reachable.flatMap((event) => {
     const start = wallTimeToInstant(
       event.date,
       event.allDay ? '00:00' : event.start,

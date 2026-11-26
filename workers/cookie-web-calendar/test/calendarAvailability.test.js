@@ -93,6 +93,24 @@ describe('availability wall times and native events', () => {
     expect(intervals[1].end - intervals[1].start).toBe(25 * 3_600_000);
   });
 
+  it('ignores an ambiguous wall time on a date that cannot reach the window', () => {
+    // 25 October 01:30 is the repeated London hour. It falls in the 32-day
+    // lead the read expands for long events, but ends a week before the
+    // requested dates.
+    const later = { ...body, from: '2026-11-02', to: '2026-11-04' };
+    const intervals = nativeBusyIntervals(
+      [
+        { ...event, date: '2026-11-02' },
+        { ...event, id: 'repeat', date: '2026-10-25', start: '01:30' },
+      ],
+      later,
+      { start: Date.parse('2026-11-02T00:00:00Z'), end: Date.parse('2026-11-05T00:00:00Z') },
+    );
+    expect(intervals).toEqual([
+      { start: Date.parse('2026-11-02T09:00Z'), end: Date.parse('2026-11-02T10:00Z') },
+    ]);
+  });
+
   it('unions nested and overlapping conflicts from different calendars', () => {
     expect(
       mergeBusy([
