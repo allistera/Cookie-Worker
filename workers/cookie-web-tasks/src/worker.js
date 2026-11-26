@@ -147,8 +147,10 @@ async function route(url, request, sql, userId, env) {
       );
     }
     return withJsonBody(request, (body) => {
-      if (generate) return createAiTask(sql, userId, body, env);
-      if (interpret) return interpretTask(sql, userId, body, env);
+      const report = (/** @type {string} */ operation, /** @type {unknown} */ error) =>
+        captureHandledException(operation, error, env);
+      if (generate) return createAiTask(sql, userId, body, env, { report });
+      if (interpret) return interpretTask(sql, userId, body, env, { report });
       if (reorder) return reorderTaskItems(sql, userId, body);
       if (request.method === 'POST') return createTaskItem(sql, userId, body, env);
       if (request.method === 'PATCH') return updateTaskItem(sql, userId, body, env);

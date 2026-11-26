@@ -83,6 +83,7 @@ describe('handleCompose draft', () => {
     const input = JSON.parse(payload.input[1].content);
     expect(input.reply_context.body).toBe('Cabinets Tuesday.');
     expect(payload.input[0].content).toContain('untrusted data');
+    expect(payload.reasoning).toEqual({ effort: 'none' });
   });
 
   test('answers 502 without leaking details when OpenAI fails', async () => {
@@ -96,6 +97,18 @@ describe('handleCompose draft', () => {
 });
 
 describe('generateDraft snippet mode', () => {
+  test('leaves the reasoning option off a model that does not take it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ output_text: JSON.stringify({ name: 'recap', text: 'Thanks!' }) }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await generateDraft({ instruction: 'recap' }, 'key', 'model', 'snippet');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty('reasoning');
+  });
+
   test('returns the trigger and template for a valid snippet', async () => {
     vi.stubGlobal(
       'fetch',

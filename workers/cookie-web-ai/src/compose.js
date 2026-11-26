@@ -6,6 +6,7 @@ import { requestAiJson } from './aiTracing.js';
 
 import { DEFAULT_MODEL, clean } from './openai.js';
 import { parseOutputJson } from '../../../shared/openai.js';
+import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
 import { validId } from '../../../shared/pagination.js';
 
 const SNIPPET_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -70,6 +71,9 @@ export async function generateDraft(input, apiKey, model, mode = 'draft') {
       body: JSON.stringify({
         model,
         max_output_tokens: 700,
+        // Reasoning tokens share the 700-token allowance and can use all of
+        // it, leaving an incomplete response with no draft.
+        ...(supportsReasoning(model) ? { reasoning: { effort: 'none' } } : {}),
         input: [
           {
             role: 'system',

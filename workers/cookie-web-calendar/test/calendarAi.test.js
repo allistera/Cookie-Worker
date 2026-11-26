@@ -59,12 +59,43 @@ describe('calendar event AI parsing', () => {
     });
     const request = JSON.parse(/** @type {any} */ (fetchImpl).mock.calls[0][1].body);
     expect(request.model).toBe('test-calendar-model');
+    // Not a reasoning model, so no reasoning option.
+    expect(request).not.toHaveProperty('reasoning');
     expect(request.text.format).toMatchObject({
       type: 'json_schema',
       name: 'calendar_event',
       strict: true,
     });
     expect(request.input[1].content).toContain('Europe/London');
+  });
+
+  it('turns reasoning off for the default reasoning model', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        output_text: JSON.stringify({
+          title: 'Dentist',
+          description: '',
+          location: '',
+          date: '2026-08-24',
+          start: '09:00',
+          duration: 30,
+          repeat: 'none',
+          repeatUntil: '',
+          repeatDays: [],
+        }),
+      }),
+    }));
+
+    await generateCalendarEventDraft(
+      { text: 'Dentist tomorrow 9am', now: '2026-08-23T12:00:00.000Z', timeZone: 'UTC' },
+      'test-key',
+      /** @type {any} */ (fetchImpl),
+    );
+
+    const request = JSON.parse(/** @type {any} */ (fetchImpl).mock.calls[0][1].body);
+    expect(request.model).toBe('gpt-6-luna');
+    expect(request.reasoning).toEqual({ effort: 'none' });
   });
 
   it('rejects an incomplete model response with a descriptive error', async () => {

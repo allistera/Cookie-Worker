@@ -2,8 +2,10 @@ import { createTaskTree, isCalendarDate } from './taskItems.js';
 import { isTaskTimeZone, normalizeTaskLabels, normalizeTaskMetadata } from './taskMetadata.js';
 import { parseTaskRecurrence, taskOccurrence } from './taskRecurrence.js';
 import { allowRequest } from '../../../shared/rate-limit.js';
+import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
+import { OpenAIOutputError, parseOutputJson, responsesUrl } from '../../../shared/openai.js';
 
-import { responsesUrl } from '../../../shared/openai.js';
+const TASK_MODEL = 'gpt-6-luna';
 /** Extract explicit shortcuts before AI so p1, #projects and @labels are exact. @param {string} text */
 export function extractTaskTokens(text) {
   let priority = 4;
@@ -71,9 +73,15 @@ export async function generateTaskDraft(input, apiKey, fetchImpl = fetch) {
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(input.expand ? 45_000 : 15_000),
     body: JSON.stringify({
-      model: 'gpt-6-luna',
+      model: TASK_MODEL,
       store: false,
       max_output_tokens: input.expand ? 2500 : 700,
+      // Reasoning tokens share the output allowance: without a low effort a
+      // reasoning model can spend all of it and return no draft. Only the
+      // larger plan allowance leaves room for a short reasoning pass.
+      ...(supportsReasoning(TASK_MODEL)
+        ? { reasoning: { effort: input.expand ? 'low' : 'none' } }
+        : {}),
       input: [
         {
           role: 'system',
@@ -135,13 +143,10 @@ export async function generateTaskDraft(input, apiKey, fetchImpl = fetch) {
       },
     }),
   });
-  if (!response.ok) throw new Error('Task interpretation failed');
-  const body = await response.json();
-  const output =
-    body.output_text ??
-    body.output?.flatMap((item) => item.content ?? []).find((part) => part.type === 'output_text')
-      ?.text;
-  const value = JSON.parse(output);
+  if (!response.ok)
+    throw new OpenAIOutputError(`OpenAI Responses API responded ${response.status}`);
+  // Names an incomplete or empty response instead of failing in JSON.parse.
+  const value = parseOutputJson(await response.json());
   return input.expand ? normalizeTaskPlan(value) : normalizeTaskDraft(value, input.timeZone);
 }
 
@@ -150,7 +155,7 @@ export async function generateTaskDraft(input, apiKey, fetchImpl = fetch) {
  * Creation still goes through the ordinary, validated POST task-items endpoint.
  * @param {import('postgres').Sql} sql @param {string} userId @param {any} body
  * @param {{OPENAI_API_KEY?: string}} env
- * @param {{generator?: typeof generateTaskDraft, now?: () => Date, expand?: boolean}} [overrides]
+ * @param {{generator?: typeof generateTaskDraft, now?: () => Date, expand?: boolean, report?: (operation: string, error: unknown) => void}} [overrides]
  */
 export async function interpretTask(sql, userId, body, env, overrides = {}) {
   if (
@@ -224,8 +229,14 @@ export async function interpretTask(sql, userId, body, env, overrides = {}) {
     return Response.json({
       draft: { ...draft, projectId, priority: tokens.priority, labels: tokens.labels },
     });
-  } catch {
-    // Never log user prompts or provider responses.
+  } catch (error) {
+    // Never log user prompts or provider responses: the message of an
+    // OpenAIOutputError is fixed text, and its cause (which can quote the
+    // output) is left out. A provider failure is reported; a draft the
+    // validators refuse is only logged.
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : 'unknown error';
+    console.error('Task AI interpretation failed:', message);
+    if (error instanceof OpenAIOutputError) overrides.report?.('task_ai_interpret', error);
     return Response.json(
       { error: 'Could not interpret that task. Try a clear task name and date, or use Advanced.' },
       { status: 502 },
@@ -252,8 +263,11 @@ export function normalizeTaskPlan(value) {
   return { ...normalize(value), subtasks: value.subtasks.map(normalize) };
 }
 
-/** @param {import('postgres').Sql} sql @param {string} userId @param {any} body @param {any} env */
-export async function createAiTask(sql, userId, body, env) {
+/**
+ * @param {import('postgres').Sql} sql @param {string} userId @param {any} body @param {any} env
+ * @param {{report?: (operation: string, error: unknown) => void}} [options]
+ */
+export async function createAiTask(sql, userId, body, env, options = {}) {
   // The model never dates a plan. The caller may: an optional dueDate goes on
   // the parent task alone, and is refused here before any AI budget is spent.
   const given = body?.dueDate;
@@ -265,6 +279,7 @@ export async function createAiTask(sql, userId, body, env) {
   // shortcuts: the dedicated AI composer always creates a plan in Inbox.
   const response = await interpretTask(sql, userId, body, env, {
     expand: true,
+    report: options.report,
     generator: (input, key) => generateTaskDraft({ ...input, text: body.text, expand: true }, key),
   });
   if (!response.ok) return response;
