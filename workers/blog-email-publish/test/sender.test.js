@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { checkSender, dmarcPassedFor } from '../src/sender.js';
+import { automaticMailReason, checkSender, dmarcPassedFor } from '../src/sender.js';
 
 const ALLOWED = 'me@example.com';
 // The shape Cloudflare Email Routing writes, tabs included.
@@ -99,5 +99,31 @@ describe('checkSender', () => {
     const message = email([['authentication-results', PASS]], '');
 
     expect(checkSender(message, '')).toBe('sender_not_allowed');
+  });
+});
+
+describe('automaticMailReason', () => {
+  test('passes mail a person wrote, including Auto-Submitted: no', () => {
+    expect(automaticMailReason(email([['from', ALLOWED]]))).toBeNull();
+    expect(automaticMailReason(email([['auto-submitted', ' No ']]))).toBeNull();
+  });
+
+  test.each(['auto-replied', 'auto-generated', 'auto-notified; owner-email="me@example.com"'])(
+    'marks Auto-Submitted: %s',
+    (value) => {
+      expect(automaticMailReason(email([['auto-submitted', value]]))).toBe('auto_submitted');
+    },
+  );
+
+  test('marks a message with a calendar part', () => {
+    const message = { ...email([['from', ALLOWED]]), attachments: [{ mimeType: 'Text/Calendar' }] };
+
+    expect(automaticMailReason(message)).toBe('calendar');
+  });
+
+  test('passes other attachments', () => {
+    const message = { ...email([['from', ALLOWED]]), attachments: [{ mimeType: 'image/png' }] };
+
+    expect(automaticMailReason(message)).toBeNull();
   });
 });

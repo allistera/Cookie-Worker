@@ -180,6 +180,41 @@ describe('senders', () => {
 });
 
 describe('emails that cannot be published', () => {
+  // Cookie's own calendar replies and out-of-office answers leave from the
+  // owner's address with a DMARC pass; neither may become an article.
+  test.each([
+    [
+      'an automatic reply',
+      rawEmail().replace('MIME-Version:', 'Auto-Submitted: auto-replied\r\nMIME-Version:'),
+      'auto_submitted',
+    ],
+    [
+      'a calendar reply',
+      rawEmail()
+        .replace(
+          'Content-Type: text/html; charset=utf-8',
+          'Content-Type: multipart/mixed; boundary="b"\r\n\r\n--b\r\nContent-Type: text/html; charset=utf-8',
+        )
+        .replace(
+          '<div>Hello <b>blog</b>.</div>\r\n',
+          '<div>Accepted</div>\r\n--b\r\nContent-Type: text/calendar; method=REPLY; charset=utf-8\r\n\r\nBEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n--b--\r\n',
+        ),
+      'calendar',
+    ],
+  ])('accepts without publishing %s from the owner', async (_name, raw, reason) => {
+    const message = fakeMessage(raw);
+
+    await worker.email(message, env);
+
+    expect(message.setReject).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logged()).toContain(`"reason":"${reason}"`);
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { operation: 'read_email' },
+      extra: { reason },
+    });
+  });
+
   test.each([
     ['no subject', rawEmail({ subject: '' }), 'missing_title'],
     ['no content', rawEmail({ body: '<div><br></div>' }), 'empty_body'],
