@@ -123,6 +123,19 @@ describe('bulk label changes', () => {
     },
   );
 
+  test('refuses to remove a system label from a batch', async () => {
+    const sql = createMockSql([[]]);
+    const response = await postMessage(
+      sql,
+      'owner',
+      { action: 'remove_label', ids: [id], label_id: label },
+      deps(),
+    );
+    expect(response.status).toBe(404);
+    expect(sql).toHaveBeenCalledOnce();
+    expect(sql.calls[0].text).toContain("kind = 'user'");
+  });
+
   test('rejects missing labels before mutation', async () => {
     const sql = createMockSql([[]]);
     const response = await postMessage(

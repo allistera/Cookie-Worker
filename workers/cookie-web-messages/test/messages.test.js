@@ -137,7 +137,7 @@ describe('postMessage — label actions', () => {
   test('update_labels adds and removes several labels with one drift mark and one reindex', async () => {
     const OTHER_LABEL = '55555555-5555-4555-8555-555555555555';
     const sql = createMockSql([
-      [{ message: true, labels: 1 }], // ownership check
+      [{ message: true, labels: 1, remove_labels: 1 }], // ownership check
       [{ label_id: LABEL_ID }], // INSERT ... RETURNING
       [{ label_id: OTHER_LABEL }], // DELETE ... RETURNING
       [], // search_indexed_at drift mark
@@ -164,7 +164,7 @@ describe('postMessage — label actions', () => {
   });
 
   test('update_labels changes nothing when a label to add is not the owner\u2019s', async () => {
-    const sql = createMockSql([[{ message: true, labels: 0 }]]);
+    const sql = createMockSql([[{ message: true, labels: 0, remove_labels: 0 }]]);
     const onMessageChanged = vi.fn();
     const response = await postMessage(
       sql,
@@ -175,6 +175,41 @@ describe('postMessage — label actions', () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: 'Label not found' });
     expect(onMessageChanged).not.toHaveBeenCalled();
+  });
+
+  test('update_labels leaves a system label in place', async () => {
+    const sql = createMockSql([[{ message: true, labels: 0, remove_labels: 0 }]]);
+    const onMessageChanged = vi.fn();
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'update_labels', remove_label_ids: [LABEL_ID] },
+      unsubscribeDeps({ onMessageChanged }),
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Label not found' });
+    expect(sql.calls).toHaveLength(1);
+    expect(sql.calls[0].text.replace(/\s+/g, ' ')).toContain(
+      "WHERE l.id = ANY(?::uuid[]) AND l.user_id = ? AND l.kind = 'user' ) AS remove_labels",
+    );
+    expect(onMessageChanged).not.toHaveBeenCalled();
+  });
+
+  test('remove_label leaves a system label in place', async () => {
+    const sql = createMockSql([
+      [], // DELETE matched nothing: the label is not a user label
+      [{ message: true, label: false }], // ownership check
+    ]);
+    const response = await postMessage(
+      sql,
+      USER_ID,
+      { id: MESSAGE_ID, action: 'remove_label', label_id: LABEL_ID },
+      unsubscribeDeps(),
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Label not found' });
+    expect(sql.calls[0].text).toContain('DELETE FROM message_labels');
+    expect(sql.calls[0].text).toContain("l.kind = 'user'");
   });
 
   test('update_labels returns 404 for a message the caller does not own', async () => {
@@ -191,7 +226,7 @@ describe('postMessage — label actions', () => {
 
   test('update_labels with no change skips the drift mark and the reindex', async () => {
     const sql = createMockSql([
-      [{ message: true, labels: 1 }], // ownership check
+      [{ message: true, labels: 1, remove_labels: 0 }], // ownership check
       [], // INSERT ... ON CONFLICT DO NOTHING changed nothing
       [{ name: 'Work', color: '#3b82f6', kind: 'user' }], // labels read-back
     ]);

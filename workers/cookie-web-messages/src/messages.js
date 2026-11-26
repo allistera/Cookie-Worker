@@ -396,6 +396,8 @@ async function mutateMessageLabel(sql, userId, messageId, action, rawLabelId, de
             WHERE message_id = ${messageId} AND label_id = ${labelId}
               AND EXISTS (
                 SELECT 1 FROM messages m WHERE m.id = ${messageId} AND m.user_id = ${userId}
+              ) AND EXISTS (
+                SELECT 1 FROM labels l WHERE l.id = ${labelId} AND l.user_id = ${userId} AND l.kind = 'user'
               )
             RETURNING label_id
           `;
@@ -524,11 +526,18 @@ async function updateMessageLabels(sql, userId, messageId, rawAdd, rawRemove, de
         (
           SELECT count(*)::int FROM labels l
           WHERE l.id = ANY(${addIds}::uuid[]) AND l.user_id = ${userId} AND l.kind = 'user'
-        ) AS labels
+        ) AS labels,
+        (
+          SELECT count(*)::int FROM labels l
+          WHERE l.id = ANY(${removeIds}::uuid[]) AND l.user_id = ${userId} AND l.kind = 'user'
+        ) AS remove_labels
     `;
     if (!owned?.message) return { error: 'Message not found' };
-    // Checked before any write so a bad id changes nothing.
-    if (owned.labels !== addIds.length) return { error: 'Label not found' };
+    // Checked before any write so a bad id changes nothing. System labels
+    // carry a verdict and are neither added nor removed here.
+    if (owned.labels !== addIds.length || owned.remove_labels !== removeIds.length) {
+      return { error: 'Label not found' };
+    }
 
     const added = addIds.length
       ? await tx`
