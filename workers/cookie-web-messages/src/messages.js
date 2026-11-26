@@ -832,6 +832,13 @@ export async function postMessage(sql, userId, body, deps) {
           WHERE event.message_id = m.id AND m.thread_id = ${changed.id}
             AND event.user_id = ${userId} AND m.user_id = ${userId}
         `;
+        await tx`
+          DELETE FROM ntfy_notification_events event
+          USING messages m
+          WHERE event.message_id = m.id AND m.thread_id = ${changed.id}
+            AND event.user_id = ${userId} AND m.user_id = ${userId}
+            AND event.published_at IS NULL
+        `;
       }
       return changed;
     });
