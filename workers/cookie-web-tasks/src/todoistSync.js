@@ -652,11 +652,15 @@ export async function applySync(sql, userId, plan, options = {}) {
         project_id = EXCLUDED.project_id,
         position   = EXCLUDED.position,
         updated_at = now()
+      WHERE (task_items.content, task_items.project_id, task_items.position)
+        IS DISTINCT FROM (EXCLUDED.content, EXCLUDED.project_id, EXCLUDED.position)
     `;
   }
 
   /** @type {Map<string, string>} Todoist task id → Cookie task id */
-  const taskIds = new Map();
+  // Seeded with every mirror, since the upsert below returns only the rows
+  // it inserted or changed and a sub-task still needs its parent's id.
+  const taskIds = new Map(existing.map((row) => [String(row.todoistId), String(row.id)]));
   for (const level of levels(plan.tasks)) {
     const rows = level.map((task) => ({
       todoist_id: task.todoistId,
@@ -706,6 +710,17 @@ export async function applySync(sql, userId, plan, options = {}) {
                             THEN NULL ELSE task_items.completed_at END,
         search_indexed_at = NULL,
         updated_at   = now()
+      -- An unchanged mirror is left alone: no rewrite, no activity row and
+      -- no re-index on every run.
+      WHERE (task_items.content, task_items.description, task_items.project_id,
+             task_items.parent_id, task_items.due_time, task_items.time_zone, task_items.labels,
+             task_items.priority, task_items.recurrence, task_items.position)
+          IS DISTINCT FROM (EXCLUDED.content, EXCLUDED.description, EXCLUDED.project_id,
+             EXCLUDED.parent_id, EXCLUDED.due_time, EXCLUDED.time_zone, EXCLUDED.labels,
+             EXCLUDED.priority, EXCLUDED.recurrence, EXCLUDED.position)
+        OR (task_items.todoist_pending IS NULL
+            AND (task_items.due_date IS DISTINCT FROM EXCLUDED.due_date
+                 OR task_items.completed_at IS NOT NULL))
       RETURNING id, todoist_id AS "todoistId", parent_id AS "parentId"
     `;
     for (const row of saved) taskIds.set(String(row.todoistId), String(row.id));

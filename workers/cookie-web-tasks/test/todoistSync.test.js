@@ -394,6 +394,10 @@ describe('applySync', () => {
     expect(sql.calls[7].values[1].__json).toEqual([
       expect.objectContaining({ todoist_id: 't1a', parent_id: T1, position: 1 }),
     ]);
+    // An unchanged mirror is neither rewritten nor re-indexed.
+    expect(texts[5]).toContain('IS DISTINCT FROM (EXCLUDED.content');
+    expect(texts[6]).toContain('IS DISTINCT FROM (EXCLUDED.content, EXCLUDED.description');
+    expect(texts[6]).toContain('OR task_items.completed_at IS NOT NULL');
     expect(texts[8]).toContain('SET search_indexed_at = NULL');
     expect(sql.calls[8].values[1]).toEqual([T1]);
 
@@ -420,6 +424,29 @@ describe('applySync', () => {
       skipped: 0,
     });
     expect(deletedRootIds).toEqual(['z-row']);
+  });
+
+  it('resolves a sub-task to its unchanged parent, which the upsert does not return', async () => {
+    const sql = createMockSql([
+      [{ id: WORK, todoistId: 'work' }], // projects depth 0
+      [{ id: REPORTS, todoistId: 'reports' }], // projects depth 1
+      [], // vanished projects deleted
+      [], // vanished projects unlinked
+      [{ id: T1, todoistId: 't1', parentId: null, completedAt: null }], // existing mirrors
+      [], // sections upsert
+      [], // tasks depth 0: every root unchanged
+    ]);
+
+    await applySync(sql, USER_ID, plan);
+
+    const depthOne = sql.calls.find(
+      (/** @type {{text: string, values: any[]}} */ call) =>
+        call.text.includes("'task'") &&
+        call.values[1]?.__json?.some((/** @type {any} */ row) => row.todoist_id === 't1a'),
+    );
+    expect(depthOne.values[1].__json).toEqual([
+      expect.objectContaining({ todoist_id: 't1a', parent_id: T1 }),
+    ]);
   });
 
   it('leaves a row whose completion Todoist has yet to hear as Cookie has it', async () => {
