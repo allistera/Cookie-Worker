@@ -9,6 +9,8 @@ payload and sent-copy metadata before contacting Resend. The first attempt
 starts a fixed 23-hour retry window, shorter than
 [Resend's 24-hour idempotency retention](https://resend.com/docs/dashboard/emails/idempotency-keys).
 Retries retain the key and payload. At most five ambiguous attempts are made.
+An attempt that stopped before the provider was called (an attachment that
+could not be read, or a busy payload slot) is given back and does not count.
 An active two-minute lease prevents concurrent provider requests. A known
 provider receipt is always handled as local sent-copy repair, even after the
 retry window.
@@ -26,11 +28,17 @@ local history still needs repair. `DELIVERY_PENDING` permits retrying the same
 unchanged request. `DELIVERY_UNCERTAIN` requires operator or recipient
 confirmation; never clear its deadline or generate a new request id as an
 automatic retry. `DELIVERY_CONFLICT` means a client reused an identity for
-different content. The browser keeps the frozen request in its account-scoped
+different content. `DELIVERY_NOT_SENT` (HTTP 503 with `Retry-After`) means the
+provider was never called; retrying the same request resumes the same delivery.
+`DELIVERY_REJECTED` (HTTP 422, no `Retry-After`) means the provider refused the
+message: the same request would be refused again, so the browser releases the
+request id and lets the draft be edited and sent anew. The browser keeps the frozen request in its account-scoped
 local recovery store until delivery is confirmed.
 
 The MCP `cookie_send_email` tool requires a caller-supplied `requestId`, reused
-for every retry and changed only for an intentional new message. Older direct
+for every retry and changed only for an intentional new message, and a
+`confirmation` the owner created in Cookie for that email (README, "Agent send
+confirmations"); without it the send answers 403 `SEND_CONFIRMATION_REQUIRED`. Older direct
 API clients may omit it for a first send and replay the same completed receipt
 within the original 24-hour window. After that window, a completed immediate
 delivery without an explicit identity returns HTTP 409 with

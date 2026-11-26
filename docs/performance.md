@@ -6,7 +6,7 @@ Implemented across Cookie-Web, Cookie-Worker and Cookie-iOS. Migrations 0074 and
 
 - Mailbox counts are fetched only for the first Inbox page; other folder pages skip those aggregates. Label/category counts can be omitted for web sidebar requests while MCP keeps its count fields by default.
 - Bulk message PATCH/POST accepts up to 100 owned IDs in one database update and schedules one batch Meilisearch sync for indexed fields. Web archive/delete/star/read/category/label selection actions use these paths.
-- Ask streams opt-in server-sent events to the web drawer while retaining JSON responses for existing callers.
+- Ask answered with opt-in server-sent events for a time; the web drawer now uses `POST /chat`, and `POST /ask` answers with JSON only (`stream=1` is ignored).
 - Contacts now read from a maintained per-message projection instead of expanding recipient JSON across all messages. Apply migration `0100_contact_directory_projection.sql` through the normal migration process before rollout.
 
 - Web attachment uploads dynamically load the Blob client after validation. Production builds enforce budgets for the complete static entry/inbox/editor import graphs and emit `dist/bundle-budgets.json`.
