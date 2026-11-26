@@ -113,6 +113,55 @@ ${'a'.repeat(600 * 1024)}`;
     expect(new TextEncoder().encode(capped.value).byteLength).toBeLessThanOrEqual(512 * 1024);
   });
 
+  test('drops only the partial character a byte cut leaves at the end', () => {
+    expect(capString('\u00e9\u00e9\u00e9', 3).value).toBe('\u00e9');
+  });
+
+  // Both used to be regexes that rescanned a long run from every position:
+  // 100,000 characters took about 25 s and the invocation hit its CPU limit
+  // before the message was stored or forwarded.
+  test('turns 100,000 non-breaking spaces in an HTML-only body into text quickly', async () => {
+    const nbsp = '\u00a0'.repeat(100_000);
+    const record = await parseEmail(
+      fakeMessage(`From: a@example.com
+To: b@example.com
+Subject: Spaces
+Message-ID: <nbsp@example.com>
+Content-Type: text/html; charset=utf-8
+
+<p>a${nbsp}b</p>`),
+    );
+    expect(record.bodyText).toBe(`a${nbsp}b`);
+  });
+
+  test('truncates a body with a long run of invalid bytes quickly', async () => {
+    const head = new TextEncoder().encode(`From: a@example.com
+To: b@example.com
+Subject: Invalid bytes
+Message-ID: <invalid@example.com>
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+`);
+    // Each 0xFF decodes to a three-byte U+FFFD; the run is followed by text,
+    // so it sits inside the 512 KB cut and not at its end.
+    const invalid = new Uint8Array(150_000).fill(0xff);
+    const tail = new TextEncoder().encode(`a${'b'.repeat(100 * 1024)}`);
+    const raw = new Uint8Array(head.length + invalid.length + tail.length);
+    raw.set(head);
+    raw.set(invalid, head.length);
+    raw.set(tail, head.length + invalid.length);
+
+    // The production message hands over bytes, not a string.
+    const record = await parseEmail(
+      fakeMessage(/** @type {any} */ (raw), { rawSize: raw.byteLength }),
+    );
+
+    expect(record.truncated).toBe(true);
+    expect(record.bodyText).toContain(`${'\uFFFD'.repeat(150_000)}ab`);
+    expect(record.bodyText.endsWith('b')).toBe(true);
+  });
+
   test('retains attachment bytes and permits null filenames', async () => {
     const record = await parseEmail(
       fakeMessage(`From: a@example.com
