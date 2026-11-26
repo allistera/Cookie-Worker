@@ -106,6 +106,9 @@ describe('purgeExpiredSpam', () => {
     expect(text).not.toContain("'held'");
     // Mail that moved into Blocked with the decision counts from the decision.
     expect(blocked).toContain('GREATEST(m.created_at, sd.updated_at) < r.cutoff');
+    // Redundant with the line above, but it keeps the decision lookup off
+    // blocked mail that is too new to expire.
+    expect(blocked).toContain('AND m.created_at < r.cutoff');
     // Candidate selection is a snapshot; after waiting for a concurrent Block
     // or Unblock the UPDATE target must recheck the committed disposition.
     expect(text.slice(text.indexOf('UPDATE messages m'))).toContain(
