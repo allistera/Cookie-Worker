@@ -490,8 +490,8 @@ export async function loadProviderAttachments(attachments, readBlob) {
 // isolate) would exhaust it, so payloads with attachments are built and
 // handed to the provider one at a time per isolate. A waiter never starts
 // while a live holder still has its payload: after ATTACHMENT_PAYLOAD_WAIT_MS
-// it gives up with AttachmentSlotBusyError, which callers treat as a
-// retryable failure before anything was loaded or sent. Only a holder older
+// it gives up with AttachmentSlotBusyError, which resumeDelivery reports as
+// DELIVERY_NOT_SENT: nothing was loaded or sent. Only a holder older
 // than ATTACHMENT_PAYLOAD_STALE_MS is presumed dead (its request was
 // cancelled mid-send and its release never ran) and is taken over, so a
 // cancelled request cannot wedge every later forward on this isolate.
@@ -849,6 +849,9 @@ export async function resumeDelivery(sql, delivery, services) {
   const claim = await claimDelivery(sql, delivery);
   let row = claim.row;
   if (claim.send) {
+    // Set just before the provider is contacted. A failure before that point
+    // (attachment load, payload slot wait) sent nothing.
+    let providerCalled = false;
     /** @param {Record<string, any>} payload */
     const send = async (payload) => {
       // Payload loading must not turn an eligible claim into a send after the
@@ -856,6 +859,7 @@ export async function resumeDelivery(sql, delivery, services) {
       if (row.retry_until && Date.now() >= new Date(row.retry_until).getTime()) {
         return { status: 'uncertain', providerId: null };
       }
+      providerCalled = true;
       if (services.sendProvider) return services.sendProvider(payload, row.source_key);
       // Injection seam for existing provider tests. Production uses the
       // fixed-origin, deadline-bound adapter in createSendServices.
@@ -881,16 +885,18 @@ export async function resumeDelivery(sql, delivery, services) {
           )
         : await send(row.provider_payload);
     } catch {
-      outcome = { status: 'retry', providerId: null };
+      outcome = { status: providerCalled ? 'retry' : 'not_sent', providerId: null };
     }
     if (outcome.status !== 'sent' || !outcome.providerId) {
       const state = await deferDelivery(sql, row, outcome.status);
       throw new DeliveryError(
-        state === 'uncertain'
-          ? 'DELIVERY_UNCERTAIN'
-          : state === 'rejected'
-            ? 'DELIVERY_REJECTED'
-            : 'DELIVERY_PENDING',
+        outcome.status === 'not_sent'
+          ? 'DELIVERY_NOT_SENT'
+          : state === 'uncertain'
+            ? 'DELIVERY_UNCERTAIN'
+            : state === 'rejected'
+              ? 'DELIVERY_REJECTED'
+              : 'DELIVERY_PENDING',
       );
     }
     // The intent is already durable. If the receipt write fails, a same-key

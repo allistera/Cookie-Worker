@@ -258,6 +258,35 @@ describe.skipIf(!databaseUrl)('durable outbound delivery on PostgreSQL', () => {
     expect(await sql`SELECT id FROM messages`).toHaveLength(1);
   });
 
+  it('does not count an attempt that stopped before the provider was called', async () => {
+    await sql`INSERT INTO outbound_attachments(id,user_id,blob_url) VALUES (${UPLOAD},${OWNER},'https://blob.test/file')`;
+    const row = await createDelivery(
+      sql,
+      OWNER,
+      'immediate-send/unreadable',
+      payload,
+      {
+        ...copy,
+        attachments: [
+          { id: UPLOAD, source: 'upload', size_bytes: 1, blob_url: 'https://blob.test/file' },
+        ],
+      },
+      'client-5',
+    );
+    const svc = services();
+    svc.readBlob = vi.fn(async () => {
+      throw new Error('blob store unavailable');
+    });
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await expect(resumeDelivery(sql, row, svc)).rejects.toMatchObject({
+        code: 'DELIVERY_NOT_SENT',
+      });
+    }
+    expect(svc.sendProvider).not.toHaveBeenCalled();
+    const [stored] = await sql`SELECT status, attempts, claimed_at FROM outbound_deliveries`;
+    expect(stored).toEqual({ status: 'sending', attempts: 0, claimed_at: null });
+  });
+
   it('protects upload metadata for unresolved deliveries', async () => {
     await sql`INSERT INTO outbound_attachments(id,user_id,blob_url) VALUES (${UPLOAD},${OWNER},'https://blob.test/file')`;
     await createDelivery(

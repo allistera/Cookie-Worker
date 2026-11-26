@@ -328,6 +328,30 @@ describe('a reclaimed lease', () => {
     expect(sql.calls.at(-1).text).toContain("SET status = 'pending'");
   });
 
+  test('gives back the slot and the attempt when an attachment could not be read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sql = scriptedSql([
+      [{ exists: 1 }],
+      [{ authorized: true, quota_claimed: true }],
+      [], // refund
+      [], // back to pending
+    ]);
+    const svc = deliveryServices();
+    svc.readBlob.mockRejectedValue(new Error('blob store unavailable'));
+    const attachment = { id: 'a', filename: 'a.txt', size_bytes: 1, blob_url: 'https://blob/a' };
+
+    const result = await deliverScheduledSend(sql, dueRow({ attachments: [attachment] }), svc);
+
+    expect(result).toEqual({ status: 'retried', storedMessageUuid: null });
+    expect(svc.send).not.toHaveBeenCalled();
+    const quota = quotaQueries(sql.calls);
+    expect(quota).toHaveLength(2);
+    expect(quota[1].text).toContain('send_count - 1');
+    const pending = sql.calls.at(-1);
+    expect(pending.text).toContain("SET status = 'pending'");
+    expect(pending.text).not.toContain('attempts');
+  });
+
   test('refunds the slot when the first provider attempt is definitively rejected', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const sql = scriptedSql([

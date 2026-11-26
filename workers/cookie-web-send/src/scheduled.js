@@ -7,7 +7,6 @@ import { retryWithBackoff } from '../../../shared/retry.js';
 import { isTransientDbError } from '../../../shared/transient-db.js';
 import { DeliveryError, findDelivery, stopUnconfirmedDelivery } from './deliveryLedger.js';
 import {
-  AttachmentSlotBusyError,
   buildReadReceiptUrl,
   claimOutboundEmailQuota,
   deliverMail,
@@ -561,6 +560,15 @@ export async function deliverScheduledSend(sql, row, services) {
       services,
     );
   } catch (err) {
+    if (err instanceof DeliveryError && err.code === 'DELIVERY_NOT_SENT') {
+      // Stopped before the provider was called (an attachment could not be
+      // read, or another attachment send held this isolate's payload slot):
+      // the row goes back without spending an attempt or its quota slot.
+      await refundOutboundEmailQuota(sql, row.user_id);
+      await sql`UPDATE scheduled_sends SET status = 'pending', claimed_at = NULL,
+        last_error = ${err.message} WHERE id = ${row.id}`;
+      return { status: 'retried', storedMessageUuid: null };
+    }
     if (err instanceof DeliveryError) {
       const terminal = ['DELIVERY_UNCERTAIN', 'DELIVERY_CONFLICT'].includes(err.code);
       const rejected = err.code === 'DELIVERY_REJECTED';
@@ -573,13 +581,6 @@ export async function deliverScheduledSend(sql, row, services) {
         status: terminal ? 'unconfirmed' : rejected ? 'failed' : 'retried',
         storedMessageUuid: null,
       };
-    }
-    // Another attachment send held this isolate's payload slot: nothing was
-    // loaded or sent, so the row goes back without spending an attempt.
-    if (err instanceof AttachmentSlotBusyError) {
-      await refundOutboundEmailQuota(sql, row.user_id);
-      await sql`UPDATE scheduled_sends SET status = 'pending', claimed_at = NULL WHERE id = ${row.id}`;
-      return { status: 'retried', storedMessageUuid: null };
     }
     const attempts = row.attempts + 1;
     const errorMessage = /** @type {Error} */ (err).message;

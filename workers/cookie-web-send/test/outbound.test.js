@@ -702,6 +702,57 @@ describe('attachment payload slot', () => {
     }
   });
 
+  it('reports an attachment that cannot be read as not sent, without calling the provider', async () => {
+    const send = vi.fn(async () => ({ data: { id: 'never' }, error: null }));
+    const services = /** @type {any} */ ({
+      env,
+      createResend: () => ({ emails: { send } }),
+      readBlob: async () => {
+        throw new Error('blob store unavailable');
+      },
+    });
+    await expect(
+      deliverMail(
+        createMockSql([]),
+        'user-1',
+        {
+          recipients: ['r@example.com'],
+          subject: 'S',
+          text: 'body',
+          html: null,
+          replyToMessageId: null,
+          readReceiptToken: 'not-a-uuid',
+          attachments: [forward],
+        },
+        services,
+      ),
+    ).rejects.toMatchObject({ code: 'DELIVERY_NOT_SENT' });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('still treats a provider call that throws as a pending delivery', async () => {
+    const send = vi.fn(async () => {
+      throw new Error('socket closed');
+    });
+    const services = /** @type {any} */ ({ env, createResend: () => ({ emails: { send } }) });
+    await expect(
+      deliverMail(
+        createMockSql([]),
+        'user-1',
+        {
+          recipients: ['r@example.com'],
+          subject: 'S',
+          text: 'body',
+          html: null,
+          replyToMessageId: null,
+          readReceiptToken: 'not-a-uuid',
+        },
+        services,
+      ),
+    ).rejects.toMatchObject({ code: 'DELIVERY_PENDING' });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   it('sends plain mail without waiting for the slot', async () => {
     const send = vi.fn(async () => ({ data: { id: 'resend-plain' }, error: null }));
     const services = /** @type {any} */ ({ env, createResend: () => ({ emails: { send } }) });
