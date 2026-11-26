@@ -7,6 +7,7 @@ import { byName, fakeApi } from './helpers.js';
 const ID = '11111111-1111-4111-8111-111111111111';
 const MSG = '22222222-2222-4222-8222-222222222222';
 const ATT = '33333333-3333-4333-8333-333333333333';
+const CONFIRMATION = 'ab'.repeat(32);
 
 /** @param {string} name @param {any} args @param {any} api */
 async function call(name, args, api) {
@@ -180,7 +181,13 @@ describe('drafts tools', () => {
     api.send.post.mockResolvedValue({ id: 'prov', messageId: '<m@x>', followUpScheduled: true });
     const result = await call(
       'cookie_send_email',
-      { to: ['a@example.com', 'b@example.com'], subject: 'S', text: 'T', requestId: 'req-1' },
+      {
+        to: ['a@example.com', 'b@example.com'],
+        subject: 'S',
+        text: 'T',
+        requestId: 'req-1',
+        confirmation: CONFIRMATION,
+      },
       api,
     );
     expect(api.send.post).toHaveBeenCalledWith('/send', {
@@ -188,6 +195,7 @@ describe('drafts tools', () => {
       subject: 'S',
       text: 'T',
       requestId: 'req-1',
+      confirmation: CONFIRMATION,
     });
     expect(result).toEqual({
       status: 'sent',
@@ -203,7 +211,13 @@ describe('drafts tools', () => {
     api.send.post.mockResolvedValue({ id: 'prov', messageId: null });
     const result = await call(
       'cookie_send_email',
-      { to: ['a@example.com'], subject: 'S', text: 'T', requestId: 'req-null-copy' },
+      {
+        to: ['a@example.com'],
+        subject: 'S',
+        text: 'T',
+        requestId: 'req-null-copy',
+        confirmation: CONFIRMATION,
+      },
       api,
     );
     expect(result).toEqual({ status: 'sent', providerId: 'prov', messageId: null });
@@ -227,20 +241,47 @@ describe('drafts tools', () => {
         text: 'T',
         sendAt: '2026-10-05T09:00:00Z',
         requestId: 'req-scheduled',
+        confirmation: CONFIRMATION,
       },
       api,
     );
-    expect(api.send.post.mock.calls[0][1].sendAt).toBe('2026-10-05T09:00:00Z');
+    expect(api.send.post.mock.calls[0][1]).toMatchObject({
+      sendAt: '2026-10-05T09:00:00Z',
+      confirmation: CONFIRMATION,
+    });
     expect(result).toEqual({ status: 'scheduled', scheduledSend });
   });
 
   test('cookie_send_email rejects bad input', () => {
     const tool = byName(tools, 'cookie_send_email');
-    const base = { to: ['a@example.com'], subject: 'S', text: 'T', requestId: 'req-valid' };
+    const base = {
+      to: ['a@example.com'],
+      subject: 'S',
+      text: 'T',
+      requestId: 'req-valid',
+      confirmation: CONFIRMATION,
+    };
+    expect(() => tool.inputSchema.parse(base)).not.toThrow();
     expect(() => tool.inputSchema.parse({ ...base, to: [] })).toThrow();
     expect(() => tool.inputSchema.parse({ ...base, to: ['nope'] })).toThrow();
     expect(() => tool.inputSchema.parse({ ...base, text: '' })).toThrow();
     expect(() => tool.inputSchema.parse({ ...base, requestId: 'bad id!' })).toThrow();
+    expect(() => tool.inputSchema.parse({ ...base, confirmation: 'AB'.repeat(32) })).toThrow();
+  });
+
+  test('cookie_send_email requires an owner-created confirmation and says where to get one', () => {
+    const tool = byName(tools, 'cookie_send_email');
+    const result = tool.inputSchema.safeParse({
+      to: ['a@example.com'],
+      subject: 'S',
+      text: 'T',
+      requestId: 'req-1',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toContainEqual(
+      expect.objectContaining({ path: ['confirmation'] }),
+    );
+    expect(tool.description).toContain('Cookie Settings');
   });
 
   test('cookie_send_email requires the caller to supply a stable request identity', () => {

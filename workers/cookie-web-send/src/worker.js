@@ -43,6 +43,8 @@ import { flushWithOutOfOffice, runOutOfOfficeInBackground } from './outOfOffice.
 import { captureHandledException, createSentryOptions } from './sentry.js';
 import { sendAutoReply, USER_SEND_PROVIDER_TIMEOUT_MS } from './autoReplyProvider.js';
 import { DeliveryError, findDelivery } from './deliveryLedger.js';
+import { consumeSendConfirmation, createSendConfirmation } from './sendConfirmation.js';
+import { internalCaller } from '../../../shared/internal-identity.js';
 
 // Names the single ScheduledSendClock instance (see scheduledSendClock.js).
 const SCHEDULED_SEND_CLOCK_NAME = 'scheduled-sends';
@@ -234,6 +236,15 @@ async function handleSend(sql, userId, request, services) {
       { error: 'attachmentIds must be a unique list of valid ids' },
       { status: 400 },
     );
+  }
+  // An agent (the MCP server's service-binding identity) may only send or
+  // schedule with a permit the owner created in Cookie, bound to this
+  // requestId. Browser sessions never need one.
+  if (internalCaller()) {
+    const permit = await consumeSendConfirmation(sql, userId, body.confirmation, requestIdText);
+    if (!permit.ok) {
+      return Response.json({ error: permit.error, code: permit.code }, { status: permit.status });
+    }
   }
   // Fixture ids from e2e/dev mode aren't UUIDs — ignore them rather than error.
   let replyTo = validId(replyToMessageId) ? String(replyToMessageId) : null;
@@ -496,7 +507,8 @@ const worker = {
   },
   /**
    * Routes POST /send, GET/DELETE /send/scheduled (was ?resource=scheduled),
-   * POST /send/invitation-reply (invitationReply.js) and POST /send/flush
+   * POST /send/invitation-reply (invitationReply.js), POST /send/confirmation
+   * (sendConfirmation.js) and POST /send/flush
    * (was ?resource=flush). The flush job authenticates
    * with its own bearer secret, not a user Auth0 token, so it is dispatched
    * before verifyAccessToken runs.
@@ -545,9 +557,15 @@ const worker = {
     try {
       if (
         !resource ||
-        !['send', 'scheduled', 'flush', 'follow-up', 'attachments', 'invitation-reply'].includes(
-          resource,
-        )
+        ![
+          'send',
+          'scheduled',
+          'flush',
+          'follow-up',
+          'attachments',
+          'invitation-reply',
+          'confirmation',
+        ].includes(resource)
       ) {
         return Response.json({ error: 'Not Found' }, { status: 404 });
       }
@@ -597,7 +615,16 @@ const worker = {
 
       let response;
       try {
-        if (resource === 'follow-up') {
+        if (resource === 'confirmation') {
+          // createSendConfirmation refuses the agent identity and is rate limited.
+          response =
+            request.method === 'POST'
+              ? await createSendConfirmation(sql, userId)
+              : Response.json(
+                  { error: 'Method not allowed' },
+                  { status: 405, headers: { Allow: 'POST' } },
+                );
+        } else if (resource === 'follow-up') {
           response = await handleFollowUp(sql, userId, request);
         } else if (resource === 'invitation-reply') {
           response = sendingConfigured(env)

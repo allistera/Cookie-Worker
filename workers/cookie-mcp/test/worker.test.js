@@ -233,6 +233,7 @@ describe('tools', () => {
               subject: 's',
               text: 't',
               requestId: 'scope-check-send',
+              confirmation: 'ab'.repeat(32),
             },
           },
         }),

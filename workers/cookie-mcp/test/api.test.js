@@ -28,6 +28,21 @@ describe('createApi', () => {
     });
   });
 
+  test('non-2xx responses keep the API error code', async () => {
+    const call = vi.fn(async () => ({
+      status: 403,
+      body: {
+        error: 'A send confirmation from Cookie is required',
+        code: 'SEND_CONFIRMATION_REQUIRED',
+      },
+    }));
+    const api = createApi(/** @type {any} */ ({ SEND: { call } }), identity);
+    await expect(api.send.post('/send', {})).rejects.toMatchObject({
+      status: 403,
+      code: 'SEND_CONFIRMATION_REQUIRED',
+    });
+  });
+
   test('a missing error message falls back to the status', async () => {
     const call = vi.fn(async () => ({ status: 500, body: null }));
     const api = createApi(/** @type {any} */ ({ TASKS: { call } }), identity);
