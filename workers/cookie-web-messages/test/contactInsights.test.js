@@ -66,6 +66,47 @@ describe('contact insights', () => {
     });
   });
 
+  test('pages history with a cursor that keeps microseconds', async () => {
+    const OLDER_ID = '22222222-2222-4222-8222-222222222222';
+    const row = (/** @type {string} */ id, /** @type {string} */ cursor) => ({
+      id,
+      sent_at: '2026-09-14T09:00:00.123Z',
+      sent_cursor: cursor,
+      is_sent: false,
+    });
+    const sql = createMockSql([
+      [{}],
+      [
+        row(MESSAGE_ID, '2026-09-14T09:00:00.123456Z'),
+        row(OLDER_ID, '2026-09-14T09:00:00.123001Z'),
+      ],
+    ]);
+    const response = await getContactInsights(
+      sql,
+      USER_ID,
+      new URL('https://example.test/messages/contact-insights?address=alex@example.com&limit=1'),
+    );
+    const body = await response.json();
+    expect(body.history).toEqual([
+      { id: MESSAGE_ID, sent_at: '2026-09-14T09:00:00.123Z', is_sent: false },
+    ]);
+    const next = JSON.parse(atob(body.nextCursor.replaceAll('-', '+').replaceAll('_', '/')));
+    expect(next).toEqual(['2026-09-14T09:00:00.123456Z', MESSAGE_ID]);
+
+    // The next page binds the cursor as text, so Postgres sees every digit.
+    const nextSql = createMockSql([[{}], []]);
+    await getContactInsights(
+      nextSql,
+      USER_ID,
+      new URL(
+        `https://example.test/messages/contact-insights?address=alex@example.com&before=${body.nextCursor}`,
+      ),
+    );
+    const history = nextSql.calls[1];
+    expect(history.text).toContain('(m.sent_at, m.id) < (?::text::timestamptz, ?::uuid)');
+    expect(history.values).toContain('2026-09-14T09:00:00.123456Z');
+  });
+
   test('scopes both history branches to the caller and derives has_html from body_html', async () => {
     const sql = createMockSql([[{}], []]);
     await getContactInsights(
