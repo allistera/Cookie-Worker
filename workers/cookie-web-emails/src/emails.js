@@ -234,23 +234,6 @@ export function fetchSnoozedCount(sql, userId) {
   `;
 }
 
-// How many Send Later messages are still waiting. The sidebar lists the
-// Scheduled folder only while this is non-zero, and it used to learn that
-// from a separate boot-time request to the Vercel /api/send function; it
-// rides with the other folder counts instead. Same predicate as the
-// pending queue in cookie-web-send's scheduled.js.
-/**
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- */
-export function fetchScheduledCount(sql, userId) {
-  return sql`
-    SELECT count(*)::int AS scheduled
-    FROM scheduled_sends s
-    WHERE s.user_id = ${userId} AND s.status IN ('pending', 'failed', 'uncertain')
-  `;
-}
-
 // How many messages the Starred, New senders (held) and Blocked folders
 // hold. The sidebar lists each only while it has something, so the counts
 // travel with the others. Same predicates as folderPredicate for those
