@@ -110,6 +110,15 @@ describe('cleanMessages', () => {
     });
   });
 
+  // The drawer sends every earlier answer back, so one long answer must not
+  // make every later turn fail.
+  test('accepts an earlier answer longer than a typed message', () => {
+    const answer = { role: 'assistant', content: 'x'.repeat(4001) };
+    expect(cleanMessages([...QUESTION, answer, ...QUESTION])).toEqual({
+      messages: [...QUESTION, answer, ...QUESTION],
+    });
+  });
+
   test.each([
     ['nothing', undefined],
     ['an empty list', []],
@@ -121,6 +130,10 @@ describe('cleanMessages', () => {
     ['a blank question', [{ role: 'user', content: '   ' }]],
     ['a tool result without its call id', [{ role: 'tool', content: 'x' }, ...QUESTION]],
     ['an over-long question', [{ role: 'user', content: 'x'.repeat(4001) }]],
+    [
+      'an answer longer than a tool result',
+      [...QUESTION, { role: 'assistant', content: 'x'.repeat(20_001) }, ...QUESTION],
+    ],
     ['too many messages', Array.from({ length: 41 }, () => QUESTION[0])],
     [
       'malformed tool calls',

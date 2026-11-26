@@ -42,6 +42,8 @@ const MAX_MESSAGES = 40;
 const MAX_TEXT_CHARS = 4000;
 // Tool results carry rendered search hits (up to five documents of up to 1.5 KB
 // each per search), so they are allowed more room than a typed message.
+// Assistant answers share that room: the browser sends every answer back on
+// the next turn, and the model's output is not capped at a typed message.
 const MAX_TOOL_RESULT_CHARS = 20_000;
 const MAX_TOOL_CALLS = 8;
 const MAX_TOOL_ARGUMENT_CHARS = 2000;
@@ -133,7 +135,7 @@ export function cleanMessages(input) {
     const role = String(raw.role ?? '');
     if (!ROLES.has(role)) return { error: 'messages must have a user, assistant or tool role' };
     const content = raw.content === null ? null : String(raw.content ?? '');
-    const limit = role === 'tool' ? MAX_TOOL_RESULT_CHARS : MAX_TEXT_CHARS;
+    const limit = role === 'user' ? MAX_TEXT_CHARS : MAX_TOOL_RESULT_CHARS;
     if ((content ?? '').length > limit) return { error: `a ${role} message is too long` };
     /** @type {ChatMessage} */
     const message = { role: /** @type {ChatMessage['role']} */ (role), content };
