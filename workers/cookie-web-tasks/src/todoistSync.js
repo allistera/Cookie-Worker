@@ -69,6 +69,10 @@ export const COMPLETED_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 // Overlap between runs so a completion stamped just before the previous run
 // finished is not missed.
 const COMPLETED_OVERLAP_MS = 60 * 60 * 1000;
+// Todoist refuses a completed-tasks window wider than three months, so after
+// a longer pause the window starts this far before its end instead of at the
+// old cursor (a day under the limit, whatever the months' lengths).
+export const COMPLETED_MAX_WINDOW_MS = 89 * 24 * 60 * 60 * 1000;
 const MAX_CONTENT_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 10000;
 const MAX_DIVIDER_TEXT_LENGTH = 120;
@@ -918,13 +922,17 @@ export async function syncConnection(sql, env, connection, deps = {}) {
           fetchImpl: deps.fetchImpl,
         })
       : 0;
+    const completedUntil = now.getTime() + COMPLETED_OVERLAP_MS;
     const snapshot = await fetchSnapshot(connection.token, {
       completedSince: new Date(
-        connection.tasksSyncedAt
-          ? connection.tasksSyncedAt.getTime() - COMPLETED_OVERLAP_MS
-          : now.getTime() - COMPLETED_LOOKBACK_MS,
+        Math.max(
+          connection.tasksSyncedAt
+            ? connection.tasksSyncedAt.getTime() - COMPLETED_OVERLAP_MS
+            : now.getTime() - COMPLETED_LOOKBACK_MS,
+          completedUntil - COMPLETED_MAX_WINDOW_MS,
+        ),
       ),
-      completedUntil: new Date(now.getTime() + COMPLETED_OVERLAP_MS),
+      completedUntil: new Date(completedUntil),
       includeTasks: syncTasks,
       fetchImpl: deps.fetchImpl,
     });

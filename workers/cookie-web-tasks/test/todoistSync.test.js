@@ -746,6 +746,32 @@ describe('syncConnection', () => {
     expect(completedUrl.searchParams.get('since')).toBe('2026-10-14T07:00:00.000Z');
   });
 
+  it('keeps the completed window inside the three months Todoist allows after a long pause', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ results: [], items: [], next_cursor: null }),
+    );
+    const now = new Date('2026-10-15T09:00:00Z');
+
+    await syncConnection(
+      createMockSql([]),
+      /** @type {any} */ ({}),
+      { ...connection, tasksSyncedAt: new Date('2026-03-01T08:00:00Z') },
+      { fetchImpl: /** @type {any} */ (fetchImpl), now: () => now },
+    ).catch(() => undefined);
+
+    const completedUrl = new URL(
+      String(
+        /** @type {any[][]} */ (fetchImpl.mock.calls).find(([url]) =>
+          String(url).includes('by_completion_date'),
+        )?.[0],
+      ),
+    );
+    const until = completedUrl.searchParams.get('until');
+    expect(until).toBe('2026-10-15T10:00:00.000Z');
+    // 89 days before the end, not the March cursor.
+    expect(completedUrl.searchParams.get('since')).toBe('2026-07-18T10:00:00.000Z');
+  });
+
   it('reads the mirrored projects under the lock when projects are switched off', async () => {
     const fetchImpl = vi.fn(async (/** @type {any} */ url) => {
       const path = new URL(String(url)).pathname;
