@@ -148,6 +148,22 @@ describe('routing', () => {
     expect(response.headers.get('Allow')).toBe('GET');
   });
 
+  test('GET /messages/attachments dispatches to the attachment library', async () => {
+    const response = await worker.fetch(request('/messages/attachments?direction=sent'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ attachments: [], nextCursor: null });
+  });
+
+  test('POST on /messages/attachments returns 405', async () => {
+    const response = await worker.fetch(
+      request('/messages/attachments', { method: 'POST' }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('GET');
+  });
+
   test('GET /messages/contacts dispatches to getContacts', async () => {
     const response = await worker.fetch(request('/messages/contacts'), env, ctx);
     expect(response.status).toBe(200);
