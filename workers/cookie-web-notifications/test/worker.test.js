@@ -241,31 +241,15 @@ describe('routing', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  test('POST /ntfy still creates a generated topic on the default server', async () => {
-    mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        server_url: 'https://ntfy.allisterantosik.com',
-        topic: 'cookie-generated-topic',
-        enabled: true,
-        token_hint: '',
-        access_token_encrypted: null,
-      },
-    ]);
+  test('POST /ntfy is not a route: settings are saved with PUT', async () => {
     const response = await worker.fetch(
       request('/ntfy', { method: 'POST', body: JSON.stringify({}) }),
       env,
       ctx,
     );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      enabled: true,
-      defaultServerUrl: 'https://ntfy.allisterantosik.com',
-      tokensSupported: false,
-      serverUrl: 'https://ntfy.allisterantosik.com',
-      topic: 'cookie-generated-topic',
-      subscribeUrl: 'https://ntfy.allisterantosik.com/cookie-generated-topic',
-      tokenHint: '',
-    });
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('GET, PUT, DELETE');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   test('DELETE /ntfy disables the authenticated user subscription', async () => {

@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { encryptToken } from '../../../shared/token-crypto.js';
 import {
-  createNtfySubscription,
   DELIVERY_CONCURRENCY,
   deliverPendingNtfy,
   encodeHeaderValue,
@@ -777,63 +776,6 @@ describe('ntfy settings', () => {
     await expect(
       saveNtfySubscription(sql, 'user-1', { serverUrl: 'https://ntfy.sh', topic: 'shared' }, {}),
     ).rejects.toMatchObject({ code: 'topic_taken' });
-  });
-
-  test('creates a random topic on the default server for the switch-only setup', async () => {
-    const sql = /** @type {any} */ (
-      vi
-        .fn()
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([
-          {
-            server_url: 'https://ntfy.allisterantosik.com',
-            topic: 'cookie-generated-topic',
-            enabled: true,
-            token_hint: '',
-            access_token_encrypted: null,
-          },
-        ])
-    );
-    const result = await createNtfySubscription(sql, 'user-1', {
-      makeTopic: () => 'generated-topic',
-    });
-
-    expect(sql.mock.calls[1].slice(1)).toEqual([
-      'user-1',
-      'https://ntfy.allisterantosik.com',
-      'generated-topic',
-    ]);
-    expect(result).toEqual({
-      enabled: true,
-      defaultServerUrl: 'https://ntfy.allisterantosik.com',
-      tokensSupported: false,
-      serverUrl: 'https://ntfy.allisterantosik.com',
-      topic: 'cookie-generated-topic',
-      subscribeUrl: 'https://ntfy.allisterantosik.com/cookie-generated-topic',
-      tokenHint: '',
-    });
-  });
-
-  test('re-enables an existing subscription on its own server rather than replacing it', async () => {
-    const sql = /** @type {any} */ (
-      vi.fn().mockResolvedValueOnce([
-        {
-          server_url: 'https://ntfy.sh',
-          topic: 'my-topic',
-          enabled: true,
-          token_hint: 'cret',
-          access_token_encrypted: 'v1:kept',
-        },
-      ])
-    );
-
-    const result = await createNtfySubscription(sql, 'user-1', {
-      baseUrl: 'https://ntfy.allisterantosik.com',
-    });
-
-    expect(sql).toHaveBeenCalledOnce();
-    expect(result.subscribeUrl).toBe('https://ntfy.sh/my-topic');
-    expect(result.tokenHint).toBe('cret');
   });
 
   test('sends a clearly labelled test notification to the user server and topic', async () => {

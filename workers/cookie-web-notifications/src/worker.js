@@ -9,7 +9,6 @@ import { createSql, withUserSql } from '../../../shared/db.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
 import { handleNotificationEvent } from './notificationEvents.js';
 import {
-  createNtfySubscription,
   DEFAULT_BASE_URL,
   deliverPendingNtfy,
   disableNtfySubscription,
@@ -68,9 +67,7 @@ async function route(url, request, sql, userId, ntfy) {
         headers: { 'Cache-Control': 'no-store' },
       });
     }
-    // PUT saves the server, topic and token Settings sent; POST is the older
-    // switch-only setup (a generated topic on the default server), kept for
-    // a web client deployed before the form existed.
+    // PUT saves the server, topic and token Settings sent.
     if (request.method === 'PUT') {
       let body;
       try {
@@ -96,18 +93,13 @@ async function route(url, request, sql, userId, ntfy) {
         throw error;
       }
     }
-    if (request.method === 'POST') {
-      return Response.json(await createNtfySubscription(sql, userId, ntfy), {
-        headers: { 'Cache-Control': 'no-store' },
-      });
-    }
     if (request.method === 'DELETE') {
       await disableNtfySubscription(sql, userId);
       return new Response(null, { status: 204 });
     }
     return Response.json(
       { error: 'Method not allowed' },
-      { status: 405, headers: { Allow: 'GET, PUT, POST, DELETE' } },
+      { status: 405, headers: { Allow: 'GET, PUT, DELETE' } },
     );
   }
   if (url.pathname !== '/notification-event') {

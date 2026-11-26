@@ -374,37 +374,6 @@ export async function saveNtfySubscription(sql, userId, input, options) {
   return publicNtfySettings(subscriptionFromRow(row), options);
 }
 
-/**
- * Turns delivery on for a user who never chose a server or topic, with a
- * random topic on the default server (the setup Settings offered before the
- * form existed). An existing subscription is simply re-enabled as it stands.
- *
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- * @param {{baseUrl?: string, tokenKey?: string, makeTopic?: () => string}} [options]
- */
-export async function createNtfySubscription(sql, userId, options = {}) {
-  const baseUrl = (options.baseUrl || DEFAULT_BASE_URL).replace(/\/$/, '');
-  const makeTopic = options.makeTopic || (() => `cookie-${crypto.randomUUID()}`);
-  const [existing] = await sql`
-    UPDATE ntfy_subscriptions
-    SET enabled = true, updated_at = now()
-    WHERE user_id = ${userId}
-    RETURNING server_url, topic, enabled, token_hint, access_token_encrypted
-  `;
-  if (existing) return publicNtfySettings(subscriptionFromRow(existing), options);
-  const topic = makeTopic();
-  if (!TOPIC_RE.test(topic)) throw new Error('generated invalid ntfy topic');
-  const [created] = await sql`
-    INSERT INTO ntfy_subscriptions (user_id, server_url, topic)
-    VALUES (${userId}, ${baseUrl}, ${topic})
-    ON CONFLICT (user_id) DO UPDATE SET enabled = true, updated_at = now()
-    RETURNING server_url, topic, enabled, token_hint, access_token_encrypted
-  `;
-  if (!created) throw new Error('ntfy subscription was not created');
-  return publicNtfySettings(subscriptionFromRow(created), options);
-}
-
 /** @param {import('postgres').Sql} sql @param {string} userId @param {{baseUrl?: string, tokenKey?: string}} [options] */
 export async function getNtfySubscription(sql, userId, options = {}) {
   return publicNtfySettings(await loadSubscription(sql, userId), options);
