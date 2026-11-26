@@ -198,8 +198,8 @@ describe('POST /send security boundaries', () => {
     });
   });
 
-  test('keeps asking for a retry while delivery is still being confirmed', async () => {
-    const response = deliveryErrorResponse(new DeliveryError('DELIVERY_PENDING'));
+  test.each(['DELIVERY_PENDING', 'DELIVERY_NOT_SENT'])('asks for a retry of %s', async (code) => {
+    const response = deliveryErrorResponse(new DeliveryError(code));
     expect(response?.status).toBe(503);
     expect(response?.headers.get('Retry-After')).toBe('5');
   });

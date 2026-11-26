@@ -15,7 +15,9 @@ export class DeliveryError extends Error {
             ? 'This legacy request already completed and its 24-hour retry window has ended. Supply a new requestId only to intentionally send another email.'
             : code === 'DELIVERY_REJECTED'
               ? 'The email provider rejected this delivery'
-              : 'Delivery is being confirmed. Retry the same request shortly.',
+              : code === 'DELIVERY_NOT_SENT'
+                ? 'The email was not sent. Retry the same request shortly.'
+                : 'Delivery is being confirmed. Retry the same request shortly.',
     );
     this.code = code;
   }
@@ -136,6 +138,9 @@ export async function acceptDelivery(sql, row, providerId) {
   return accepted;
 }
 
+// `not_sent` means the attempt stopped before the provider was called (an
+// attachment could not be read, or the isolate's payload slot stayed busy):
+// the claim is released and the attempt it counted is given back.
 /** @param {any} sql @param {any} row @param {string} outcome */
 export async function deferDelivery(sql, row, outcome) {
   const status =
@@ -144,8 +149,10 @@ export async function deferDelivery(sql, row, outcome) {
       : outcome === 'rejected'
         ? 'rejected'
         : 'sending';
+  const refundedAttempts = outcome === 'not_sent' ? 1 : 0;
   await sql.begin(async (/** @type {any} */ tx) => {
     await tx`UPDATE outbound_deliveries SET status = ${status},
+      attempts = greatest(attempts - ${refundedAttempts}, 0),
       claimed_at = NULL, claim_token = NULL, last_error = ${outcome}, updated_at = now()
       WHERE id = ${row.id} AND claim_token = ${row.claim_token} AND provider_id IS NULL`;
     if (status === 'rejected') {
