@@ -82,6 +82,10 @@ export async function purgeExpiredSpam(env, deps = {}) {
           LEFT JOIN sender_decisions sd ON sd.user_id = m.user_id AND sd.address = d.address
           WHERE m.screening_status = 'blocked'
             AND NOT m.is_deleted AND NOT m.is_sent
+            -- Implied by the GREATEST test below, but stated so the planner
+            -- filters before the lateral call: without it the function runs
+            -- for every blocked message (2 s instead of 14 ms in production).
+            AND m.created_at < r.cutoff
             AND GREATEST(m.created_at, sd.updated_at) < r.cutoff
         )
         ORDER BY since
