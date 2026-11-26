@@ -3,7 +3,7 @@ import PostalMime from 'postal-mime';
 import { withApplicationMetrics } from '../../../shared/applicationMetrics.js';
 import { ArticleError, buildArticle } from './article.js';
 import { createFile, GitHubError } from './github.js';
-import { checkSender } from './sender.js';
+import { automaticMailReason, checkSender } from './sender.js';
 import { captureHandledException, createSentryOptions, redact } from './sentry.js';
 
 // An article is text. Anything near this size is attachments, which are not
@@ -49,6 +49,15 @@ const worker = {
     if (sender !== 'authorised') {
       console.log(JSON.stringify({ event: 'sender_rejected', reason: sender }));
       message.setReject('This address only accepts mail from its owner');
+      return;
+    }
+
+    // Accepted, as all mail from the owner is, but an automatic reply is not
+    // an article.
+    const automatic = automaticMailReason(email);
+    if (automatic) {
+      const err = new Error('Automatic mail is not published');
+      reportUnpublished('publish_skipped', 'read_email', err, env, { reason: automatic });
       return;
     }
 

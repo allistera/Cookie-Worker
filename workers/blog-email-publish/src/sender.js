@@ -46,3 +46,27 @@ export function checkSender(email, allowedSender) {
   const domain = allowed.slice(allowed.lastIndexOf('@') + 1);
   return dmarcPassedFor(email.headers, domain) ? 'authorised' : 'unauthenticated';
 }
+
+/**
+ * Why the message was sent by a machine, or null for mail a person wrote.
+ * Cookie sends DMARC-aligned mail from the owner's address to addresses that
+ * inbound mail chose: a calendar reply goes to the invitation's organiser, an
+ * out-of-office answer to the sender. Either would pass checkSender here and
+ * be published under the other party's subject.
+ *
+ * @param {{headers: {key: string, value: string}[], attachments?: {mimeType?: string}[]}} email A parsed message.
+ * @returns {'auto_submitted' | 'calendar' | null}
+ */
+export function automaticMailReason(email) {
+  // RFC 3834: any Auto-Submitted value but "no" marks automatic mail.
+  const autoSubmitted = email.headers.some(
+    (header) =>
+      header.key === 'auto-submitted' && header.value.split(';')[0].trim().toLowerCase() !== 'no',
+  );
+  if (autoSubmitted) return 'auto_submitted';
+  // PostalMime lists a text/calendar part as an attachment, inline or not.
+  const calendar = (email.attachments ?? []).some(
+    (attachment) => String(attachment.mimeType ?? '').toLowerCase() === 'text/calendar',
+  );
+  return calendar ? 'calendar' : null;
+}
