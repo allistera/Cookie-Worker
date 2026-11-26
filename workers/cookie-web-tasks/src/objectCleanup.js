@@ -86,25 +86,32 @@ export async function queueUnreferencedImages(sql) {
 }
 
 /**
+ * What still points at the object. 'row' is a row whose cleanup trigger
+ * (migration 0103) queues the object again when that row is deleted or its
+ * key changes; 'pinned' is a reference no trigger watches (a document image
+ * reference, or a snapshot in an unresolved delivery).
+ *
  * @param {import('postgres').TransactionSql} tx
  * @param {{storage: string, object_key: string}} job
  * @param {boolean} deliveryLedgerExists
+ * @returns {Promise<'row' | 'pinned' | null>}
  */
-async function hasReferences(tx, job, deliveryLedgerExists) {
+async function findReference(tx, job, deliveryLedgerExists) {
   if (job.storage === 'r2') {
     const [row] = await tx`
       SELECT EXISTS (SELECT 1 FROM document_files WHERE object_key = ${job.object_key})
         OR EXISTS (SELECT 1 FROM task_comments WHERE object_key = ${job.object_key}) AS live
     `;
-    return Boolean(row?.live);
+    return row?.live ? 'row' : null;
   }
   const [row] = await tx`
     SELECT EXISTS (SELECT 1 FROM attachments WHERE blob_url = ${job.object_key})
-      OR EXISTS (SELECT 1 FROM outbound_attachments WHERE blob_url = ${job.object_key})
-      OR EXISTS (SELECT 1 FROM document_image_references WHERE pathname = ${job.object_key}) AS live
+      OR EXISTS (SELECT 1 FROM outbound_attachments WHERE blob_url = ${job.object_key}) AS live,
+      EXISTS (SELECT 1 FROM document_image_references WHERE pathname = ${job.object_key}) AS pinned
   `;
-  if (row?.live) return true;
-  if (!deliveryLedgerExists) return false;
+  if (row?.live) return 'row';
+  if (row?.pinned) return 'pinned';
+  if (!deliveryLedgerExists) return null;
   const [delivery] = await tx`
     SELECT EXISTS (
       SELECT 1 FROM outbound_deliveries d
@@ -113,7 +120,7 @@ async function hasReferences(tx, job, deliveryLedgerExists) {
         AND a->>'blob_url' = ${job.object_key}
     ) AS live
   `;
-  return Boolean(delivery?.live);
+  return delivery?.live ? 'pinned' : null;
 }
 
 /** @param {unknown} error */
@@ -144,10 +151,10 @@ export async function processObjectCleanup(sql, env, deps = {}) {
     FROM due WHERE j.storage = due.storage AND j.object_key = due.object_key
     RETURNING j.storage, j.object_key, j.attempts
   `;
-  if (!jobs.length) return { processed: 0, failed: 0, retained: 0 };
+  if (!jobs.length) return { processed: 0, failed: 0, retained: 0, released: 0 };
   const [schema] =
     await sql`SELECT to_regclass('public.outbound_deliveries') IS NOT NULL AS available`;
-  const summary = { processed: 0, failed: 0, retained: 0 };
+  const summary = { processed: 0, failed: 0, retained: 0, released: 0 };
   for (const job of jobs) {
     try {
       const ready = await sql.begin(async (tx) => {
@@ -159,13 +166,27 @@ export async function processObjectCleanup(sql, env, deps = {}) {
           FOR UPDATE
         `;
         if (!claimed) return false;
-        if (
-          await hasReferences(
-            tx,
-            { storage: job.storage, object_key: job.object_key },
-            Boolean(schema?.available),
-          )
-        ) {
+        const reference = await findReference(
+          tx,
+          { storage: job.storage, object_key: job.object_key },
+          Boolean(schema?.available),
+        );
+        if (reference === 'row') {
+          // A live file (an upload queues its key before the row exists).
+          // The row's cleanup trigger queues the key again when the row goes,
+          // so the job can go now instead of being rechecked every day.
+          const [dropped] = await tx`
+            DELETE FROM object_cleanup_jobs
+            WHERE storage = ${job.storage} AND object_key = ${job.object_key}
+              AND lease_token = ${lease} AND delete_started_at IS NULL
+            RETURNING object_key
+          `;
+          if (dropped) {
+            summary.released++;
+            return false;
+          }
+        }
+        if (reference) {
           // A snapshot in an unresolved delivery may outlive its source row;
           // retain that job until the snapshot is reconciled or rejected.
           await tx`

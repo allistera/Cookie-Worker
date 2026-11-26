@@ -29,7 +29,7 @@ describe('private object cleanup', () => {
     const summary = await processObjectCleanup(sql, {
       FILES: /** @type {any} */ ({ delete: remove }),
     });
-    expect(summary).toEqual({ processed: 1, failed: 0, retained: 0 });
+    expect(summary).toEqual({ processed: 1, failed: 0, retained: 0, released: 0 });
     expect(remove).toHaveBeenCalledWith(job.object_key);
     const acknowledgement = sql.mock.invocationCallOrder[sql.mock.invocationCallOrder.length - 1];
     expect(acknowledgement).toBeGreaterThan(remove.mock.invocationCallOrder[0]);
@@ -85,7 +85,7 @@ describe('private object cleanup', () => {
       { BLOB_READ_WRITE_TOKEN: 'test' },
       { deleteBlob },
     );
-    expect(summary).toEqual({ processed: 0, failed: 0, retained: 1 });
+    expect(summary).toEqual({ processed: 0, failed: 0, retained: 1, released: 0 });
     expect(deleteBlob).not.toHaveBeenCalled();
     expect(sql.calls[4].text).toContain(
       "d.status IN ('pending', 'sending', 'accepted', 'uncertain')",
@@ -93,13 +93,35 @@ describe('private object cleanup', () => {
     expect(sql.calls.at(-1).text).toContain("interval '1 day'");
   });
 
-  it('checks ordinary file references before attempting external deletion', async () => {
+  it('drops the job of a live file instead of rechecking it every day', async () => {
     const job = { storage: 'r2', object_key: `${USER}/file`, attempts: 1 };
     const sql = cleanupSql([
       [job],
       [{ available: false }],
       [{ object_key: job.object_key }],
       [{ live: true }],
+      [{ object_key: job.object_key }],
+    ]);
+    const remove = vi.fn();
+    const summary = await processObjectCleanup(sql, {
+      FILES: /** @type {any} */ ({ delete: remove }),
+    });
+    expect(summary).toEqual({ processed: 0, failed: 0, retained: 0, released: 1 });
+    expect(remove).not.toHaveBeenCalled();
+    // The row's cleanup trigger queues the key again when the row is deleted.
+    expect(sql.calls.at(-1).text).toContain('DELETE FROM object_cleanup_jobs');
+    expect(sql.calls.at(-1).text).toContain('delete_started_at IS NULL');
+    expect(sql.calls.at(-1).values).toEqual(['r2', job.object_key, expect.any(String)]);
+  });
+
+  it('retains a live file whose deletion had already started', async () => {
+    const job = { storage: 'r2', object_key: `${USER}/file`, attempts: 1 };
+    const sql = cleanupSql([
+      [job],
+      [{ available: false }],
+      [{ object_key: job.object_key }],
+      [{ live: true }],
+      [],
       [],
     ]);
     const remove = vi.fn();
@@ -108,6 +130,29 @@ describe('private object cleanup', () => {
     });
     expect(summary.retained).toBe(1);
     expect(remove).not.toHaveBeenCalled();
+    expect(sql.calls.at(-1).text).toContain("interval '1 day'");
+  });
+
+  it('retains a document image job while a document still references it', async () => {
+    const job = { storage: 'blob', object_key: PATH, attempts: 1 };
+    const sql = cleanupSql([
+      [job],
+      [{ available: false }],
+      [{ object_key: job.object_key }],
+      [{ live: false, pinned: true }],
+      [],
+    ]);
+    const deleteBlob = vi.fn();
+    const summary = await processObjectCleanup(
+      sql,
+      { BLOB_READ_WRITE_TOKEN: 'test' },
+      { deleteBlob },
+    );
+    expect(summary.retained).toBe(1);
+    expect(deleteBlob).not.toHaveBeenCalled();
+    expect(sql.calls.some((call) => call.text.includes('DELETE FROM object_cleanup_jobs'))).toBe(
+      false,
+    );
   });
 
   it('treats an already-missing Blob as successful and keeps the image tombstone', async () => {
