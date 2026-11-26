@@ -77,8 +77,8 @@ const worker = {
       return;
     }
 
-    /** @type {Awaited<ReturnType<typeof parseEmail>> | null} */
-    let record = null;
+    /** @type {Awaited<ReturnType<typeof parseEmail>>} */
+    let record;
     /** @type {Promise<Awaited<ReturnType<typeof storeEmail>>> | null} */
     let storePromise = null;
     /** @type {import('postgres').Sql | null} */
@@ -92,6 +92,40 @@ const worker = {
 
     try {
       record = await parseEmail(message);
+    } catch (err) {
+      // A boundary-line bomb is a permanent property of the message: storing
+      // it would build an enormous MIME tree, and rethrowing would make the
+      // MTA redeliver it forever. Treat it like the oversize case — skip
+      // storage, forward once, accept.
+      if (err instanceof MimePartLimitError) {
+        console.log(
+          JSON.stringify({
+            event: 'store_skipped_mime_parts',
+            boundary_lines: err.boundaryLines,
+            raw_size: rawSize,
+          }),
+        );
+        setSpanAttributes({ 'cookie.ingest.outcome': 'skipped_mime_parts' });
+        await forwardOriginal(message, env);
+        return;
+      }
+      // Any other parse failure is just as permanent: the same bytes break the
+      // parser on every redelivery, so a retry only delays the bounce and the
+      // mailbox never gets its copy. Report it, forward once, accept.
+      console.log(
+        JSON.stringify({
+          event: 'store_skipped_parse_failed',
+          error: err instanceof Error ? err.message : String(err),
+          raw_size: rawSize,
+        }),
+      );
+      setSpanAttributes({ 'cookie.ingest.outcome': 'skipped_parse_failed' });
+      captureHandledException('parse', err, [], { raw_size: rawSize });
+      await forwardOriginal(message, env);
+      return;
+    }
+
+    try {
       sql = createSql(env.HYPERDRIVE.connectionString);
       // One read resolves the owner and checks for a duplicate; the store
       // below reuses the owner id rather than looking it up again.
@@ -157,22 +191,6 @@ const worker = {
         'cookie.ingest.truncated': record.truncated,
       });
     } catch (err) {
-      // A boundary-line bomb is a permanent property of the message: storing
-      // it would build an enormous MIME tree, and rethrowing would make the
-      // MTA redeliver it forever. Treat it like the oversize case — skip
-      // storage, forward once, accept.
-      if (err instanceof MimePartLimitError) {
-        console.log(
-          JSON.stringify({
-            event: 'store_skipped_mime_parts',
-            boundary_lines: err.boundaryLines,
-            raw_size: rawSize,
-          }),
-        );
-        setSpanAttributes({ 'cookie.ingest.outcome': 'skipped_mime_parts' });
-        await forwardOriginal(message, env);
-        return;
-      }
       console.log(
         JSON.stringify({
           event: 'store_failed',

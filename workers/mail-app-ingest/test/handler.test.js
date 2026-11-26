@@ -50,6 +50,15 @@ const { syncMessageToMeili, syncMessagesToMeili } = vi.hoisted(() => ({
 
 vi.mock('../../../shared/meiliSync.js', () => ({ syncMessageToMeili, syncMessagesToMeili }));
 
+// The real parser, wrapped so one test can make it fail.
+vi.mock('postal-mime', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    default: { parse: vi.fn((/** @type {any[]} */ ...args) => actual.default.parse(...args)) },
+  };
+});
+
 vi.mock('@sentry/cloudflare', () => ({
   captureException: vi.fn(),
   captureMessage: vi.fn(),
@@ -71,6 +80,8 @@ vi.mock('cloudflare:workers', () => ({
 const postgres = (await import('postgres')).default;
 /** @type {any} */
 const sentry = await import('@sentry/cloudflare');
+/** @type {any} */
+const PostalMime = (await import('postal-mime')).default;
 const { createSentryOptions } = await import('../src/sentry.js');
 
 afterEach(() => {
@@ -480,6 +491,34 @@ describe('email handler', () => {
     expect(message.forward).not.toHaveBeenCalled();
     expect(messageFromLog('forward_skipped_auto_forwarded')).toEqual({
       event: 'forward_skipped_auto_forwarded',
+    });
+  });
+
+  test('forwards and accepts a message over the MIME boundary limit without storing it', async () => {
+    const raw = `${simpleFixture}\n${'--b\n'.repeat(2001)}`;
+    const message = fakeMessage(raw);
+    await worker.email(message, env(), ctx());
+    expect(postgres).not.toHaveBeenCalled();
+    expect(message.forward).toHaveBeenCalledOnce();
+    expect(messageFromLog('store_skipped_mime_parts')).toMatchObject({ boundary_lines: 2001 });
+    expect(sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  // The same bytes break the parser on every redelivery, so a retry would
+  // only end in a bounce with the mailbox never getting its copy.
+  test('reports, forwards and accepts a message the parser cannot read', async () => {
+    PostalMime.parse.mockRejectedValueOnce(new Error('unreadable MIME'));
+    const message = fakeMessage(simpleFixture);
+    await worker.email(message, env(), ctx());
+    expect(postgres).not.toHaveBeenCalled();
+    expect(message.forward).toHaveBeenCalledExactlyOnceWith('forward@example.com');
+    expect(messageFromLog('store_skipped_parse_failed')).toMatchObject({
+      error: 'unreadable MIME',
+      raw_size: message.rawSize,
+    });
+    expect(sentry.captureException).toHaveBeenCalledOnce();
+    expect(sentry.captureException.mock.calls[0][1]).toMatchObject({
+      tags: { service: 'mail-app-ingest', operation: 'parse' },
     });
   });
 
