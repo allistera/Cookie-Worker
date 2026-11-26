@@ -46,10 +46,27 @@ export class NtfySettingsError extends Error {
   }
 }
 
+// Hosts a publish must never reach. The same syntactic rules as
+// cookie-web-messages' isSafeUnsubscribeUrl: no IP literals, a dotted name
+// with a non-numeric top label, and no internal suffix. Where a name actually
+// resolves is left to global_fetch_strictly_public.
+const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.lan', '.home.arpa'];
+
+/** @param {string} hostname */
+function isPublicHostName(hostname) {
+  const host = hostname.toLowerCase();
+  if (host.startsWith('[') || host.endsWith(']')) return false;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false;
+  if (!host.includes('.')) return false;
+  if (/^\d+$/.test(host.split('.').at(-1) ?? '')) return false;
+  return !BLOCKED_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+}
+
 /**
  * The ntfy server Settings typed in, as the base of every publish URL: https
- * only (a token travels in the Authorization header), no credentials, query
- * or fragment, and no trailing slash so the topic can be appended.
+ * only (a token travels in the Authorization header), a public host name, no
+ * credentials, query or fragment, and no trailing slash so the topic can be
+ * appended.
  *
  * @param {unknown} value
  */
@@ -70,7 +87,14 @@ export function normalizeServerUrl(value) {
       'Enter the https:// address of an ntfy server.',
     );
   }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !isPublicHostName(url.hostname)
+  ) {
     throw new NtfySettingsError(
       'invalid_server_url',
       'Enter the https:// address of an ntfy server.',
@@ -187,6 +211,9 @@ export async function publishNtfy(notification, options = {}) {
       `${baseUrl.replace(/\/$/, '')}/${notification.topic}`,
       {
         method: 'POST',
+        // A redirect could lead the token anywhere, so it counts as a failed
+        // publish instead of being followed.
+        redirect: 'manual',
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           // ntfy access tokens (ntfy.sh reserved topics, self-hosted servers
