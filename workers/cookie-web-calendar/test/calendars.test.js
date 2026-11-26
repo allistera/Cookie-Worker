@@ -8,6 +8,7 @@ import {
   deleteCalendar,
   fetchCalendars,
   listCalendars,
+  refreshSubscriptions,
   renameCalendar,
   setDefaultCalendar,
   syncCalendar,
@@ -117,6 +118,82 @@ describe('GET calendar management', () => {
     const response = await listCalendars(makeSql(), USER_ID);
 
     expect((await response.json()).defaultCalendarId).toBeNull();
+  });
+
+  it('refreshes stale subscribed feeds after the response, stalest first', async () => {
+    const now = Date.parse('2026-11-26T12:00:00Z');
+    const feed = (/** @type {string} */ id, /** @type {string | null} */ syncedAt) => ({
+      id,
+      name: id,
+      color: '#d15c4e',
+      subscriptionUrl: `https://calendar.google.com/calendar/ical/${id}/public/basic.ics`,
+      subscriptionSyncedAt: syncedAt ? new Date(syncedAt) : null,
+      subscriptionError: null,
+      defaultCalendarId: null,
+    });
+    sqlQueue = [
+      [
+        feed('fresh', '2026-11-26T06:00:00Z'),
+        feed('old', '2026-11-25T20:00:00Z'),
+        feed('never', null),
+        feed('older', '2026-11-25T08:00:00Z'),
+        { id: CALENDAR_ID, name: 'Work', color: '#4f7c6b', defaultCalendarId: null },
+      ],
+    ];
+    /** @type {((sql: any) => Promise<void>)[]} */
+    const deferred = [];
+    const sync = vi.fn(async () => ({ ok: true, count: 1 }));
+
+    const response = await listCalendars(makeSql(), USER_ID, env, {
+      defer: (task) => deferred.push(task),
+      now: () => now,
+      sync,
+    });
+
+    // The response does not wait for any feed.
+    expect(response.status).toBe(200);
+    expect(sync).not.toHaveBeenCalled();
+    expect(deferred).toHaveLength(1);
+
+    sqlQueue = [[{ allowed: true }]];
+    await deferred[0](makeSql());
+    expect(queriesRun.at(-1)?.values).toContain('calendar-sync');
+    // At most two per request: the never-synced feed, then the oldest.
+    expect(sync.mock.calls.map((call) => /** @type {any[]} */ (call)[1])).toEqual([
+      'never',
+      'older',
+    ]);
+  });
+
+  it('leaves fresh feeds and feeds without a background seam alone', async () => {
+    const feed = {
+      id: CALENDAR_ID,
+      name: 'Holidays',
+      color: '#d15c4e',
+      subscriptionUrl: 'https://calendar.google.com/calendar/ical/x/public/basic.ics',
+      subscriptionSyncedAt: new Date('2026-11-26T06:00:00Z'),
+      defaultCalendarId: null,
+    };
+    sqlQueue = [[feed]];
+    const defer = vi.fn();
+    await listCalendars(makeSql(), USER_ID, env, {
+      defer,
+      now: () => Date.parse('2026-11-26T12:00:00Z'),
+    });
+    expect(defer).not.toHaveBeenCalled();
+  });
+
+  it('skips the background refresh when the sync quota is used up', async () => {
+    sqlQueue = [[{ allowed: false }]];
+    const sync = vi.fn();
+    await refreshSubscriptions(
+      makeSql(),
+      USER_ID,
+      [{ id: CALENDAR_ID, subscriptionUrl: 'https://calendar.google.com/x.ics' }],
+      env,
+      sync,
+    );
+    expect(sync).not.toHaveBeenCalled();
   });
 
   it('seeds five default calendars for a user with none yet', async () => {

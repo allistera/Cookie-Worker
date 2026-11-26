@@ -20,6 +20,11 @@ const MAX_NAME = 50;
 // cap) plus a transactional rewrite of up to 1000 event rows, so both the
 // create-time initial sync and manual re-syncs share one per-user quota.
 const SYNC_RATE_LIMIT = { limit: 5, windowMs: 60_000 };
+// Subscribed feeds are refreshed lazily: GET /calendars starts a background
+// refresh of the feeds last synced longer ago than this, the stalest first and
+// at most a couple per request, under the same per-user sync quota.
+export const SUBSCRIPTION_REFRESH_MS = 12 * 60 * 60 * 1000;
+const MAX_LAZY_REFRESHES = 2;
 
 const DEFAULT_CALENDARS = [
   { id: 'work', name: 'Work', color: '#4f7c6b' },
@@ -126,7 +131,62 @@ async function ensureDefaultCalendars(sql, userId, existing) {
  * @param {string} userId
  * @param {import('./sentry.js').CalendarEnv} [env]
  */
-export async function listCalendars(sql, userId, env = /** @type {any} */ ({})) {
+/**
+ * The subscribed calendars due a refresh, stalest (or never synced) first.
+ *
+ * @param {{id: string, subscriptionUrl?: string | null, subscriptionSyncedAt?: Date | string | null}[]} calendars
+ * @param {number} now
+ */
+export function staleSubscriptions(calendars, now) {
+  const syncedAt = (/** @type {{subscriptionSyncedAt?: Date | string | null}} */ calendar) =>
+    calendar.subscriptionSyncedAt ? new Date(calendar.subscriptionSyncedAt).getTime() : 0;
+  return calendars
+    .filter(
+      (calendar) => calendar.subscriptionUrl && now - syncedAt(calendar) > SUBSCRIPTION_REFRESH_MS,
+    )
+    .sort((a, b) => syncedAt(a) - syncedAt(b))
+    .slice(0, MAX_LAZY_REFRESHES);
+}
+
+/**
+ * Background refresh started by GET /calendars. Claims one unit of the sync
+ * quota for the batch and does nothing when none is left; a feed that fails
+ * records its error as a manual sync would.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {{id: string, subscriptionUrl?: string | null}[]} calendars
+ * @param {import('./sentry.js').CalendarEnv} env
+ * @param {typeof syncCalendarSubscription} [sync]
+ */
+export async function refreshSubscriptions(
+  sql,
+  userId,
+  calendars,
+  env,
+  sync = syncCalendarSubscription,
+) {
+  if (await claimSyncQuota(sql, userId)) return;
+  const allowlist = calendarSubscriptionAllowlist(env);
+  for (const calendar of calendars) {
+    // Re-validated like a manual sync, so a host no longer allowed is skipped.
+    const url = validSubscriptionUrl(calendar.subscriptionUrl, allowlist);
+    if (url) await sync(sql, calendar.id, userId, url);
+  }
+}
+
+/**
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {import('./sentry.js').CalendarEnv} [env]
+ * @param {{
+ *   defer?: (task: (sql: import('postgres').Sql) => Promise<void>) => void,
+ *   now?: () => number,
+ *   sync?: typeof syncCalendarSubscription,
+ * }} [options] `defer` runs a task after the response on its own database
+ *   client; without it, stale subscriptions are left alone.
+ */
+export async function listCalendars(sql, userId, env = /** @type {any} */ ({}), options = {}) {
   let calendars;
   // Stays undefined when the one read below could not run, and the saved
   // default is then read on its own, as it always used to be.
@@ -149,6 +209,12 @@ export async function listCalendars(sql, userId, env = /** @type {any} */ ({})) 
     // as the expand migration creates the table.
     if (!isUndefinedTable(error)) throw error;
     calendars = DEFAULT_CALENDARS;
+  }
+  const stale = options.defer ? staleSubscriptions(calendars, (options.now ?? Date.now)()) : [];
+  if (stale.length) {
+    options.defer?.((background) =>
+      refreshSubscriptions(background, userId, stale, env, options.sync),
+    );
   }
   if (isGoogleConfigured(env)) {
     calendars = [
