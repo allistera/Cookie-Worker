@@ -734,7 +734,8 @@ async function unsubscribe(sql, userId, id, deps, allowAi = false) {
         body: 'List-Unsubscribe=One-Click',
         timeoutMs: 10_000,
       });
-      if (resp.status < 400) {
+      // A redirect is not followed, so it is not a confirmed unsubscribe.
+      if (resp.status >= 200 && resp.status < 300) {
         return unsubscribed('one-click');
       }
       console.log(

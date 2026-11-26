@@ -1586,7 +1586,7 @@ describe('deferred calendar enrichment', () => {
 });
 
 describe('unsubscribe fallback failures', () => {
-  test('falls back to a safe manual URL after a failing one-click status', async () => {
+  test.each([503, 302])('falls back to a safe manual URL after a one-click %i', async (status) => {
     const url = 'https://news.example.com/unsubscribe';
     const sql = createMockSql([
       [
@@ -1602,7 +1602,7 @@ describe('unsubscribe fallback failures', () => {
       sql,
       USER_ID,
       { id: MESSAGE_ID, action: 'unsubscribe' },
-      unsubscribeDeps({ requestPublicHttps: vi.fn().mockResolvedValue({ status: 503 }) }),
+      unsubscribeDeps({ requestPublicHttps: vi.fn().mockResolvedValue({ status }) }),
     );
     expect(await response.json()).toEqual({ status: 'manual', method: 'link', url });
   });

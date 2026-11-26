@@ -82,7 +82,8 @@ export function fetchContactHistory(sql, userId, address, limit, before) {
         SELECT m.id, m.from_name, m.from_address, m.recipients, m.subject, m.snippet,
                m.sent_at, m.is_sent, m.is_unread, m.is_starred, m.is_archived,
                m.scheduled_for, m.follow_up_at,
-               (m.body_html IS NOT NULL) AS has_html
+               (m.body_html IS NOT NULL) AS has_html,
+               to_char(m.sent_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS sent_cursor
         FROM messages m
         WHERE m.user_id = ${userId}
           AND NOT m.is_deleted
@@ -90,8 +91,8 @@ export function fetchContactHistory(sql, userId, address, limit, before) {
           AND NOT m.is_sent
           AND lower(btrim(m.from_address)) = ${address}
           AND (
-            ${beforeSentAt}::timestamptz IS NULL
-            OR (m.sent_at, m.id) < (${beforeSentAt}::timestamptz, ${beforeId}::uuid)
+            ${beforeSentAt}::text IS NULL
+            OR (m.sent_at, m.id) < (${beforeSentAt}::text::timestamptz, ${beforeId}::uuid)
           )
         ORDER BY m.sent_at DESC, m.id DESC
         LIMIT ${limit + 1}
@@ -101,15 +102,16 @@ export function fetchContactHistory(sql, userId, address, limit, before) {
         SELECT m.id, m.from_name, m.from_address, m.recipients, m.subject, m.snippet,
                m.sent_at, m.is_sent, m.is_unread, m.is_starred, m.is_archived,
                m.scheduled_for, m.follow_up_at,
-               (m.body_html IS NOT NULL) AS has_html
+               (m.body_html IS NOT NULL) AS has_html,
+               to_char(m.sent_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS sent_cursor
         FROM messages m
         WHERE m.user_id = ${userId}
           AND NOT m.is_deleted
           AND m.screening_status = 'allowed'
           AND m.is_sent
           AND (
-            ${beforeSentAt}::timestamptz IS NULL
-            OR (m.sent_at, m.id) < (${beforeSentAt}::timestamptz, ${beforeId}::uuid)
+            ${beforeSentAt}::text IS NULL
+            OR (m.sent_at, m.id) < (${beforeSentAt}::text::timestamptz, ${beforeId}::uuid)
           )
           AND EXISTS (
             SELECT 1
@@ -160,8 +162,13 @@ export async function getContactInsights(sql, userId, url) {
     fetchContactHistory(sql, userId, address, limit, before),
   ]);
   const profile = profileRows[0] ?? {};
-  const history = historyRows.slice(0, limit);
-  const last = history.at(-1);
+  const page = historyRows.slice(0, limit);
+  const last = page.at(-1);
+  const history = page.map((row) => {
+    const item = { ...row };
+    delete item.sent_cursor;
+    return item;
+  });
 
   return noStore(
     Response.json({
@@ -176,7 +183,9 @@ export async function getContactInsights(sql, userId, url) {
       history,
       nextCursor:
         historyRows.length > limit && last
-          ? encodeCursor([timestamp(last.sent_at), last.id])
+          ? // Microseconds survive as text; a Date would drop them and skip
+            // or repeat messages sent within the same millisecond.
+            encodeCursor([last.sent_cursor ?? timestamp(last.sent_at), last.id])
           : null,
     }),
   );
