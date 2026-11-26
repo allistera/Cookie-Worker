@@ -474,6 +474,17 @@ describe('ntfy delivery', () => {
     expect(query).toContain('(message.category_id IS NULL OR category.notifications_enabled)');
   });
 
+  test('never claims an event whose thread is muted', async () => {
+    const sql = /** @type {any} */ (vi.fn().mockResolvedValueOnce([]));
+
+    await deliverPendingNtfy(sql, { fetchImpl: vi.fn() });
+
+    const query = sql.mock.calls[0][0].join(' ').replace(/\s+/g, ' ');
+    expect(query).toContain(
+      'NOT EXISTS ( SELECT 1 FROM threads t WHERE t.id = message.thread_id AND t.user_id = message.user_id AND t.is_muted )',
+    );
+  });
+
   // FOR UPDATE SKIP LOCKED releases when the claim commits, so an overlapping
   // cron tick must be kept off the row by its attempt stamp instead.
   test('only reclaims a row after its exponential backoff has elapsed', async () => {
@@ -533,6 +544,10 @@ describe('ntfy delivery', () => {
     );
     expect(query).toContain('effective_sender_decision(message.user_id, message.from_address)');
     expect(query).toContain("sender.decision = 'blocked'");
+    // Muting the thread while a publish waits to retry also suppresses it.
+    expect(query).toContain(
+      'NOT EXISTS (SELECT 1 FROM threads t WHERE t.id = message.thread_id AND t.user_id = message.user_id AND t.is_muted)',
+    );
   });
 
   // A run slow enough to outlive the backoff lease must not publish a row the

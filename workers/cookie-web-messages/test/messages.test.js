@@ -39,7 +39,7 @@ function unsubscribeDeps(overrides = {}) {
 describe('postMessage — thread muting', () => {
   test.each([true, false])('persists muted=%s on the owned conversation', async (muted) => {
     const thread = { id: LABEL_ID, is_muted: muted };
-    const sql = createMockSql([[thread], []]);
+    const sql = createMockSql([[thread], [], []]);
     const response = await postMessage(
       sql,
       USER_ID,
@@ -57,10 +57,14 @@ describe('postMessage — thread muting', () => {
     expect(sql.calls[0].text).toContain('NOT m.is_deleted');
     expect(sql.calls[0].text).toContain('t.user_id = ?');
     expect(sql.calls[0].values).toEqual([muted, MESSAGE_ID, USER_ID, USER_ID]);
-    expect(sql.calls).toHaveLength(muted ? 2 : 1);
+    expect(sql.calls).toHaveLength(muted ? 3 : 1);
     if (muted) {
       expect(sql.calls[1].text).toContain('DELETE FROM browser_notification_events');
       expect(sql.calls[1].values).toEqual([LABEL_ID, USER_ID, USER_ID]);
+      // Unpublished ntfy pushes go too; published rows stay as history.
+      expect(sql.calls[2].text).toContain('DELETE FROM ntfy_notification_events');
+      expect(sql.calls[2].text).toContain('event.published_at IS NULL');
+      expect(sql.calls[2].values).toEqual([LABEL_ID, USER_ID, USER_ID]);
     }
   });
 

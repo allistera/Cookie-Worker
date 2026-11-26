@@ -486,6 +486,10 @@ export async function deliverPendingNtfy(sql, options = {}) {
           SELECT 1 FROM effective_sender_decision(message.user_id, message.from_address) sender
           WHERE sender.decision = 'blocked'
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM threads t
+          WHERE t.id = message.thread_id AND t.user_id = message.user_id AND t.is_muted
+        )
         AND (message.scheduled_for IS NULL OR message.scheduled_for <= now())
         AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
         AND (ai.status IS DISTINCT FROM 'pending'
@@ -532,7 +536,9 @@ export async function deliverPendingNtfy(sql, options = {}) {
                   AND NOT message.is_deleted
                   AND message.screening_status = 'allowed'
                   AND NOT EXISTS (SELECT 1 FROM effective_sender_decision(message.user_id, message.from_address) sender
-          WHERE sender.decision = 'blocked')) AS eligible
+          WHERE sender.decision = 'blocked')
+                  AND NOT EXISTS (SELECT 1 FROM threads t
+          WHERE t.id = message.thread_id AND t.user_id = message.user_id AND t.is_muted)) AS eligible
               FROM ntfy_notification_events event
               JOIN messages message ON message.id = event.message_id AND message.user_id = event.user_id
               LEFT JOIN ntfy_subscriptions subscription ON subscription.user_id = event.user_id
