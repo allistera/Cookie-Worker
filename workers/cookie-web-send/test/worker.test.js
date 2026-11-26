@@ -106,6 +106,7 @@ const {
 } = await import('../src/worker.js');
 const { DeliveryError } = await import('../src/deliveryLedger.js');
 const { MAX_OUTBOUND_ATTACHMENT_BYTES } = await import('../src/outbound.js');
+const { runAsInternalCaller } = await import('../../../shared/internal-identity.js');
 
 const PRODUCTION = 'https://mail.infinitywave.online';
 const USER_ID = '11111111-1111-1111-1111-111111111111';
@@ -358,6 +359,119 @@ describe('POST /send security boundaries', () => {
     expect(await response.json()).toMatchObject({ code: 'DELIVERY_REJECTED' });
     const queries = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
     expect(queries.some((query) => query.includes('GREATEST(send_count - 1, 0)'))).toBe(true);
+  });
+});
+
+describe('agent send confirmations', () => {
+  const agent = { userId: USER_ID, email: 'owner@example.com' };
+  const confirmation = 'ab'.repeat(32);
+  /** @param {Request} req */
+  const asAgent = (req) => runAsInternalCaller(agent, () => worker.fetch(req, env, ctx));
+
+  test('POST /send/confirmation gives a signed-in browser a ten-minute permit', async () => {
+    responses = [[{ allowed: true }], []];
+    const response = await worker.fetch(request('/send/confirmation'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    const body = await response.json();
+    expect(body.confirmation).toMatch(/^[0-9a-f]{64}$/);
+    expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.now());
+    const [rateLimit, insert] = mockQuery.mock.calls.map(([parts]) => parts.join(' '));
+    expect(rateLimit).toContain('api_rate_limits');
+    expect(insert).toContain('INSERT INTO mcp_send_confirmations');
+  });
+
+  test('POST /send/confirmation refuses the agent identity', async () => {
+    const response = await asAgent(request('/send/confirmation'));
+    expect(response.status).toBe(403);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('POST /send/confirmation is rate limited', async () => {
+    responses = [[{ allowed: false }]];
+    const response = await worker.fetch(request('/send/confirmation'), env, ctx);
+    expect(response.status).toBe(429);
+    expect(response.headers.get('Retry-After')).toBe('60');
+  });
+
+  test('only POST creates a confirmation', async () => {
+    const response = await worker.fetch(request('/send/confirmation', { method: 'GET' }), env, ctx);
+    expect(response.status).toBe(405);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('an agent send without a confirmation is refused before anything is sent', async () => {
+    const response = await asAgent(
+      request('/send', { body: sendBody({ requestId: 'agent-req-1' }) }),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'SEND_CONFIRMATION_REQUIRED' });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('an agent send with an unknown or spent confirmation is refused', async () => {
+    responses = [[]]; // no permit row matches
+    const response = await asAgent(
+      request('/send', { body: sendBody({ requestId: 'agent-req-1', confirmation }) }),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'SEND_CONFIRMATION_REQUIRED' });
+    expect(mockQuery).toHaveBeenCalledOnce();
+    expect(resendSend).not.toHaveBeenCalled();
+  });
+
+  test('an agent send consumes its confirmation for the request id, then delivers', async () => {
+    responses = [
+      [{ token_hash: 'claimed' }], // consume the permit
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ user_id: USER_ID, thread_id: null }], // storeSentMessage lookup
+      [], // insert threads
+      [{ id: 'stored' }], // insert messages
+      [], // read receipt insert
+    ];
+    resendSend.mockResolvedValue({ data: { id: 'resend-agent' }, error: null });
+    const response = await asAgent(
+      request('/send', { body: sendBody({ requestId: 'agent-req-1', confirmation }) }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ id: 'resend-agent' });
+    const [parts, ...values] = mockQuery.mock.calls[0];
+    expect(parts.join(' ')).toContain('UPDATE mcp_send_confirmations');
+    expect(values).toContain('agent-req-1');
+    expect(values).toContain(USER_ID);
+    expect(values).not.toContain(confirmation);
+  });
+
+  test('an agent cannot schedule without a confirmation either', async () => {
+    const response = await asAgent(
+      request('/send', { body: sendBody({ requestId: 'agent-req-2', sendAt: futureIso() }) }),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'SEND_CONFIRMATION_REQUIRED' });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('an agent schedule consumes its confirmation before queueing', async () => {
+    responses = [
+      [{ token_hash: 'claimed' }], // consume the permit
+      [], // early request lookup
+      [], // advisory lock
+      [], // request lookup inside the lock
+      [{ id: 'sched-agent', scheduledFor: futureIso() }],
+    ];
+    const response = await asAgent(
+      request('/send', {
+        body: sendBody({ requestId: 'agent-req-2', sendAt: futureIso(), confirmation }),
+      }),
+    );
+    expect(response.status).toBe(201);
+    expect(mockQuery.mock.calls[0][0].join(' ')).toContain('UPDATE mcp_send_confirmations');
+    expect(
+      mockQuery.mock.calls.some(([parts]) =>
+        parts.join(' ').includes('INSERT INTO scheduled_sends'),
+      ),
+    ).toBe(true);
   });
 });
 

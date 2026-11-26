@@ -45,6 +45,16 @@ describe('results', () => {
     expect(toolError(new ApiError('emails', 403, 'Forbidden')).content[0].text).toBe(
       'This Cookie account is not provisioned for mailbox access.',
     );
+    expect(
+      toolError(
+        new ApiError(
+          'send',
+          403,
+          'A send confirmation from Cookie is required',
+          'SEND_CONFIRMATION_REQUIRED',
+        ),
+      ).content[0].text,
+    ).toMatch(/send confirmation from the mailbox owner.*Cookie Settings/);
     expect(toolError(new ApiError('emails', 502, 'Failed')).content[0].text).toBe(
       'Cookie could not complete the request (status 502). Try again later.',
     );

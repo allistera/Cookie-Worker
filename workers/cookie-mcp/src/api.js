@@ -10,12 +10,16 @@ const BINDINGS = /** @type {const} */ ({
 });
 
 export class ApiError extends Error {
-  /** @param {string} service @param {number} status @param {string} message */
-  constructor(service, status, message) {
+  /**
+   * @param {string} service @param {number} status @param {string} message
+   * @param {string} [code] the API's machine-readable error code, when it sent one
+   */
+  constructor(service, status, message, code) {
     super(message);
     this.name = 'ApiError';
     this.service = service;
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -64,7 +68,11 @@ export function createApi(env, identity) {
         payload && typeof payload === 'object' && typeof payload.error === 'string'
           ? payload.error
           : `Request failed with status ${status}`;
-      throw new ApiError(service, status, message);
+      const code =
+        payload && typeof payload === 'object' && typeof payload.code === 'string'
+          ? payload.code
+          : undefined;
+      throw new ApiError(service, status, message, code);
     }
     /** @type {ServiceCaller} */
     return {

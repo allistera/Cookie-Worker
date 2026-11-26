@@ -27,7 +27,13 @@ function failure(text) {
 export function toolError(error) {
   if (error instanceof ToolInputError) return failure(`Invalid input: ${error.message}`);
   if (error instanceof ApiError) {
-    const { status, message } = error;
+    const { status, message, code } = error;
+    if (code === 'SEND_CONFIRMATION_REQUIRED')
+      return failure(
+        'Sending needs a send confirmation from the mailbox owner. Ask the owner to create one ' +
+          'in Cookie Settings under Connected agents and pass it as confirmation. Each one ' +
+          'covers one email (one requestId) and expires after ten minutes.',
+      );
     if (status === 401 || status === 403)
       return failure('This Cookie account is not provisioned for mailbox access.');
     if (status === 429)
