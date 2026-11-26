@@ -422,6 +422,47 @@ describe('applySync', () => {
     expect(deletedRootIds).toEqual(['z-row']);
   });
 
+  it('leaves a row whose completion Todoist has yet to hear as Cookie has it', async () => {
+    const sql = createMockSql([
+      [], // vanished projects deleted
+      [], // vanished projects unlinked
+      [
+        // Reopened in Cookie, still closed in Todoist: absent from the open
+        // list and present in the completed one.
+        { id: 'c1-row', todoistId: 'c1', parentId: null, completedAt: null, pending: 'reopen' },
+        // A repeating task ticked in Cookie that Todoist no longer lists.
+        { id: 'z-row', todoistId: 'zombie', parentId: null, completedAt: null, pending: 'close' },
+      ],
+      [{ id: 'open-row', todoistId: 'open', parentId: null }], // tasks depth 0
+    ]);
+    const held = planSync(
+      {
+        projects: [],
+        sections: [],
+        tasks: [{ id: 'open', content: 'Still open there', project_id: 'inbox', priority: 1 }],
+        completed: [{ id: 'c1', completed_at: '2026-10-14T09:00:00Z' }],
+      },
+      { timeZone: ZONE },
+    );
+
+    const { summary } = await applySync(sql, USER_ID, held);
+
+    const texts = sql.calls.map((/** @type {{text: string}} */ call) => call.text);
+    expect(texts[2]).toContain('todoist_pending AS pending');
+    // A task Todoist still lists as open keeps the completion and the due
+    // date it has here while a change is waiting to be sent.
+    expect(texts[3]).toMatch(
+      /completed_at = CASE WHEN task_items\.todoist_pending IS NULL\s+THEN NULL ELSE task_items\.completed_at END/,
+    );
+    expect(texts[3]).toMatch(
+      /due_date {5}= CASE WHEN task_items\.todoist_pending IS NULL\s+THEN EXCLUDED\.due_date ELSE task_items\.due_date END/,
+    );
+    // Neither pending row is completed or removed by this run.
+    expect(texts.some((text) => text.includes('SET completed_at = r.completed_at'))).toBe(false);
+    expect(texts.some((text) => text.includes('DELETE FROM task_items'))).toBe(false);
+    expect(summary).toMatchObject({ tasks: 1, completed: 0, removed: 0 });
+  });
+
   it('leaves projects alone and files tasks under the mirrors it holds when projects are off', async () => {
     const tasksOnly = planSync(SNAPSHOT, {
       timeZone: ZONE,
@@ -569,9 +610,63 @@ describe('syncConnection', () => {
         fetchImpl: /** @type {any} */ (fetchImpl),
       }),
     ).rejects.toBeInstanceOf(TodoistAuthError);
-    expect(sql.calls[0].text).toContain('UPDATE todoist_connections');
-    expect(sql.calls[0].values).toContain('failed');
-    expect(sql.calls[0].values).toContain('Todoist rejected the saved token. Enter a new one.');
+    // Nothing was pending, so the run got as far as reading Todoist.
+    expect(sql.calls[0].text).toContain('todoist_pending IS NOT NULL');
+    expect(sql.calls[1].text).toContain('UPDATE todoist_connections');
+    expect(sql.calls[1].values).toContain('failed');
+    expect(sql.calls[1].values).toContain('Todoist rejected the saved token. Enter a new one.');
+  });
+
+  it('sends the completions Cookie owes Todoist before it reads Todoist', async () => {
+    /** @type {string[]} */
+    const requests = [];
+    const fetchImpl = vi.fn(async (/** @type {any} */ url, /** @type {any} */ init) => {
+      const path = new URL(String(url)).pathname;
+      requests.push(`${init.method} ${path}`);
+      if (init.method === 'POST') return new Response(null, { status: 204 });
+      if (path.endsWith('/by_completion_date'))
+        return jsonResponse({ items: [], next_cursor: null });
+      return jsonResponse({ results: [], next_cursor: null });
+    });
+    const sql = createMockSql([
+      [
+        { id: 'done-row', todoistId: 'td-done', action: 'close' },
+        { id: 'undone-row', todoistId: 'td-undone', action: 'reopen' },
+      ],
+    ]);
+
+    const summary = await syncConnection(sql, /** @type {any} */ ({}), connection, {
+      fetchImpl: /** @type {any} */ (fetchImpl),
+    });
+
+    expect(requests.slice(0, 3)).toEqual([
+      'POST /api/v1/tasks/td-done/close',
+      'POST /api/v1/tasks/td-undone/reopen',
+      'GET /api/v1/projects',
+    ]);
+    expect(sql.calls[1].text).toContain('SET todoist_pending = NULL');
+    expect(sql.calls[1].values).toEqual([USER_ID, 'done-row', 'close']);
+    expect(summary.pushed).toBe(2);
+    // The count reaches Settings with the rest of the run's summary.
+    const record = sql.calls.find((call) => call.text.includes('UPDATE todoist_connections'));
+    expect(record.values).toContainEqual({ __json: expect.objectContaining({ pushed: 2 }) });
+  });
+
+  it('fails the run, applying nothing, when a completion cannot be sent', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 503 }));
+    const sql = createMockSql([[{ id: 'done-row', todoistId: 'td-done', action: 'close' }]]);
+
+    await expect(
+      syncConnection(sql, /** @type {any} */ ({}), connection, {
+        fetchImpl: /** @type {any} */ (fetchImpl),
+      }),
+    ).rejects.toBeInstanceOf(TodoistApiError);
+
+    // One request: the close. Todoist was never read, so nothing was written
+    // over the completion it did not receive.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sql.begin).not.toHaveBeenCalled();
+    expect(sql.calls.at(-1).values).toContain('Todoist responded 503.');
   });
 
   it('applies under the owner lock, records the summary and defers indexing on the request queue', async () => {
@@ -594,6 +689,7 @@ describe('syncConnection', () => {
       return jsonResponse({ results: [], next_cursor: null });
     });
     const sql = createMockSql([
+      [], // completions waiting to be sent to Todoist
       [], // attachment keys, read before the run writes
       [{ id: 'p-row', todoistId: 'p' }],
       [],
@@ -621,6 +717,7 @@ describe('syncConnection', () => {
       completed: 0,
       removed: 0,
       skipped: 0,
+      pushed: 0,
     });
     expect(sql.begin).toHaveBeenCalledTimes(1);
     // With projects on, the mirrored-project read is not needed.
@@ -669,6 +766,7 @@ describe('syncConnection', () => {
       return jsonResponse({ results: [], next_cursor: null });
     });
     const sql = createMockSql([
+      [], // completions waiting to be sent to Todoist
       [{ id: 'p-row', todoistId: 'p' }], // mirrored projects
       [], // attachment keys
       [], // existing mirrors
@@ -687,8 +785,8 @@ describe('syncConnection', () => {
     );
 
     expect(summary).toMatchObject({ projects: 0, tasks: 2, removed: 0 });
-    expect(sql.calls[0].text).toContain('FROM task_projects');
-    const rows = sql.calls[3].values[1].__json;
+    expect(sql.calls[1].text).toContain('FROM task_projects');
+    const rows = sql.calls[4].values[1].__json;
     expect(rows.find((/** @type {any} */ row) => row.todoist_id === 't').project_id).toBe('p-row');
     expect(rows.find((/** @type {any} */ row) => row.todoist_id === 'u').project_id).toBeNull();
     expect(sql.calls.some((call) => call.text.includes('INSERT INTO task_projects'))).toBe(false);
@@ -707,6 +805,9 @@ describe('syncConnection', () => {
       { fetchImpl: /** @type {any} */ (fetchImpl), now: () => now },
     );
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // Nothing is sent to Todoist either: what is pending waits for tasks to
+    // be switched back on.
+    expect(sql.calls.some((call) => call.text.includes('todoist_pending IS NOT NULL'))).toBe(false);
     const record = sql.calls.at(-1);
     expect(record.text).toContain('tasks_synced_at   = CASE WHEN ?::boolean');
     expect(record.values.slice(0, 4)).toEqual([true, now, false, now]);

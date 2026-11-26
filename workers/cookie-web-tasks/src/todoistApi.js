@@ -1,6 +1,7 @@
 // The Todoist REST API (unified v1) as the sync needs it: the signed-in
 // account, and every page of projects, sections, active tasks and recently
-// completed tasks. Read-only — nothing here writes to Todoist.
+// completed tasks. The one write is a task's completion (setTaskCompletion):
+// closing it, or opening it again.
 //
 // Every list endpoint pages the same way (`cursor` in, `next_cursor` out,
 // `limit` at most 200); listAll walks the pages so callers see one array.
@@ -133,6 +134,42 @@ export async function fetchAccount(token, fetchImpl = fetch) {
   const timeZone =
     typeof user?.tz_info?.timezone === 'string' ? user.tz_info.timezone.trim().slice(0, 100) : '';
   return { id: id || null, email: email || null, timeZone: timeZone || null };
+}
+
+/**
+ * Tells Todoist a task was completed (`close`) or marked not done again
+ * (`reopen`). Closing a repeating task moves it to its next occurrence, as
+ * ticking it in Todoist does, so the request is sent once and never retried
+ * here: a second close would skip an occurrence.
+ *
+ * Answers whether Todoist took it. A rejected token (401) and a failure
+ * worth another go (a rate limit, a server error, a timeout) throw, so the
+ * caller keeps the change for later. Any other refusal — the task is gone,
+ * or Todoist will not change it — answers false: sending it again would be
+ * refused again.
+ *
+ * @param {string} token
+ * @param {string} taskId The task's Todoist id.
+ * @param {'close' | 'reopen'} action
+ * @param {typeof fetch} [fetchImpl]
+ * @returns {Promise<boolean>}
+ */
+export async function setTaskCompletion(token, taskId, action, fetchImpl = fetch) {
+  // The id stays out of the error, which reaches logs and Sentry.
+  const path = `/tasks/:id/${action}`;
+  return fetchWithTimeout(
+    `${TODOIST_API_URL}/tasks/${encodeURIComponent(taskId)}/${action}`,
+    { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+    async (response) => {
+      if (response.status === 401) throw new TodoistAuthError(response.status, path);
+      if (response.status === 429 || response.status >= 500) {
+        throw new TodoistApiError(response.status, path);
+      }
+      return response.ok;
+    },
+    REQUEST_TIMEOUT_MS,
+    fetchImpl,
+  );
 }
 
 /**

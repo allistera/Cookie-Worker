@@ -268,6 +268,111 @@ describe('PATCH /task-items', () => {
     expect(response.status).toBe(404);
   });
 
+  // A task mirrored from Todoist is closed or reopened there too: the change
+  // is recorded on the row and sent once the write has committed
+  // (todoistPush.js).
+  describe('a task mirrored from Todoist', () => {
+    const mirror = {
+      id: ITEM_ID,
+      kind: 'task',
+      parentId: null,
+      recurrence: null,
+      dueDate: null,
+      completedAt: null,
+      todoistId: 'td-1',
+    };
+    /** Whether the update records a change for Todoist, and which. */
+    const pendingChange = (sql) => {
+      const update = sql.calls.find((call) => call.text.includes('UPDATE task_items t SET'));
+      const index = update.text
+        .split('?')
+        .findIndex((part) => part.includes('todoist_pending = CASE WHEN '));
+      return update.values.slice(index, index + 2);
+    };
+    const pushKey = `todoist-push:${ITEM_ID}`;
+
+    it('records a close and queues its send when the task is completed', async () => {
+      const sql = createMockSql([[mirror], [{ id: ITEM_ID, completedAt: 't1' }]]);
+      const deferSearchSync = vi.fn();
+
+      const response = await updateTaskItem(
+        sql,
+        USER_ID,
+        { id: ITEM_ID, completed: true },
+        { deferSearchSync },
+      );
+
+      expect(response.status).toBe(200);
+      expect(sql.calls[0].text).toContain('todoist_id AS "todoistId"');
+      expect(pendingChange(sql)).toEqual([true, 'close']);
+      expect(deferSearchSync).toHaveBeenCalledWith(expect.any(Function), pushKey);
+    });
+
+    it('records a reopen when a completed task is marked not done again', async () => {
+      const sql = createMockSql([
+        [{ ...mirror, completedAt: '2026-10-14 09:00:00.123456+00' }],
+        [{ id: ITEM_ID, completedAt: null }],
+      ]);
+      const deferSearchSync = vi.fn();
+
+      await updateTaskItem(sql, USER_ID, { id: ITEM_ID, completed: false }, { deferSearchSync });
+
+      expect(pendingChange(sql)).toEqual([true, 'reopen']);
+      expect(deferSearchSync).toHaveBeenCalledWith(expect.any(Function), pushKey);
+    });
+
+    it('records a close for a repeating task moved on to its next occurrence', async () => {
+      const repeating = { ...mirror, recurrence: 'every 3 days', dueDate: '2026-09-05' };
+      const sql = createMockSql([[repeating], [{ ...repeating, dueDate: '2026-09-08' }]]);
+
+      await updateTaskItem(sql, USER_ID, {
+        id: ITEM_ID,
+        completed: true,
+        today: '2026-09-05',
+        expectedDueDate: '2026-09-05',
+      });
+
+      expect(pendingChange(sql)).toEqual([true, 'close']);
+    });
+
+    it('records nothing when the completion does not change', async () => {
+      const renamed = createMockSql([[mirror], [{ id: ITEM_ID, content: 'Renamed' }]]);
+      const deferSearchSync = vi.fn();
+      await updateTaskItem(
+        renamed,
+        USER_ID,
+        { id: ITEM_ID, content: 'Renamed' },
+        { deferSearchSync },
+      );
+      expect(pendingChange(renamed)).toEqual([false, null]);
+
+      // Marking an open task not done again is no news to Todoist.
+      const stillOpen = createMockSql([[mirror], [{ id: ITEM_ID, completedAt: null }]]);
+      await updateTaskItem(
+        stillOpen,
+        USER_ID,
+        { id: ITEM_ID, completed: false },
+        { deferSearchSync },
+      );
+      expect(pendingChange(stillOpen)).toEqual([false, null]);
+
+      expect(deferSearchSync).not.toHaveBeenCalledWith(expect.any(Function), pushKey);
+    });
+
+    it('leaves a task written in Cookie out of it', async () => {
+      const sql = createMockSql([
+        [{ ...mirror, todoistId: null }],
+        [{ id: ITEM_ID, completedAt: 't1' }],
+      ]);
+      const deferSearchSync = vi.fn();
+
+      await updateTaskItem(sql, USER_ID, { id: ITEM_ID, completed: true }, { deferSearchSync });
+
+      expect(pendingChange(sql)).toEqual([false, null]);
+      expect(deferSearchSync).not.toHaveBeenCalledWith(expect.any(Function), pushKey);
+    });
+  });
+
   it('rejects a move that would make a task its own descendant', async () => {
     const sql = createMockSql([
       [{ id: ITEM_ID }], // the task exists

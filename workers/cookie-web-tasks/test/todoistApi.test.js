@@ -8,6 +8,7 @@ import {
   fetchAccount,
   fetchSnapshot,
   listAll,
+  setTaskCompletion,
 } from '../src/todoistApi.js';
 
 /** @param {unknown} body @param {number} [status] */
@@ -162,6 +163,59 @@ describe('fetchAccount', () => {
       email: null,
       timeZone: null,
     });
+  });
+});
+
+describe('setTaskCompletion', () => {
+  it('posts to the close or reopen path of the task with the bearer token', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
+
+    expect(await setTaskCompletion('tok', 'a/b', 'close', /** @type {any} */ (fetchImpl))).toBe(
+      true,
+    );
+    expect(await setTaskCompletion('tok', '42', 'reopen', /** @type {any} */ (fetchImpl))).toBe(
+      true,
+    );
+
+    const calls = /** @type {any[][]} */ (fetchImpl.mock.calls);
+    expect(calls.map(([url]) => String(url))).toEqual([
+      `${TODOIST_API_URL}/tasks/a%2Fb/close`,
+      `${TODOIST_API_URL}/tasks/42/reopen`,
+    ]);
+    expect(calls[0][1].method).toBe('POST');
+    expect(calls[0][1].headers.Authorization).toBe('Bearer tok');
+  });
+
+  it('answers false when Todoist refuses the change for good', async () => {
+    for (const status of [400, 403, 404]) {
+      const fetchImpl = vi.fn(async () => new Response('{}', { status }));
+      expect(await setTaskCompletion('tok', '42', 'close', /** @type {any} */ (fetchImpl))).toBe(
+        false,
+      );
+    }
+  });
+
+  it('throws on a rejected token, a rate limit or a server error, without retrying', async () => {
+    const rejected = vi.fn(async () => new Response('{}', { status: 401 }));
+    await expect(
+      setTaskCompletion('tok', '42', 'close', /** @type {any} */ (rejected)),
+    ).rejects.toBeInstanceOf(TodoistAuthError);
+
+    for (const status of [429, 500, 503]) {
+      const fetchImpl = vi.fn(async () => new Response('{}', { status }));
+      const failure = await setTaskCompletion(
+        'tok',
+        'secret-id',
+        'close',
+        /** @type {any} */ (fetchImpl),
+      ).catch((error) => error);
+      expect(failure).toBeInstanceOf(TodoistApiError);
+      expect(failure).not.toBeInstanceOf(TodoistAuthError);
+      expect(failure.status).toBe(status);
+      // The task id stays out of the message that reaches the logs.
+      expect(failure.message).not.toContain('secret-id');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
   });
 });
 

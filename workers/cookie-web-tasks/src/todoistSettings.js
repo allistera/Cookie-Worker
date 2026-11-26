@@ -15,6 +15,10 @@
 //                               different account unlinks them first.
 //   POST   /tasks/todoist/sync  runs a sync now and answers with the result.
 //
+// The sync mirrors Todoist into Cookie; the one thing that goes the other
+// way is a mirrored task's completion (todoistPush.js), sent from the task
+// write itself and again by each run.
+//
 // The token is encrypted at rest under TODOIST_TOKEN_ENCRYPTION_KEY
 // (shared/token-crypto.js); without that secret the feature reports itself
 // as not configured and nothing is stored. The browser only ever sees the
@@ -264,7 +268,9 @@ export async function putTodoistSettings(sql, userId, body, env, deps = {}) {
     const switchesAccount = existing !== null && isDifferentAccount(existing, account);
     if (switchesAccount) {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 1))`;
-      await tx`UPDATE task_items SET todoist_id = NULL, updated_at = now()
+      // A completion still waiting to be sent (todoistPush.js) was meant for
+      // the previous account; it goes with the link.
+      await tx`UPDATE task_items SET todoist_id = NULL, todoist_pending = NULL, updated_at = now()
                WHERE user_id = ${userId} AND todoist_id IS NOT NULL`;
       await tx`UPDATE task_projects SET todoist_id = NULL
                WHERE user_id = ${userId} AND todoist_id IS NOT NULL`;

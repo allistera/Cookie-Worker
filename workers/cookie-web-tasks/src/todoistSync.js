@@ -1,6 +1,8 @@
-// One-way Todoist sync for the Tasks app. Todoist is the source of truth:
-// every run reads the account's projects, sections and open tasks and makes
+// Todoist sync for the Tasks app. Todoist is the source of truth: every run
+// reads the account's projects, sections and open tasks and makes
 // task_projects / task_items match, keyed by todoist_id (migration 0093).
+// One thing goes the other way — a mirrored task completed, or marked not
+// done again, in Cookie is closed or reopened in Todoist (todoistPush.js).
 //
 // What maps to what:
 // - A project becomes a task_projects row under its Todoist parent. The
@@ -33,6 +35,13 @@
 // task or sub-project lives in it. Rows with a null todoist_id are never
 // touched, so Cookie's own tasks sit alongside the mirrors in the same lists.
 //
+// A run that reads tasks first sends Todoist the completions Cookie still
+// owes it (task_items.todoist_pending, migration 0116), so the read that
+// follows already shows them. A row still owing one when the plan is written
+// — more were waiting than one run sends, or it changed while the run was
+// reading — keeps its completion and due date as Cookie has them, and is
+// neither completed nor removed, until a later run has sent it.
+//
 // Reads happen first, outside any transaction; the plan is then drawn up and
 // written under the same per-owner advisory lock the task writes take, so a
 // sync never interleaves with a drag or a completion. Rows are upserted a
@@ -47,6 +56,7 @@ import { isCalendarDate, registerTaskLabels } from './taskItems.js';
 import { isTaskTimeZone, normalizeTaskLabels } from './taskMetadata.js';
 import { parseTaskRecurrence } from './taskRecurrence.js';
 import { TodoistApiError, TodoistAuthError, fetchSnapshot } from './todoistApi.js';
+import { pushPendingCompletions } from './todoistPush.js';
 
 export const DEFAULT_TIME_ZONE = 'Europe/London';
 // The hourly cron runs the sync at these local hours, inclusive.
@@ -72,8 +82,9 @@ const MAX_SYNC_ERROR_LENGTH = 500;
 /**
  * @typedef {{
  *   projects: number, sections: number, tasks: number, completed: number,
- *   removed: number, skipped: number,
+ *   removed: number, skipped: number, pushed?: number,
  * }} SyncSummary
+ *   `pushed` counts the completions the run sent to Todoist.
  */
 
 // ---------------------------------------------------------------------------
@@ -614,7 +625,8 @@ export async function applySync(sql, userId, plan, options = {}) {
     todoistProjectId === null ? null : (projectIds.get(todoistProjectId) ?? null);
 
   const existing = await sql`
-    SELECT id, todoist_id AS "todoistId", parent_id AS "parentId", completed_at AS "completedAt"
+    SELECT id, todoist_id AS "todoistId", parent_id AS "parentId", completed_at AS "completedAt",
+           todoist_pending AS pending
     FROM task_items
     WHERE user_id = ${userId} AND todoist_id IS NOT NULL
   `;
@@ -671,7 +683,11 @@ export async function applySync(sql, userId, plan, options = {}) {
         description  = EXCLUDED.description,
         project_id   = EXCLUDED.project_id,
         parent_id    = EXCLUDED.parent_id,
-        due_date     = EXCLUDED.due_date,
+        -- A completion Todoist has yet to be told about (todoistPush.js)
+        -- outranks what Todoist said: the row keeps the date a repeating
+        -- task moved to here, and (below) whether it is done.
+        due_date     = CASE WHEN task_items.todoist_pending IS NULL
+                            THEN EXCLUDED.due_date ELSE task_items.due_date END,
         due_time     = EXCLUDED.due_time,
         time_zone    = EXCLUDED.time_zone,
         labels       = EXCLUDED.labels,
@@ -682,7 +698,8 @@ export async function applySync(sql, userId, plan, options = {}) {
         today_position = CASE WHEN task_items.due_date IS DISTINCT FROM EXCLUDED.due_date
                               THEN NULL ELSE task_items.today_position END,
         -- Todoist lists it as open, so it is open here too.
-        completed_at = NULL,
+        completed_at = CASE WHEN task_items.todoist_pending IS NULL
+                            THEN NULL ELSE task_items.completed_at END,
         search_indexed_at = NULL,
         updated_at   = now()
       RETURNING id, todoist_id AS "todoistId", parent_id AS "parentId"
@@ -711,7 +728,9 @@ export async function applySync(sql, userId, plan, options = {}) {
       if (!keptSections.has(todoistId)) toDelete.push(todoistId);
       continue;
     }
-    if (keptTasks.has(todoistId) || row.completedAt) continue;
+    // A row Todoist has yet to hear from is left as Cookie has it: reopened
+    // here, it is still closed there.
+    if (keptTasks.has(todoistId) || row.completedAt || row.pending) continue;
     const completedAt = plan.completed.get(todoistId);
     if (completedAt) toComplete.push({ todoist_id: todoistId, completed_at: completedAt });
     else toDelete.push(todoistId);
@@ -868,11 +887,12 @@ export function describeSyncFailure(error) {
 }
 
 /**
- * One full run for one connection: read Todoist, apply under the owner's
- * task lock, record the outcome, then refresh the search index — deferred
- * onto the request's queue when there is one (the HTTP path), inline
- * otherwise (the cron). The outcome is recorded on failure too, then the
- * error is rethrown for the caller to answer or report.
+ * One full run for one connection: send Todoist the completions Cookie owes
+ * it, read Todoist, apply under the owner's task lock, record the outcome,
+ * then refresh the search index — deferred onto the request's queue when
+ * there is one (the HTTP path), inline otherwise (the cron). The outcome is
+ * recorded on failure too, then the error is rethrown for the caller to
+ * answer or report.
  *
  * @param {import('postgres').Sql} sql
  * @param {TodoistSyncEnv} env
@@ -890,6 +910,14 @@ export async function syncConnection(sql, env, connection, deps = {}) {
   const syncProjects = connection.syncProjects !== false;
   const syncTasks = connection.syncTasks !== false;
   try {
+    // Before the read, so the snapshot already shows what Cookie completed.
+    // A failure here fails the run like a failed read: nothing is applied
+    // over a completion Todoist never received.
+    const pushed = syncTasks
+      ? await pushPendingCompletions(sql, connection.userId, connection.token, {
+          fetchImpl: deps.fetchImpl,
+        })
+      : 0;
     const snapshot = await fetchSnapshot(connection.token, {
       completedSince: new Date(
         connection.tasksSyncedAt
@@ -900,7 +928,7 @@ export async function syncConnection(sql, env, connection, deps = {}) {
       includeTasks: syncTasks,
       fetchImpl: deps.fetchImpl,
     });
-    const { summary, deletedRootIds, attachmentKeys } = await sql.begin(async (tx) => {
+    const { deletedRootIds, attachmentKeys, ...run } = await sql.begin(async (tx) => {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${connection.userId}, 1))`;
       // Which projects tasks may land in is read under the lock, so the plan
       // and the write see the same set.
@@ -924,6 +952,7 @@ export async function syncConnection(sql, env, connection, deps = {}) {
       });
       return { ...applied, attachmentKeys: keys };
     });
+    const summary = { ...run.summary, pushed };
     // The rows are committed, so the objects of any thread that cascaded
     // are only findable from the keys read above: clean them up now, ahead
     // of the status write, and never let that cleanup decide the outcome.
