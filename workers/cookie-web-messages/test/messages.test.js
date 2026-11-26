@@ -760,6 +760,16 @@ describe('getMessage', () => {
     expect(sql.calls[0].text).not.toContain('ai.summary');
   });
 
+  test('keeps the newest messages of a long thread, in reading order', () => {
+    const sql = createMockSql();
+
+    fetchOwnedMessageBody(sql, MESSAGE_ID, USER_ID);
+
+    const text = sql.calls[0].text.replace(/\s+/g, ' ');
+    expect(text).toContain('ORDER BY older.sent_at DESC LIMIT ?');
+    expect(text).toContain('ORDER BY thread_row.sort_at ASC');
+  });
+
   test('adds a normalized calendar invite without exposing the private Blob URL', async () => {
     const ics = `BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:booking\nDTSTART:20260902T150000Z\nDTEND:20260902T153000Z\nSUMMARY:Whitburn Recycling Centre\nEND:VEVENT\nEND:VCALENDAR\n`;
     const readBlob = vi.fn().mockResolvedValue({
@@ -1313,6 +1323,19 @@ describe('fetchThreadMessages', () => {
     expect(query).toContain('NOT m.is_deleted');
     expect(query).toContain('LIMIT');
     expect(query).not.toContain('m.body_text');
+  });
+
+  test('keeps the newest messages of a long thread, returned oldest first', () => {
+    /** @type {string} */
+    let query = '';
+    const sql = (/** @type {TemplateStringsArray} */ strings) => {
+      query = strings.join('?').replace(/\s+/g, ' ');
+      return [];
+    };
+
+    fetchThreadMessages(/** @type {any} */ (sql), 'thread-1', USER_ID);
+
+    expect(query).toContain('ORDER BY m.sent_at DESC LIMIT ? ) newest ORDER BY newest.sent_at ASC');
   });
 });
 

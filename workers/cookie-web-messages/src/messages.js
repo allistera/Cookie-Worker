@@ -61,7 +61,9 @@ export function fetchOwnedMessageBody(sql, id, userId) {
                FROM messages older
                WHERE older.thread_id = m.thread_id AND older.user_id = m.user_id
                  AND NOT older.is_deleted AND older.screening_status = 'allowed'
-               ORDER BY older.sent_at ASC
+               -- Keep the newest messages of a long thread; json_agg puts
+               -- them back in reading order.
+               ORDER BY older.sent_at DESC
                LIMIT ${MAX_THREAD_MESSAGES}
              ) thread_row
            ), '[]'::json) AS thread,
@@ -106,14 +108,18 @@ export function fetchOwnedMessageBody(sql, id, userId) {
 export const MAX_THREAD_MESSAGES = 50;
 
 export function fetchThreadMessages(sql, threadId, userId) {
+  // The newest messages of a long thread, returned oldest first.
   return sql`
-    SELECT m.id, m.from_name, m.from_address, m.snippet, m.sent_at, m.is_sent
-    FROM messages m
-    WHERE m.thread_id = ${threadId} AND m.user_id = ${userId}
-      AND NOT m.is_deleted
-      AND m.screening_status = 'allowed'
-    ORDER BY m.sent_at ASC
-    LIMIT ${MAX_THREAD_MESSAGES}
+    SELECT * FROM (
+      SELECT m.id, m.from_name, m.from_address, m.snippet, m.sent_at, m.is_sent
+      FROM messages m
+      WHERE m.thread_id = ${threadId} AND m.user_id = ${userId}
+        AND NOT m.is_deleted
+        AND m.screening_status = 'allowed'
+      ORDER BY m.sent_at DESC
+      LIMIT ${MAX_THREAD_MESSAGES}
+    ) newest
+    ORDER BY newest.sent_at ASC
   `;
 }
 
