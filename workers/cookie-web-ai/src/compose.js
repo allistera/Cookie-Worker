@@ -11,11 +11,14 @@ import { validId } from '../../../shared/pagination.js';
 const SNIPPET_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
+ * The message being answered, when it is the caller's own and not held by
+ * screening. Shared with the writing suggestions in suggest.js.
+ *
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {string} id
  */
-async function replyContext(sql, userId, id) {
+export async function replyContext(sql, userId, id) {
   if (!id || !validId(id)) return null;
   const [message] = await sql`
     SELECT m.from_name, m.from_address, m.subject,
