@@ -665,7 +665,8 @@ describe('syncConnection', () => {
     // One request: the close. Todoist was never read, so nothing was written
     // over the completion it did not receive.
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(sql.begin).not.toHaveBeenCalled();
+    // Only the push's own transaction ran; the apply never started.
+    expect(sql.begin).toHaveBeenCalledTimes(1);
     expect(sql.calls.at(-1).values).toContain('Todoist responded 503.');
   });
 
@@ -719,12 +720,17 @@ describe('syncConnection', () => {
       skipped: 0,
       pushed: 0,
     });
-    expect(sql.begin).toHaveBeenCalledTimes(1);
+    // The push's transaction, then the apply's.
+    expect(sql.begin).toHaveBeenCalledTimes(2);
     // With projects on, the mirrored-project read is not needed.
     expect(sql.calls.some((call) => call.text.includes('AS "todoistId" FROM task_projects'))).toBe(
       false,
     );
-    expect(sql.controlCalls[0].text).toContain('pg_advisory_xact_lock');
+    // The push lock (key 2), then the owner's task lock (key 1).
+    expect(sql.controlCalls.map((call) => call.text)).toEqual([
+      expect.stringContaining('pg_advisory_xact_lock'),
+      expect.stringContaining('pg_advisory_xact_lock'),
+    ]);
     const record = sql.calls.at(-1);
     expect(record.text).toContain('UPDATE todoist_connections');
     expect(record.values).toContain('ok');

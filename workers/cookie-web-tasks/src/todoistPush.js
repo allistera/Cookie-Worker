@@ -43,30 +43,50 @@ export const MAX_PUSHES_PER_RUN = 20;
  */
 export async function pushPendingCompletions(sql, userId, token, options = {}) {
   const taskId = options.taskId ?? null;
-  const rows = await sql`
-    SELECT id, todoist_id AS "todoistId", todoist_pending AS action
-    FROM task_items
-    WHERE user_id = ${userId} AND todoist_pending IS NOT NULL AND todoist_id IS NOT NULL
-      AND (${taskId}::uuid IS NULL OR id = ${taskId}::uuid)
-    ORDER BY updated_at
-    LIMIT ${MAX_PUSHES_PER_RUN}
-  `;
-  let pushed = 0;
-  for (const row of rows) {
-    const taken = await setTaskCompletion(
-      token,
-      String(row.todoistId),
-      row.action,
-      options.fetchImpl,
-    );
-    if (taken) pushed += 1;
-    else console.log(JSON.stringify({ event: 'todoist_push_refused', action: row.action }));
-    // Only the change that was sent: one made meanwhile stays pending.
-    await sql`
-      UPDATE task_items SET todoist_pending = NULL
-      WHERE user_id = ${userId} AND id = ${row.id} AND todoist_pending = ${row.action}
+  // The push after a PATCH and the push at the start of a sync can overlap.
+  // Both would read the same pending row and send it, and Todoist advances a
+  // repeating task once per close. A per-user lock held for the whole read,
+  // send and clear makes the second wait and then read what the first left
+  // pending (seed 2: not the task lock, seed 1, that a sync applies under).
+  // The failure that stops a run is rethrown only after the clears
+  // of the changes Todoist did take have committed.
+  /** @type {unknown} */
+  let failure = null;
+  const pushed = await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 2))`;
+    const rows = await tx`
+      SELECT id, todoist_id AS "todoistId", todoist_pending AS action
+      FROM task_items
+      WHERE user_id = ${userId} AND todoist_pending IS NOT NULL AND todoist_id IS NOT NULL
+        AND (${taskId}::uuid IS NULL OR id = ${taskId}::uuid)
+      ORDER BY updated_at
+      LIMIT ${MAX_PUSHES_PER_RUN}
     `;
-  }
+    let count = 0;
+    for (const row of rows) {
+      let taken;
+      try {
+        taken = await setTaskCompletion(
+          token,
+          String(row.todoistId),
+          row.action,
+          options.fetchImpl,
+        );
+      } catch (error) {
+        failure = error;
+        break;
+      }
+      if (taken) count += 1;
+      else console.log(JSON.stringify({ event: 'todoist_push_refused', action: row.action }));
+      // Only the change that was sent: one made meanwhile stays pending.
+      await tx`
+        UPDATE task_items SET todoist_pending = NULL
+        WHERE user_id = ${userId} AND id = ${row.id} AND todoist_pending = ${row.action}
+      `;
+    }
+    return count;
+  });
+  if (failure) throw failure;
   return pushed;
 }
 
