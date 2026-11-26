@@ -52,6 +52,16 @@ describe('worker repository interface', () => {
     expect(config.compatibility_flags).not.toContain('global_fetch_private_origin');
   });
 
+  test('keeps user-chosen ntfy server publishes on public routing', async () => {
+    const config = parse(
+      await readFile(
+        new URL('../../workers/cookie-web-notifications/wrangler.jsonc', import.meta.url),
+        'utf8',
+      ),
+    );
+    expect(config.compatibility_flags).toContain('global_fetch_strictly_public');
+  });
+
   test('states the Workers Issues setting in every capsule, off only where URLs carry tokens', async () => {
     const workersRoot = new URL('../../workers/', import.meta.url);
     const names = (await readdir(workersRoot, { withFileTypes: true }))

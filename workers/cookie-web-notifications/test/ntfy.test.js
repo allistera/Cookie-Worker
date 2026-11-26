@@ -156,6 +156,20 @@ describe('ntfy delivery', () => {
     expect(request.body).toBe('Please book your appointment before Friday.');
   });
 
+  test('refuses to follow a redirect and reports it as a failed publish', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 302, headers: { Location: 'https://elsewhere.example' } }),
+      );
+
+    await expect(
+      publishNtfy({ topic: 'cookie-topic', messageId: 'message-1' }, { fetchImpl }),
+    ).rejects.toMatchObject({ name: 'NtfyPublishError', status: 302 });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0][1].redirect).toBe('manual');
+  });
+
   test('uses readable fallbacks when the subject and plain-text body are empty', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
 
@@ -608,6 +622,13 @@ describe('ntfy settings', () => {
     ['a query string', 'https://ntfy.example.com/?auth=x'],
     ['an empty value', '   '],
     ['an overlong value', `https://${'a'.repeat(200)}.example.com`],
+    ['an IPv4 literal', 'https://10.0.0.5'],
+    ['an IPv6 literal', 'https://[::1]'],
+    ['a single-label host', 'https://ntfy'],
+    ['a numeric top label', 'https://ntfy.123'],
+    ['a .local host', 'https://ntfy.local'],
+    ['a .internal host', 'https://ntfy.corp.internal'],
+    ['a .home.arpa host', 'https://ntfy.home.arpa'],
   ])('rejects a server URL with %s', (_name, input) => {
     expect(() => normalizeServerUrl(input)).toThrow(NtfySettingsError);
     expect(() => normalizeServerUrl(input)).toThrow(
