@@ -1,4 +1,5 @@
 import { parseOutputJson, responsesUrl } from '../../../shared/openai.js';
+import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
 import { validDate, validTime } from './availabilityTime.js';
 // Ported from Cookie-Web's api/_lib/calendar-ai.js. Behaviorally identical —
 // only the model configuration comes from the Worker env instead of
@@ -79,6 +80,9 @@ export async function generateCalendarEventDraft(
     body: JSON.stringify({
       model,
       max_output_tokens: 500,
+      // Reasoning tokens share the 500-token allowance and can use all of
+      // it, leaving an incomplete response with no event.
+      ...(supportsReasoning(model) ? { reasoning: { effort: 'none' } } : {}),
       input: [
         {
           role: 'system',

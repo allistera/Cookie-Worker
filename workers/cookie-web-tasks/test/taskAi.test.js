@@ -113,8 +113,23 @@ describe('OpenAI task draft generation', () => {
     const request = JSON.parse(options.body);
     expect(endpoint).toBe('https://api.openai.com/v1/responses');
     expect(request.store).toBe(false);
+    expect(request.reasoning).toEqual({ effort: 'none' });
     expect(request.text.format).toMatchObject({ type: 'json_schema', strict: true });
     expect(options.headers.Authorization).toBe('Bearer test-key');
+  });
+
+  it('names an incomplete response instead of failing to parse it', async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } }),
+    );
+
+    await expect(
+      generateTaskDraft(
+        { text: 'Call plumber', now: '2026-09-05T12:00:00.000Z', timeZone: 'UTC' },
+        'test-key',
+        fetchMock,
+      ),
+    ).rejects.toThrow('OpenAI response incomplete (max_output_tokens)');
   });
 });
 
@@ -209,6 +224,35 @@ describe('POST /task-items/interpret', () => {
     expect(response.status).toBe(502);
     expect((await response.json()).error).not.toContain('private provider detail');
   });
+
+  it('reports and logs an incomplete model response', async () => {
+    const report = vi.fn();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fetchMock = vi.fn(async () =>
+      Response.json({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } }),
+    );
+    try {
+      const response = await interpretTask(
+        createMockSql([]),
+        USER_ID,
+        { text: 'Call plumber Friday', timeZone: 'UTC' },
+        { OPENAI_API_KEY: 'test-key' },
+        { generator: (input, key) => generateTaskDraft(input, key, fetchMock), report },
+      );
+
+      expect(response.status).toBe(502);
+      expect(report).toHaveBeenCalledWith(
+        'task_ai_interpret',
+        expect.objectContaining({ message: 'OpenAI response incomplete (max_output_tokens)' }),
+      );
+      expect(consoleError).toHaveBeenCalledWith(
+        'Task AI interpretation failed:',
+        'OpenAIOutputError: OpenAI response incomplete (max_output_tokens)',
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });
 
 describe('AI task plans', () => {
@@ -244,6 +288,7 @@ describe('AI task plans', () => {
       ),
     ).toEqual(value);
     const request = JSON.parse(/** @type {any} */ (fetchMock.mock.calls[0])[1].body);
+    expect(request.reasoning).toEqual({ effort: 'low' });
     expect(request.text.format.schema.required).toContain('subtasks');
     expect(request.text.format.schema.properties.subtasks.maxItems).toBe(8);
   });
