@@ -179,9 +179,21 @@ export function capString(value, maxBytes) {
     return { value: clean, truncated: false };
   }
   return {
-    value: decoder.decode(bytes.slice(0, maxBytes)).replace(/\uFFFD+$/u, ''),
+    value: trimTrailingReplacement(decoder.decode(bytes.slice(0, maxBytes))),
     truncated: true,
   };
+}
+
+/**
+ * Drops the U+FFFD a mid-character cut leaves at the end. A loop, not
+ * /\uFFFD+$/u, which rescans a long run of them from every position.
+ *
+ * @param {string} text
+ */
+function trimTrailingReplacement(text) {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0xfffd) end--;
+  return text.slice(0, end);
 }
 
 /**
@@ -204,22 +216,27 @@ function formatSize(bytes) {
  * @param {string} html
  */
 export function htmlToText(html) {
-  return stripNul(html)
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, '')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, '')
-    .replace(/<br\s*\/?>/giu, '\n')
-    .replace(/<\/(p|div|section|article|li|tr|h[1-6])>/giu, '\n\n')
-    .replace(/<[^>]+>/gu, '')
-    .replace(/&nbsp;/giu, ' ')
-    .replace(/&amp;/giu, '&')
-    .replace(/&lt;/giu, '<')
-    .replace(/&gt;/giu, '>')
-    .replace(/&#39;|&apos;/giu, "'")
-    .replace(/&quot;/giu, '"')
-    .replace(/[ \t\f\v]+/gu, ' ')
-    .replace(/\s*\n\s*/gu, '\n')
-    .replace(/\n{3,}/gu, '\n\n')
-    .trim();
+  return (
+    stripNul(html)
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, '')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, '')
+      .replace(/<br\s*\/?>/giu, '\n')
+      .replace(/<\/(p|div|section|article|li|tr|h[1-6])>/giu, '\n\n')
+      .replace(/<[^>]+>/gu, '')
+      .replace(/&nbsp;/giu, ' ')
+      .replace(/&amp;/giu, '&')
+      .replace(/&lt;/giu, '<')
+      .replace(/&gt;/giu, '>')
+      .replace(/&#39;|&apos;/giu, "'")
+      .replace(/&quot;/giu, '"')
+      .replace(/[ \t\f\v]+/gu, ' ')
+      // A whitespace run that holds a newline becomes one newline. Matching the
+      // whole run once keeps this linear; /\s*\n\s*/ rescanned a long run of
+      // U+00A0 or bare CRs from every position.
+      .replace(/\s+/gu, (run) => (run.includes('\n') ? '\n' : run))
+      .replace(/\n{3,}/gu, '\n\n')
+      .trim()
+  );
 }
 
 /**
