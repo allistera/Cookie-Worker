@@ -57,8 +57,9 @@ import { isTransientDbError } from '../../../shared/transient-db.js';
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  * @param {import('./sentry.js').CalendarEnv} env
+ * @param {ExecutionContext} ctx
  */
-async function route(url, request, sql, userId, env) {
+async function route(url, request, sql, userId, env, ctx) {
   if (url.pathname === '/calendar-feeds') return manageCalendarFeeds(sql, userId, request);
   const segments = url.pathname.split('/').filter(Boolean);
   const resource = segments.length === 1 ? segments[0] : null;
@@ -82,7 +83,7 @@ async function route(url, request, sql, userId, env) {
     if (resource === 'google-calendar') return getGoogleStatus(sql, userId, env);
     return resource === 'calendar-events'
       ? listEvents(sql, userId, url, env)
-      : listCalendars(sql, userId, env);
+      : listCalendars(sql, userId, env, { defer: (task) => deferWithSql(task, env, ctx) });
   }
   if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') {
     return Response.json(
@@ -141,6 +142,32 @@ async function route(url, request, sql, userId, env) {
       : renameCalendar(sql, userId, body);
   }
   return deleteCalendar(sql, userId, body);
+}
+
+/**
+ * Runs `task` after the response on a database client of its own, since the
+ * request's client is ended once the response is sent. A failure is
+ * reported, never surfaced to the request.
+ *
+ * @param {(sql: import('postgres').Sql) => Promise<void>} task
+ * @param {import('./sentry.js').CalendarEnv} env
+ * @param {ExecutionContext} ctx
+ */
+function deferWithSql(task, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      /** @type {import('postgres').Sql | undefined} */
+      let sql;
+      try {
+        sql = createSql(env.HYPERDRIVE.connectionString);
+        await task(sql);
+      } catch (error) {
+        captureHandledException('calendar-subscription-refresh', error, env);
+      } finally {
+        await endSql(sql);
+      }
+    })(),
+  );
 }
 
 const worker = {
@@ -205,7 +232,7 @@ const worker = {
         env,
         ctx,
         { retryable: request.method === 'GET' || request.method === 'HEAD' },
-        (sql, userId) => route(url, request, sql, userId, env),
+        (sql, userId) => route(url, request, sql, userId, env, ctx),
       );
       return withCors(response, origin, env.ALLOWED_ORIGIN, env.SENTRY_ENVIRONMENT);
     } catch (error) {
