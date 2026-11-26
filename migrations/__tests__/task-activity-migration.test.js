@@ -49,6 +49,11 @@ describe.skipIf(!databaseUrl)('0097 task activity on PostgreSQL', () => {
       'utf8',
     );
     await sql.begin((tx) => tx.unsafe(durationMigration.replace(/^(BEGIN|COMMIT);[ \t]*$/gm, '')));
+    const positionMigration = await readFile(
+      new URL('../0117_task_activity_ignore_position.sql', import.meta.url),
+      'utf8',
+    );
+    await sql.begin((tx) => tx.unsafe(positionMigration.replace(/^(BEGIN|COMMIT);[ \t]*$/gm, '')));
     backfill = await sql`SELECT action, occurred_at FROM task_activity ORDER BY occurred_at`;
   });
   beforeEach(async () => {
@@ -122,6 +127,15 @@ describe.skipIf(!databaseUrl)('0097 task activity on PostgreSQL', () => {
     await sql`UPDATE task_items SET content = content, updated_at = now(), search_indexed_at = now()`;
     expect(await actions(id)).toHaveLength(1);
     expect(await sql`SELECT id FROM task_activity`).toHaveLength(1);
+  });
+
+  it('records no event for reordering, and leaves position out of other edits', async () => {
+    const id = await task({ position: 1 });
+    await sql`UPDATE task_items SET position = 2, today_position = 5 WHERE id = ${id}`;
+    await sql`UPDATE task_items SET position = 3, content = 'Moved and renamed' WHERE id = ${id}`;
+    const history = await actions(id);
+    expect(history.map((row) => row.action)).toEqual(['created', 'edited']);
+    expect(Object.keys(history[1].changes)).toEqual(['content']);
   });
 
   it('records each recurring occurrence without marking the next occurrence complete', async () => {
