@@ -24,6 +24,10 @@ const LOOP_HEADERS = new Set([
   'x-autoreply-from',
 ]);
 export const MAX_HEADER_VALUE = 2048;
+// Unsubscribe links carry signed tokens and often run past MAX_HEADER_VALUE; a
+// cut URL does not work, so these two headers get a larger cap of their own.
+export const MAX_UNSUBSCRIBE_HEADER_VALUE = 16 * 1024;
+const UNSUBSCRIBE_HEADERS = new Set(['list-unsubscribe', 'list-unsubscribe-post']);
 export const MAX_ATTACHMENTS_META = 100;
 export const MAX_REFERENCES = 50;
 export const MAX_MESSAGE_ID = 998;
@@ -290,10 +294,13 @@ function normalizeHeaders(headers) {
     if (kept.length >= MAX_HEADERS + MAX_LOOP_HEADERS) break;
     if (isLoopHeader(stripNul('key' in entry ? entry.key : entry.name))) kept.push(entry);
   }
-  return kept.map((entry) => ({
-    key: stripNul('key' in entry ? entry.key : entry.name).slice(0, MAX_HEADER_VALUE),
-    value: stripNul('value' in entry ? entry.value : '').slice(0, MAX_HEADER_VALUE),
-  }));
+  return kept.map((entry) => {
+    const key = stripNul('key' in entry ? entry.key : entry.name).slice(0, MAX_HEADER_VALUE);
+    const cap = UNSUBSCRIBE_HEADERS.has(key.trim().toLowerCase())
+      ? MAX_UNSUBSCRIBE_HEADER_VALUE
+      : MAX_HEADER_VALUE;
+    return { key, value: stripNul('value' in entry ? entry.value : '').slice(0, cap) };
+  });
 }
 
 /** @param {string} key */

@@ -8,6 +8,7 @@ import {
   MAX_HEADERS,
   MAX_LOOP_HEADERS,
   MAX_MESSAGE_ID,
+  MAX_UNSUBSCRIBE_HEADER_VALUE,
   parseEmail,
 } from '../src/parse.js';
 import { fakeMessage, simpleFixture } from './helpers.js';
@@ -243,6 +244,29 @@ aGVsbG8=
     // Only the late Content-Type outlives the cap; the late X-Extra-* do not.
     expect(record.headers.slice(MAX_HEADERS).map((header) => header.key)).toEqual(['content-type']);
     expect(record.headers.every((header) => header.value.length <= MAX_HEADER_VALUE)).toBe(true);
+  });
+
+  test('keeps a long List-Unsubscribe whole and caps it at its own bound', async () => {
+    const url = `https://example.com/unsubscribe?token=${'t'.repeat(5000)}`;
+    const raw = simpleFixture.replace(
+      'Content-Type: text/plain; charset=utf-8',
+      [
+        `List-Unsubscribe: <${url}>`,
+        'List-Unsubscribe-Post: List-Unsubscribe=One-Click',
+        `X-Long: ${'v'.repeat(5000)}`,
+        `List-Unsubscribe: <https://example.com/${'u'.repeat(MAX_UNSUBSCRIBE_HEADER_VALUE)}>`,
+        'Content-Type: text/plain; charset=utf-8',
+      ].join('\n'),
+    );
+
+    const record = await parseEmail(fakeMessage(raw));
+    const values = (/** @type {string} */ key) =>
+      record.headers.filter((header) => header.key === key).map((header) => header.value);
+
+    expect(values('list-unsubscribe')[0]).toBe(`<${url}>`);
+    expect(values('list-unsubscribe')[1]).toHaveLength(MAX_UNSUBSCRIBE_HEADER_VALUE);
+    expect(values('list-unsubscribe-post')).toEqual(['List-Unsubscribe=One-Click']);
+    expect(values('x-long')[0]).toHaveLength(MAX_HEADER_VALUE);
   });
 
   // Out-of-office suppression reads the stored headers, so a List-Id or
