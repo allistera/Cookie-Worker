@@ -17,6 +17,7 @@ import {
   deliverMail,
   parseFollowUpAt,
   immediateSendIdempotencyKey,
+  claimDailySendAllowance,
   claimOutboundEmailQuota,
   ownedReplyToMessageId,
   parseAttachmentIds,
@@ -79,6 +80,7 @@ async function armScheduledSendClock(env, scheduledFor) {
 // Outbound messages can include HTML bodies; keep Vercel's 4.5 MB cap for
 // send, but use the shared helper for consistent JSON error handling.
 const MAX_BODY_BYTES = 4.5 * 1024 * 1024;
+const DAILY_LIMIT_ERROR = 'Daily email limit reached; try again later';
 
 export { createSql };
 
@@ -301,6 +303,9 @@ async function handleSend(sql, userId, request, services) {
       if (resolved.invalid || resolved.tooLarge) {
         return Response.json({ error: 'Attachments exceed the allowed size' }, { status: 400 });
       }
+      if (!(await claimDailySendAllowance(sql, userId))) {
+        return Response.json({ error: DAILY_LIMIT_ERROR }, { status: 429 });
+      }
       const result = await createScheduledSend(sql, userId, {
         recipients,
         cc,
@@ -398,6 +403,10 @@ async function handleSend(sql, userId, request, services) {
         { error: 'Outbound email quota exceeded; try again shortly' },
         { status: 429 },
       );
+    }
+    if (!(await claimDailySendAllowance(sql, userId))) {
+      await refundOutboundEmailQuota(sql, userId);
+      return Response.json({ error: DAILY_LIMIT_ERROR }, { status: 429 });
     }
   } catch (err) {
     console.error('failed to enforce outbound email quota:', /** @type {Error} */ (err).message);
