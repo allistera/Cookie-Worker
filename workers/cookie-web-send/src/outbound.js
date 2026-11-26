@@ -10,6 +10,7 @@ import { Buffer } from 'node:buffer';
 
 import { hasControlChars, isValidEmailAddress } from '../../../shared/email-validation.js';
 import { validId } from '../../../shared/pagination.js';
+import { allowRequest } from '../../../shared/rate-limit.js';
 import {
   acceptDelivery,
   claimDelivery,
@@ -32,6 +33,9 @@ export const MAX_OUTBOUND_ATTACHMENTS = 20;
 // headroom while converting streamed bytes into a provider-safe Base64 string.
 export const MAX_OUTBOUND_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const OUTBOUND_SENDS_PER_MINUTE = 10;
+// A ceiling on what one mailbox can send or schedule through POST /send in a
+// day, far above personal use, so a runaway client or agent stops at 300.
+const OUTBOUND_SENDS_PER_DAY = 300;
 
 /** @param {string} value */
 function escapeHtml(value) {
@@ -200,6 +204,20 @@ export async function claimOutboundEmailQuota(sql, userId) {
       EXISTS (SELECT 1 FROM claimed) AS quota_claimed
   `;
   return result || { authorized: false, quota_claimed: false };
+}
+
+/**
+ * Claims one of the day's sends: a 24-hour fixed window in api_rate_limits,
+ * kept apart from the per-minute quota above.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ */
+export function claimDailySendAllowance(sql, userId) {
+  return allowRequest(sql, userId, 'outbound-email-daily', {
+    limit: OUTBOUND_SENDS_PER_DAY,
+    windowMs: 24 * 60 * 60 * 1000,
+  });
 }
 
 // Compensating decrement after a failed provider delivery so an outage does

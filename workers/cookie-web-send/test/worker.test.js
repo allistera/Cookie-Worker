@@ -231,6 +231,24 @@ describe('POST /send security boundaries', () => {
     expect(resendSend).not.toHaveBeenCalled();
   });
 
+  test('stops a send over the daily cap and gives back its per-minute slot', async () => {
+    responses = [
+      [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ allowed: false }], // daily cap
+      [], // refund
+    ];
+    const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: 'Daily email limit reached; try again later' });
+    expect(resendSend).not.toHaveBeenCalled();
+    const [, daily, refund] = mockQuery.mock.calls;
+    expect(daily[0].join(' ')).toContain('api_rate_limits');
+    expect(daily.slice(1)).toEqual(
+      expect.arrayContaining([USER_ID, 'outbound-email-daily', 300, 24 * 60 * 60 * 1000]),
+    );
+    expect(refund[0].join(' ')).toContain('GREATEST(send_count - 1, 0)');
+  });
+
   test('403s an unprovisioned subject before constructing a provider send', async () => {
     responses = [[{ authorized: false, quota_claimed: false }]];
     const response = await worker.fetch(request('/send', { body: sendBody() }), env, ctx);
@@ -241,6 +259,7 @@ describe('POST /send security boundaries', () => {
   test('delivers a provisioned send, stores the copy, and returns the provider id', async () => {
     responses = [
       [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ allowed: true }], // daily cap
       [{ user_id: USER_ID, thread_id: null }], // storeSentMessage lookup
       [], // insert threads (sql.begin)
       [{ id: 'stored' }], // insert messages (sql.begin), RETURNING id
@@ -272,6 +291,7 @@ describe('POST /send security boundaries', () => {
     responses = [
       [attachment],
       [{ authorized: true, quota_claimed: true }],
+      [{ allowed: true }], // daily cap
       [{ user_id: USER_ID, thread_id: null }],
       [],
       [{ id: 'stored' }],
@@ -365,6 +385,7 @@ describe('POST /send security boundaries', () => {
   test('refunds the quota and reports a definitive provider rejection', async () => {
     responses = [
       [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ allowed: true }], // daily cap
       [], // refund update
     ];
     resendSend.mockResolvedValue({ data: null, error: { message: 'bounced' } });
@@ -442,6 +463,7 @@ describe('agent send confirmations', () => {
     responses = [
       [{ token_hash: 'claimed' }], // consume the permit
       [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ allowed: true }], // daily cap
       [{ user_id: USER_ID, thread_id: null }], // storeSentMessage lookup
       [], // insert threads
       [{ id: 'stored' }], // insert messages
@@ -473,6 +495,7 @@ describe('agent send confirmations', () => {
     responses = [
       [{ token_hash: 'claimed' }], // consume the permit
       [], // early request lookup
+      [{ allowed: true }], // daily cap
       [], // advisory lock
       [], // request lookup inside the lock
       [{ id: 'sched-agent', scheduledFor: futureIso() }],
@@ -529,6 +552,7 @@ describe('POST /send with sendAt (schedule creation)', () => {
           blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
         },
       ],
+      [{ allowed: true }], // daily cap
       [], // Advisory lock
       [], // Request lookup inside the lock
       [scheduledSend],
@@ -640,6 +664,7 @@ describe('POST /send with sendAt (schedule creation)', () => {
           blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
         },
       ],
+      [{ allowed: true }], // daily cap
       [], // Advisory lock
       [{ ...scheduledSend, requestHash }], // Other request committed before the lock
     ];
@@ -650,13 +675,18 @@ describe('POST /send with sendAt (schedule creation)', () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ scheduledSend });
-    expect(mockQuery.mock.calls.some(([parts]) => parts.join(' ').includes('INSERT'))).toBe(false);
+    expect(
+      mockQuery.mock.calls.some(([parts]) =>
+        parts.join(' ').includes('INSERT INTO scheduled_sends'),
+      ),
+    ).toBe(false);
     expect(clockArm).not.toHaveBeenCalled();
     expect(resendSend).not.toHaveBeenCalled();
   });
 
   test('queues a scheduled_sends row instead of calling the provider', async () => {
     responses = [
+      [{ allowed: true }], // daily cap
       [], // advisory lock (sql.begin)
       [
         {
@@ -682,7 +712,7 @@ describe('POST /send with sendAt (schedule creation)', () => {
   // safety net. Arming rides in waitUntil so the response is not held up.
   test('arms the scheduled-send clock for the new row after responding', async () => {
     const sendAt = futureIso();
-    responses = [[], [{ id: 'sched-2', scheduledFor: sendAt }]];
+    responses = [[{ allowed: true }], [], [{ id: 'sched-2', scheduledFor: sendAt }]];
     clockArm.mockClear();
 
     const response = await worker.fetch(
@@ -700,7 +730,7 @@ describe('POST /send with sendAt (schedule creation)', () => {
   });
 
   test('a failed arm is logged and never fails the schedule request', async () => {
-    responses = [[], [{ id: 'sched-3', scheduledFor: futureIso() }]];
+    responses = [[{ allowed: true }], [], [{ id: 'sched-3', scheduledFor: futureIso() }]];
     clockArm.mockRejectedValueOnce(new Error('clock unavailable'));
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -728,8 +758,21 @@ describe('POST /send with sendAt (schedule creation)', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
+  test('stops a schedule over the daily cap before queueing it', async () => {
+    responses = [[{ allowed: false }]];
+    const response = await worker.fetch(
+      request('/send', { body: sendBody({ sendAt: futureIso() }) }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: 'Daily email limit reached; try again later' });
+    expect(mockQuery).toHaveBeenCalledOnce();
+  });
+
   test('reports 429 when the per-user pending cap is hit', async () => {
     responses = [
+      [{ allowed: true }], // daily cap
       [], // advisory lock (sql.begin)
       [], // insert suppressed by the cap
     ];
@@ -753,6 +796,7 @@ describe('POST /send with sendAt (schedule creation)', () => {
           blob_url: 'https://store.private.blob.vercel-storage.com/plan.pdf',
         },
       ],
+      [{ allowed: true }], // daily cap
       [],
       [{ id: 'sched-1', scheduledFor: futureIso() }],
       [],
@@ -1306,6 +1350,7 @@ describe('search indexing of sent mail', () => {
   function storedSendResponses() {
     return [
       [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ allowed: true }], // daily cap
       [{ user_id: USER_ID, thread_id: null }], // storeSentMessage lookup
       [], // insert threads (sql.begin)
       [{ id: 'stored' }], // insert messages (sql.begin), RETURNING id
@@ -1390,6 +1435,7 @@ describe('search indexing of sent mail', () => {
   test('indexes nothing new when the send is an idempotent replay', async () => {
     responses = [
       [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ allowed: true }], // daily cap
       // The Resend id already resolves to a stored copy: no INSERT runs at all.
       [{ user_id: USER_ID, thread_id: null, existing_message_id: 'already-stored' }],
       [], // read receipt insert
@@ -1413,6 +1459,7 @@ describe('search indexing of sent mail', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     responses = [
       [{ authorized: true, quota_claimed: true }], // quota claim
+      [{ allowed: true }], // daily cap
       new Error('database unavailable'), // storeSentMessage lookup
     ];
     resendSend.mockResolvedValue({ data: { id: 'resend-1' }, error: null });
