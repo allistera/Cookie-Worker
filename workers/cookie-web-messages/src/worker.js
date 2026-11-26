@@ -12,6 +12,7 @@ import { invitationSender } from '../../../shared/calendarInvitation.js';
 import { getContacts } from './contacts.js';
 import { getContactInsights, patchContactInsights } from './contactInsights.js';
 import { getSubscriptions } from './subscriptions.js';
+import { getAttachmentLibrary } from './attachmentLibrary.js';
 import {
   getAttachment,
   getCalendarInvite,
@@ -85,7 +86,8 @@ function reindexMessages(env, ctx, messageIds) {
  * with the reader's threaded view, which expands conversation messages
  * through GET /messages?id= like any other message.) GET
  * /messages/subscriptions, the senders the mailbox is subscribed to, was
- * added here later (subscriptions.js).
+ * added here later (subscriptions.js), and so was GET /messages/attachments,
+ * every file the mailbox received or sent (attachmentLibrary.js).
  *
  * @param {URL} url
  * @param {Request} request
@@ -102,9 +104,14 @@ async function route(url, request, sql, userId, env, ctx) {
   const sub = segments[1];
   if (
     sub &&
-    !['attachment', 'contacts', 'contact-insights', 'calendar-invite', 'subscriptions'].includes(
-      sub,
-    )
+    ![
+      'attachment',
+      'attachments',
+      'contacts',
+      'contact-insights',
+      'calendar-invite',
+      'subscriptions',
+    ].includes(sub)
   ) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
@@ -125,6 +132,15 @@ async function route(url, request, sql, userId, env, ctx) {
         { status: 405, headers: { Allow: 'GET' } },
       );
     return getSubscriptions(sql, userId);
+  }
+
+  if (sub === 'attachments') {
+    if (request.method !== 'GET')
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET' } },
+      );
+    return getAttachmentLibrary(sql, userId, url);
   }
 
   if (sub === 'contact-insights' && !['GET', 'PATCH'].includes(request.method)) {
