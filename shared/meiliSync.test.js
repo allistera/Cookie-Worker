@@ -6,8 +6,9 @@ vi.mock('./meili.js', async (importOriginal) => {
   return { ...actual, addDocuments: (...args) => addDocuments(...args) };
 });
 
-const { MEILI_CHUNK_SIZE, isTransientMeiliError, syncMessageToMeili, syncMessagesToMeili } =
+const { MEILI_CHUNK_SIZE, syncMessageToMeili, syncMessagesToMeili } =
   await import('./meiliSync.js');
+const { isTransientMeiliError } = await import('./meiliErrors.js');
 
 const ENV = { MEILISEARCH_URL: 'https://meili.test', MEILISEARCH_API_KEY: 'key' };
 const MESSAGE_ID = '11111111-1111-4111-8111-111111111111';

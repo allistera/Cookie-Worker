@@ -2,8 +2,6 @@ import { addDocuments, meiliAvailable } from './meili.js';
 import { MESSAGES_INDEX } from './meili/messages.js';
 import { isTransientMeiliError } from './meiliErrors.js';
 
-export { isTransientMeiliError } from './meiliErrors.js';
-
 // Meilisearch accepts or rejects an addDocuments payload as a whole, so one
 // oversized or malformed document would otherwise cost every other document
 // in the call — and with it every id's stamp, leaving the drift sweep to

@@ -2,7 +2,6 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   fetchMessageAttachments,
   fetchOwnedMessageBody,
-  fetchThreadMessages,
   getAttachment,
   getMessage,
   getCalendarInvite,
@@ -1340,37 +1339,6 @@ describe('fetchMessageAttachments', () => {
     expect(query).toContain('WHERE message_id =');
     expect(query).toContain('ORDER BY filename');
     expect(values).toEqual([MESSAGE_ID]);
-  });
-});
-
-describe('fetchThreadMessages', () => {
-  test('returns thread metadata without full bodies', () => {
-    /** @type {string} */
-    let query = '';
-    const sql = (/** @type {TemplateStringsArray} */ strings) => {
-      query = strings.join('?');
-      return [];
-    };
-
-    fetchThreadMessages(/** @type {any} */ (sql), 'thread-1', USER_ID);
-
-    expect(query).toContain('m.snippet');
-    expect(query).toContain('NOT m.is_deleted');
-    expect(query).toContain('LIMIT');
-    expect(query).not.toContain('m.body_text');
-  });
-
-  test('keeps the newest messages of a long thread, returned oldest first', () => {
-    /** @type {string} */
-    let query = '';
-    const sql = (/** @type {TemplateStringsArray} */ strings) => {
-      query = strings.join('?').replace(/\s+/g, ' ');
-      return [];
-    };
-
-    fetchThreadMessages(/** @type {any} */ (sql), 'thread-1', USER_ID);
-
-    expect(query).toContain('ORDER BY m.sent_at DESC LIMIT ? ) newest ORDER BY newest.sent_at ASC');
   });
 });
 

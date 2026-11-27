@@ -95,33 +95,7 @@ export function fetchOwnedMessageBody(sql, id, userId) {
   `;
 }
 
-/**
- * The other messages in this message's conversation (thread_id), oldest
- * first, for the reader's collapsed conversation history. Only the summary
- * fields are selected — body_html/blob URLs are deliberately left out, same
- * as the inbox list, since older thread messages render as plain text.
- *
- * @param {import('postgres').Sql} sql
- * @param {string} threadId
- * @param {string} userId
- */
 export const MAX_THREAD_MESSAGES = 50;
-
-export function fetchThreadMessages(sql, threadId, userId) {
-  // The newest messages of a long thread, returned oldest first.
-  return sql`
-    SELECT * FROM (
-      SELECT m.id, m.from_name, m.from_address, m.snippet, m.sent_at, m.is_sent
-      FROM messages m
-      WHERE m.thread_id = ${threadId} AND m.user_id = ${userId}
-        AND NOT m.is_deleted
-        AND m.screening_status = 'allowed'
-      ORDER BY m.sent_at DESC
-      LIMIT ${MAX_THREAD_MESSAGES}
-    ) newest
-    ORDER BY newest.sent_at ASC
-  `;
-}
 
 /**
  * A message's attachments, ordered by filename. The private Blob URL never

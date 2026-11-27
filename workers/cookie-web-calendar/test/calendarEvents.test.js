@@ -2,13 +2,12 @@
 // recurrence and fetch halves, unchanged.
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildRecurrenceRule,
-  expandEvents,
-  expandEventsPage,
-  parseRangeParams,
-} from '../src/recurrence.js';
+import { buildRecurrenceRule, expandEventsPage, parseRangeParams } from '../src/recurrence.js';
 import { fetchEvents, listEvents } from '../src/calendarEvents.js';
+
+/** Only the occurrences, for the cases that do not look at truncation. */
+const expandEvents = (/** @type {Parameters<typeof expandEventsPage>} */ ...args) =>
+  expandEventsPage(...args).events;
 
 describe('buildRecurrenceRule', () => {
   it('returns null for "none"', () => {

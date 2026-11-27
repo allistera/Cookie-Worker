@@ -2,7 +2,6 @@ import { Meilisearch } from 'meilisearch';
 import { isTransientMeiliError } from './meiliErrors.js';
 
 export { MESSAGES_INDEX } from './meili/messages.js';
-export { EMBEDDER } from './meili/embedder.js';
 
 /**
  * Checks whether Meilisearch is configured for this environment. Used

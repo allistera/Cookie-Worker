@@ -7,7 +7,6 @@ import worker, {
   isStoreTimeout,
   isTransientDbError,
   recoverPendingEnrichment,
-  redact,
   withTimeout,
 } from '../src/worker.js';
 import { MAX_ENRICHMENT_ATTEMPTS } from '../src/enrich.js';
@@ -1208,10 +1207,6 @@ describe('helpers', () => {
     expect(isTransientForwardError(new Error('transient error (421)'))).toBe(false);
     expect(isTransientForwardError(new Error('boom'))).toBe(false);
     expect(isTransientForwardError('not an error')).toBe(false);
-  });
-
-  test('redact replaces all provided secrets', () => {
-    expect(redact(new Error('a secret b key'), 'secret', 'key')).toBe('a [redacted] b [redacted]');
   });
 });
 
