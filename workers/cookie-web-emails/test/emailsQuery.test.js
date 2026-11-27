@@ -1,11 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import {
-  fetchEmails,
-  fetchPresenceCounts,
-  fetchSnoozedCount,
-  fetchSpamCount,
-  fetchUnreadCount,
-} from '../src/emails.js';
+import { fetchEmails, fetchMailboxCounts } from '../src/emails.js';
 
 // Ported from Cookie-Web's api/_lib/__tests__/emails-query.test.js — the
 // folder-predicate and query-shape suite, unchanged apart from moving with
@@ -27,6 +21,20 @@ function captureQuery() {
     return frag;
   };
   return { sql, query: () => text };
+}
+
+/**
+ * Returns the subquery of fetchMailboxCounts that produces the `name` column.
+ *
+ * @param {string} name
+ */
+function mailboxCount(name) {
+  const capture = captureQuery();
+  fetchMailboxCounts(capture.sql, USER_ID);
+  const query = capture.query();
+  const end = query.indexOf(`) AS ${name}`);
+  expect(end).toBeGreaterThan(0);
+  return query.slice(query.lastIndexOf('(\n        SELECT', end), end);
 }
 
 const USER_ID = '99999999-9999-4999-8999-999999999999';
@@ -97,8 +105,7 @@ describe('fetchEmails', () => {
     const capture = captureQuery();
     fetchEmails(capture.sql, USER_ID, 50, null, 'inbox');
     expect(capture.query()).toContain("ai.status = 'completed'");
-    fetchUnreadCount(capture.sql, USER_ID);
-    expect(capture.query()).toContain("ai.status = 'completed'");
+    expect(mailboxCount('unread')).toContain("ai.status = 'completed'");
     fetchEmails(capture.sql, USER_ID, 50, null, 'sent');
     expect(capture.query()).not.toContain("ai.status = 'completed'");
   });
@@ -203,55 +210,43 @@ describe('fetchEmails', () => {
   });
 });
 
-describe('fetchUnreadCount', () => {
-  // A bare aggregate (no GROUP BY) always returns exactly one row even when
-  // zero messages match, so unlike the old users-anchored LEFT JOIN version,
-  // this can scope directly off messages by the already-known userId and
-  // still guarantee a row. is_unread stays in the WHERE, matching the
-  // partial index messages_unread_idx; spam exclusion stays in the FILTER
-  // since it depends on the joined message_ai row.
+describe('fetchMailboxCounts unread', () => {
+  // is_unread stays in the WHERE, matching the partial index
+  // messages_unread_idx; spam exclusion stays in the FILTER since it depends
+  // on the joined message_ai row.
   test('excludes spam inside the aggregate filter, not the WHERE clause', () => {
-    const capture = captureQuery();
+    const query = mailboxCount('unread');
 
-    fetchUnreadCount(capture.sql, USER_ID);
-
-    expect(capture.query()).toMatch(
+    expect(query).toMatch(
       /count\(m\.id\) FILTER \(\s*WHERE ai\.status = 'completed'\s*AND COALESCE\(ai\.spam_verdict, 'inbox'\) <> 'spam'\s*\)/,
     );
-    expect(capture.query()).toContain('WHERE m.user_id = ? AND m.is_unread');
-    const whereOnwards = capture.query().slice(capture.query().indexOf('WHERE m.user_id'));
-    expect(whereOnwards).not.toContain('spam');
+    expect(query).toContain('WHERE m.user_id = ? AND m.is_unread');
+    expect(query.slice(query.indexOf('WHERE m.user_id'))).not.toContain('spam');
   });
 });
 
 // The Spam folder predicate (folderPredicate('spam') plus the list's
 // NOT is_deleted) and this count must agree, or the sidebar would show a
-// folder that opens empty — or hide one that has mail in it.
-describe('fetchSpamCount', () => {
+// folder that opens empty, or hide one that has mail in it.
+describe('fetchMailboxCounts spam', () => {
   test('counts exactly what the Spam folder lists', () => {
-    const capture = captureQuery();
+    const query = mailboxCount('spam');
 
-    fetchSpamCount(capture.sql, USER_ID);
-
-    const query = capture.query();
     expect(query).toContain("ai.spam_verdict = 'spam'");
     expect(query).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
-    expect(query).toContain('count(*)::int AS spam');
+    expect(query).toContain('count(*)::int');
   });
 });
 
 // Likewise for Snoozed: the count and folderPredicate('snoozed') must agree.
-describe('fetchSnoozedCount', () => {
+describe('fetchMailboxCounts snoozed', () => {
   test('counts exactly what the Snoozed folder lists', () => {
-    const capture = captureQuery();
+    const query = mailboxCount('snoozed');
 
-    fetchSnoozedCount(capture.sql, USER_ID);
-
-    const query = capture.query();
     expect(query).toContain('m.scheduled_for > now()');
     expect(query).toContain("COALESCE(ai.spam_verdict, 'inbox') <> 'spam'");
     expect(query).toContain('NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent');
-    expect(query).toContain('count(m.id)::int AS snoozed');
+    expect(query).toContain('count(m.id)::int');
     expect(query).toContain("ai.status = 'completed'");
   });
 });
@@ -259,13 +254,10 @@ describe('fetchSnoozedCount', () => {
 // The screening half of the WHERE must spell out NOT is_sent so the planner
 // can use the partial index messages_screening_queue_idx (whose predicate
 // includes it); the FILTERs already imply it, so the counts are unchanged.
-describe('fetchPresenceCounts', () => {
+describe('fetchMailboxCounts presence', () => {
   test('restates NOT is_sent so the screening partial index applies', () => {
-    const capture = captureQuery();
+    const query = mailboxCount('presence');
 
-    fetchPresenceCounts(capture.sql, USER_ID);
-
-    const query = capture.query();
     expect(query).toContain(
       "AND (m.is_starred OR (NOT m.is_sent AND m.screening_status <> 'allowed'))",
     );

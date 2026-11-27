@@ -168,98 +168,15 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
   `;
 }
 
-// A bare aggregate (no GROUP BY) always returns exactly one row, even when
-// zero messages match, so this no longer needs to anchor on users the way it
-// did when it was also the source of the caller's userId (the caller already
-// has it from verifyAccessToken). is_unread stays in the WHERE, matching the
-// partial index messages_unread_idx (migration 0001).
+// Each count uses the same predicate as its folder (folderPredicate plus the
+// list's NOT is_deleted), so the sidebar never shows a folder that opens
+// empty. A bare aggregate always returns one row, even with no matches.
+// Unread keeps is_unread in the WHERE for the partial index
+// messages_unread_idx, and spam exclusion in the FILTER because it depends on
+// the joined message_ai row. Presence restates NOT is_sent in the WHERE so the
+// partial index messages_screening_queue_idx applies.
 /**
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- */
-export function fetchUnreadCount(sql, userId) {
-  return sql`
-    SELECT count(m.id) FILTER (
-             WHERE ai.status = 'completed'
-               AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
-           )::int AS unread
-    FROM messages m
-    LEFT JOIN message_ai ai ON ai.message_id = m.id
-    WHERE m.user_id = ${userId} AND m.is_unread
-      AND m.screening_status = 'allowed'
-      AND NOT m.is_archived AND NOT m.is_sent AND NOT m.is_deleted
-      AND (m.scheduled_for IS NULL OR m.scheduled_for <= now())
-  `;
-}
-
-// How many messages the Spam folder holds. The sidebar only lists Spam
-// while this is non-zero, so it travels with the unread count on every
-// bootstrap and first-page payload. Same predicate as folderPredicate('spam')
-// (plus the list's NOT is_deleted) so the count and the folder always agree;
-// the join keeps it on the 0010 partial index message_ai_spam_idx.
-/**
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- */
-export function fetchSpamCount(sql, userId) {
-  return sql`
-    SELECT count(*)::int AS spam
-    FROM messages m
-    JOIN message_ai ai ON ai.message_id = m.id
-    WHERE m.user_id = ${userId}
-      AND m.screening_status = 'allowed'
-      AND ai.spam_verdict = 'spam'
-      AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
-  `;
-}
-
-// How many messages the Snoozed folder holds — the sidebar lists Snoozed
-// only while this is non-zero, so it travels with the spam count. Same
-// predicate as folderPredicate('snoozed') plus the list's NOT is_deleted.
-/**
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- */
-export function fetchSnoozedCount(sql, userId) {
-  return sql`
-    SELECT count(m.id)::int AS snoozed
-    FROM messages m
-    LEFT JOIN message_ai ai ON ai.message_id = m.id
-    WHERE m.user_id = ${userId}
-      AND m.screening_status = 'allowed'
-      AND NOT m.is_deleted AND NOT m.is_archived AND NOT m.is_sent
-      AND ai.status = 'completed'
-      AND COALESCE(ai.spam_verdict, 'inbox') <> 'spam'
-      AND m.scheduled_for > now()
-  `;
-}
-
-// How many messages the Starred, New senders (held) and Blocked folders
-// hold. The sidebar lists each only while it has something, so the counts
-// travel with the others. Same predicates as folderPredicate for those
-// folders, plus the list's NOT is_deleted (and starred's allowed-only rule).
-// The WHERE restates NOT is_sent on the screening side so the planner can use
-// the partial index messages_screening_queue_idx; the FILTERs imply it anyway.
-/**
- * @param {import('postgres').Sql} sql
- * @param {string} userId
- */
-export function fetchPresenceCounts(sql, userId) {
-  return sql`
-    SELECT
-      count(*) FILTER (WHERE m.is_starred AND m.screening_status = 'allowed')::int AS starred,
-      count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'held')::int AS screening,
-      count(*) FILTER (WHERE NOT m.is_sent AND m.screening_status = 'blocked')::int AS blocked
-    FROM messages m
-    WHERE m.user_id = ${userId} AND NOT m.is_deleted
-      AND (m.is_starred OR (NOT m.is_sent AND m.screening_status <> 'allowed'))
-  `;
-}
-
-/**
- * Fetch the sidebar counts with one database round trip. The individual
- * helpers above remain available for focused query tests and callers that
- * need only one count.
+ * Fetch the sidebar counts with one database round trip.
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  */
