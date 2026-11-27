@@ -62,6 +62,16 @@ describe('worker repository interface', () => {
     expect(config.compatibility_flags).toContain('global_fetch_strictly_public');
   });
 
+  test('keeps unsubscribe requests to URLs from mail on public routing', async () => {
+    const config = parse(
+      await readFile(
+        new URL('../../workers/cookie-web-messages/wrangler.jsonc', import.meta.url),
+        'utf8',
+      ),
+    );
+    expect(config.compatibility_flags).toContain('global_fetch_strictly_public');
+  });
+
   test('states the Workers Issues setting in every capsule, off only where URLs carry tokens', async () => {
     const workersRoot = new URL('../../workers/', import.meta.url);
     const names = (await readdir(workersRoot, { withFileTypes: true }))
