@@ -6,7 +6,7 @@ export const ENRICHMENT_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 export const ENRICHMENT_INTERVALS = [1, 2, 3, 4, 6, 12];
 
 /** Models that accept the Responses API `reasoning` option. */
-export const REASONING_MODELS = new Set(ENRICHMENT_MODELS);
+export const REASONING_MODELS = new Set([...ENRICHMENT_MODELS, 'gpt-6.1-sol']);
 /** @param {string} model */
 export function supportsReasoning(model) {
   return REASONING_MODELS.has(model);
