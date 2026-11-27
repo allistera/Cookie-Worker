@@ -184,41 +184,30 @@ export function markdownToBlocks(markdown, maxBlocks = MAX_BLOCKS) {
  */
 export async function generateDocument(instruction, apiKey, model) {
   return requestAiJson(
-    model,
     {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      signal: AbortSignal.timeout(30_000),
-      body: JSON.stringify({
-        model,
-        max_output_tokens: 3000,
-        input: [
-          {
-            role: 'system',
-            content:
-              "You write documents for one private user's notes app. Follow the user instruction and produce a complete, well-structured document. " +
-              'Write the body as Markdown using only: headings (#, ##, ###), paragraphs, bullet lists (-), numbered lists (1.), checklists (- [ ]), fenced code blocks (```) and --- dividers. ' +
-              'No HTML, no tables, no front matter, and do not repeat the title as a heading. Return only the requested JSON.',
-          },
-          { role: 'user', content: JSON.stringify({ instruction }) },
-        ],
-        text: {
-          format: {
-            type: 'json_schema',
-            name: 'document',
-            strict: true,
-            schema: {
-              type: 'object',
-              properties: { title: { type: 'string' }, markdown: { type: 'string' } },
-              required: ['title', 'markdown'],
-              additionalProperties: false,
-            },
-          },
+      apiKey,
+      model,
+      timeoutMs: 30_000,
+      maxOutputTokens: 3000,
+      input: [
+        {
+          role: 'system',
+          content:
+            "You write documents for one private user's notes app. Follow the user instruction and produce a complete, well-structured document. " +
+            'Write the body as Markdown using only: headings (#, ##, ###), paragraphs, bullet lists (-), numbered lists (1.), checklists (- [ ]), fenced code blocks (```) and --- dividers. ' +
+            'No HTML, no tables, no front matter, and do not repeat the title as a heading. Return only the requested JSON.',
         },
-      }),
+        { role: 'user', content: JSON.stringify({ instruction }) },
+      ],
+      format: {
+        name: 'document',
+        schema: {
+          type: 'object',
+          properties: { title: { type: 'string' }, markdown: { type: 'string' } },
+          required: ['title', 'markdown'],
+          additionalProperties: false,
+        },
+      },
     },
     (payload) => {
       const parsed = parseOutputJson(payload);

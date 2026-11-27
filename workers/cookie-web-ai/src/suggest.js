@@ -1,7 +1,6 @@
 import { requestAiJson } from './aiTracing.js';
 import { replyContext } from './compose.js';
 import { DEFAULT_MODEL, clean } from './openai.js';
-import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
 import { parseOutputJson } from '../../../shared/openai.js';
 
 // Writing suggestions: the composer asks for the words most likely to come
@@ -73,38 +72,27 @@ export function cleanSuggestion(value, text) {
  */
 export async function generateSuggestion(input, text, apiKey, model) {
   return requestAiJson(
-    model,
     {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-      body: JSON.stringify({
-        model,
-        max_output_tokens: MAX_OUTPUT_TOKENS,
-        // The writer is waiting on every keystroke pause: a reasoning pass
-        // would take longer than the pause itself.
-        ...(supportsReasoning(model) ? { reasoning: { effort: 'none' } } : {}),
-        input: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: JSON.stringify({ ...input, text_before_caret: text }) },
-        ],
-        text: {
-          format: {
-            type: 'json_schema',
-            name: 'email_completion',
-            strict: true,
-            schema: {
-              type: 'object',
-              properties: { completion: { type: 'string' } },
-              required: ['completion'],
-              additionalProperties: false,
-            },
-          },
+      apiKey,
+      model,
+      timeoutMs: TIMEOUT_MS,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      // The writer is waiting on every keystroke pause: a reasoning pass
+      // would take longer than the pause itself.
+      reasoningEffort: 'none',
+      input: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: JSON.stringify({ ...input, text_before_caret: text }) },
+      ],
+      format: {
+        name: 'email_completion',
+        schema: {
+          type: 'object',
+          properties: { completion: { type: 'string' } },
+          required: ['completion'],
+          additionalProperties: false,
         },
-      }),
+      },
     },
     (payload) => cleanSuggestion(parseOutputJson(payload).completion, text),
   );
