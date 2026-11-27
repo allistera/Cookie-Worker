@@ -24,12 +24,12 @@ import { validId } from '../../../shared/pagination.js';
 import { isTransientMeiliError } from '../../../shared/meiliErrors.js';
 import { setSpanAttributes } from '../../../shared/tracing.js';
 
-export const MAX_TITLE_LENGTH = 300;
-export const MAX_EMOJI_LENGTH = 16;
+const MAX_TITLE_LENGTH = 300;
+const MAX_EMOJI_LENGTH = 16;
 // Documents can also use a Material Symbols icon, stored in the same emoji
 // column as `ms:<icon_name>` (Cookie-Web src/lib/documentIcons.js).
-export const ICON_PREFIX = 'ms:';
-export const MAX_ICON_NAME_LENGTH = 64;
+const ICON_PREFIX = 'ms:';
+const MAX_ICON_NAME_LENGTH = 64;
 const ICON_NAME_PATTERN = /^[a-z0-9_]+$/;
 // Blocks are stored as sent apart from their inline HTML, including base64
 // images, so the cap is generous
@@ -87,7 +87,7 @@ export function normalizeBlocks(input) {
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId */
-export function fetchWorkspace(sql, userId) {
+function fetchWorkspace(sql, userId) {
   return Promise.all([
     sql`
       SELECT f.id, f.parent_id, f.title, f.emoji, f.created_at
@@ -105,7 +105,7 @@ export function fetchWorkspace(sql, userId) {
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string} id */
-export function fetchDocument(sql, userId, id) {
+function fetchDocument(sql, userId, id) {
   return sql`
     SELECT d.id, d.folder_id, d.title, d.emoji, d.starred, d.tags, d.blocks,
            d.created_at, d.updated_at
@@ -115,7 +115,7 @@ export function fetchDocument(sql, userId, id) {
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId */
-export function fetchTemplates(sql, userId) {
+function fetchTemplates(sql, userId) {
   return sql`
     SELECT t.id, t.title, t.emoji, t.created_at, t.updated_at
     FROM document_templates t
@@ -125,7 +125,7 @@ export function fetchTemplates(sql, userId) {
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {string} id */
-export function fetchTemplate(sql, userId, id) {
+function fetchTemplate(sql, userId, id) {
   return sql`
     SELECT t.id, t.title, t.emoji, t.blocks, t.created_at, t.updated_at
     FROM document_templates t

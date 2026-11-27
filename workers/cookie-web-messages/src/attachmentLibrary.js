@@ -39,7 +39,7 @@ const DIRECTIONS = new Set(['received', 'sent']);
  *   cursor: {sentAt: string, id: string} | null,
  * }} options
  */
-export function fetchAttachmentPage(sql, userId, { direction, includeEmbedded, cursor }) {
+function fetchAttachmentPage(sql, userId, { direction, includeEmbedded, cursor }) {
   return sql`
     SELECT a.id, a.filename, a.content_type, a.size_bytes,
            (a.blob_url IS NOT NULL) AS downloadable,

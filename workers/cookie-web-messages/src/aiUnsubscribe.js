@@ -28,7 +28,7 @@ import { requestPublicHttps } from '../../../shared/safe-https.js';
 import { parseOutputJson, requestResponses } from '../../../shared/openai.js';
 // End-to-end budget for one attempt. The SPA's own fetch timeout is slightly
 // longer so the server verdict, not a client abort, decides the outcome.
-export const AI_UNSUBSCRIBE_TIMEOUT_MS = 180_000;
+const AI_UNSUBSCRIBE_TIMEOUT_MS = 180_000;
 
 const DEFAULT_MODEL = 'gpt-6-luna';
 

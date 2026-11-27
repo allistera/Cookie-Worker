@@ -182,7 +182,7 @@ export function markdownToBlocks(markdown, maxBlocks = MAX_BLOCKS) {
  * @param {string} apiKey
  * @param {string} model
  */
-export async function generateDocument(instruction, apiKey, model) {
+async function generateDocument(instruction, apiKey, model) {
   return requestAiJson(
     {
       apiKey,

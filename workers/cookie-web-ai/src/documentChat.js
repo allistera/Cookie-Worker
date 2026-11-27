@@ -11,7 +11,7 @@ const MAX_CONTEXT_CHARS = 250_000;
 // up to 16k each could add ~190k more. Older turns matter least once the
 // current draft is in context, so only the most recent turns that fit this
 // budget are sent.
-export const MAX_HISTORY_CHARS = 32_000;
+const MAX_HISTORY_CHARS = 32_000;
 // Lower than the shared 'ai' quota (10/min): each call is a much larger
 // prompt to a bigger model with medium reasoning.
 export const DOCUMENT_CHAT_RATE_LIMIT = { limit: 4, windowMs: 60_000 };
@@ -90,7 +90,7 @@ export function validateChat(body) {
 /** The newest turns whose combined content fits MAX_HISTORY_CHARS.
  * @param {{role: string, content: string}[]} history
  */
-export function recentHistory(history) {
+function recentHistory(history) {
   let start = history.length;
   let total = 0;
   while (start > 0 && total + history[start - 1].content.length <= MAX_HISTORY_CHARS) {

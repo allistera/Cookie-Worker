@@ -7,7 +7,7 @@ import { captureHandledException } from './sentry.js';
 // backlog, or when someone drops their retention from a year to a week, and
 // spreads that over several ticks.
 export const PURGE_LIMIT = 500;
-export const DEFAULT_SPAM_RETENTION_DAYS = 30;
+const DEFAULT_SPAM_RETENTION_DAYS = 30;
 
 /**
  * Soft-deletes spam and blocked mail that has sat in its folder longer than

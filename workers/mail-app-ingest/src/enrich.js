@@ -8,16 +8,16 @@ export const AI_FETCH_TIMEOUT_MS = 60_000;
 export const AI_MODEL = 'gpt-6-luna';
 export const PROMPT_VERSION = 'email-enrichment-v6';
 export const SPAM_THRESHOLD = 0.98;
-export const REVIEW_THRESHOLD = 0.8;
-export const CLASSIFICATION_INPUT_CAP = 12_000;
+const REVIEW_THRESHOLD = 0.8;
+const CLASSIFICATION_INPUT_CAP = 12_000;
 // The classification JSON is short, but a reasoning model spends output tokens
 // on reasoning before it writes any. At 600 a run could use the whole
 // allowance on reasoning and come back `incomplete` with no JSON at all
 // (Sentry COOKIE-WEB-1Y), so leave reasoning room as the thread summaries do.
 // This is a ceiling, not a spend: a typical run costs what it did before.
 export const CLASSIFICATION_MAX_OUTPUT_TOKENS = 2_000;
-export const AI_ATTEMPTS = 3;
-export const AI_RETRY_BASE_DELAY_MS = 500;
+const AI_ATTEMPTS = 3;
+const AI_RETRY_BASE_DELAY_MS = 500;
 // Failed enrichments the recovery sweep retries before leaving the row
 // failed for good. Each run spends a slot of the shared inbound AI budget, so
 // a message that always fails must not keep starving new mail.
@@ -30,7 +30,7 @@ export const MAX_ENRICHMENT_ATTEMPTS = 3;
 // month was accepted. The refusal therefore lasts as long as the email
 // invocation does, and the recovery cron, which no sender triggers, gets
 // through.
-export const BLOCKED_REGION_CODE = 'unsupported_country_region_territory';
+const BLOCKED_REGION_CODE = 'unsupported_country_region_territory';
 
 /**
  * @param {unknown} error
@@ -51,7 +51,7 @@ export function isBlockedRegionError(error) {
  * @param {unknown} error
  * @returns {boolean}
  */
-export function isTransientOpenAiError(error) {
+function isTransientOpenAiError(error) {
   if (error instanceof ResponsesApiError) {
     return error.status === 408 || error.status === 429 || error.status >= 500;
   }
@@ -141,7 +141,7 @@ function enrichmentSchema(categories) {
 }
 
 // AI labels and AI rules share one confidence bar.
-export const MATCH_THRESHOLD = 0.7;
+const MATCH_THRESHOLD = 0.7;
 
 /**
  * @typedef {{id: string, prompt: string, action: string, label_id: string | null}} AiRule

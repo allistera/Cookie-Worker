@@ -1,6 +1,6 @@
 import { ApiError } from './api.js';
 
-export const TEXT_LIMIT = 20_000;
+const TEXT_LIMIT = 20_000;
 
 export class ToolInputError extends Error {
   /** @param {string} message */

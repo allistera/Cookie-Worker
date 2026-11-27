@@ -23,12 +23,12 @@ import {
 } from './deliveryLedger.js';
 
 const SNIPPET_LENGTH = 100;
-export const MAX_OUTBOUND_RECIPIENTS = 20;
-export const MAX_OUTBOUND_SUBJECT_BYTES = 998;
-export const MAX_OUTBOUND_TEXT_BYTES = 100_000;
-export const MAX_OUTBOUND_HTML_BYTES = 200_000;
-export const MAX_OUTBOUND_TOTAL_BYTES = 256_000;
-export const MAX_OUTBOUND_ATTACHMENTS = 20;
+const MAX_OUTBOUND_RECIPIENTS = 20;
+const MAX_OUTBOUND_SUBJECT_BYTES = 998;
+const MAX_OUTBOUND_TEXT_BYTES = 100_000;
+const MAX_OUTBOUND_HTML_BYTES = 200_000;
+const MAX_OUTBOUND_TOTAL_BYTES = 256_000;
+const MAX_OUTBOUND_ATTACHMENTS = 20;
 // Resend's 40 MB ceiling is measured after Base64 encoding, and Workers need
 // headroom while converting streamed bytes into a provider-safe Base64 string.
 export const MAX_OUTBOUND_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -340,7 +340,7 @@ export function parseFollowUpAt(value, after = Date.now()) {
  * @param {string[]} attachmentIds
  */
 /** @param {unknown} err */
-export function isUndefinedOutboundAttachmentsTable(err) {
+function isUndefinedOutboundAttachmentsTable(err) {
   const error = /** @type {{code?: string, message?: string}} */ (err);
   return error?.code === '42P01' && /outbound_attachments/i.test(String(error.message ?? ''));
 }

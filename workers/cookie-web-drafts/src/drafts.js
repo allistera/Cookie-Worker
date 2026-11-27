@@ -20,7 +20,7 @@ const MAX_HTML_BYTES = 200_000;
 const MAX_TOTAL_BYTES = 256_000;
 const MAX_ATTACHMENTS = 20;
 // Autosave means a runaway client could otherwise mint rows forever.
-export const MAX_DRAFTS_PER_USER = 200;
+const MAX_DRAFTS_PER_USER = 200;
 
 const encoder = new TextEncoder();
 
@@ -185,7 +185,7 @@ function sameIds(stored, requested) {
  * @param {unknown} value
  * @returns {{expected: string | null, invalid?: undefined} | {invalid: true, expected?: undefined}}
  */
-export function parseExpectedUpdatedAt(value) {
+function parseExpectedUpdatedAt(value) {
   if (value === undefined || value === null) return { expected: null };
   if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) return { invalid: true };
   return { expected: new Date(value).toISOString() };

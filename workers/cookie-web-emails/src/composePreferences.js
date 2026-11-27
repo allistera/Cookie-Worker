@@ -18,7 +18,7 @@ const NO_STORE = { 'Cache-Control': 'private, no-store' };
 /** @typedef {{revision: number, signatureHtml: string, snippets: {id: string, name: string, html: string}[]}} ComposePreferencesInput */
 
 /** @param {unknown} stored */
-export function parseComposePreferences(stored) {
+function parseComposePreferences(stored) {
   const value = /** @type {Record<string, any>} */ (
     stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
   );

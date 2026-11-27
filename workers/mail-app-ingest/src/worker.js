@@ -33,7 +33,7 @@ import { emailAlreadyStored, storeEmail } from './store.js';
 
 import { configureOpenAi } from '../../../shared/openai.js';
 
-export const STORE_BUDGET_MS = 5000;
+const STORE_BUDGET_MS = 5000;
 export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 // Rows one recovery tick enriches, concurrently. Each still claims a slot of
 // the shared inbound AI budget (exhaustion defers without spending an
@@ -41,8 +41,8 @@ export const MAX_PARSE_BYTES = 10 * 1024 * 1024;
 export const RECOVERY_BATCH_SIZE = 10;
 // One stable Sentry cron monitor per schedule. Sentry creates each monitor from
 // its schedule on the first check-in, then reports a missed or failed run.
-export const SWEEPS_MONITOR = { slug: 'mail-app-ingest-sweeps', schedule: '*/15 * * * *' };
-export const WORKSPACE_SWEEP_MONITOR = {
+const SWEEPS_MONITOR = { slug: 'mail-app-ingest-sweeps', schedule: '*/15 * * * *' };
+const WORKSPACE_SWEEP_MONITOR = {
   slug: 'mail-app-ingest-workspace-search-drift',
   schedule: WORKSPACE_SWEEP_CRON,
 };
@@ -640,7 +640,7 @@ const PERMANENT_FORWARD_ERRORS = [
  *
  * @param {unknown} err
  */
-export function isSenderCausedForwardError(err) {
+function isSenderCausedForwardError(err) {
   const text = err instanceof Error ? err.message : String(err);
   return UNAUTHENTICATED_SENDER_ERROR.test(text) || UNSOLICITED_MAIL_ERROR.test(text);
 }

@@ -20,10 +20,10 @@ const MAX_DIVIDER_TEXT_LENGTH = 120;
 // priority". Mirrors the CHECK on task_items.priority (migration 0058).
 const MIN_PRIORITY = 1;
 const MAX_PRIORITY = 4;
-export const DEFAULT_PRIORITY = MAX_PRIORITY;
+const DEFAULT_PRIORITY = MAX_PRIORITY;
 // The estimate a new task gets when the request does not mention one. An
 // explicit null still creates the task with no estimate.
-export const DEFAULT_DURATION_MINUTES = 30;
+const DEFAULT_DURATION_MINUTES = 30;
 // A row is a task, or a divider: a rule dropped between tasks to group them
 // (migration 0064). A divider carries at most a short heading; it has no
 // date, parent or sub-tasks, and beyond its text it only takes its place in
@@ -50,7 +50,7 @@ export function isCalendarDate(value) {
  *
  * @param {any} value
  */
-export function isPriority(value) {
+function isPriority(value) {
   return Number.isInteger(value) && value >= MIN_PRIORITY && value <= MAX_PRIORITY;
 }
 
@@ -177,7 +177,7 @@ export async function getTaskItems(sql, userId, url) {
 // The calendar asks for a little more than it shows (padding around the
 // visible weeks), so a hundred days covers a month view comfortably while
 // keeping the read bounded.
-export const MAX_CALENDAR_WINDOW_DAYS = 100;
+const MAX_CALENDAR_WINDOW_DAYS = 100;
 
 /**
  * GET /task-items?view=calendar&from=YYYY-MM-DD&to=YYYY-MM-DD — every open
@@ -727,11 +727,11 @@ async function updateTaskItemUnlocked(sql, userId, body, env) {
   return Response.json({ item });
 }
 
-export const MAX_REORDER_IDS = 500;
+const MAX_REORDER_IDS = 500;
 // How far apart two rows that shared a position are pushed. Positions are
 // epoch seconds (migration 0062) or small integers from an earlier renumber,
 // so a thousandth never crosses a neighbour outside the reordered set.
-export const POSITION_TIE_STEP = 0.001;
+const POSITION_TIE_STEP = 0.001;
 
 /**
  * The position values a set of rows will carry after being re-arranged: the
@@ -742,7 +742,7 @@ export const POSITION_TIE_STEP = 0.001;
  *
  * @param {{position: number}[]} rows in their current order
  */
-export function dealtPositions(rows) {
+function dealtPositions(rows) {
   const slots = rows.map((row) => Number(row.position)).sort((a, b) => a - b);
   for (let i = 1; i < slots.length; i += 1) {
     if (slots[i] <= slots[i - 1]) slots[i] = slots[i - 1] + POSITION_TIE_STEP;

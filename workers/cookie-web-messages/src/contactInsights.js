@@ -56,7 +56,7 @@ function linkedinUrl(value) {
   return url.toString();
 }
 
-export function fetchContactProfile(sql, userId, address) {
+function fetchContactProfile(sql, userId, address) {
   return sql`
     SELECT c.name, i.company, i.role, i.linkedin_url, i.notes
     FROM (SELECT ${address}::text AS address) requested
@@ -71,7 +71,7 @@ export function fetchContactProfile(sql, userId, address) {
 // is_sent) so the received side can use the user/sent_at index on its own,
 // and the recipients jsonb expansion only runs over the caller's sent rows.
 // Each branch is ordered and limited before the outer merge.
-export function fetchContactHistory(sql, userId, address, limit, before) {
+function fetchContactHistory(sql, userId, address, limit, before) {
   const beforeSentAt = before?.sentAt ?? null;
   const beforeId = before?.id ?? null;
   return sql`

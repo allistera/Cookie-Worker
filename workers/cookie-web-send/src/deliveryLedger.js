@@ -1,7 +1,7 @@
 // Provider delivery and local history are separate durable outcomes. No
 // transaction spans network I/O, and every retry uses the first frozen payload.
-export const DELIVERY_LEASE_MS = 120_000;
-export const DELIVERY_MAX_ATTEMPTS = 5;
+const DELIVERY_LEASE_MS = 120_000;
+const DELIVERY_MAX_ATTEMPTS = 5;
 
 export class DeliveryError extends Error {
   /** @param {string} code */

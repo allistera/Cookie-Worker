@@ -1,8 +1,8 @@
 import PostalMime from 'postal-mime';
 import { syntheticMessageId } from './synthetic-id.js';
 
-export const BODY_CAP_BYTES = 512 * 1024;
-export const SNIPPET_LENGTH = 100;
+const BODY_CAP_BYTES = 512 * 1024;
+const SNIPPET_LENGTH = 100;
 export const MAX_HEADERS = 100;
 // Headers past MAX_HEADERS that out-of-office suppression (shared/outOfOffice.js
 // autoReplySuppression) reads from the stored copy. Dropping them would let an
@@ -28,21 +28,21 @@ export const MAX_HEADER_VALUE = 2048;
 // cut URL does not work, so these two headers get a larger cap of their own.
 export const MAX_UNSUBSCRIBE_HEADER_VALUE = 16 * 1024;
 const UNSUBSCRIBE_HEADERS = new Set(['list-unsubscribe', 'list-unsubscribe-post']);
-export const MAX_ATTACHMENTS_META = 100;
-export const MAX_REFERENCES = 50;
+const MAX_ATTACHMENTS_META = 100;
+const MAX_REFERENCES = 50;
 export const MAX_MESSAGE_ID = 998;
 export const MAX_FUTURE_MS = 24 * 60 * 60 * 1000;
 // Decoded-metadata bounds. The 10 MiB raw cap and per-header caps don't bound
 // MIME-decoded fields (an encoded-word Subject or a huge To list expands after
 // header truncation), so every decoded field gets its own conservative cap
 // before storage or indexing.
-export const MAX_SUBJECT_BYTES = 2048;
-export const MAX_ADDRESS_CHARS = 320;
-export const MAX_ADDRESS_NAME_CHARS = 256;
-export const MAX_ADDRESSES_PER_FIELD = 100;
-export const MAX_ADDRESS_GROUP_DEPTH = 5;
-export const MAX_FILENAME_CHARS = 255;
-export const MAX_MIME_TYPE_CHARS = 255;
+const MAX_SUBJECT_BYTES = 2048;
+const MAX_ADDRESS_CHARS = 320;
+const MAX_ADDRESS_NAME_CHARS = 256;
+const MAX_ADDRESSES_PER_FIELD = 100;
+const MAX_ADDRESS_GROUP_DEPTH = 5;
+const MAX_FILENAME_CHARS = 255;
+const MAX_MIME_TYPE_CHARS = 255;
 
 // PostalMime allocates a node per boundary delimiter line, so a small raw
 // message packed with boundary lines ("--b\n" repeated) can build an enormous
@@ -50,7 +50,7 @@ export const MAX_MIME_TYPE_CHARS = 255;
 // built. Real messages have at most a few dozen boundary lines; the scan
 // over-counts (any body line starting "--" matches) but never under-counts,
 // which is the safe direction for an admission bound.
-export const MAX_MIME_BOUNDARY_LINES = 2000;
+const MAX_MIME_BOUNDARY_LINES = 2000;
 
 export class MimePartLimitError extends Error {
   /** @param {number} boundaryLines */
@@ -84,7 +84,7 @@ async function materializeRaw(raw) {
  *
  * @param {string | ArrayBuffer | Uint8Array} raw
  */
-export function countBoundaryLines(raw) {
+function countBoundaryLines(raw) {
   const bytes =
     typeof raw === 'string'
       ? encoder.encode(raw)
@@ -168,7 +168,7 @@ export async function parseEmail(message) {
  * @param {unknown} value
  * @returns {string}
  */
-export function stripNul(value) {
+function stripNul(value) {
   return String(value ?? '').replaceAll('\0', '');
 }
 
@@ -206,7 +206,7 @@ function trimTrailingReplacement(text) {
  *
  * @param {number} rawSize
  */
-export function truncationNotice(rawSize) {
+function truncationNotice(rawSize) {
   return `[Cookie: this message was too large to store in full. Only its first ${formatSize(BODY_CAP_BYTES)} of text is kept; the full message is ${formatSize(rawSize)}. Open it in your mailbox for the rest.]`;
 }
 

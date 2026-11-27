@@ -80,7 +80,7 @@ export function createSentryOptions({ service, env, trigger, beforeSend }) {
 // Sentry tag carrying the SQLSTATE or driver code of a database failure, so
 // issues can be filtered and alerted on by class (08 connection, 53
 // resources, 57014 statement timeout, 40P01 deadlock) without opening them.
-export const DB_ERROR_TAG = 'db.error_code';
+const DB_ERROR_TAG = 'db.error_code';
 
 // postgres.js raises these itself when the socket never came up or dropped.
 const DRIVER_ERROR_CODES = new Set([
@@ -117,7 +117,7 @@ const LOCAL_DEV_BUNDLE = /[\\/]\.wrangler[\\/]tmp[\\/]/u;
  *
  * @param {import('@sentry/core').ErrorEvent} event
  */
-export function isLocalDevEvent(event) {
+function isLocalDevEvent(event) {
   return Boolean(
     event.exception?.values?.some((value) =>
       value.stacktrace?.frames?.some(

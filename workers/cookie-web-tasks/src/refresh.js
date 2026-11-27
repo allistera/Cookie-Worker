@@ -7,7 +7,7 @@ import { allowRequest } from '../../../shared/rate-limit.js';
 
 // A triage and news rebuild is bounded but not free: cap it well below what a
 // held-down button could manage.
-export const RATE_LIMIT = { limit: 4, windowMs: 60_000 };
+const RATE_LIMIT = { limit: 4, windowMs: 60_000 };
 
 // The data-enricher may make two bounded 60-second triage attempts, beside its
 // news source fetch (15 seconds) and ranking (60 seconds). The two run

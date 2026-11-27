@@ -60,8 +60,8 @@ import { pushPendingCompletions } from './todoistPush.js';
 
 export const DEFAULT_TIME_ZONE = 'Europe/London';
 // The hourly cron runs the sync at these local hours, inclusive.
-export const SYNC_START_HOUR = 7;
-export const SYNC_END_HOUR = 20;
+const SYNC_START_HOUR = 7;
+const SYNC_END_HOUR = 20;
 export const SECTION_PREFIX = 'section:';
 // How far back the first run (or one after a long gap) looks for completions
 // of tasks it still holds open.
@@ -72,7 +72,7 @@ const COMPLETED_OVERLAP_MS = 60 * 60 * 1000;
 // Todoist refuses a completed-tasks window wider than three months, so after
 // a longer pause the window starts this far before its end instead of at the
 // old cursor (a day under the limit, whatever the months' lengths).
-export const COMPLETED_MAX_WINDOW_MS = 89 * 24 * 60 * 60 * 1000;
+const COMPLETED_MAX_WINDOW_MS = 89 * 24 * 60 * 60 * 1000;
 const MAX_CONTENT_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 10000;
 const MAX_DIVIDER_TEXT_LENGTH = 120;

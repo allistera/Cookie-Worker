@@ -30,7 +30,7 @@ import {
 } from './googleAuth.js';
 
 export const GOOGLE_API_URL = 'https://www.googleapis.com/calendar/v3';
-export const GOOGLE_ID_PREFIX = 'google:';
+const GOOGLE_ID_PREFIX = 'google:';
 const DEFAULT_CALENDAR_COLOR = '#4285f4';
 const API_TIMEOUT_MS = 15_000;
 const PAGE_SIZE = 250;
@@ -57,7 +57,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const REAUTH_MESSAGE = 'Google Calendar needs to be reconnected in Settings.';
 const NO_GOOGLE_EVENTS = Object.freeze({ events: [], error: null, truncated: false });
 
-export class GoogleApiError extends Error {
+class GoogleApiError extends Error {
   /**
    * @param {number} status
    * @param {string} message
@@ -316,7 +316,7 @@ const eventPath = (calendarId, eventId) =>
  * @param {Client} client
  * @returns {Promise<SelectedGoogleCalendar[]>}
  */
-export async function fetchCalendarList(client) {
+async function fetchCalendarList(client) {
   /** @type {SelectedGoogleCalendar[]} */
   const calendars = [];
   let pageToken = null;
@@ -541,7 +541,7 @@ export function googleCalendarEntries(connection) {
 // Event writes
 
 /** @param {unknown} error */
-export function googleErrorResponse(error) {
+function googleErrorResponse(error) {
   if (error instanceof GoogleReauthRequired) {
     return Response.json(
       {

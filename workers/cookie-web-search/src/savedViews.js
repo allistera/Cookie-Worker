@@ -83,7 +83,7 @@ export function savedQueryError(query) {
 }
 
 /** @param {unknown} stored */
-export function parseSavedViews(stored) {
+function parseSavedViews(stored) {
   const value = /** @type {Record<string, any>} */ (
     stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
   );

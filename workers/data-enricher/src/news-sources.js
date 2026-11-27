@@ -4,14 +4,13 @@ import { fetchWithTimeout, readTextCapped } from '../../../shared/fetch.js';
 // allistera/daily-news Python project. Each returns plain
 // {title, url, description, meta} items; ranking happens in news.js.
 
-export const GITHUB_SEARCH_URL = 'https://api.github.com/search/repositories';
-export const PRODUCT_HUNT_URL = 'https://api.producthunt.com/v2/api/graphql';
-export const BBC_UK_FEED_URL = 'https://feeds.bbci.co.uk/news/uk/rss.xml';
-export const WEST_LOTHIAN_FEED_URL =
-  'https://www.edinburghlive.co.uk/all-about/west-lothian?service=rss';
+const GITHUB_SEARCH_URL = 'https://api.github.com/search/repositories';
+const PRODUCT_HUNT_URL = 'https://api.producthunt.com/v2/api/graphql';
+const BBC_UK_FEED_URL = 'https://feeds.bbci.co.uk/news/uk/rss.xml';
+const WEST_LOTHIAN_FEED_URL = 'https://www.edinburghlive.co.uk/all-about/west-lothian?service=rss';
 // The feeds are currently well under 100KB; 5MB means something is very wrong upstream.
 const MAX_FEED_BYTES = 5 * 1024 * 1024;
-export const USER_AGENT = 'cookie-data-enricher';
+const USER_AGENT = 'cookie-data-enricher';
 
 /**
  * Minutes Europe/London is ahead of UTC at `date` (60 under BST, 0 under GMT).

@@ -9,7 +9,7 @@ import { toMarkdown } from 'mdast-util-to-markdown';
 
 // Where the blog keeps its articles. Plain `.md`, not `.mdx`: converted prose
 // may hold `{` or `<`, which MDX would read as code.
-export const CONTENT_DIRECTORY = 'src/content/blog';
+const CONTENT_DIRECTORY = 'src/content/blog';
 export const MAX_SLUG_LENGTH = 80;
 export const MAX_DESCRIPTION_LENGTH = 160;
 

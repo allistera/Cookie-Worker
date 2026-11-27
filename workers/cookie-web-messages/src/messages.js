@@ -95,7 +95,7 @@ export function fetchOwnedMessageBody(sql, id, userId) {
   `;
 }
 
-export const MAX_THREAD_MESSAGES = 50;
+const MAX_THREAD_MESSAGES = 50;
 
 /**
  * A message's attachments, ordered by filename. The private Blob URL never
@@ -128,7 +128,7 @@ export function fetchMessageAttachments(sql, messageId) {
  * @param {string} id
  * @param {string} userId
  */
-export function fetchOwnedAttachment(sql, id, userId) {
+function fetchOwnedAttachment(sql, id, userId) {
   return sql`
     SELECT a.filename, a.content_type, a.blob_url
     FROM attachments a

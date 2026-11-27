@@ -103,7 +103,7 @@ function cleanLabelName(value) {
  * @param {unknown} stored
  * @returns {{revision: number, filters: TaskFilter[]}}
  */
-export function parseTaskFilters(stored) {
+function parseTaskFilters(stored) {
   const value = /** @type {Record<string, any>} */ (
     stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
   );

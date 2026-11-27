@@ -88,7 +88,7 @@ export function blocksToText(blocks) {
 
 const BLOCKS_LIMIT = 100_000;
 const EMBEDDED_DATA_LIMIT = 200;
-export const EMBEDDED_DATA_OMITTED = '[embedded data omitted]';
+const EMBEDDED_DATA_OMITTED = '[embedded data omitted]';
 
 /**
  * Raw blocks sized for an agent's context. Documents hold up to 4 MiB of
