@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { stubPublicDns } from './helpers.js';
 
 // Routing/CORS/auth wiring is what this file tests — the business logic
 // (notificationEvents.js) already has its own unit tests against a mock sql,
@@ -264,7 +265,7 @@ describe('routing', () => {
       { server_url: 'https://ntfy.sh', topic: 'cookie-user-topic', access_token_encrypted: null },
     ]);
     const ntfyFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
-    vi.stubGlobal('fetch', ntfyFetch);
+    stubPublicDns(ntfyFetch);
 
     const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
 
@@ -276,7 +277,7 @@ describe('routing', () => {
   test('POST /ntfy/test never falls back to the public ntfy service', async () => {
     mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
     const ntfyFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
-    vi.stubGlobal('fetch', ntfyFetch);
+    stubPublicDns(ntfyFetch);
 
     await worker.fetch(
       request('/ntfy/test', { method: 'POST' }),
@@ -304,7 +305,7 @@ describe('routing', () => {
       .mockResolvedValue(
         new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
       );
-    vi.stubGlobal('fetch', ntfyFetch);
+    stubPublicDns(ntfyFetch);
 
     const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
 
@@ -319,8 +320,7 @@ describe('routing', () => {
 
   test('POST /ntfy/test reports an exhausted upstream outage as retryable', async () => {
     mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
-    vi.stubGlobal(
-      'fetch',
+    stubPublicDns(
       vi
         .fn()
         .mockResolvedValue(
@@ -337,7 +337,7 @@ describe('routing', () => {
 
   test('POST /ntfy/test reports a non-retryable provider rejection as a bad gateway', async () => {
     mockQuery.mockResolvedValueOnce([{ topic: 'cookie-user-topic' }]);
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('rejected', { status: 400 })));
+    stubPublicDns(vi.fn().mockResolvedValue(new Response('rejected', { status: 400 })));
 
     const response = await worker.fetch(request('/ntfy/test', { method: 'POST' }), env, ctx);
 

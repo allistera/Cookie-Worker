@@ -26,3 +26,27 @@ export function createMockSql(results = []) {
   sql.calls = calls;
   return sql;
 }
+
+/**
+ * Stubs global fetch so shared/safe-https.js's DNS-over-HTTPS lookups see
+ * one address (public by default) and every other request goes to `target`.
+ *
+ * @param {(input: RequestInfo | URL, init?: RequestInit) => unknown} [target]
+ * @param {string} [address]
+ */
+export function stubPublicDns(target = () => new Response(null, { status: 200 }), address) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (/** @type {RequestInfo | URL} */ input, /** @type {RequestInit} */ init) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'cloudflare-dns.com') {
+        const type = url.searchParams.get('type');
+        return Response.json({
+          Status: 0,
+          Answer: type === 'A' ? [{ type: 1, data: address ?? '93.184.216.34' }] : [],
+        });
+      }
+      return target(input, init);
+    }),
+  );
+}
