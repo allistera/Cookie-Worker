@@ -289,3 +289,27 @@ describe('requestPublicHttps bodies', () => {
     );
   });
 });
+
+describe('requestPublicHttps timeout', () => {
+  test('aborts a request that outlives timeoutMs', async () => {
+    stubPublicTarget(() => new Response('unused'));
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(
+        (/** @type {any} */ _url, /** @type {RequestInit} */ init) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+          }),
+      );
+      const request = requestPublicHttps('https://x.example/u', {
+        timeoutMs: 1000,
+        fetchImpl: /** @type {any} */ (fetchImpl),
+      });
+      const failure = expect(request).rejects.toMatchObject({ name: 'TimeoutError' });
+      await vi.advanceTimersByTimeAsync(1000);
+      await failure;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
