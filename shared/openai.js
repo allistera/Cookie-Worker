@@ -105,9 +105,11 @@ export class ResponsesApiError extends Error {
 
 /**
  * OpenAI's machine-readable error code, without any of the body's prose. A
- * body that is not JSON or has no usable code gives null.
+ * bare 403 can mean a revoked key or a request OpenAI places in a region it
+ * does not serve (Sentry COOKIE-WEB-1C), and only the code says which.
  *
  * @param {Response} response
+ * @returns {Promise<string | null>}
  */
 export async function openAiErrorCode(response) {
   try {
