@@ -44,6 +44,7 @@ import { captureHandledException, createSentryOptions } from './sentry.js';
 import { sendAutoReply, USER_SEND_PROVIDER_TIMEOUT_MS } from './autoReplyProvider.js';
 import { DeliveryError, findDelivery } from './deliveryLedger.js';
 import { consumeSendConfirmation, createSendConfirmation } from './sendConfirmation.js';
+import { sendErrorResponse } from './sendErrorContract.js';
 import { internalCaller } from '../../../shared/internal-identity.js';
 
 // Names the single ScheduledSendClock instance (see scheduledSendClock.js).
@@ -165,22 +166,9 @@ export function createSendServices(env, ctx) {
 /** @param {unknown} error */
 export function deliveryErrorResponse(error) {
   if (!(error instanceof DeliveryError)) return null;
-  // The provider refused this exact message: retrying it unchanged replays
-  // the refusal, so it is a client error with no retry hint.
-  if (error.code === 'DELIVERY_REJECTED') {
-    return Response.json({ error: error.message, code: error.code }, { status: 422 });
-  }
-  const status = [
-    'DELIVERY_UNCERTAIN',
-    'DELIVERY_CONFLICT',
-    'DELIVERY_REQUEST_ID_REQUIRED',
-  ].includes(error.code)
-    ? 409
-    : 503;
-  return Response.json(
-    { error: error.message, code: error.code },
-    { status, headers: { 'Retry-After': '5' } },
-  );
+  // Status and retry hint come from the send error contract, so a client's
+  // rule for releasing a draft and the Worker's status cannot drift apart.
+  return sendErrorResponse(error.code, error.message);
 }
 
 /** @param {import('./sentry.js').SendEnv} env */
@@ -327,12 +315,9 @@ async function handleSend(sql, userId, request, services) {
       return Response.json({ scheduledSend }, { status: replayed ? 200 : 201 });
     } catch (err) {
       if (/** @type {{code?: string}} */ (err).code === 'IDEMPOTENCY_CONFLICT')
-        return Response.json(
-          {
-            error: 'Request id already used for a different scheduled email',
-            code: 'DELIVERY_CONFLICT',
-          },
-          { status: 409 },
+        return sendErrorResponse(
+          'DELIVERY_CONFLICT',
+          'Request id already used for a different scheduled email',
         );
       console.error('POST /send (schedule) failed:', err);
       return Response.json({ error: 'Failed to schedule email' }, { status: 500 });

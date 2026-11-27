@@ -6,6 +6,7 @@
 
 import { internalCaller } from '../../../shared/internal-identity.js';
 import { allowRequest } from '../../../shared/rate-limit.js';
+import { SEND_ERROR_CONTRACT } from './sendErrorContract.js';
 
 const TOKEN_RE = /^[0-9a-f]{64}$/;
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -78,7 +79,7 @@ export async function consumeSendConfirmation(sql, userId, token, requestId) {
   if (!TOKEN_RE.test(confirmation) || !REQUEST_ID_RE.test(requestId)) {
     return {
       ok: false,
-      status: 403,
+      status: SEND_ERROR_CONTRACT.SEND_CONFIRMATION_REQUIRED.status,
       error: 'A send confirmation from Cookie is required',
       code: 'SEND_CONFIRMATION_REQUIRED',
     };
@@ -98,7 +99,7 @@ export async function consumeSendConfirmation(sql, userId, token, requestId) {
     if (!row) {
       return {
         ok: false,
-        status: 403,
+        status: SEND_ERROR_CONTRACT.SEND_CONFIRMATION_REQUIRED.status,
         error: 'A send confirmation from Cookie is required',
         code: 'SEND_CONFIRMATION_REQUIRED',
       };
@@ -107,7 +108,7 @@ export async function consumeSendConfirmation(sql, userId, token, requestId) {
     if (/** @type {{code?: string}} */ (error).code === '42P01') {
       return {
         ok: false,
-        status: 503,
+        status: SEND_ERROR_CONTRACT.SEND_CONFIRMATION_UNAVAILABLE.status,
         error: 'Send confirmations are being upgraded. Try again shortly.',
         code: 'SEND_CONFIRMATION_UNAVAILABLE',
       };
