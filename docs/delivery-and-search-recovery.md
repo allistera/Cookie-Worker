@@ -24,16 +24,47 @@ content is removed from those ledger records. Account deletion cascades the
 ledger.
 
 The API returns `sentCopyPending: true` when Resend accepted the message but
-local history still needs repair. `DELIVERY_PENDING` permits retrying the same
-unchanged request. `DELIVERY_UNCERTAIN` requires operator or recipient
-confirmation; never clear its deadline or generate a new request id as an
-automatic retry. `DELIVERY_CONFLICT` means a client reused an identity for
-different content. `DELIVERY_NOT_SENT` (HTTP 503 with `Retry-After`) means the
-provider was never called; retrying the same request resumes the same delivery.
-`DELIVERY_REJECTED` (HTTP 422, no `Retry-After`) means the provider refused the
-message: the same request would be refused again, so the browser releases the
-request id and lets the draft be edited and sent anew. The browser keeps the frozen request in its account-scoped
-local recovery store until delivery is confirmed.
+local history still needs repair. The browser keeps the frozen request in its
+account-scoped local recovery store until delivery is confirmed.
+
+## Send error contract
+
+Every failure of `POST /send`, immediate or scheduled, is in this table. The
+coded rows are also `SEND_ERROR_CONTRACT` in
+`workers/cookie-web-send/src/sendErrorContract.js`, which sets their status,
+and `sendErrorContract.test.js` checks both. "Release" means the client frees
+the request id so the draft can be edited and sent anew. "Retry" keeps the
+draft locked and retries the same unchanged request. "Surface" keeps it locked
+and shows the error without retrying.
+
+| Code                            | HTTP status                                                                                  | Meaning                                                                                                                              | May have been sent                                                    | Client                                      |
+| ------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | ------------------------------------------- |
+| `DELIVERY_REJECTED`             | 422                                                                                          | The provider refused this exact message; resending it unchanged is refused again.                                                    | No                                                                    | Release                                     |
+| `DELIVERY_NOT_SENT`             | 503, `Retry-After: 5`                                                                        | The delivery is recorded but stopped before the provider was called (an attachment could not be read, or the payload slot was busy). | No, but the recorded delivery can still go out on a retry or the cron | Retry                                       |
+| `DELIVERY_PENDING`              | 503, `Retry-After: 5`; 502 from the Vercel `/api/send` proxy when the Worker does not answer | Another attempt holds the lease, or the provider gave no clear answer.                                                               | Maybe                                                                 | Retry                                       |
+| `DELIVERY_UNCERTAIN`            | 409                                                                                          | Five attempts or the 23-hour window passed without a provider answer. Needs operator or recipient confirmation.                      | Maybe                                                                 | Surface; never retry with a new request id  |
+| `DELIVERY_CONFLICT`             | 409                                                                                          | The request id was already used for different content.                                                                               | An earlier email under that id may have been                          | Surface                                     |
+| `DELIVERY_REQUEST_ID_REQUIRED`  | 409                                                                                          | A request without a request id matches a completed send older than 24 hours.                                                         | The earlier one was; this one was not                                 | Release; a new email needs a new request id |
+| `SEND_CONFIRMATION_REQUIRED`    | 403                                                                                          | An agent send or schedule has no valid confirmation for this request id.                                                             | No                                                                    | Release                                     |
+| `SEND_CONFIRMATION_UNAVAILABLE` | 503                                                                                          | The confirmation table is missing (migration not applied).                                                                           | No                                                                    | Retry later                                 |
+| none                            | 400                                                                                          | Invalid JSON, recipients, subject or body, `attachmentIds`, `sendAt` or `followUpAt`, or attachments over the size limit.            | No                                                                    | Release                                     |
+| none                            | 401                                                                                          | Missing or invalid access token.                                                                                                     | No                                                                    | Release                                     |
+| none                            | 403                                                                                          | Mailbox access is not provisioned.                                                                                                   | No                                                                    | Release                                     |
+| none                            | 404                                                                                          | Reply target or attachment not found.                                                                                                | No                                                                    | Release                                     |
+| none                            | 413 or 415                                                                                   | Body over 4.5 MB, or not JSON.                                                                                                       | No                                                                    | Release                                     |
+| none                            | 429                                                                                          | Per-minute quota (10), daily cap (300), or 50 pending scheduled sends.                                                               | No                                                                    | Release                                     |
+| none                            | 500                                                                                          | Unexpected failure while scheduling or before delivery.                                                                              | No for a schedule; a recorded immediate delivery resumes on retry     | Retry                                       |
+| none                            | 502                                                                                          | Unexpected failure in the delivery step outside the coded outcomes.                                                                  | Unlikely; a recorded delivery resumes on retry                        | Retry                                       |
+| none                            | 503                                                                                          | Sending is not configured, or the quota check failed.                                                                                | No                                                                    | Retry                                       |
+
+Only `DELIVERY_PENDING` and `DELIVERY_NOT_SENT` carry `Retry-After`. The 409
+codes must not be retried automatically, so they have none. The scheduled-send
+flush (`POST /send/flush`, cron only) maps the same codes onto the row:
+`DELIVERY_NOT_SENT` and `DELIVERY_PENDING` leave it `pending`,
+`DELIVERY_REJECTED` marks it `failed`, and `DELIVERY_UNCERTAIN` or
+`DELIVERY_CONFLICT` mark it `uncertain`.
+
+## Request ids and recovery
 
 The MCP `cookie_send_email` tool requires a caller-supplied `requestId`, reused
 for every retry and changed only for an intentional new message, and a
@@ -70,6 +101,8 @@ and `uncertain` rows. `accepted` entries remaining after consecutive cron
 passes indicate a database, attachment metadata, or sent-copy constraint issue.
 `outbound_delivery_confirmation_pending` and `outbound_sent_copy_pending` logs
 contain no payload or credentials.
+
+## Search repair
 
 Document and task search repair runs on the ingest Worker at minutes 7, 22, 37
 and 52. Each tick handles at most 25 oldest changed documents and 25 root tasks,
