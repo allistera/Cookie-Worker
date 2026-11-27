@@ -398,6 +398,34 @@ describe('PATCH /documents', () => {
     expect(sql.calls[2].text).toContain('updated_at = now()');
   });
 
+  it('stores sanitised block HTML, whoever wrote it', async () => {
+    const sql = createMockSql([
+      [{ title: 'Notes', blocks: [] }],
+      [{ id: DOC_ID, title: 'Notes', folder_id: null }],
+    ]);
+    const response = await updateDocument(
+      sql,
+      USER_ID,
+      {
+        id: DOC_ID,
+        blocks: [
+          {
+            type: 'paragraph',
+            data: { text: '<a href="javascript:x()" style="position:fixed">Hi</a><img src=x>' },
+          },
+          { type: 'list', data: { items: [{ content: '<b onclick="x()">One</b>', items: [] }] } },
+        ],
+      },
+      deps(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(sql.json).toHaveBeenCalledWith([
+      { type: 'paragraph', data: { text: '<a>Hi</a>' } },
+      { type: 'list', data: { items: [{ content: '<b>One</b>', items: [] }] } },
+    ]);
+  });
+
   it('syncs a Daily note time-range line into a linked calendar event', async () => {
     const sql = createMockSql([
       [{ title: '14-08-26', folder_id: FOLDER_ID, blocks: [] }],
