@@ -6,7 +6,7 @@ import { ensureSpamLabel } from '../../../shared/spamLabel.js';
 
 export const AI_FETCH_TIMEOUT_MS = 60_000;
 export const AI_MODEL = 'gpt-6-luna';
-export const PROMPT_VERSION = 'email-enrichment-v6';
+export const PROMPT_VERSION = 'email-enrichment-v7';
 export const SPAM_THRESHOLD = 0.98;
 const REVIEW_THRESHOLD = 0.8;
 const CLASSIFICATION_INPUT_CAP = 12_000;
@@ -16,6 +16,8 @@ const CLASSIFICATION_INPUT_CAP = 12_000;
 // (Sentry COOKIE-WEB-1Y), so leave reasoning room as the thread summaries do.
 // This is a ceiling, not a spend: a typical run costs what it did before.
 export const CLASSIFICATION_MAX_OUTPUT_TOKENS = 2_000;
+// The list preview is a sentence or two; anything longer is cut at a word.
+const PREVIEW_MAX_LENGTH = 240;
 const AI_ATTEMPTS = 3;
 const AI_RETRY_BASE_DELAY_MS = 500;
 // Failed enrichments the recovery sweep retries before leaving the row
@@ -107,6 +109,8 @@ const ENRICHMENT_SCHEMA = {
     // Whether the email is a receipt, confirmation or other transactional
     // record: these also appear in Cookie-Web's Paper Trail list.
     paper_trail: { type: 'boolean' },
+    // The line Cookie-Web's mail list shows under the subject.
+    preview: { type: 'string' },
   },
   required: [
     'labels',
@@ -116,6 +120,7 @@ const ENRICHMENT_SCHEMA = {
     'spam_reason',
     'priority',
     'paper_trail',
+    'preview',
   ],
   additionalProperties: false,
 };
@@ -142,6 +147,23 @@ function enrichmentSchema(categories) {
 
 // AI labels and AI rules share one confidence bar.
 const MATCH_THRESHOLD = 0.7;
+
+/**
+ * The model's preview as one line of bounded length, or null when it wrote
+ * none. Rendered as text by the clients, so no markup handling is needed.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+export function normalizePreview(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  if (text.length <= PREVIEW_MAX_LENGTH) return text;
+  const cut = text.slice(0, PREVIEW_MAX_LENGTH);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
 
 /**
  * @typedef {{id: string, prompt: string, action: string, label_id: string | null}} AiRule
@@ -179,7 +201,8 @@ export async function classifyEmail(
           'Mark spam only for unsolicited, deceptive, or abusive mail; legitimate newsletters and receipts are inbox mail. ' +
           'Set priority to high only when the owner should read or act on it soon: a person writing to them directly, a question or request awaiting their reply, a deadline, an appointment, money owed or due, or an account problem. ' +
           'Newsletters, promotions, unsolicited commercial cold pitches, receipts, automated notifications and social updates are low. Personalisation in a sales pitch alone does not make it high priority. Everything else is normal. ' +
-          'Set paper_trail to true only when the email is a record worth keeping of something the owner bought, paid for, booked or signed up for: a receipt, an invoice, an order, purchase, booking or payment confirmation, a refund, a shipping or delivery update, or an account statement. Promotions, newsletters, one-time codes, security alerts and mail written by a person are false. Return only the schema.',
+          'Set paper_trail to true only when the email is a record worth keeping of something the owner bought, paid for, booked or signed up for: a receipt, an invoice, an order, purchase, booking or payment confirmation, a refund, a shipping or delivery update, or an account statement. Promotions, newsletters, one-time codes, security alerts and mail written by a person are false. ' +
+          'Write preview for the mail list, where it appears under the subject: one or two short plain-text sentences, 30 words at most, in the language of the email, saying what the email tells or asks the owner that its subject line does not, such as the request, the amount, the date, the decision or the result. Do not repeat the subject, greet, name the sender or describe the email ("This email..."); state the content itself. Return an empty string when the body adds nothing to the subject. Return only the schema.',
       },
       {
         role: 'user',
@@ -207,6 +230,7 @@ export async function classifyEmail(
   }
   if (!Array.isArray(result.rules)) result.rules = [];
   result.paper_trail = result.paper_trail === true;
+  result.preview = normalizePreview(result.preview);
   return result;
 }
 
@@ -432,17 +456,17 @@ export async function enrichMessage(sql, record, messageUuid, apiKey, model = AI
       }
       await tx`
         INSERT INTO message_ai (
-          message_id, status, spam_verdict, spam_score, spam_reason,
+          message_id, status, spam_verdict, spam_score, spam_reason, preview,
           priority, provider, model, prompt_version, processed_at, updated_at
         ) VALUES (
           ${messageUuid}, 'completed', ${verdict}, ${score}, ${classification.spam_reason},
-          ${priority}, 'openai', ${model},
+          ${classification.preview}, ${priority}, 'openai', ${model},
           ${PROMPT_VERSION}, now(), now()
         )
         ON CONFLICT (message_id) DO UPDATE SET
           status = 'completed', spam_verdict = EXCLUDED.spam_verdict,
           spam_score = EXCLUDED.spam_score, spam_reason = EXCLUDED.spam_reason,
-          priority = EXCLUDED.priority,
+          preview = EXCLUDED.preview, priority = EXCLUDED.priority,
           provider = EXCLUDED.provider, model = EXCLUDED.model,
           prompt_version = EXCLUDED.prompt_version, error_code = NULL,
           processed_at = now(), updated_at = now()

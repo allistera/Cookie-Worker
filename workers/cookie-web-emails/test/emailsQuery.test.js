@@ -49,6 +49,7 @@ describe('fetchEmails', () => {
     expect(capture.query()).toContain('NOT m.is_deleted');
     expect(capture.query()).toContain('NOT m.is_archived AND NOT m.is_sent');
     expect(capture.query()).toContain('ai.status AS ai_status');
+    expect(capture.query()).toContain('ai.preview AS ai_preview');
     expect(capture.query()).toContain('LIMIT ?');
   });
   test.each([
@@ -140,7 +141,7 @@ describe('fetchEmails', () => {
     expect(capture.query()).toContain('m.scheduled_for > now()');
     expect(capture.query()).not.toContain("? = 'snoozed'");
     expect(capture.query()).toContain(
-      'GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, ai.status, ai.enrichment_attempts, c.id',
+      'GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, ai.status, ai.enrichment_attempts, ai.preview, c.id',
     );
   });
 

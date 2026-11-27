@@ -11,6 +11,7 @@ import {
   classifyEmail,
   enrichMessage,
   isBlockedRegionError,
+  normalizePreview,
   PROMPT_VERSION,
   SPAM_THRESHOLD,
 } from '../src/enrich.js';
@@ -68,8 +69,11 @@ describe('AI enrichment', () => {
     expect(request.input[0].content).toContain('Set paper_trail to true only when');
     expect(request.text.format.schema.properties.paper_trail).toEqual({ type: 'boolean' });
     expect(request.text.format.schema.required).toContain('paper_trail');
-    // Summaries are user-requested through Cookie-Web's reader; enrichment
-    // must not ask the model for one.
+    expect(request.input[0].content).toContain('Write preview for the mail list');
+    expect(request.text.format.schema.properties.preview).toEqual({ type: 'string' });
+    expect(request.text.format.schema.required).toContain('preview');
+    // Thread summaries are user-requested through Cookie-Web's reader;
+    // enrichment asks only for the short list preview.
     expect(request.text.format.schema.properties).not.toHaveProperty('summary');
     expect(request.text.format.schema.required).not.toContain('summary');
     expect(timeout).toHaveBeenCalledWith(expect.any(Function), AI_FETCH_TIMEOUT_MS);
@@ -424,6 +428,43 @@ describe('AI enrichment', () => {
     // Paper Trail is a second place to find the message, not a move.
     const statements = sql.transactions[0].map((query) => query.text).join('\n');
     expect(statements).not.toContain('is_archived = true');
+  });
+
+  test('stores the preview the model wrote with the classification', async () => {
+    const sql = createMockSql();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          output_text: JSON.stringify(
+            responseResult({ preview: '  Dinner moved to 8pm on Friday.\nCan you still come? ' }),
+          ),
+        }),
+      })),
+    );
+
+    await enrichMessage(
+      sql,
+      { messageId: '<id>', fromAddress: 'sam@example.com', subject: 'Friday', bodyText: 'Body' },
+      'message-1',
+      'key',
+    );
+
+    const upsert = sql.transactions[0].find((query) =>
+      query.text.includes('INSERT INTO message_ai'),
+    );
+    expect(upsert.text).toContain('preview = EXCLUDED.preview');
+    expect(upsert.values).toContain('Dinner moved to 8pm on Friday. Can you still come?');
+  });
+
+  test('keeps a preview to one bounded line and stores none when the model wrote none', () => {
+    expect(normalizePreview('')).toBeNull();
+    expect(normalizePreview('   ')).toBeNull();
+    expect(normalizePreview(undefined)).toBeNull();
+    const long = String(normalizePreview(`${'word '.repeat(80)}end`));
+    expect(long.length).toBeLessThanOrEqual(241);
+    expect(long.endsWith('word…')).toBe(true);
   });
 
   test('leaves mail the model did not call a record out of Paper Trail', async () => {

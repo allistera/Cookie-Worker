@@ -88,8 +88,9 @@ function sortExpression(sql, folder) {
 // folder selects inbox, sent/outbox, high-confidence AI spam, snoozed, or
 // archived (Done) mail. Recipients let the client render "To: <address>" for
 // outbound rows.
-// Message bodies are deliberately excluded: list rows render the stored snippet,
-// while the authoritative body is fetched only when the reader opens.
+// Message bodies are deliberately excluded: list rows render the AI preview
+// or, without one, the stored snippet, while the authoritative body is
+// fetched only when the reader opens.
 /**
  * @param {import('postgres').Sql} sql
  * @param {string} userId
@@ -133,6 +134,9 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
            m.sent_at, m.is_unread, m.is_starred, m.screening_status,
            m.is_sent, m.is_archived, m.scheduled_for, m.follow_up_at, ai.spam_score, ai.spam_verdict,
            ai.priority, ai.status AS ai_status, ai.enrichment_attempts,
+           -- The classifier's one-line preview (mail-app-ingest enrich.js);
+           -- NULL for sent mail and mail classified before previews existed.
+           ai.preview AS ai_preview,
            BOOL_OR(
              NULLIF(BTRIM(t.ai_summary), '') IS NOT NULL
              AND t.ai_summary_message_id = (
@@ -162,7 +166,7 @@ export function fetchEmails(sql, userId, limit, cursor, folder, labelName = '') 
     LEFT JOIN message_labels ml ON ml.message_id = m.id
     LEFT JOIN labels l ON l.id = ml.label_id
     WHERE m.user_id = ${userId}
-    GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, ai.status, ai.enrichment_attempts, c.id
+    GROUP BY m.id, ai.spam_score, ai.spam_verdict, ai.priority, ai.status, ai.enrichment_attempts, ai.preview, c.id
     ORDER BY ${sortAt} DESC, m.id DESC
     LIMIT ${limit + 1}
   `;
