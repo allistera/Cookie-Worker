@@ -247,35 +247,48 @@ export async function requestPublicHttps(rawUrl, options = {}) {
     checkUrl,
     fetchImpl = fetch,
   } = options;
-  const signal = AbortSignal.timeout(timeoutMs);
+  let current = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+  const controller = new AbortController();
+  // The same reason AbortSignal.timeout gives, on a timer fake clocks control.
+  const timer = setTimeout(
+    () =>
+      controller.abort(
+        new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+      ),
+    timeoutMs,
+  );
+  const { signal } = controller;
   let method = options.method ?? 'GET';
   let headers = options.headers ?? {};
   let body = options.body ?? null;
-  let current = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
-  for (let hop = 0; ; hop += 1) {
-    checkUrl?.(current);
-    const url = await resolvePublicHttpsUrl(current);
-    const response = await fetchImpl(url.href, {
-      method,
-      headers,
-      body: body ?? undefined,
-      redirect: 'manual',
-      signal,
-    });
-    const location =
-      response.status >= 300 && response.status < 400 ? response.headers.get('Location') : null;
-    if (location && maxRedirects > 0) {
-      if (hop >= maxRedirects) throw new Error('too_many_redirects');
-      current = new URL(location, url);
-      method = 'GET';
-      headers = withoutContentType(headers);
-      body = null;
-      continue;
+  try {
+    for (let hop = 0; ; hop += 1) {
+      checkUrl?.(current);
+      const url = await resolvePublicHttpsUrl(current);
+      const response = await fetchImpl(url.href, {
+        method,
+        headers,
+        body: body ?? undefined,
+        redirect: 'manual',
+        signal,
+      });
+      const location =
+        response.status >= 300 && response.status < 400 ? response.headers.get('Location') : null;
+      if (location && maxRedirects > 0) {
+        if (hop >= maxRedirects) throw new Error('too_many_redirects');
+        current = new URL(location, url);
+        method = 'GET';
+        headers = withoutContentType(headers);
+        body = null;
+        continue;
+      }
+      const read =
+        maxResponseBytes === undefined
+          ? { body: null, truncated: false }
+          : await readCappedBody(response, maxResponseBytes);
+      return { status: response.status, headers: response.headers, url: url.href, ...read };
     }
-    const read =
-      maxResponseBytes === undefined
-        ? { body: null, truncated: false }
-        : await readCappedBody(response, maxResponseBytes);
-    return { status: response.status, headers: response.headers, url: url.href, ...read };
+  } finally {
+    clearTimeout(timer);
   }
 }
