@@ -24,7 +24,6 @@ import {
   disconnect,
   getAccessToken,
   isGoogleConfigured,
-  loadConnection,
   loadConnectionIfAvailable,
   saveSelectedCalendars,
   stageAuthorizationCode,
@@ -1066,5 +1065,3 @@ export async function disconnectGoogle(sql, userId, env, overrides = {}) {
   await disconnect(sql, userId, env, overrides.fetchImpl);
   return Response.json({ ok: true });
 }
-
-export { loadConnection };

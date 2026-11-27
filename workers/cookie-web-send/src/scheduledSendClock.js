@@ -11,8 +11,6 @@ import { runWithSqlMetrics } from '../../../shared/sqlMetrics.js';
 import { createSendServices, createSql } from './worker.js';
 import { flushDueScheduledSends } from './scheduled.js';
 
-export const CLOCK_NAME = 'scheduled-sends';
-
 export class ScheduledSendClock {
   /**
    * Only the alarm storage and waitUntil of DurableObjectState are used, so

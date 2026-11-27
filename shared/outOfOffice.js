@@ -1,8 +1,3 @@
-// Date-only inclusive windows are compared in their IANA zone, never as 24-hour
-// arithmetic. This naturally includes both repeated DST hours and short days.
-export const OUT_OF_OFFICE_COOLDOWN_DAYS = 4;
-export const OUT_OF_OFFICE_RETRY_HOURS = 23;
-
 /**
  * Serializes responder dispatch with config and post-ingest suppression changes.
  * The two-int advisory namespace cannot overlap ingest's one-bigint namespace.

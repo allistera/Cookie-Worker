@@ -32,7 +32,6 @@ import {
 import { emailAlreadyStored, storeEmail } from './store.js';
 
 import { configureOpenAi } from '../../../shared/openai.js';
-export { redact } from './sentry.js';
 
 export const STORE_BUDGET_MS = 5000;
 export const MAX_PARSE_BYTES = 10 * 1024 * 1024;

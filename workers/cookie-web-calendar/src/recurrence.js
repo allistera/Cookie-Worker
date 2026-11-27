@@ -241,15 +241,6 @@ export function expandEventsPage(events, now = new Date(), range = null) {
   return { events: occurrences, truncated };
 }
 
-/**
- * @param {any[]} events
- * @param {Date} [now]
- * @param {{from: string, to: string} | null} [range]
- */
-export function expandEvents(events, now = new Date(), range = null) {
-  return expandEventsPage(events, now, range).events;
-}
-
 // from/to are optional but must come as a valid pair: omitting both keeps the
 // original return-everything contract, anything else is a client bug worth a
 // 400 rather than a silently unbounded payload.
