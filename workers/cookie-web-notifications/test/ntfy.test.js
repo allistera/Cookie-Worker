@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { encryptToken } from '../../../shared/token-crypto.js';
 import {
   DELIVERY_CONCURRENCY,
@@ -13,6 +13,18 @@ import {
   saveNtfySubscription,
   sendNtfyTest,
 } from '../src/ntfy.js';
+import { stubPublicDns } from './helpers.js';
+
+// Publishes resolve the ntfy host through shared/safe-https.js first; the
+// publish itself goes to each test's fetchImpl.
+beforeEach(() => {
+  stubPublicDns(() => {
+    throw new Error('the publish must go through fetchImpl');
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 // 32 zero bytes, base64: a valid AES-256 key for the token round trips below.
 const TOKEN_KEY = btoa(String.fromCharCode(...new Uint8Array(32)));
@@ -167,6 +179,19 @@ describe('ntfy delivery', () => {
     ).rejects.toMatchObject({ name: 'NtfyPublishError', status: 302 });
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(fetchImpl.mock.calls[0][1].redirect).toBe('manual');
+  });
+
+  test('refuses a server whose name resolves to a private address', async () => {
+    stubPublicDns(undefined, '10.0.0.5');
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+
+    await expect(
+      publishNtfy(
+        { topic: 'cookie-topic', messageId: 'message-1' },
+        { baseUrl: 'https://ntfy.example.com', fetchImpl },
+      ),
+    ).rejects.toThrow(/disallowed address/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test('uses readable fallbacks when the subject and plain-text body are empty', async () => {

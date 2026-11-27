@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from '../../../shared/fetch.js';
+import { requestPublicHttps } from '../../../shared/safe-https.js';
 import { decryptToken, encryptToken } from '../../../shared/token-crypto.js';
 
 export const DEFAULT_BASE_URL = 'https://ntfy.allisterantosik.com';
@@ -46,10 +46,11 @@ export class NtfySettingsError extends Error {
   }
 }
 
-// Hosts a publish must never reach. The same syntactic rules as
+// Hosts Settings refuses up front. The same syntactic rules as
 // cookie-web-messages' isSafeUnsubscribeUrl: no IP literals, a dotted name
-// with a non-numeric top label, and no internal suffix. Where a name actually
-// resolves is left to global_fetch_strictly_public.
+// with a non-numeric top label, and no internal suffix. Every publish also
+// goes through shared/safe-https.js, which checks where the name resolves,
+// and global_fetch_strictly_public keeps it on public routing.
 const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.lan', '.home.arpa'];
 
 /** @param {string} hostname */
@@ -124,7 +125,7 @@ function normalizeAccessToken(value) {
   return token;
 }
 
-/** @param {Response} response */
+/** @param {{headers: Headers}} response */
 function retryAfterSeconds(response) {
   const value = response.headers.get('Retry-After');
   if (!value) return null;
@@ -207,13 +208,12 @@ export async function publishNtfy(notification, options = {}) {
     // Check again before every external attempt, including retries after a wait.
     if (options.canPublish && !(await options.canPublish()))
       throw new NotificationSuppressedError();
-    const response = await fetchWithTimeout(
+    const response = await requestPublicHttps(
       `${baseUrl.replace(/\/$/, '')}/${notification.topic}`,
       {
         method: 'POST',
-        // A redirect could lead the token anywhere, so it counts as a failed
-        // publish instead of being followed.
-        redirect: 'manual',
+        // safe-https never follows a redirect: it could lead the token
+        // anywhere, so a 3xx counts as a failed publish.
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           // ntfy access tokens (ntfy.sh reserved topics, self-hosted servers
@@ -230,12 +230,11 @@ export async function publishNtfy(notification, options = {}) {
           'X-Priority': 'default',
         },
         body,
+        timeoutMs: NTFY_FETCH_TIMEOUT_MS,
+        fetchImpl,
       },
-      async (published) => published,
-      NTFY_FETCH_TIMEOUT_MS,
-      fetchImpl,
     );
-    if (response.ok) return;
+    if (response.status >= 200 && response.status < 300) return;
 
     const retryAfter = retryAfterSeconds(response);
     const retryable = response.status === 429 || response.status >= 500;

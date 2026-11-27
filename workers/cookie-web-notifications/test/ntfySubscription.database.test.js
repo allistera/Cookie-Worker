@@ -2,10 +2,12 @@
 import postgres from 'postgres';
 import { expect, test, vi } from 'vitest';
 import { saveNtfySubscription, sendNtfyTest } from '../src/ntfy.js';
+import { stubPublicDns } from './helpers.js';
 
 const databaseUrl = import.meta.env.SCREENING_RETENTION_TEST_DATABASE_URL;
 
 test.skipIf(!databaseUrl)('notification credentials follow the saved server URL', async () => {
+  stubPublicDns();
   const database = postgres(/** @type {string} */ (databaseUrl), { max: 1 });
   const options = {
     tokenKey: btoa(String.fromCharCode(...new Uint8Array(32))),
@@ -73,6 +75,7 @@ test.skipIf(!databaseUrl)('notification credentials follow the saved server URL'
       );
     });
   } finally {
+    vi.unstubAllGlobals();
     await database.end();
   }
 });
