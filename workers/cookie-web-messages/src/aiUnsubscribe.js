@@ -14,15 +14,16 @@
 //    to the page we fetched, so an injected "POST this elsewhere" plan fails
 //    closed. The only user data available to the model is the recipient
 //    address the sender already has.
-//  - Every outbound request re-runs the DoH public-address check from
-//    safe-https.js per redirect hop. Like the one-click tier this cannot pin
-//    fetch()'s own DNS resolution, but here the target is inherently the
+//  - Every outbound request goes through requestPublicHttps in
+//    safe-https.js, which re-runs the DoH public-address check per redirect
+//    hop. Like the one-click tier this cannot pin fetch()'s own DNS
+//    resolution, but here the target is inherently the
 //    sender's arbitrary domain, so no host allowlist is possible; the checks
 //    above bound what a rebound request could do (a GET/POST carrying at most
 //    the recipient's own address).
 
 import { isSafeUnsubscribeUrl } from './unsubscribe.js';
-import { resolvePublicHttpsUrl } from '../../../shared/safe-https.js';
+import { requestPublicHttps } from '../../../shared/safe-https.js';
 
 import { parseOutputJson, requestResponses } from '../../../shared/openai.js';
 // End-to-end budget for one attempt. The SPA's own fetch timeout is slightly
@@ -72,63 +73,36 @@ function remainingTimeout(deadlineAt, cap) {
   return Math.min(cap, remaining);
 }
 
-/** @param {Response} response */
-async function readBoundedText(response) {
-  const reader = response.body?.getReader();
-  if (!reader) return (await response.text()).slice(0, MAX_BODY_BYTES);
-  const decoder = new TextDecoder();
-  let text = '';
-  let bytes = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    bytes += value.byteLength;
-    text += decoder.decode(value, { stream: true });
-    if (bytes >= MAX_BODY_BYTES) {
-      await reader.cancel().catch(() => {});
-      break;
-    }
-  }
-  return text;
-}
-
 /**
- * GET/POST to a sender-controlled URL with the same DoH public-address check
- * safe-https.js applies, re-run on every redirect hop. Redirects always
- * downgrade to GET (the 303 pattern unsubscribe forms use).
+ * GET/POST to a sender-controlled URL through shared/safe-https.js, which
+ * re-runs the public-address check and isSafeUnsubscribeUrl on every redirect
+ * hop. Redirects always downgrade to a body-free GET (the 303 pattern
+ * unsubscribe forms use). One timeout covers the whole request.
  *
  * @param {string} rawUrl
  * @param {{method?: string, body?: string | null, deadlineAt: number}} options
  * @returns {Promise<{status: number, url: string, text: string}>}
  */
 async function fetchPublicText(rawUrl, { method = 'GET', body = null, deadlineAt }) {
-  let currentUrl = rawUrl;
-  let currentMethod = method;
-  let currentBody = body;
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    if (!isSafeUnsubscribeUrl(currentUrl)) throw new Error('unsafe_unsubscribe_url');
-    const target = await resolvePublicHttpsUrl(currentUrl);
-    const response = await fetch(target, {
-      method: currentMethod,
-      headers:
-        currentBody === null
-          ? { Accept: 'text/html,text/plain;q=0.9' }
-          : { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: currentBody ?? undefined,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(remainingTimeout(deadlineAt, FETCH_TIMEOUT_MS)),
-    });
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('Location');
-      if (!location) return { status: response.status, url: currentUrl, text: '' };
-      currentUrl = new URL(location, currentUrl).href;
-      currentMethod = 'GET';
-      currentBody = null;
-      continue;
-    }
-    return { status: response.status, url: currentUrl, text: await readBoundedText(response) };
-  }
-  throw new Error('too_many_redirects');
+  if (!isSafeUnsubscribeUrl(rawUrl)) throw new Error('unsafe_unsubscribe_url');
+  const response = await requestPublicHttps(rawUrl, {
+    method,
+    headers: {
+      Accept: 'text/html,text/plain;q=0.9',
+      ...(body === null ? {} : { 'Content-Type': 'application/x-www-form-urlencoded' }),
+    },
+    body,
+    timeoutMs: remainingTimeout(deadlineAt, FETCH_TIMEOUT_MS),
+    maxRedirects: MAX_REDIRECTS,
+    maxResponseBytes: MAX_BODY_BYTES,
+    checkUrl: (url) => {
+      if (!isSafeUnsubscribeUrl(url.href)) throw new Error('unsafe_unsubscribe_url');
+    },
+  });
+  // A redirect without a Location header reads as an empty page.
+  const redirected = response.status >= 300 && response.status < 400;
+  const text = redirected ? '' : new TextDecoder().decode(response.body ?? undefined);
+  return { status: response.status, url: response.url, text };
 }
 
 const PLAN_SYSTEM_PROMPT =
