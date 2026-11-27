@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { fetchEmails, fetchUnreadCount, handleList, handleState } from '../src/emails.js';
+import { fetchEmails, fetchMailboxCounts, handleList, handleState } from '../src/emails.js';
 
 // Ported from Cookie-Web's api/__tests__/emails.test.js — same scripted
 // results, same expected statuses and payloads, plus the validation branches
@@ -220,7 +220,7 @@ describe('fetchEmails', () => {
   });
 });
 
-describe('fetchUnreadCount', () => {
+describe('fetchMailboxCounts', () => {
   test('keeps is_unread in the WHERE so the partial unread index applies', () => {
     let query = '';
     /** @type {any} */
@@ -229,7 +229,7 @@ describe('fetchUnreadCount', () => {
       return [];
     };
 
-    fetchUnreadCount(sql, USER_ID);
+    fetchMailboxCounts(sql, USER_ID);
 
     // messages_unread_idx is a partial index ON messages (user_id) WHERE
     // is_unread — this predicate shape matches it directly.
