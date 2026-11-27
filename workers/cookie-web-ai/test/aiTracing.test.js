@@ -6,6 +6,14 @@ vi.mock('@sentry/cloudflare', () => ({
   startSpan: (options, callback) => startSpan(options, callback),
 }));
 const { requestAiJson, sanitizeAiSpan } = await import('../src/aiTracing.js');
+/** @param {string} model */
+const request = (model) => ({
+  apiKey: 'test-key',
+  model,
+  input: [{ role: 'user', content: 'private prompt' }],
+  maxOutputTokens: 100,
+  timeoutMs: 1_000,
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -25,9 +33,7 @@ describe('model tracing', () => {
       },
     };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(payload)));
-    await expect(requestAiJson('gpt-6.1-sol', { body: 'private prompt' })).resolves.toEqual(
-      payload,
-    );
+    await expect(requestAiJson(request('gpt-6.1-sol'))).resolves.toEqual(payload);
     expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 100);
     expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', 40);
     expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.cache_read.input_tokens', 50);
@@ -47,8 +53,8 @@ describe('model tracing', () => {
       else if (kind === 'json') fetchMock.mockResolvedValue(new Response('private invalid JSON'));
       else fetchMock.mockResolvedValue(Response.json({ status: 'incomplete' }));
       vi.stubGlobal('fetch', fetchMock);
-      if (kind === 'incomplete') await requestAiJson('model', {});
-      else await expect(requestAiJson('model', {})).rejects.toThrow();
+      if (kind === 'incomplete') await requestAiJson(request('model'));
+      else await expect(requestAiJson(request('model'))).rejects.toThrow();
       expect(span.setStatus).toHaveBeenCalledWith({ code: 2 });
       expect(JSON.stringify(span.setAttribute.mock.calls)).not.toContain('private');
     },

@@ -1,14 +1,14 @@
 import * as Sentry from '@sentry/cloudflare';
-import { responsesUrl } from './openai.js';
+import { requestResponses } from '../../../shared/openai.js';
 
 // Raw fetch calls are not covered by the OpenAI SDK integration. Capture only
 // model metadata and token totals; never prompts, documents, or response text.
 /**
- * @param {string} model
- * @param {RequestInit} options
+ * @param {Parameters<typeof requestResponses>[0]} request
  * @param {(payload: any) => any} [validate]
  */
-export async function requestAiJson(model, options, validate = (payload) => payload) {
+export async function requestAiJson(request, validate = (payload) => payload) {
+  const { model } = request;
   return Sentry.startSpan(
     {
       op: 'gen_ai.chat',
@@ -21,9 +21,7 @@ export async function requestAiJson(model, options, validate = (payload) => payl
     },
     async (span) => {
       try {
-        const response = await fetch(responsesUrl(), options);
-        if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-        const payload = await response.json();
+        const payload = await requestResponses(request);
         if (typeof payload.model === 'string')
           span.setAttribute('gen_ai.response.model', payload.model);
         const usage = payload.usage;
