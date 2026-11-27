@@ -21,7 +21,7 @@ import { cleanText } from './documents.js';
 import { decodeCursor, encodeCursor, validId } from '../../../shared/pagination.js';
 
 // Same as a task description (taskItems.js).
-export const MAX_COMMENT_LENGTH = 10000;
+const MAX_COMMENT_LENGTH = 10000;
 const MAX_NAME_LENGTH = 255;
 // Multipart framing around the file itself; a declared body past this is
 // refused before a byte is read.

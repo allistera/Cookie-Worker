@@ -47,7 +47,7 @@ export function responsesUrl() {
  * @param {any} body
  * @returns {string}
  */
-export function outputText(body) {
+function outputText(body) {
   if (typeof body?.output_text === 'string') return body.output_text;
   for (const item of body?.output || []) {
     for (const content of item?.content || []) {
@@ -111,7 +111,7 @@ export class ResponsesApiError extends Error {
  * @param {Response} response
  * @returns {Promise<string | null>}
  */
-export async function openAiErrorCode(response) {
+async function openAiErrorCode(response) {
   try {
     const body = /** @type {any} */ (await response.json());
     const code = body?.error?.code ?? body?.error?.type;

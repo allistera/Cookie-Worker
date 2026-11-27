@@ -56,7 +56,7 @@ const PUBLIC_EMAIL_DOMAINS = new Set([
  * @param {unknown} value
  * @returns {{key: string, sender: string | null} | {error: string} | null}
  */
-export function senderKey(value) {
+function senderKey(value) {
   const address = exactAddress(value);
   if (address) {
     const domain = address.slice(address.lastIndexOf('@') + 1);

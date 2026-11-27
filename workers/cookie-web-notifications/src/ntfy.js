@@ -271,7 +271,7 @@ function subscriptionFromRow(row) {
  * @param {NtfySubscriptionRow | null} subscription
  * @param {{baseUrl?: string, tokenKey?: string}} options
  */
-export function publicNtfySettings(subscription, options) {
+function publicNtfySettings(subscription, options) {
   const defaultServerUrl = (options.baseUrl || DEFAULT_BASE_URL).replace(/\/$/, '');
   return {
     enabled: subscription?.enabled ?? false,

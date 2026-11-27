@@ -350,7 +350,7 @@ function timedOccurrences(event, windowStart, windowEnd, max, formatters) {
  * @param {Date} windowEnd
  * @param {number} [max]
  */
-export function allDayOccurrences(event, windowStart, windowEnd, max = MAX_OCCURRENCES_PER_EVENT) {
+function allDayOccurrences(event, windowStart, windowEnd, max = MAX_OCCURRENCES_PER_EVENT) {
   const rows = [];
   const firstWindowDay = startOfLocalDay(windowStart);
   const afterLastWindowDay = addDaysLocal(startOfLocalDay(windowEnd), 1);

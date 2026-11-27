@@ -8,8 +8,8 @@ import { retryWithBackoff } from '../../../shared/retry.js';
 export const TRIAGE_POLICY_SOURCE = 'ericporres/email-triage-plugin';
 export const DIGEST_PROMPT_VERSION = 'email-triage-v3';
 export const DIGEST_KIND = 'daily_digest';
-export const DIGEST_MESSAGE_LIMIT = 50;
-export const DIGEST_TEXT_CAP = 400;
+const DIGEST_MESSAGE_LIMIT = 50;
+const DIGEST_TEXT_CAP = 400;
 export const DIGEST_MAX_OUTPUT_TOKENS = 16000;
 export const DIGEST_REASONING_EFFORT = 'low';
 export const DIGEST_TIMEOUT_MS = 60_000;
@@ -101,7 +101,7 @@ export async function fetchDigestMessages(sql, userId) {
 }
 
 /** A model response with incomplete or invalid message coverage. */
-export class TriageCoverageError extends Error {
+class TriageCoverageError extends Error {
   constructor() {
     super('Email triage did not classify every message exactly once');
     this.name = 'TriageCoverageError';

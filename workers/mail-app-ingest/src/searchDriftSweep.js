@@ -42,7 +42,7 @@ export const DEFAULT_SEARCH_BACKLOG_MAX_ROWS = 1000;
 // Default for SEARCH_STALE_MAX_MINUTES. Documents and tasks drift oldest-first
 // at 25 a tick, so an edit still unindexed after an hour has been passed over
 // by four ticks: the pushes are failing, or the edit rate is beyond the bound.
-export const DEFAULT_SEARCH_STALE_MAX_MINUTES = 60;
+const DEFAULT_SEARCH_STALE_MAX_MINUTES = 60;
 
 /**
  * @param {Date | string | null | undefined} oldest

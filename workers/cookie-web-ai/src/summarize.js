@@ -9,12 +9,12 @@ import { parseOutputJson } from '../../../shared/openai.js';
 import { supportsReasoning } from '../../../shared/enrichmentSettings.js';
 import { validId } from '../../../shared/pagination.js';
 
-export const MAX_SUMMARY_MESSAGES = 50;
-export const MAX_SUMMARY_BODY_CHARS = 20_000;
-export const MAX_SUMMARY_TRANSCRIPT_CHARS = 100_000;
-export const MAX_THREAD_SUMMARY_CHARS = 220;
+const MAX_SUMMARY_MESSAGES = 50;
+const MAX_SUMMARY_BODY_CHARS = 20_000;
+const MAX_SUMMARY_TRANSCRIPT_CHARS = 100_000;
+const MAX_THREAD_SUMMARY_CHARS = 220;
 
-export class SummaryInputTooLargeError extends Error {
+class SummaryInputTooLargeError extends Error {
   constructor() {
     super('The email thread is too large to summarize safely');
     this.name = 'SummaryInputTooLargeError';
@@ -105,11 +105,11 @@ export function buildThreadTranscript(messages) {
 // spends output tokens on reasoning first; at 160 it regularly ran out and
 // returned status 'incomplete'. Leave reasoning room in line with the other
 // short structured calls here (compose 700, rule draft 1,400).
-export const SUMMARY_MAX_OUTPUT_TOKENS = 160;
-export const SUMMARY_REASONING_MAX_OUTPUT_TOKENS = 1_500;
+const SUMMARY_MAX_OUTPUT_TOKENS = 160;
+const SUMMARY_REASONING_MAX_OUTPUT_TOKENS = 1_500;
 
 /** @param {string} model */
-export function summaryMaxOutputTokens(model) {
+function summaryMaxOutputTokens(model) {
   return supportsReasoning(model) || /^(?:gpt-[5-9]|o\d)/.test(model)
     ? SUMMARY_REASONING_MAX_OUTPUT_TOKENS
     : SUMMARY_MAX_OUTPUT_TOKENS;

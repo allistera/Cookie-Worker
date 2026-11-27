@@ -1,12 +1,12 @@
-export const ENRICHMENT_TIME_ZONE = 'Europe/London';
+const ENRICHMENT_TIME_ZONE = 'Europe/London';
 // Settings saved with a model that has since left this list (gpt-5-nano,
 // gpt-5.6-luna, gpt-4.1-nano) read back as the default.
-export const ENRICHMENT_MODELS = ['gpt-6-luna', 'gpt-6.1-terra'];
-export const ENRICHMENT_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-export const ENRICHMENT_INTERVALS = [1, 2, 3, 4, 6, 12];
+const ENRICHMENT_MODELS = ['gpt-6-luna', 'gpt-6.1-terra'];
+const ENRICHMENT_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const ENRICHMENT_INTERVALS = [1, 2, 3, 4, 6, 12];
 
 /** Models that accept the Responses API `reasoning` option. */
-export const REASONING_MODELS = new Set([...ENRICHMENT_MODELS, 'gpt-6.1-sol']);
+const REASONING_MODELS = new Set([...ENRICHMENT_MODELS, 'gpt-6.1-sol']);
 /** @param {string} model */
 export function supportsReasoning(model) {
   return REASONING_MODELS.has(model);

@@ -8,9 +8,9 @@ import {
 import { claimOutboundEmailQuota, configuredEmailFrom, storeSentMessage } from './outbound.js';
 import { AUTO_REPLY_PROVIDER_TIMEOUT_MS, sendAutoReply } from './autoReplyProvider.js';
 
-export const AUTO_REPLY_SCAN_LIMIT = 25;
-export const AUTO_REPLY_SEND_LIMIT = 10;
-export const AUTO_REPLY_FLUSH_BUDGET_MS = 20_000;
+const AUTO_REPLY_SCAN_LIMIT = 25;
+const AUTO_REPLY_SEND_LIMIT = 10;
+const AUTO_REPLY_FLUSH_BUDGET_MS = 20_000;
 const LEASE_MS = 120_000;
 const MAX_ATTEMPTS = 12;
 

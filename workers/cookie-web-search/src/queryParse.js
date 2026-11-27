@@ -117,7 +117,7 @@ export function parseFederatedSearchQuery(raw) {
 // documents leg of the federated query is dropped entirely rather than run
 // with the operator silently ignored (which would just return every
 // document as if the operator weren't there).
-export const MAIL_ONLY_FILTER_KEYS = ['from', 'to', 'hasAttachment', 'before', 'after', 'in'];
+const MAIL_ONLY_FILTER_KEYS = ['from', 'to', 'hasAttachment', 'before', 'after', 'in'];
 
 /** @param {Record<string, any>} filters */
 export function hasMailOnlyFilters(filters) {

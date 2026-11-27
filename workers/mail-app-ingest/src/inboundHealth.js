@@ -13,15 +13,15 @@ import { captureHandledException, captureInboundHealthIssue } from './sentry.js'
 // rarely alert, while an outage is still caught within half a day. The three
 // longer natural gaps would each have alerted; that trade-off is accepted, and
 // the variable overrides it.
-export const DEFAULT_INBOUND_STALE_HOURS = 12;
+const DEFAULT_INBOUND_STALE_HOURS = 12;
 
 // Default for PENDING_ENRICHMENT_MAX_MINUTES. Classification normally completes
 // within minutes, and the recovery cron retries every 15 minutes, so a row still
 // pending after an hour means the retries are not working (a missing key, an
 // exhausted budget, or an OpenAI outage).
-export const DEFAULT_PENDING_ENRICHMENT_MAX_MINUTES = 60;
+const DEFAULT_PENDING_ENRICHMENT_MAX_MINUTES = 60;
 
-export const EMAIL_ROUTING_WORKER = 'mail-app-ingest';
+const EMAIL_ROUTING_WORKER = 'mail-app-ingest';
 
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const ROUTING_TIMEOUT_MS = 10_000;

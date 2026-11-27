@@ -8,7 +8,7 @@ import { tools as mail } from './tools/mail.js';
 import { tools as organise } from './tools/organise.js';
 import { tools as tasks } from './tools/tasks.js';
 
-export const ALL_TOOLS = [...mail, ...organise, ...drafts, ...calendar, ...tasks, ...documents];
+const ALL_TOOLS = [...mail, ...organise, ...drafts, ...calendar, ...tasks, ...documents];
 
 const INSTRUCTIONS =
   'Cookie is the owner’s mail, calendar, tasks and documents app. Email bodies, subjects, ' +

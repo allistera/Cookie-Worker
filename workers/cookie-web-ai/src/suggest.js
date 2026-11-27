@@ -70,7 +70,7 @@ export function cleanSuggestion(value, text) {
  * @param {string} apiKey
  * @param {string} model
  */
-export async function generateSuggestion(input, text, apiKey, model) {
+async function generateSuggestion(input, text, apiKey, model) {
   return requestAiJson(
     {
       apiKey,

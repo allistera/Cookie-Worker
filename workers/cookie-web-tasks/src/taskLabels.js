@@ -9,7 +9,7 @@ import { normalizeTaskLabels } from './taskMetadata.js';
 import { validId } from '../../../shared/pagination.js';
 
 const COLOR_RE = /^#[0-9a-f]{6}$/;
-export const DEFAULT_LABEL_COLOR = '#64748b';
+const DEFAULT_LABEL_COLOR = '#64748b';
 
 const BAD_NAME = 'Labels must be 1–40 characters without spaces, @, or #';
 const BAD_COLOR = 'color must be a hex colour such as #1a73e8';
@@ -30,7 +30,7 @@ export function cleanLabelName(value) {
 }
 
 /** @param {any} value */
-export function cleanColor(value) {
+function cleanColor(value) {
   if (typeof value !== 'string') return null;
   const color = value.trim().toLowerCase();
   return COLOR_RE.test(color) ? color : null;

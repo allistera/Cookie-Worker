@@ -44,7 +44,7 @@ import {
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
 // A run reads the whole account from Todoist; a held-down button should not
 // be able to do that more than a few times a minute.
-export const SYNC_RATE_LIMIT = { limit: 4, windowMs: 60_000 };
+const SYNC_RATE_LIMIT = { limit: 4, windowMs: 60_000 };
 const MAX_TOKEN_LENGTH = 200;
 const TOKEN_HINT_LENGTH = 4;
 const TOKEN_UNREADABLE_MESSAGE = 'The saved token could not be read. Enter it again.';
@@ -66,7 +66,7 @@ const TOKEN_UNREADABLE_MESSAGE = 'The saved token could not be read. Enter it ag
 const FLAGS = /** @type {const} */ (['enabled', 'syncProjects', 'syncTasks']);
 
 /** @param {{TODOIST_TOKEN_ENCRYPTION_KEY?: string}} env */
-export function isTodoistConfigured(env) {
+function isTodoistConfigured(env) {
   return Boolean(env.TODOIST_TOKEN_ENCRYPTION_KEY);
 }
 
@@ -117,7 +117,7 @@ export function isDifferentAccount(existing, account) {
  * @param {string} userId
  * @returns {Promise<TodoistConnection | null>}
  */
-export async function loadConnection(sql, userId) {
+async function loadConnection(sql, userId) {
   const [row] = await sql`
     SELECT user_id AS "userId", api_token_encrypted AS "apiTokenEncrypted", token_hint AS "tokenHint",
            todoist_user_id AS "todoistUserId", todoist_email AS email, time_zone AS "timeZone", enabled,

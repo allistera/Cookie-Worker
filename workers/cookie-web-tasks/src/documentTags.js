@@ -2,7 +2,7 @@
 // Node APIs.
 
 export const MAX_DOCUMENT_TAGS = 20;
-export const MAX_DOCUMENT_TAG_LENGTH = 40;
+const MAX_DOCUMENT_TAG_LENGTH = 40;
 
 const DOCUMENT_TAG_RE = /^[\p{L}\p{N}][\p{L}\p{N}_-]*$/u;
 

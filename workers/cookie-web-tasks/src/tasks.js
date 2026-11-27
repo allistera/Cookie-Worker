@@ -209,7 +209,7 @@ export function fetchOwnedTask(sql, id, userId) {
 // The schedule of one of the caller's own task_items rows: what completing it
 // from AI Today has to hand updateTaskItem when it repeats.
 /** @param {import('postgres').Sql} sql @param {string} id @param {string} userId */
-export function fetchOwnedTaskItemSchedule(sql, id, userId) {
+function fetchOwnedTaskItemSchedule(sql, id, userId) {
   return sql`
     SELECT t.recurrence, to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate"
     FROM task_items t

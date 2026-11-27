@@ -12,7 +12,7 @@ export const NEWS_PROMPT_VERSION = 'daily-news-v1';
 export const NEWS_KIND = 'daily_news';
 export const MAX_PICKS_PER_SOURCE = 5;
 export const HEADLINE_PICKS = 10;
-export const LOCAL_HEADLINE_PICKS = 3;
+const LOCAL_HEADLINE_PICKS = 3;
 // GitHub carries more of the round-up than the other sources, and its
 // candidate pool is already 20 repos (fetchTopRepos), so it ranks a longer
 // list. Everything else stays at MAX_PICKS_PER_SOURCE.

@@ -14,7 +14,7 @@ const MAX_CONTACTS = 2000;
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  */
-export function fetchContacts(sql, userId) {
+function fetchContacts(sql, userId) {
   return sql`
     SELECT c.address, c.name
     FROM contacts c

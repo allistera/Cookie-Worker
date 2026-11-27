@@ -10,7 +10,7 @@ import { isSafeUnsubscribeUrl, parseListUnsubscribe } from './unsubscribe.js';
 
 // The list is newest sender first, so the cut drops the senders that have been
 // quiet the longest.
-export const MAX_SUBSCRIPTIONS = 1000;
+const MAX_SUBSCRIPTIONS = 1000;
 
 /**
  * The newest list message of each sender, with how many list messages the
@@ -25,7 +25,7 @@ export const MAX_SUBSCRIPTIONS = 1000;
  * @param {import('postgres').Sql} sql
  * @param {string} userId
  */
-export function fetchSubscriptionSenders(sql, userId) {
+function fetchSubscriptionSenders(sql, userId) {
   return sql`
     WITH list_mail AS MATERIALIZED (
       SELECT m.id, m.from_name, lower(btrim(m.from_address)) AS address, m.sent_at

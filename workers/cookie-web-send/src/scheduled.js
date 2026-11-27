@@ -16,7 +16,7 @@ import {
   storeSentMessage,
 } from './outbound.js';
 
-export const MAX_PENDING_SCHEDULED_SENDS = 50;
+const MAX_PENDING_SCHEDULED_SENDS = 50;
 // A scheduled send needs enough lead time that it can't fire before the
 // composer has even finished closing — matches ScheduleMenu's own minimum.
 const MIN_SCHEDULE_LEAD_MS = 60_000;

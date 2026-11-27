@@ -23,7 +23,7 @@ const SYNC_RATE_LIMIT = { limit: 5, windowMs: 60_000 };
 // Subscribed feeds are refreshed lazily: GET /calendars starts a background
 // refresh of the feeds last synced longer ago than this, the stalest first and
 // at most a couple per request, under the same per-user sync quota.
-export const SUBSCRIPTION_REFRESH_MS = 12 * 60 * 60 * 1000;
+const SUBSCRIPTION_REFRESH_MS = 12 * 60 * 60 * 1000;
 const MAX_LAZY_REFRESHES = 2;
 
 const DEFAULT_CALENDARS = [
@@ -137,7 +137,7 @@ async function ensureDefaultCalendars(sql, userId, existing) {
  * @param {{id: string, subscriptionUrl?: string | null, subscriptionSyncedAt?: Date | string | null}[]} calendars
  * @param {number} now
  */
-export function staleSubscriptions(calendars, now) {
+function staleSubscriptions(calendars, now) {
   const syncedAt = (/** @type {{subscriptionSyncedAt?: Date | string | null}} */ calendar) =>
     calendar.subscriptionSyncedAt ? new Date(calendar.subscriptionSyncedAt).getTime() : 0;
   return calendars

@@ -3,9 +3,9 @@
 // dev/e2e calendar fixture — kept in sync by hand (date-keyed occurrence ids
 // and start-relative MONTHLY/YEARLY expansion landed here first).
 
-export const MS_PER_DAY = 24 * 60 * 60 * 1000;
-export const EXPAND_PAST_DAYS = 365;
-export const EXPAND_FUTURE_DAYS = 730;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const EXPAND_PAST_DAYS = 365;
+const EXPAND_FUTURE_DAYS = 730;
 // Explicit ranges may span at least the default window so the two contracts
 // cannot drift apart again (the default window used to exceed this cap).
 const MAX_RANGE_DAYS = EXPAND_PAST_DAYS + EXPAND_FUTURE_DAYS;

@@ -10,7 +10,7 @@ import { validId } from '../../../shared/pagination.js';
  * @param {string} userId
  * @param {string} eventId
  */
-export function claimNotificationEvent(sql, userId, eventId) {
+function claimNotificationEvent(sql, userId, eventId) {
   return sql`
     UPDATE browser_notification_events event
     SET claim_token = gen_random_uuid(),
@@ -53,7 +53,7 @@ export function claimNotificationEvent(sql, userId, eventId) {
  * @param {string} userId
  * @param {string} eventId
  */
-export function findNotificationEventLease(sql, userId, eventId) {
+function findNotificationEventLease(sql, userId, eventId) {
   return sql`
     SELECT event.claimed_until,
            (ai.status = 'pending' AND ai.updated_at > now() - interval '5 minutes')
@@ -72,7 +72,7 @@ export function findNotificationEventLease(sql, userId, eventId) {
  * @param {string} eventId
  * @param {string} claimToken
  */
-export function acknowledgeNotificationEvent(sql, userId, eventId, claimToken) {
+function acknowledgeNotificationEvent(sql, userId, eventId, claimToken) {
   return sql`
     DELETE FROM browser_notification_events event
     WHERE event.event_id = ${eventId}

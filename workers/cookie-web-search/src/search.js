@@ -153,7 +153,7 @@ export function fetchSearchEmails(sql, userId, ids) {
  * @param {string} userId
  * @param {string[]} ids
  */
-export function fetchSearchDocuments(sql, userId, ids) {
+function fetchSearchDocuments(sql, userId, ids) {
   return sql`
     SELECT d.id, d.title, d.tags, d.starred, d.updated_at
     FROM documents d
@@ -170,7 +170,7 @@ export function fetchSearchDocuments(sql, userId, ids) {
  * @param {string} userId
  * @param {string[]} ids
  */
-export function fetchSearchTasks(sql, userId, ids) {
+function fetchSearchTasks(sql, userId, ids) {
   return sql`
     SELECT t.id, t.content, t.description, t.project_id AS "projectId",
            to_char(t.due_date, 'YYYY-MM-DD') AS "dueDate", t.completed_at AS "completedAt"

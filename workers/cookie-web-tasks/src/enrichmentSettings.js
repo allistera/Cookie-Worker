@@ -4,7 +4,7 @@ import {
 } from '../../../shared/enrichmentSettings.js';
 
 /** @param {import('postgres').Sql} sql @param {string} userId */
-export function fetchEnrichmentSettings(sql, userId) {
+function fetchEnrichmentSettings(sql, userId) {
   return sql`
     SELECT prefs -> 'enrichmentSettings' AS enrichment_settings
     FROM users
@@ -13,7 +13,7 @@ export function fetchEnrichmentSettings(sql, userId) {
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {any} enrichmentSettings */
-export function saveEnrichmentSettings(sql, userId, enrichmentSettings) {
+function saveEnrichmentSettings(sql, userId, enrichmentSettings) {
   return sql`
     UPDATE users
     SET prefs = coalesce(prefs, '{}'::jsonb) || ${sql.json({ enrichmentSettings })}

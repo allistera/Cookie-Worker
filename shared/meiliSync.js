@@ -19,7 +19,7 @@ function errorText(err) {
 
 // Meilisearch is self-hosted behind a Cloudflare Tunnel, and a tunnel blip
 // answers 502-504 or 520-530 for a single request (Sentry COOKIE-WEB-1E).
-export const TRANSIENT_RETRY_DELAY_MS = 1000;
+const TRANSIENT_RETRY_DELAY_MS = 1000;
 
 /**
  * @param {any} env

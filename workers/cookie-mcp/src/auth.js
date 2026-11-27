@@ -9,8 +9,8 @@ export const METADATA_PATHS = [
 // cookie:read lists, reads and searches; cookie:write adds every tool that
 // changes something, sending mail included. An Auth0 application granted only
 // cookie:read is therefore a read-only connection.
-export const READ_SCOPE = 'cookie:read';
-export const WRITE_SCOPE = 'cookie:write';
+const READ_SCOPE = 'cookie:read';
+const WRITE_SCOPE = 'cookie:write';
 const SCOPES = `${READ_SCOPE} ${WRITE_SCOPE}`;
 
 /** @param {{MCP_RESOURCE: string, AUTH0_DOMAIN: string}} env */

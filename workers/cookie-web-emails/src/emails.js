@@ -29,7 +29,7 @@ const FOLDERS = new Set([
  * @param {string} folder
  * @param {string} [labelName]
  */
-export function folderPredicate(sql, folder, labelName) {
+function folderPredicate(sql, folder, labelName) {
   if (folder === 'processing')
     return sql`NOT m.is_archived AND NOT m.is_sent AND ai.status IS DISTINCT FROM 'completed'`;
   if (folder === 'screening') return sql`NOT m.is_sent AND m.screening_status = 'held'`;

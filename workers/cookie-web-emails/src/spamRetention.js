@@ -3,8 +3,8 @@
 // in users.prefs like AI Today's interests: the sweep reads it with no browser
 // running.
 export const DEFAULT_SPAM_RETENTION_DAYS = 30;
-export const MIN_SPAM_RETENTION_DAYS = 1;
-export const MAX_SPAM_RETENTION_DAYS = 365;
+const MIN_SPAM_RETENTION_DAYS = 1;
+const MAX_SPAM_RETENTION_DAYS = 365;
 
 /**
  * Coerces a stored or submitted value to a whole number of days within
@@ -20,7 +20,7 @@ export function normalizeSpamRetentionDays(value) {
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId */
-export function fetchSpamRetentionDays(sql, userId) {
+function fetchSpamRetentionDays(sql, userId) {
   return sql`
     SELECT u.prefs -> 'spamRetentionDays' AS days
     FROM users u
@@ -29,7 +29,7 @@ export function fetchSpamRetentionDays(sql, userId) {
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId @param {number} days */
-export function saveSpamRetentionDays(sql, userId, days) {
+function saveSpamRetentionDays(sql, userId, days) {
   // sql.json, never a pre-stringified string: see interests.js in the tasks
   // Worker — a string parameter becomes a jsonb scalar and the || below would
   // append instead of merging keys, dropping every other preference.
