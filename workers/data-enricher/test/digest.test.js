@@ -146,7 +146,7 @@ describe('buildDigest email triage', () => {
       vi.fn(async () => ({ ok: false, status: 429 })),
     );
     await expect(buildDigest(MESSAGES, 'key', 'gpt-6-luna')).rejects.toThrow(
-      'OpenAI request failed (429)',
+      'OpenAI Responses API responded 429',
     );
   });
 
