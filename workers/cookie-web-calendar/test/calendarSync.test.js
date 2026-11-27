@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_CALENDAR_ALLOWLIST,
   calendarSubscriptionAllowlist,
+  requestPublicHttps as requestFeed,
   syncCalendarSubscription,
   validSubscriptionUrl,
 } from '../src/calendarSync.js';
@@ -769,5 +770,46 @@ describe('syncCalendarSubscription', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe('Could not sync the calendar subscription');
     expect(updates.some((update) => update.text.includes('subscription_error'))).toBe(true);
+  });
+});
+
+describe('requestPublicHttps (the feed request)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** @param {Response} feed */
+  function stubFeed(feed) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        if (url.hostname === 'cloudflare-dns.com') {
+          return Response.json({
+            Status: 0,
+            Answer:
+              url.searchParams.get('type') === 'A' ? [{ type: 1, data: '93.184.216.34' }] : [],
+          });
+        }
+        return feed;
+      }),
+    );
+  }
+
+  it('returns the status and body of a feed within the cap', async () => {
+    stubFeed(new Response('BEGIN:VCALENDAR'));
+    const response = await requestFeed('https://example.com/feed.ics', {
+      timeoutMs: 1000,
+      maxResponseBytes: 100,
+    });
+    expect(response.status).toBe(200);
+    expect(new TextDecoder().decode(response.body)).toBe('BEGIN:VCALENDAR');
+  });
+
+  it('rejects a feed larger than the cap', async () => {
+    stubFeed(new Response('x'.repeat(200)));
+    await expect(
+      requestFeed('https://example.com/feed.ics', { timeoutMs: 1000, maxResponseBytes: 100 }),
+    ).rejects.toThrow('The calendar feed is too large');
   });
 });

@@ -2,8 +2,8 @@
 // and transactional replace are unchanged; the egress boundary changes with
 // the runtime. Cookie-Web's api/_lib/safe-https.js resolved the hostname via
 // node:dns and pinned the HTTPS connection to the verified IP — Workers'
-// fetch() has no pinning primitive, so requestPublicHttps below pre-resolves
-// via shared/safe-https.js's DNS-over-HTTPS check (rejecting private
+// fetch() has no pinning primitive, so requestPublicHttps below goes through
+// shared/safe-https.js's DNS-over-HTTPS check (rejecting private
 // addresses) and then fetches normally, the same documented trade-off
 // cookie-web-messages made for one-click unsubscribe. Subscription URLs are
 // supplied by the authenticated owner (not attacker-controlled headers), and
@@ -12,7 +12,10 @@
 
 import ical from 'node-ical';
 
-import { hostMatchesSuffixes, resolvePublicHttpsUrl } from '../../../shared/safe-https.js';
+import {
+  hostMatchesSuffixes,
+  requestPublicHttps as requestSafeHttps,
+} from '../../../shared/safe-https.js';
 
 const MAX_TITLE = 200;
 const MAX_LOCATION = 200;
@@ -59,43 +62,18 @@ export const DEFAULT_CALENDAR_ALLOWLIST = [
   'icloud.com',
 ];
 
-// The public-HTTPS boundary, Workers edition: DoH-validate the target,
-// fetch without following redirects (the caller reports 3xx explicitly), and
-// stream the body under a byte cap so a huge feed cannot buffer unbounded.
+// The public-HTTPS boundary is shared/safe-https.js: DoH-validate the target,
+// return a 3xx instead of following it (the caller reports it), and read the
+// body under a byte cap so a huge feed cannot buffer unbounded.
 /**
  * @param {string} url
  * @param {{timeoutMs: number, maxResponseBytes: number, headers?: Record<string, string>}} options
  * @returns {Promise<{status: number, body: Uint8Array}>}
  */
 export async function requestPublicHttps(url, { timeoutMs, maxResponseBytes, headers }) {
-  const target = await resolvePublicHttpsUrl(url);
-  const response = await fetch(target, {
-    headers,
-    redirect: 'manual',
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const reader = response.body?.getReader();
-  const chunks = [];
-  let received = 0;
-  if (reader) {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      received += value.byteLength;
-      if (received > maxResponseBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw new Error('The calendar feed is too large');
-      }
-      chunks.push(value);
-    }
-  }
-  const body = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { status: response.status, body };
+  const response = await requestSafeHttps(url, { headers, timeoutMs, maxResponseBytes });
+  if (response.truncated) throw new Error('The calendar feed is too large');
+  return { status: response.status, body: response.body ?? new Uint8Array(0) };
 }
 
 // Google Calendar's share dialog hands out an "add this calendar" page link
