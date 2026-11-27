@@ -1,27 +1,20 @@
-// SSRF defense for the one-click unsubscribe POST — a server-side request to
-// a URL taken from an untrusted, sender-controlled email header.
+// SSRF defence for every server-side request to a URL that comes from mail
+// or user settings: one-click and AI unsubscribe, subscribed calendar feeds
+// and the per-user ntfy server. Each of those Workers also sets the
+// global_fetch_strictly_public compatibility flag, so a host in our own zone
+// is reached through its public front door, never straight at the origin.
 //
-// Cookie-Web's original api/_lib/safe-https.js resolves the hostname itself
-// via node:dns, verifies every resolved address is public, and then pins the
-// actual HTTPS connection to that exact verified IP (Node's
-// https.request({ lookup })) — closing a DNS-rebinding attack, where a
-// malicious domain answers with a safe IP for the check and a private one
-// moments later for the real connection.
-//
-// Workers' fetch() has no equivalent pinning primitive: there is no way to
-// force the connection fetch() itself makes to reuse an IP this module
-// already resolved and checked. This module still resolves the hostname
-// itself first (via Cloudflare's DNS-over-HTTPS resolver) and rejects if any
-// A/AAAA record is private/internal — that blocks the common case, a domain
-// that simply points at an internal address. It does NOT close the narrower,
-// timing-dependent DNS-rebinding gap on its own: fetch() re-resolves
-// independently, so a domain re-pointed between our check and fetch()'s own
-// resolution could still slip through. Callers accept that residual risk by
-// keeping the request itself inert: requestPublicHttps sends a caller-fixed
-// body, follows no redirects, and exposes only the status and headers — the
-// response body never reaches a client. Callers that need a tighter target
-// set can still layer a suffix allowlist via hostMatchesSuffixes (the
-// calendar worker does).
+// Cookie-Web's original api/_lib/safe-https.js resolved the hostname via
+// node:dns, checked every address and pinned the connection to the checked
+// IP, which closes DNS rebinding. Workers' fetch() has no pinning primitive.
+// This module resolves the hostname itself (Cloudflare DNS over HTTPS) and
+// rejects any private or internal A/AAAA record, which blocks a domain that
+// simply points inside a network. fetch() then resolves again on its own, so
+// a domain re-pointed between the two lookups could still slip through.
+// Callers keep that residual risk small: they send fixed or validated bodies,
+// cap what they read, and re-check every redirect hop here. Callers that need
+// a tighter target set add a suffix allowlist via hostMatchesSuffixes (the
+// calendar Worker does) or a checkUrl rule.
 
 const DNS_QUERY_TIMEOUT_MS = 5000;
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
@@ -182,19 +175,107 @@ export function hostMatchesSuffixes(hostname, suffixes) {
   return suffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
 }
 
+/** @param {Record<string, string>} headers */
+function withoutContentType(headers) {
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => name.toLowerCase() !== 'content-type'),
+  );
+}
+
 /**
+ * Reads at most maxBytes of a body. Reading stops once the cap is reached, so
+ * a body that never ends cannot hold the request open.
+ *
+ * @param {Response} response
+ * @param {number} maxBytes
+ */
+async function readCappedBody(response, maxBytes) {
+  const reader = response.body?.getReader();
+  if (!reader) return { body: new Uint8Array(0), truncated: false };
+  const chunks = [];
+  let received = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    if (received >= maxBytes) {
+      truncated = true;
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+  }
+  const body = new Uint8Array(Math.min(received, maxBytes));
+  let offset = 0;
+  for (const chunk of chunks) {
+    const part = chunk.subarray(0, body.byteLength - offset);
+    body.set(part, offset);
+    offset += part.byteLength;
+  }
+  return { body, truncated };
+}
+
+/**
+ * The one way Workers fetch a URL taken from mail or user settings. Every hop
+ * must be a credential-free https URL whose host resolves only to public
+ * addresses, and passes the caller's own checkUrl rule when given. Redirects
+ * are never followed by fetch() itself: with maxRedirects 0 (the default) a
+ * 3xx comes back to the caller, otherwise each Location is validated again
+ * and requested as a body-free GET. One timeout covers every hop and the
+ * body read. The body is read only when maxResponseBytes is set, and never
+ * past that many bytes.
+ *
  * @param {string | URL} rawUrl
- * @param {{method?: string, headers?: Record<string, string>, body?: string | null, timeoutMs?: number}} [options]
+ * @param {{
+ *   method?: string,
+ *   headers?: Record<string, string>,
+ *   body?: string | null,
+ *   timeoutMs?: number,
+ *   maxRedirects?: number,
+ *   maxResponseBytes?: number,
+ *   checkUrl?: (url: URL) => void,
+ *   fetchImpl?: typeof fetch,
+ * }} [options]
+ * @returns {Promise<{status: number, headers: Headers, url: string, body: Uint8Array | null, truncated: boolean}>}
  */
 export async function requestPublicHttps(rawUrl, options = {}) {
-  const { method = 'GET', headers = {}, body = null, timeoutMs = 10_000 } = options;
-  const url = await resolvePublicHttpsUrl(rawUrl);
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: body ?? undefined,
-    redirect: 'manual',
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  return { status: response.status, headers: response.headers };
+  const {
+    timeoutMs = 10_000,
+    maxRedirects = 0,
+    maxResponseBytes,
+    checkUrl,
+    fetchImpl = fetch,
+  } = options;
+  const signal = AbortSignal.timeout(timeoutMs);
+  let method = options.method ?? 'GET';
+  let headers = options.headers ?? {};
+  let body = options.body ?? null;
+  let current = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+  for (let hop = 0; ; hop += 1) {
+    checkUrl?.(current);
+    const url = await resolvePublicHttpsUrl(current);
+    const response = await fetchImpl(url.href, {
+      method,
+      headers,
+      body: body ?? undefined,
+      redirect: 'manual',
+      signal,
+    });
+    const location =
+      response.status >= 300 && response.status < 400 ? response.headers.get('Location') : null;
+    if (location && maxRedirects > 0) {
+      if (hop >= maxRedirects) throw new Error('too_many_redirects');
+      current = new URL(location, url);
+      method = 'GET';
+      headers = withoutContentType(headers);
+      body = null;
+      continue;
+    }
+    const read =
+      maxResponseBytes === undefined
+        ? { body: null, truncated: false }
+        : await readCappedBody(response, maxResponseBytes);
+    return { status: response.status, headers: response.headers, url: url.href, ...read };
+  }
 }
