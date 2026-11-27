@@ -19,6 +19,7 @@ For local validation before deployment:
 ```bash
 npm ci
 npm run lint
+npm run knip
 npm run types -- --all --check
 npm run typecheck
 npm test
