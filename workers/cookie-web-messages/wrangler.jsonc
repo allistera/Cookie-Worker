@@ -7,7 +7,10 @@
   "workers_dev": true,
   "routes": [{ "pattern": "messages-api.infinitywave.online", "custom_domain": true }],
   "compatibility_date": "2026-08-26",
-  "compatibility_flags": ["nodejs_compat"],
+  // Unsubscribe requests go to URLs taken from mail. Public routing keeps a
+  // host in our own zone from reaching its origin past the zone's security
+  // settings (shared/safe-https.js does the address checks).
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "upload_source_maps": true,
   "observability": {
     "enabled": true,
