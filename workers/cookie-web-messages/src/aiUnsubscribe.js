@@ -24,14 +24,11 @@
 import { isSafeUnsubscribeUrl } from './unsubscribe.js';
 import { resolvePublicHttpsUrl } from '../../../shared/safe-https.js';
 
-import { responsesUrl } from '../../../shared/openai.js';
+import { parseOutputJson, requestResponses } from '../../../shared/openai.js';
 // End-to-end budget for one attempt. The SPA's own fetch timeout is slightly
 // longer so the server verdict, not a client abort, decides the outcome.
 export const AI_UNSUBSCRIBE_TIMEOUT_MS = 180_000;
 
-// Same OpenAI Responses API surface cookie-web-ai uses (its src/openai.js is
-// another Worker's tree, so the few lines are duplicated here rather than
-// imported across workers).
 const DEFAULT_MODEL = 'gpt-6-luna';
 
 const FETCH_TIMEOUT_MS = 20_000;
@@ -48,17 +45,6 @@ const MAX_FIELD_VALUE_CHARS = 2048;
 // are permitted without appearing verbatim in the HTML; see
 // fieldValueIsPermitted.
 const MAX_UNCHECKED_VALUE_CHARS = 32;
-
-/** @param {any} body */
-function outputText(body) {
-  if (body?.output_text) return String(body.output_text);
-  for (const item of body?.output || []) {
-    for (const content of item?.content || []) {
-      if (content?.type === 'output_text' && content.text) return String(content.text);
-    }
-  }
-  return '';
-}
 
 /**
  * Strips the markup the model does not need (and that wastes tokens) while
@@ -225,25 +211,18 @@ async function requestOpenAiJson(
   { apiKey, model },
   { system, user, schemaName, schema, deadlineAt },
 ) {
-  const response = await fetch(responsesUrl(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    signal: AbortSignal.timeout(remainingTimeout(deadlineAt, MODEL_TIMEOUT_MS)),
-    body: JSON.stringify({
-      model,
-      max_output_tokens: 2_000,
-      input: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      text: { format: { type: 'json_schema', name: schemaName, strict: true, schema } },
-    }),
+  const payload = await requestResponses({
+    apiKey,
+    model,
+    timeoutMs: remainingTimeout(deadlineAt, MODEL_TIMEOUT_MS),
+    maxOutputTokens: 2_000,
+    input: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+    format: { name: schemaName, schema },
   });
-  if (!response.ok) throw new Error(`OpenAI Responses API responded ${response.status}`);
-  return JSON.parse(outputText(await response.json()));
+  return parseOutputJson(payload);
 }
 
 /**
