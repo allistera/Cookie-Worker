@@ -18,6 +18,7 @@ import { normalizeDocumentTags } from './documentTags.js';
 import { resolveDailyNoteEventDate, syncDailyNoteEvents } from './dailyEventSync.js';
 import { removeDocumentFromMeili, syncDocumentToMeili } from './documentMeiliSync.js';
 import { flattenBlocksToText } from './documentText.js';
+import { sanitizeDocumentBlocks } from './inlineHtml.js';
 import { parseDocumentSearchQuery } from './queryParse.js';
 import { validId } from '../../../shared/pagination.js';
 import { isTransientMeiliError } from '../../../shared/meiliErrors.js';
@@ -30,7 +31,8 @@ export const MAX_EMOJI_LENGTH = 16;
 export const ICON_PREFIX = 'ms:';
 export const MAX_ICON_NAME_LENGTH = 64;
 const ICON_NAME_PATTERN = /^[a-z0-9_]+$/;
-// Blocks are stored verbatim, including base64 images, so the cap is generous
+// Blocks are stored as sent apart from their inline HTML, including base64
+// images, so the cap is generous
 // but still bounds a single row (and request) to something sane.
 export const MAX_BLOCKS_BYTES = 4 * 1024 * 1024;
 
@@ -73,12 +75,15 @@ export function cleanEmoji(value) {
 
 // A document body must be an array of objects small enough to store. Returns
 // null on anything else so the caller can 400 instead of persisting garbage.
+// Every writer (the editor, the MCP tool, AI proposals, revision restore,
+// templates and the Daily note seed) comes through here, so this is also
+// where the block HTML Editor.js renders is reduced to the inline allow-list.
 /** @param {any} input */
 export function normalizeBlocks(input) {
   if (!Array.isArray(input)) return null;
   if (input.some((block) => Object(block) !== block)) return null;
   if (JSON.stringify(input).length > MAX_BLOCKS_BYTES) return null;
-  return input;
+  return sanitizeDocumentBlocks(input);
 }
 
 /** @param {import('postgres').Sql} sql @param {string} userId */
