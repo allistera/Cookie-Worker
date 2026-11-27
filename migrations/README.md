@@ -618,3 +618,12 @@ before. Earlier "Reordered" events stay in `task_activity`.
 
 It changes only the trigger function, so it can be applied at any time; no
 Worker or frontend deploy depends on it.
+
+## Mail list previews (0118)
+
+`0118_message_ai_preview.sql` adds the nullable `message_ai.preview` column:
+the sentence or two that `mail-app-ingest`'s classifier writes for the mail
+list. Apply it before deploying `cookie-web-emails` and `mail-app-ingest` from
+the same change, since both name the column; merging to `main` runs it before
+either Worker is deployed. Existing rows keep `NULL` and the list shows their
+snippet.
