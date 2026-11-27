@@ -759,6 +759,7 @@ The migrations lived in Cookie-Web until November 2026. Their earlier history is
 
 ```sh
 npm run lint
+npm run knip
 npm run types -- --all --check
 npm run typecheck
 npm run test:coverage
@@ -773,6 +774,12 @@ shows overall line, statement, function, and branch coverage. Download the
 file; detailed JSON, JSON summary, and LCOV data are also included. Reports are
 generated and published even when tests fail. `npm test` runs the same suite
 without collecting coverage.
+
+`npm run knip` fails on unused files, dependencies and exports. It runs
+twice: once with tests counted as importers, and once in production mode,
+where only the Worker entry points and `scripts/` count, so code that only its
+tests use is reported. Delete such code, or drop the `export` when only its
+own file uses it.
 
 ### AI Gateway
 

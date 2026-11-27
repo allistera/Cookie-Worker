@@ -13,6 +13,7 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "node scripts/typecheck.mjs",
     "lint": "eslint .",
+    "knip": "knip && knip --production",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "deploy": "node scripts/workers.mjs deploy"
@@ -42,6 +43,7 @@
     "eslint": "^10.15.0",
     "globals": "^17.14.0",
     "jsonc-parser": "^3.3.1",
+    "knip": "^6.48.0",
     "prettier": "3.10.1",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0",
