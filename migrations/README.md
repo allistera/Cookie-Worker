@@ -606,3 +606,15 @@ frontend that offers the two lines, so no message is sent by a Worker that
 ignores them. Those Workers run with or without this migration: until it is
 applied, a draft or a Send Later that has a Cc or Bcc line fails to save and
 says so, and everything else is unaffected.
+
+## Task reorders left out of task history (0117)
+
+`0117_task_activity_ignore_position.sql` replaces `record_task_activity`
+(0097, last replaced by 0098) so that `position` and `today_position` are no
+longer part of the edit diff. A drag in a list, or a Todoist sync that shifts a
+project's order, rewrites the position of every later task, and each of those
+rows used to log an `edited` event. Every other tracked key is diffed as
+before. Earlier "Reordered" events stay in `task_activity`.
+
+It changes only the trigger function, so it can be applied at any time; no
+Worker or frontend deploy depends on it.
