@@ -324,6 +324,23 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
 
+      - name: Deploy cookie-web-automations and synchronize its secrets
+        if: inputs.worker == 'all' || inputs.worker == 'cookie-web-automations'
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/cookie-web-automations
+          command: deploy
+          # Deliberately placed after every other cookie-web-* step, like
+          # cookie-mcp below: this Worker binds cookie-web-tasks' Internal
+          # entrypoint, and a failed step stops the job, so `all` never
+          # deploys it ahead of the Worker it depends on.
+          secrets: |
+            SENTRY_DSN
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
       - name: Deploy cookie-mcp and synchronize its secrets
         if: inputs.worker == 'all' || inputs.worker == 'cookie-mcp'
         uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
@@ -421,6 +438,7 @@ jobs:
           inputs.worker != 'blog-email-publish' &&
           inputs.worker != 'cookie-mcp' &&
           inputs.worker != 'cookie-web-ai' &&
+          inputs.worker != 'cookie-web-automations' &&
           inputs.worker != 'cookie-web-calendar' &&
           inputs.worker != 'cookie-web-drafts' &&
           inputs.worker != 'cookie-web-emails' &&
