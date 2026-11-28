@@ -262,7 +262,7 @@ Reads carry `readOnlyHint`; deletes, `cancel_scheduled` and `send_email` carry `
 **Auth0 setup.** In the Cookie tenant (the one behind `auth.infinitywave.online`), as configured on 2026-10-04:
 
 - API `Cookie MCP`, identifier `https://mcp.infinitywave.online/mcp`, RS256, with permissions `cookie:read` and `cookie:write`, RBAC off, and per-app authorization for user-delegated access.
-- Application `Cookie MCP Clients` (Native, public, client id `rTBvArPhtT8s9dGwT8mODMphNrngYlHb`), shared by every MCP client and granted both permissions on the API. The client id is not a secret. Its allowed callback URLs are `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback` (Claude), `http://localhost:8765/callback` and `http://127.0.0.1:8765/callback` (Claude Code), `http://localhost:8766/callback` and `http://127.0.0.1:8766/callback` (Codex), and `/callback` on ports `27890` to `27894` of both `127.0.0.1` and `localhost` (Hermes).
+- Application `Cookie MCP Clients` (Native, public, client id `rTBvArPhtT8s9dGwT8mODMphNrngYlHb`), shared by every MCP client and granted both permissions on the API. The client id is not a secret. Its allowed callback URLs are `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback` (Claude), `http://localhost:8765/callback` and `http://127.0.0.1:8765/callback` (Claude Code), `http://127.0.0.1:8766/callback/iqDOdcFGRjp0` and `http://localhost:8766/callback/iqDOdcFGRjp0` (Codex; see [Codex](#codex) for the last path segment), and `/callback` on ports `27890` to `27894` of both `127.0.0.1` and `localhost` (Hermes).
 - Client ID Metadata Documents and dynamic client registration are not enabled, so every client uses that client id. For a read-only client, create a second application granted only `cookie:read`.
 
 MCP clients ask for the server with the OAuth `resource` parameter. If a sign-in succeeds but the server then answers `401`, Auth0 issued a token for its default audience: turn on the tenant's resource parameter compatibility setting (Settings, Advanced) or set the tenant's default audience so `resource` selects this API.
@@ -324,7 +324,9 @@ codex mcp login cookie
 url = "https://mcp.infinitywave.online/mcp"
 ```
 
-Auth0 only accepts the registered callback port, so also set `mcp_oauth_callback_port = 8766` at the top level of `~/.codex/config.toml`. `codex mcp login --no-browser` prints the login URL for a machine without a browser. `codex mcp list` shows whether the server is authenticated.
+Auth0 only accepts the registered callback port, so also set `mcp_oauth_callback_port = 8766` at the top level of `~/.codex/config.toml` (above every `[section]` heading; under one it is ignored and Codex picks a random port).
+
+Codex does not call back on a bare `/callback`. Auth0 does not name itself in its authorization responses (its metadata has no `authorization_response_iss_parameter_supported`), so Codex appends an id derived from the server URL to the callback path: the first nine bytes of the SHA-256 of `https://mcp.infinitywave.online/mcp`, base64url-encoded, which is `iqDOdcFGRjp0` on every machine. The redirect it sends is therefore `http://127.0.0.1:8766/callback/iqDOdcFGRjp0`, and that exact URL must be among the application's allowed callback URLs; Auth0 does not match a path by prefix. Without it the sign-in page answers "Callback URL mismatch. The provided redirect_uri is not in the list of allowed callback URLs." Seen with codex-cli 0.172.0 on 28 November 2026; the id changes only if the server URL does. `codex mcp login --no-browser` prints the login URL for a machine without a browser. `codex mcp list` shows whether the server is authenticated.
 
 #### Hermes
 
