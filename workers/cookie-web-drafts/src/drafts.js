@@ -223,6 +223,7 @@ async function fetchDraft(sql, userId, id) {
       d.subject, d.body_text AS "text",
       d.body_html AS "html", d.reply_to_message_id AS "replyToMessageId",
       d.follow_up_at AS "followUpAt", d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated",
+      d.is_starred AS "isStarred",
       COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
           'id', COALESCE(a.id, oa.id),
@@ -272,6 +273,7 @@ export async function listDrafts(sql, userId) {
     SELECT d.id, left(d.to_addresses, 512) AS "to", d.subject,
       left(d.body_text, 141) AS preview, d.reply_to_message_id AS "replyToMessageId",
       d.updated_at AS "updatedAt", d.is_ai_generated AS "isAiGenerated", true AS "isSummary",
+      d.is_starred AS "isStarred",
       (SELECT count(*)::int FROM draft_attachments da WHERE da.draft_id = d.id) AS "attachmentCount"
     FROM drafts d WHERE d.user_id = ${userId}
     ORDER BY d.updated_at DESC LIMIT ${MAX_DRAFTS_PER_USER}
@@ -430,6 +432,39 @@ export async function updateDraft(sql, userId, id, body) {
     );
     return Response.json({ draft: { id: row.id, updatedAt: row.updatedAt } });
   });
+}
+
+/**
+ * PUT /drafts/:id/star {starred: boolean}. A starred draft is never deleted by
+ * mail-app-ingest's draft retention sweep, and removing the star starts that
+ * sweep's 30 days again (migration 0119). `updated_at` is left alone: a star is
+ * not an edit, so it neither reorders the list nor conflicts with a composer's
+ * next autosave.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {string} userId
+ * @param {string} id
+ * @param {any} body
+ */
+export async function setDraftStar(sql, userId, id, body) {
+  if (!validId(id)) {
+    return Response.json({ error: 'A valid draft id is required' }, { status: 400 });
+  }
+  const starred = body?.starred;
+  if (typeof starred !== 'boolean') {
+    return Response.json({ error: 'starred must be true or false' }, { status: 400 });
+  }
+  const [draft] = await sql`
+    UPDATE drafts
+    SET is_starred = ${starred},
+        -- SET reads the row as it was, so only removing a star moves the clock.
+        retention_from = CASE WHEN is_starred AND NOT ${starred}::boolean THEN now()
+                              ELSE retention_from END
+    WHERE id = ${id} AND user_id = ${userId}
+    RETURNING id, is_starred AS "isStarred"
+  `;
+  if (!draft) return Response.json({ error: 'Draft not found' }, { status: 404 });
+  return Response.json({ draft });
 }
 
 /**

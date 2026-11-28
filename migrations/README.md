@@ -627,3 +627,16 @@ list. Apply it before deploying `cookie-web-emails` and `mail-app-ingest` from
 the same change, since both name the column; merging to `main` runs it before
 either Worker is deployed. Existing rows keep `NULL` and the list shows their
 snippet.
+
+## Draft retention (0119)
+
+`0119_draft_retention.sql` adds `drafts.is_starred` and
+`drafts.retention_from`. `mail-app-ingest` deletes a draft that is not starred
+30 days after the later of its last save and `retention_from`. Drafts that
+exist when the migration runs get the time it ran, so each has a full 30 days
+from then in which to be starred or edited; removing a star sets
+`retention_from` again.
+
+Apply it before deploying `cookie-web-drafts` and `mail-app-ingest` from the
+same change, since both name the new columns; merging to `main` runs it before
+either Worker is deployed.

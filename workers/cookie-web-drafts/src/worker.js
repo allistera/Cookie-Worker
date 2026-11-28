@@ -8,7 +8,14 @@ import { withUserSql } from '../../../shared/db.js';
 import { preflightResponse, withCors } from '../../../shared/cors.js';
 import { allowRequest } from '../../../shared/rate-limit.js';
 import { bodyErrorResponse, readJsonBody } from '../../../shared/read-body.js';
-import { createDraft, deleteDraft, getDraft, listDrafts, updateDraft } from './drafts.js';
+import {
+  createDraft,
+  deleteDraft,
+  getDraft,
+  listDrafts,
+  setDraftStar,
+  updateDraft,
+} from './drafts.js';
 import { captureHandledException, createSentryOptions } from './sentry.js';
 
 // Autosave is a write per ~800ms of typing pause, per open composer. This is
@@ -21,7 +28,7 @@ const AUTOSAVE_RATE_LIMIT = { limit: 120, windowMs: 60_000 };
 const MAX_DRAFT_BODY_BYTES = 400 * 1024;
 
 /**
- * Routes /drafts and /drafts/:id.
+ * Routes /drafts, /drafts/:id and /drafts/:id/star.
  *
  * @param {URL} url
  * @param {Request} request
@@ -30,10 +37,29 @@ const MAX_DRAFT_BODY_BYTES = 400 * 1024;
  */
 async function route(url, request, sql, userId) {
   const segments = url.pathname.split('/').filter(Boolean);
-  if (segments[0] !== 'drafts' || segments.length > 2) {
+  const isStar = segments.length === 3 && segments[2] === 'star';
+  if (segments[0] !== 'drafts' || (segments.length > 2 && !isStar)) {
     return Response.json({ error: 'Not Found' }, { status: 404 });
   }
   const id = segments[1] ?? null;
+
+  if (isStar) {
+    if (request.method !== 'PUT') {
+      return Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'PUT' } },
+      );
+    }
+    let star;
+    try {
+      star = await readJsonBody(request);
+    } catch (error) {
+      const errorResponse = bodyErrorResponse(error);
+      if (errorResponse) return errorResponse;
+      throw error;
+    }
+    return setDraftStar(sql, userId, id, star);
+  }
 
   if (request.method === 'GET') {
     return id ? getDraft(sql, userId, id) : listDrafts(sql, userId);

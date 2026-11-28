@@ -974,9 +974,9 @@ describe('scheduled recovery', () => {
     postgres.mockReturnValue(sql);
     const context = ctx();
     await worker.scheduled(/** @type {any} */ ({}), env({ OPENAI_API_KEY: 'key' }), context);
-    // Recovery of classification, search drift, spam retention, and the
-    // notification-event purge run independently, so one failure cannot stop
-    // another — but under one waitUntil the handler itself awaits, so the
+    // Recovery of classification, search drift, spam and draft retention, and
+    // the notification-event purge run independently, so one failure cannot
+    // stop another — but under one waitUntil the handler itself awaits, so the
     // cron invocation outlives them.
     expect(context.waitUntil).toHaveBeenCalledOnce();
     expect(sql.end).toHaveBeenCalled();

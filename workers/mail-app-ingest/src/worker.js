@@ -16,6 +16,7 @@ import {
   WORKSPACE_SWEEP_CRON,
 } from './searchDriftSweep.js';
 import { purgeExpiredSpam } from './spamRetentionSweep.js';
+import { purgeExpiredDrafts } from './draftRetentionSweep.js';
 import { purgeExpiredNotificationEvents } from './notificationEventsSweep.js';
 import { runInboundHealthChecks } from './inboundHealth.js';
 import { runDbHealthChecks } from './dbHealth.js';
@@ -385,6 +386,7 @@ const worker = {
           recoverPendingEnrichment(env),
           sweepSearchDrift(env, { createSql }),
           purgeExpiredSpam(env, { createSql }),
+          purgeExpiredDrafts(env, { createSql }),
           purgeExpiredNotificationEvents(env, { createSql }),
         ]);
         ctx.waitUntil(sweeps);
