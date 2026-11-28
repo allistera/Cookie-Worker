@@ -125,6 +125,33 @@ describe('routing', () => {
     expect(response.status).toBe(405);
   });
 
+  test('PUT /drafts/:id/star sets the star', async () => {
+    mockQuery.mockResolvedValueOnce([{ id: DRAFT_ID, isStarred: true }]);
+    const response = await worker.fetch(
+      request(`/drafts/${DRAFT_ID}/star`, {
+        method: 'PUT',
+        body: JSON.stringify({ starred: true }),
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ draft: { id: DRAFT_ID, isStarred: true } });
+  });
+
+  // A whole-draft PATCH carrying only a star would empty, and so delete, it.
+  test('the star path takes only PUT', async () => {
+    const response = await worker.fetch(
+      request(`/drafts/${DRAFT_ID}/star`, autosave({ starred: true })),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Allow')).toBe('PUT');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   test('DELETE without an id is refused rather than deleting every draft', async () => {
     const response = await worker.fetch(request('/drafts', { method: 'DELETE' }), env, ctx);
     expect(response.status).toBe(400);

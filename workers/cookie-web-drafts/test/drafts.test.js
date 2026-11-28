@@ -4,6 +4,7 @@ import {
   deleteDraft,
   isEmptyDraft,
   listDrafts,
+  setDraftStar,
   parseDraftBody,
   updateDraft,
 } from '../src/drafts.js';
@@ -408,5 +409,40 @@ describe('listDrafts', () => {
     await listDrafts(sql, USER_ID);
     expect(sql.calls[0].text).toMatch(/LIMIT/);
     expect(sql.calls[0].text).not.toMatch(/body_html/);
+  });
+});
+
+describe('setDraftStar', () => {
+  test('stars the owner’s draft without touching its version', async () => {
+    const sql = createMockSql([[{ id: DRAFT_ID, isStarred: true }]]);
+    const response = await setDraftStar(sql, USER_ID, DRAFT_ID, { starred: true });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ draft: { id: DRAFT_ID, isStarred: true } });
+    expect(sql.calls[0].text).toContain('SET is_starred = ?');
+    expect(sql.calls[0].text).not.toContain('updated_at');
+    expect(sql.calls[0].values).toEqual([true, true, DRAFT_ID, USER_ID]);
+  });
+
+  test('is not found for a draft the caller does not own', async () => {
+    const sql = createMockSql([[]]);
+    const response = await setDraftStar(sql, USER_ID, DRAFT_ID, { starred: false });
+    expect(response.status).toBe(404);
+  });
+
+  test.each([undefined, {}, { starred: 'true' }, { starred: 1 }])(
+    'refuses %j without querying',
+    async (body) => {
+      const sql = createMockSql();
+      const response = await setDraftStar(sql, USER_ID, DRAFT_ID, body);
+      expect(response.status).toBe(400);
+      expect(sql.calls).toHaveLength(0);
+    },
+  );
+
+  test('refuses an id that is not one', async () => {
+    const sql = createMockSql();
+    const response = await setDraftStar(sql, USER_ID, 'nope', { starred: true });
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
   });
 });
