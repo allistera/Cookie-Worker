@@ -54,7 +54,7 @@ describe('results', () => {
           'SEND_CONFIRMATION_REQUIRED',
         ),
       ).content[0].text,
-    ).toMatch(/send confirmation from the mailbox owner.*Cookie Settings/);
+    ).toMatch(/send confirmation from the mailbox owner.*Automations, Connections/);
     expect(toolError(new ApiError('emails', 502, 'Failed')).content[0].text).toBe(
       'Cookie could not complete the request (status 502). Try again later.',
     );

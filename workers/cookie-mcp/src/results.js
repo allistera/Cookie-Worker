@@ -31,7 +31,8 @@ export function toolError(error) {
     if (code === 'SEND_CONFIRMATION_REQUIRED')
       return failure(
         'Sending needs a send confirmation from the mailbox owner. Ask the owner to create one ' +
-          'in Cookie Settings under Connected agents and pass it as confirmation. Each one ' +
+          'in Cookie under Automations, Connections, Send confirmations and pass it as ' +
+          'confirmation. Each one ' +
           'covers one email (one requestId) and expires after ten minutes.',
       );
     if (status === 401 || status === 403)
