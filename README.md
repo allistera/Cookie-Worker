@@ -272,7 +272,7 @@ MCP clients ask for the server with the OAuth `resource` parameter. If a sign-in
 ### Agent send confirmations
 
 `cookie_send_email` must carry a `confirmation`, which only the mailbox owner can
-create: in Cookie-Web under Settings, MCP clients, **Connected agents**, with
+create: in Cookie-Web under Automations, Connections, **Send confirmations**, with
 **Create send confirmation**. That button calls `POST /send/confirmation` on
 `cookie-web-send` ([`src/sendConfirmation.js`](workers/cookie-web-send/src/sendConfirmation.js)),
 which answers a browser session only: the `Internal` identity `cookie-mcp` uses is

@@ -281,7 +281,7 @@ describe('drafts tools', () => {
     expect(result.error?.issues).toContainEqual(
       expect.objectContaining({ path: ['confirmation'] }),
     );
-    expect(tool.description).toContain('Cookie Settings');
+    expect(tool.description).toContain('Automations, Connections, Send confirmations');
   });
 
   test('cookie_send_email requires the caller to supply a stable request identity', () => {
